@@ -11,6 +11,7 @@ import { css } from '@codemirror/lang-css'
 import { html } from '@codemirror/lang-html'
 import { php } from '@codemirror/lang-php'
 import type { FileEntry, Workspace } from '@cockpit/shared'
+import { ChevronDown, ChevronRight, File, FileCode, Folder, Save, Search } from '@lucide/vue'
 import { client, guard, state, toast } from '../../core/store.js'
 
 /**
@@ -47,6 +48,15 @@ function languageFor(path: string) {
   if (['html', 'htm'].includes(ext)) return html()
   if (ext === 'php') return php()
   return []
+}
+
+const CODE_EXT = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'vue', 'json', 'css', 'html', 'php', 'yml', 'yaml',
+])
+
+/** Files that hold code get the marked icon; everything else stays quiet. */
+function fileIcon(name: string) {
+  return CODE_EXT.has(name.split('.').pop()?.toLowerCase() ?? '') ? FileCode : File
 }
 
 /** A theme built from the same tokens as the rest of the app, so the editor
@@ -170,18 +180,30 @@ onBeforeUnmount(() => view.value?.destroy())
     <aside class="tree">
       <div class="ttop">
         <span class="section-label">files</span>
-        <button class="btn ghost tiny" title="Fuzzy open (⌘K)" @click="state.paletteOpen = true">⌕</button>
+        <button class="icon-btn small" title="Fuzzy open (⌘K)" @click="state.paletteOpen = true">
+          <Search class="sm" />
+        </button>
       </div>
       <div class="scroll">
         <button
           v-for="n in flatten(roots)"
           :key="n.entry.path"
           class="node"
-          :class="{ on: n.entry.path === openPath }"
-          :style="{ paddingLeft: 8 + n.depth * 12 + 'px' }"
+          :class="{ on: n.entry.path === openPath, dir: n.entry.kind === 'dir' }"
+          :style="{ paddingLeft: 6 + n.depth * 13 + 'px' }"
           @click="toggle(n)"
         >
-          <span class="tw">{{ n.entry.kind === 'dir' ? (n.expanded ? '▾' : '▸') : '' }}</span>
+          <span class="tw">
+            <component
+              v-if="n.entry.kind === 'dir'"
+              :is="n.expanded ? ChevronDown : ChevronRight"
+              class="sm"
+            />
+          </span>
+          <component
+            :is="n.entry.kind === 'dir' ? Folder : fileIcon(n.entry.name)"
+            class="fi sm"
+          />
           <span class="nm">{{ n.entry.name }}</span>
           <span v-if="n.entry.gitStatus" class="gs" :class="n.entry.gitStatus">{{ n.entry.gitStatus }}</span>
         </button>
@@ -193,10 +215,13 @@ onBeforeUnmount(() => view.value?.destroy())
         <span class="mono ep">{{ openPath }}</span>
         <span v-if="dirty" class="chip warn">unsaved</span>
         <span class="grow" />
-        <button class="btn ghost" @click="save" :disabled="!dirty">Save <span class="kbd">⌘S</span></button>
+        <button class="btn ghost" @click="save" :disabled="!dirty">
+          <Save />Save <span class="kbd">⌘S</span>
+        </button>
       </div>
       <div v-show="openPath" ref="host" class="cm" />
       <div v-if="!openPath" class="empty">
+        <FileCode />
         <strong>No file open</strong>
         <span>Pick one on the left, or press <span class="kbd">⌘K</span> to jump straight to it.</span>
       </div>
@@ -205,7 +230,7 @@ onBeforeUnmount(() => view.value?.destroy())
 </template>
 
 <style scoped>
-.code { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; }
+.code { display: grid; grid-template-columns: 272px minmax(0, 1fr); height: 100%; }
 
 .tree {
   display: flex;
@@ -218,29 +243,41 @@ onBeforeUnmount(() => view.value?.destroy())
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 8px 6px 12px;
+  padding: 12px 8px 8px 14px;
 }
-.btn.tiny { height: 20px; width: 22px; padding: 0; font-size: 12px; }
-.scroll { flex: 1; overflow: auto; padding: 0 6px 8px; }
+.icon-btn.small { width: 24px; height: 24px; }
+.scroll { flex: 1; overflow: auto; padding: 0 8px 10px; }
 
 .node {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   width: 100%;
-  height: 24px;
-  padding-right: 8px;
+  height: 28px;
+  padding-right: 9px;
   border-radius: var(--radius-sm);
   text-align: left;
   font-size: var(--fs-sm);
   color: var(--text-muted);
   white-space: nowrap;
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
 .node:hover { background: var(--hover); }
 .node.on { background: var(--selected); color: var(--text); }
-.tw { flex: none; width: 11px; font-size: 9px; color: var(--text-dim); }
+.tw {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  color: var(--text-dim);
+}
+.tw .lucide { width: 12px; height: 12px; }
+.fi { color: var(--text-dim); }
+.node.dir .fi { color: var(--text-muted); }
+.node.on .fi { color: var(--accent); }
 .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-.gs { flex: none; font-size: 10px; font-weight: 700; color: var(--warn); }
+.gs { flex: none; font-size: 11px; font-weight: 700; color: var(--warn); }
 .gs\?\? { color: var(--text-dim); }
 
 .editor { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -248,9 +285,9 @@ onBeforeUnmount(() => view.value?.destroy())
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 12px;
+  gap: 10px;
+  height: 40px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--line);
 }
 .ep {
@@ -261,6 +298,7 @@ onBeforeUnmount(() => view.value?.destroy())
   white-space: nowrap;
 }
 .grow { flex: 1; }
-.ehead .btn { height: 22px; padding: 0 8px; font-size: var(--fs-xs); }
+.ehead .btn { height: 26px; padding: 0 9px; font-size: var(--fs-xs); }
+.ehead .kbd { height: 17px; min-width: 17px; font-size: 10px; }
 .cm { flex: 1; min-height: 0; overflow: hidden; }
 </style>

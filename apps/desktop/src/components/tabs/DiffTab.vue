@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { DiffFile, FileDiff, Workspace } from '@cockpit/shared'
+import type { Component } from 'vue'
+import { Bot, CircleDashed, FileCode, Sparkles, SquareArrowOutUpRight, User, UsersRound } from '@lucide/vue'
 import { client, guard, state } from '../../core/store.js'
 
 /**
@@ -75,7 +77,14 @@ watch(
   () => void load(),
 )
 
-const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑', unknown: '·' }
+/** One icon per author, and the icon is the same everywhere it appears —
+ *  the filter rows below reuse it, so the legend needs no explaining. */
+const mark: Record<string, Component> = {
+  human: User,
+  agent: Sparkles,
+  mixed: UsersRound,
+  unknown: CircleDashed,
+}
 </script>
 
 <template>
@@ -98,7 +107,7 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
           @click="select(f.path)"
         >
           <span class="attr" :class="f.attribution" :title="'written by: ' + f.attribution">
-            {{ mark[f.attribution] }}
+            <component :is="mark[f.attribution]" class="sm" />
           </span>
           <span class="st" :class="f.status">{{ f.status }}</span>
           <span class="fp">{{ f.path }}</span>
@@ -109,6 +118,7 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
         </button>
 
         <div v-if="!files.length && !loading" class="empty">
+          <FileCode />
           <strong>Clean</strong>
           <span>No uncommitted change in this workspace.</span>
         </div>
@@ -118,13 +128,16 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
       <div class="by-author">
         <span class="section-label">by author</span>
         <button class="arow" :class="{ on: filter === 'all' }" @click="filter = 'all'">
-          <span class="dimmark">◇</span> all <span class="num">{{ files.length }}</span>
+          <span class="attr"><CircleDashed class="sm" /></span> all
+          <span class="num">{{ files.length }}</span>
         </button>
         <button class="arow" :class="{ on: filter === 'human' }" @click="filter = 'human'">
-          <span class="attr human">●</span> human <span class="num">{{ counts.human }}</span>
+          <span class="attr human"><User class="sm" /></span> human
+          <span class="num">{{ counts.human }}</span>
         </button>
         <button class="arow" :class="{ on: filter === 'agent' }" @click="filter = 'agent'">
-          <span class="attr agent">◆</span> agent <span class="num">{{ counts.agent }}</span>
+          <span class="attr agent"><Sparkles class="sm" /></span> agent
+          <span class="num">{{ counts.agent }}</span>
         </button>
         <button
           v-if="counts.unknown"
@@ -133,7 +146,8 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
           @click="filter = 'unreviewed'"
           title="Changes the journal cannot attribute — edited outside the cockpit"
         >
-          <span class="dimmark">·</span> untracked origin <span class="num">{{ counts.unknown }}</span>
+          <span class="attr unknown"><Bot class="sm" /></span> untracked origin
+          <span class="num">{{ counts.unknown }}</span>
         </button>
       </div>
     </aside>
@@ -142,7 +156,9 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
       <div v-if="selected" class="vhead">
         <span class="mono vpath">{{ selected }}</span>
         <span class="grow" />
-        <button class="btn ghost" @click="openInIde">Open in IDE</button>
+        <button class="btn ghost" @click="openInIde">
+          <SquareArrowOutUpRight />Open in IDE
+        </button>
       </div>
 
       <div class="hunks mono" v-if="current && current.lines.length">
@@ -162,7 +178,7 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
 </template>
 
 <style scoped>
-.diff { display: grid; grid-template-columns: 300px minmax(0, 1fr); height: 100%; }
+.diff { display: grid; grid-template-columns: 320px minmax(0, 1fr); height: 100%; }
 
 .files {
   display: flex;
@@ -175,9 +191,9 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px 6px;
+  padding: 12px 14px 8px;
 }
-.tot { display: flex; gap: 6px; font-size: var(--fs-xs); }
+.tot { display: flex; gap: 8px; font-size: var(--fs-xs); font-weight: 550; }
 .add { color: var(--ok); }
 .del { color: var(--danger); }
 
@@ -188,26 +204,28 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
   align-items: center;
   gap: 7px;
   width: 100%;
-  height: 26px;
-  padding: 0 8px;
+  height: 30px;
+  padding: 0 9px;
   border-radius: var(--radius-sm);
   text-align: left;
   font-size: var(--fs-sm);
   color: var(--text-muted);
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
 .frow:hover { background: var(--hover); }
 .frow.on { background: var(--selected); color: var(--text); }
 
-.attr { flex: none; font-size: 9px; line-height: 1; }
+.attr { flex: none; display: flex; align-items: center; color: var(--text-dim); }
+.attr .lucide { width: 13px; height: 13px; }
 .attr.human { color: var(--human); }
 .attr.agent { color: var(--agent); }
 .attr.mixed { color: var(--warn); }
 .attr.unknown { color: var(--text-dim); }
-.dimmark { color: var(--text-dim); font-size: 9px; }
+.attr.mixed { color: var(--warn); }
 
 .st {
   flex: none;
-  width: 11px;
+  width: 12px;
   font-size: 10px;
   font-weight: 700;
   color: var(--text-dim);
@@ -233,19 +251,21 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
 .by-author {
   flex: none;
   border-top: 1px solid var(--line);
-  padding: 8px 6px;
+  padding: 10px 8px;
+  background: var(--panel);
 }
-.by-author .section-label { display: block; padding: 0 8px 4px; }
+.by-author .section-label { display: block; padding: 0 9px 6px; }
 .arow {
   display: flex;
   align-items: center;
   gap: 7px;
   width: 100%;
-  height: 24px;
-  padding: 0 8px;
+  height: 28px;
+  padding: 0 9px;
   border-radius: var(--radius-sm);
   font-size: var(--fs-sm);
   color: var(--text-muted);
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
 .arow:hover { background: var(--hover); }
 .arow.on { background: var(--selected); color: var(--text); }
@@ -257,8 +277,8 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 34px;
-  padding: 0 12px;
+  height: 40px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--line);
 }
 .vpath {
@@ -269,7 +289,7 @@ const mark: Record<string, string> = { human: '●', agent: '◆', mixed: '◑',
   white-space: nowrap;
 }
 .grow { flex: 1; }
-.vhead .btn { height: 22px; padding: 0 8px; font-size: var(--fs-xs); }
+.vhead .btn { height: 26px; padding: 0 9px; font-size: var(--fs-xs); }
 
 .hunks {
   flex: 1;

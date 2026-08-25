@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import type { Workspace } from '@cockpit/shared'
+import { CircleStop, Sparkles, Wrench } from '@lucide/vue'
 import { client, guard, state, toast } from '../../core/store.js'
 
 /**
@@ -79,6 +80,7 @@ function payloadText(p: unknown): string {
   <div class="agent">
     <div class="stream">
       <div v-if="!transcript.length" class="empty">
+        <Sparkles />
         <strong>No agent output yet</strong>
         <span>
           A session is a set of paths, not a feature — it works the same on a worktree and on the
@@ -88,7 +90,7 @@ function payloadText(p: unknown): string {
       <div v-else class="lines">
         <div v-for="e in transcript" :key="e.id" class="ln" :class="e.type">
           <span class="badge" :class="e.type === 'agent.tool_use' ? 'tool' : 'text'">
-            {{ e.type === 'agent.tool_use' ? '⚙' : '◆' }}
+            <component :is="e.type === 'agent.tool_use' ? Wrench : Sparkles" class="sm" />
           </span>
           <span class="txt selectable">{{ payloadText(e.payload) }}</span>
         </div>
@@ -128,7 +130,7 @@ function payloadText(p: unknown): string {
 
         <textarea
           v-model="prompt"
-          class="prompt selectable"
+          class="input prompt selectable"
           rows="5"
           placeholder="What should it do here?"
           @keydown.meta.enter="start"
@@ -149,8 +151,13 @@ function payloadText(p: unknown): string {
           <span class="sname">{{ s.engine }}</span>
           <span class="sst">{{ s.status }}</span>
           <span class="scost num">${{ s.costUsd.toFixed(2) }}</span>
-          <button v-if="s.status !== 'ended' && s.status !== 'failed'" class="btn ghost x" @click="stop(s.id)">
-            ✕
+          <button
+            v-if="s.status !== 'ended' && s.status !== 'failed'"
+            class="icon-btn x"
+            title="Stop this session"
+            @click="stop(s.id)"
+          >
+            <CircleStop class="sm" />
           </button>
         </div>
         <p v-if="!sessions.length" class="none">No session recorded.</p>
@@ -164,20 +171,24 @@ function payloadText(p: unknown): string {
 </template>
 
 <style scoped>
-.agent { display: grid; grid-template-columns: minmax(0, 1fr) 300px; height: 100%; }
+.agent { display: grid; grid-template-columns: minmax(0, 1fr) 320px; height: 100%; }
 
-.stream { min-width: 0; min-height: 0; overflow-y: auto; padding: 14px 18px 30px; }
-.lines { display: flex; flex-direction: column; gap: 8px; }
-.ln { display: flex; gap: 9px; font-size: var(--fs-sm); line-height: 1.55; }
+.stream { min-width: 0; min-height: 0; overflow-y: auto; padding: 18px 22px 34px; }
+.lines { display: flex; flex-direction: column; gap: 11px; }
+.ln { display: flex; gap: 11px; font-size: var(--fs-sm); line-height: 1.6; }
 .badge {
   flex: none;
-  width: 16px;
-  text-align: center;
-  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--agent-soft);
   color: var(--agent);
-  padding-top: 2px;
 }
-.badge.tool { color: var(--text-dim); }
+.badge .lucide { width: 12px; height: 12px; }
+.badge.tool { background: var(--hover); color: var(--text-dim); }
 .txt { color: var(--text-muted); white-space: pre-wrap; word-break: break-word; }
 .ln.agent\.tool_use .txt { color: var(--text-dim); font-family: var(--mono); font-size: var(--fs-xs); }
 
@@ -185,7 +196,7 @@ function payloadText(p: unknown): string {
   border-left: 1px solid var(--line);
   background: var(--panel);
   overflow-y: auto;
-  padding: 14px 14px 24px;
+  padding: 18px 16px 26px;
 }
 .block + .block { margin-top: 22px; }
 .block .section-label { display: block; margin-bottom: 8px; }
@@ -201,8 +212,8 @@ function payloadText(p: unknown): string {
 
 .engines { display: flex; gap: 4px; }
 .eng {
-  height: 24px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
   font-size: var(--fs-xs);
@@ -215,27 +226,17 @@ function payloadText(p: unknown): string {
 .check {
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 22px;
+  gap: 8px;
+  height: 26px;
   font-size: var(--fs-sm);
   color: var(--text-muted);
 }
 .check input { accent-color: var(--accent); }
 
 .prompt {
-  width: 100%;
-  padding: 8px 9px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--bg-sunken);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--fs-sm);
-  line-height: 1.5;
   resize: vertical;
-  margin-bottom: 7px;
+  margin-bottom: 9px;
 }
-.prompt:focus { border-color: var(--focus-ring); }
 .btn.full { width: 100%; }
 
 .guard {
@@ -248,15 +249,16 @@ function payloadText(p: unknown): string {
 .srow {
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 24px;
+  gap: 8px;
+  height: 28px;
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
 .sname { font-weight: 550; color: var(--text); }
 .sst { flex: 1; color: var(--text-dim); }
 .scost { color: var(--text-muted); }
-.btn.x { height: 18px; width: 18px; padding: 0; font-size: 10px; }
+.icon-btn.x { width: 22px; height: 22px; }
+.icon-btn.x:hover { color: var(--danger); }
 .none { margin: 0; color: var(--text-dim); font-size: var(--fs-xs); }
 .totals {
   display: flex;

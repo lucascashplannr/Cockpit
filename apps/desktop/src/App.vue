@@ -104,7 +104,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   top: 0;
   left: 0;
   right: 0;
-  height: 38px;
+  height: var(--titlebar-h);
   -webkit-app-region: drag;
   pointer-events: none;
   z-index: 5;

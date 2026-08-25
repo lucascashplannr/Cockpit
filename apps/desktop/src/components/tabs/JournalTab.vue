@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { Workspace } from '@cockpit/shared'
+import { GitBranch, ScrollText, Server, Sparkles } from '@lucide/vue'
 import { state } from '../../core/store.js'
 
 /**
@@ -12,6 +13,15 @@ const props = defineProps<{ workspace: Workspace }>()
 
 const scope = ref<'workspace' | 'all'>('workspace')
 const kind = ref<'all' | 'git' | 'agent' | 'runtime'>('all')
+
+/** The filter icons are the same ones the rest of the app uses for those
+ *  three subjects, so the bar needs no labels beyond its own. */
+const KINDS = [
+  { id: 'all', label: 'all', icon: ScrollText },
+  { id: 'git', label: 'git', icon: GitBranch },
+  { id: 'agent', label: 'agent', icon: Sparkles },
+  { id: 'runtime', label: 'runtime', icon: Server },
+] as const
 
 const rows = computed(() => {
   let list = state.events
@@ -52,8 +62,9 @@ function summarize(p: unknown): string {
         <button :class="{ on: scope === 'all' }" @click="scope = 'all'">everything</button>
       </div>
       <div class="seg">
-        <button v-for="k in (['all', 'git', 'agent', 'runtime'] as const)" :key="k"
-          :class="{ on: kind === k }" @click="kind = k">{{ k }}</button>
+        <button v-for="k in KINDS" :key="k.id" :class="{ on: kind === k.id }" @click="kind = k.id">
+          <component :is="k.icon" class="sm" />{{ k.label }}
+        </button>
       </div>
       <span class="grow" />
       <span class="count num">{{ rows.length }}</span>
@@ -66,7 +77,10 @@ function summarize(p: unknown): string {
         <span class="ty">{{ e.type }}</span>
         <span class="p selectable">{{ summarize(e.payload) }}</span>
       </div>
-      <div v-if="!rows.length" class="empty"><span>Nothing logged yet.</span></div>
+      <div v-if="!rows.length" class="empty">
+        <ScrollText />
+        <span>Nothing logged yet.</span>
+      </div>
     </div>
   </div>
 </template>
@@ -78,43 +92,34 @@ function summarize(p: unknown): string {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 36px;
-  padding: 0 14px;
+  gap: 12px;
+  height: 46px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--line);
 }
-.seg { display: flex; gap: 1px; background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 2px; }
-.seg button {
-  height: 20px;
-  padding: 0 9px;
-  border-radius: 4px;
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
-}
-.seg button:hover { color: var(--text-muted); }
-.seg button.on { background: var(--panel-raised); color: var(--text); box-shadow: var(--shadow-panel); }
+.seg .lucide { width: 12px; height: 12px; }
 .grow { flex: 1; }
 .count { font-size: var(--fs-xs); color: var(--text-dim); }
 
 .rows { flex: 1; overflow-y: auto; padding: 4px 0 20px; }
 .r {
   display: flex;
-  gap: 10px;
-  padding: 3px 16px;
+  gap: 12px;
+  padding: 5px 18px;
   font-size: var(--fs-xs);
-  line-height: 1.5;
+  line-height: 1.55;
   border-left: 2px solid transparent;
 }
 .r:hover { background: var(--hover); }
 .r.warn { border-left-color: var(--warn); }
 .r.error { border-left-color: var(--danger); }
 
-.t { flex: none; width: 66px; color: var(--text-dim); font-family: var(--mono); }
-.a { flex: none; width: 54px; font-weight: 550; }
+.t { flex: none; width: 72px; color: var(--text-dim); font-family: var(--mono); }
+.a { flex: none; width: 58px; font-weight: 600; }
 .a.human { color: var(--human); }
 .a.agent { color: var(--agent); }
 .a.system { color: var(--text-dim); }
-.ty { flex: none; width: 168px; color: var(--text); font-family: var(--mono); }
+.ty { flex: none; width: 178px; color: var(--text); font-family: var(--mono); }
 .p {
   flex: 1;
   min-width: 0;

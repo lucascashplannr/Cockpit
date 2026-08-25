@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { LoaderCircle, RefreshCw, Unplug } from '@lucide/vue'
 import { client, state } from '../core/store.js'
 
 /**
@@ -11,7 +12,8 @@ import { client, state } from '../core/store.js'
 
 <template>
   <div v-if="state.connection !== 'connected'" class="banner" :class="state.connection">
-    <span class="dot" :class="state.connection === 'connecting' ? 'starting' : 'unhealthy'" />
+    <LoaderCircle v-if="state.connection === 'connecting'" class="sm spin" />
+    <Unplug v-else class="sm" />
     <span class="txt">
       <template v-if="state.connection === 'connecting'">Connecting to the core…</template>
       <template v-else-if="state.connection === 'incompatible'">
@@ -26,7 +28,7 @@ import { client, state } from '../core/store.js'
       class="btn ghost small"
       @click="client.reconnectNow()"
     >
-      Retry
+      <RefreshCw />Retry
     </button>
   </div>
 </template>
@@ -34,23 +36,24 @@ import { client, state } from '../core/store.js'
 <style scoped>
 .banner {
   position: fixed;
-  top: 8px;
+  top: 10px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 80;
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 6px 8px 6px 12px;
+  gap: 10px;
+  padding: 7px 8px 7px 14px;
   border-radius: 999px;
   border: 1px solid var(--line-strong);
   background: var(--overlay);
-  box-shadow: var(--shadow-overlay);
+  box-shadow: var(--shadow-md), var(--inset-top);
   font-size: var(--fs-xs);
   color: var(--text-muted);
   -webkit-app-region: no-drag;
 }
 .banner.disconnected, .banner.incompatible { color: var(--danger); }
 .txt { white-space: nowrap; }
-.btn.small { height: 20px; padding: 0 8px; font-size: 10px; }
+.btn.small { height: 24px; padding: 0 10px; font-size: var(--fs-xs); }
+.btn.small .lucide { width: 12px; height: 12px; }
 </style>

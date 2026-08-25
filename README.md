@@ -90,6 +90,20 @@ Agent engines shipped: `claude`, `codex` — normalised into one event stream (�
   the database or the ticket in one gesture.
 - **Packaging** (electron-builder, launchd) — the core runs in the foreground for now.
 
+## The mark
+
+The wordmark and the compact mark are generated, not drawn:
+
+```bash
+node apps/desktop/scripts/logo.mjs
+```
+
+The script carries a small bitmap font on a 12-row grid, merges each row into rectangles and
+lays an ordered dither around every stroke — so the mark is reproducible, re-cuttable at any
+size, and can be re-issued for another word by changing one string. It writes the two Vue brand
+components (`currentColor`, so they follow the theme) and the two standalone SVGs used outside
+the app.
+
 ## The local database
 
 `~/.cockpit/cockpit.db` carries a `user_version` stamp. On startup the core either creates it,
@@ -106,7 +120,10 @@ replaced database costs history, never state.
 **Quasar was not used** (§14 names "Electron + Quasar"). Quasar's component library is
 Material-shaped, and fighting it toward the dense, hairline, keyboard-first look the document
 asks for in §12 costs more than it saves. The renderer is plain Vue 3 + Vite with a small token
-system in `apps/desktop/src/styles/`. Every other stack choice in §14 is as specified —
+system in `apps/desktop/src/styles/` — `tokens.css` holds every colour, size, radius and easing,
+and nothing else in the app is allowed a literal. Icons are [Lucide](https://lucide.dev)
+(`@lucide/vue`, tree-shaken), sized and weighted by one rule in `base.css` rather than per call
+site. Every other stack choice in §14 is as specified —
 TypeScript throughout, the core as its own Node process, WebSocket transport, CodeMirror 6,
 ripgrep, node-pty + xterm, SQLite, chokidar, git and agents as subprocesses, YAML manifest.
 

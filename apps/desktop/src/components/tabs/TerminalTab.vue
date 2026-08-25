@@ -34,15 +34,15 @@ async function boot() {
 
   const t = new Terminal({
     fontFamily: readVar('--mono', 'monospace'),
-    fontSize: 12,
-    lineHeight: 1.35,
+    fontSize: 13,
+    lineHeight: 1.45,
     cursorBlink: true,
     allowProposedApi: true,
     theme: {
-      background: readVar('--bg', '#0b0b0d'),
+      background: readVar('--bg', '#0c0c0f'),
       foreground: readVar('--text', '#ececf1'),
-      cursor: readVar('--accent', '#7c7aff'),
-      selectionBackground: readVar('--accent-soft', 'rgba(124,122,255,0.16)'),
+      cursor: readVar('--accent', '#817fff'),
+      selectionBackground: readVar('--accent-soft', 'rgba(129,127,255,0.16)'),
     },
   })
   const f = new FitAddon()
@@ -110,7 +110,7 @@ watch(() => props.workspace.id, () => void boot())
 </template>
 
 <style scoped>
-.wrap { height: 100%; padding: 8px 4px 4px 10px; background: var(--bg); }
+.wrap { height: 100%; padding: 14px 8px 8px 16px; background: var(--bg); }
 .term { height: 100%; }
 :deep(.xterm) { height: 100%; }
 :deep(.xterm-viewport) { background: transparent !important; }

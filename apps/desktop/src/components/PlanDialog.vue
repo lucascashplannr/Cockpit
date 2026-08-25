@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { ShieldCheck, ShieldOff, TriangleAlert, X } from '@lucide/vue'
 import { applyPendingPlan, state } from '../core/store.js'
 
 /**
@@ -23,9 +24,12 @@ function cancel() {
     <div class="dlg" role="dialog" :aria-label="plan.operation + ' plan'">
       <header class="head">
         <h2>{{ plan.operation }}</h2>
-        <span v-if="destructive" class="chip danger">rewrites history</span>
+        <span v-if="destructive" class="chip danger">
+          <TriangleAlert />rewrites history
+        </span>
         <span class="grow" />
         <span class="count num">{{ plan.steps.length }} steps</span>
+        <button class="icon-btn" title="Cancel" @click="cancel"><X class="sm" /></button>
       </header>
 
       <div class="steps">
@@ -39,15 +43,22 @@ function cancel() {
       </div>
 
       <div v-if="plan.warnings.length" class="warns">
-        <div v-for="(w, i) in plan.warnings" :key="i" class="warn">{{ w }}</div>
+        <div v-for="(w, i) in plan.warnings" :key="i" class="warn">
+          <TriangleAlert class="sm" />
+          <span>{{ w }}</span>
+        </div>
       </div>
 
       <footer class="foot">
         <!-- §16 — the restore point is what makes the undo button real. -->
         <span v-if="plan.capturesRestorePoint" class="rp">
+          <ShieldCheck class="sm ok" />
           A restore point is captured first — undo stays available.
         </span>
-        <span v-else class="rp dim">Nothing destructive; no restore point needed.</span>
+        <span v-else class="rp dim">
+          <ShieldOff class="sm" />
+          Nothing destructive; no restore point needed.
+        </span>
         <span class="grow" />
         <button class="btn ghost" @click="cancel">Cancel</button>
         <button class="btn primary" :disabled="state.planBusy" @click="applyPendingPlan">
@@ -66,50 +77,62 @@ function cancel() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.32);
-  backdrop-filter: blur(3px);
+  background: var(--scrim);
+  backdrop-filter: blur(6px) saturate(1.1);
+  animation: fade var(--dur-2) var(--ease-soft);
+}
+@keyframes fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .dlg {
-  width: min(620px, 92vw);
+  width: min(660px, 92vw);
   max-height: 80vh;
   display: flex;
   flex-direction: column;
   background: var(--overlay);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-overlay);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg), var(--inset-top);
   overflow: hidden;
+  animation: rise var(--dur-3) var(--ease);
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: none; }
 }
 
 .head {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 14px 16px 12px;
+  gap: 10px;
+  padding: 16px 14px 14px 20px;
   border-bottom: 1px solid var(--line);
 }
 .head h2 {
   margin: 0;
   font-size: var(--fs-lg);
-  font-weight: 620;
+  font-weight: 640;
+  letter-spacing: -0.01em;
   text-transform: capitalize;
 }
 .grow { flex: 1; }
 .count { font-size: var(--fs-xs); color: var(--text-dim); }
 
-.steps { flex: 1; overflow-y: auto; padding: 10px 16px; }
-.step { display: flex; gap: 11px; padding: 7px 0; }
-.step + .step { border-top: 1px solid var(--line); }
+.steps { flex: 1; overflow-y: auto; padding: 8px 20px 12px; }
+.step { display: flex; gap: 13px; padding: 11px 0; }
+.step + .step { border-top: 1px solid var(--line-soft); }
 .n {
   flex: none;
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   margin-top: 1px;
-  border-radius: 5px;
+  border-radius: 7px;
   background: var(--hover);
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -120,32 +143,45 @@ function cancel() {
 .step.bad .title { color: var(--danger); font-weight: 550; }
 .cmd {
   display: block;
-  margin-top: 3px;
+  margin-top: 5px;
   font-size: var(--fs-xs);
   color: var(--text-dim);
   word-break: break-all;
+  line-height: 1.5;
 }
 
-.warns { flex: none; padding: 0 16px 10px; }
+.warns { flex: none; padding: 0 20px 12px; }
 .warn {
-  padding: 8px 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: var(--warn-soft);
   color: var(--warn);
   font-size: var(--fs-xs);
-  line-height: 1.5;
+  line-height: 1.55;
 }
-.warn + .warn { margin-top: 5px; }
+.warn .lucide { margin-top: 1px; }
+.warn + .warn { margin-top: 6px; }
 
 .foot {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 11px 16px;
+  gap: 9px;
+  padding: 13px 16px;
   border-top: 1px solid var(--line);
   background: var(--bg-sunken);
 }
-.rp { font-size: var(--fs-xs); color: var(--text-muted); max-width: 55%; }
+.rp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  max-width: 58%;
+}
+.rp .ok { color: var(--ok); }
 .rp.dim { color: var(--text-dim); }
 </style>

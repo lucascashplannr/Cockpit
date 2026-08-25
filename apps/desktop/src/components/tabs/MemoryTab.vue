@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { AgentSessionFile, MemoryDoc, Workspace } from '@cockpit/shared'
+import { BookMarked, Pencil, Plus } from '@lucide/vue'
 import { client, guard, toast } from '../../core/store.js'
 
 /**
@@ -76,6 +77,7 @@ watch(() => props.workspace.id, load, { immediate: true })
   <div class="mem">
     <div class="main">
       <div v-if="!doc && !editing" class="empty">
+        <BookMarked />
         <strong>No memory yet</strong>
         <span>
           The memory outlives every agent session — it is what makes clearing one free (§6).
@@ -108,7 +110,7 @@ watch(() => props.workspace.id, load, { immediate: true })
           <button class="btn ghost" @click="editing = false; load()">Cancel</button>
         </template>
         <template v-else-if="doc">
-          <button class="btn ghost" @click="editing = true">Edit raw</button>
+          <button class="btn ghost" @click="editing = true"><Pencil />Edit raw</button>
           <span class="grow" />
           <span class="path mono">{{ doc.path }}</span>
         </template>
@@ -119,18 +121,18 @@ watch(() => props.workspace.id, load, { immediate: true })
       <div class="block">
         <span class="section-label">promote into memory</span>
         <div class="promote">
-          <select v-model="promoteSection" class="sel">
+          <select v-model="promoteSection" class="select sel">
             <option v-for="s in SECTIONS" :key="s" :value="s">{{ s }}</option>
           </select>
           <textarea
             v-model="promoteText"
-            class="ptext selectable"
+            class="input ptext selectable"
             rows="4"
             placeholder="A decision, a constraint, or something you ruled out — and why."
             @keydown.meta.enter="promote"
           />
           <button class="btn primary" :disabled="!promoteText.trim()" @click="promote">
-            Promote <span class="kbd">⌘⏎</span>
+            <Plus />Promote <span class="kbd">⌘⏎</span>
           </button>
         </div>
       </div>
@@ -152,15 +154,15 @@ watch(() => props.workspace.id, load, { immediate: true })
 </template>
 
 <style scoped>
-.mem { display: grid; grid-template-columns: minmax(0, 1fr) 290px; height: 100%; }
+.mem { display: grid; grid-template-columns: minmax(0, 1fr) 310px; height: 100%; }
 
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.doc { flex: 1; overflow-y: auto; padding: 20px 24px 40px; max-width: 780px; }
+.doc { flex: 1; overflow-y: auto; padding: 24px 28px 44px; max-width: 800px; }
 
 .sec + .sec { margin-top: 22px; }
 .sec h3 {
-  margin: 0 0 6px;
-  font-size: var(--fs-sm);
+  margin: 0 0 8px;
+  font-size: var(--fs-md);
   font-weight: 650;
   letter-spacing: 0.02em;
   color: var(--text);
@@ -176,7 +178,7 @@ watch(() => props.workspace.id, load, { immediate: true })
 .sec.discarded h3 { color: var(--accent); }
 .body {
   margin: 0;
-  padding: 10px 12px;
+  padding: 12px 15px;
   border-left: 2px solid var(--line);
   background: var(--panel);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
@@ -207,9 +209,9 @@ watch(() => props.workspace.id, load, { immediate: true })
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 40px;
-  padding: 0 16px;
+  gap: 8px;
+  height: 46px;
+  padding: 0 18px;
   border-top: 1px solid var(--line);
 }
 .grow { flex: 1; }
@@ -219,34 +221,14 @@ watch(() => props.workspace.id, load, { immediate: true })
   border-left: 1px solid var(--line);
   background: var(--panel);
   overflow-y: auto;
-  padding: 14px 14px 24px;
+  padding: 18px 16px 26px;
 }
 .block + .block { margin-top: 22px; }
 .block .section-label { display: block; margin-bottom: 8px; }
 
 .promote { display: flex; flex-direction: column; gap: 7px; }
-.sel {
-  height: 26px;
-  padding: 0 6px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--bg-sunken);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--fs-sm);
-}
-.ptext {
-  padding: 8px 9px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--bg-sunken);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  resize: vertical;
-}
-.ptext:focus { border-color: var(--focus-ring); }
+.sel { width: 100%; }
+.ptext { resize: vertical; }
 
 .note { margin: 0 0 8px; font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.5; }
 .srow {

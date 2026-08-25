@@ -1,13 +1,18 @@
 <script setup lang="ts">
+import { CircleAlert, CircleCheck, Info, X } from '@lucide/vue'
 import { state } from '../core/store.js'
 </script>
 
 <template>
   <Transition name="t">
     <div v-if="state.toast" class="toast" :class="state.toast.kind">
-      <span class="ic">{{ state.toast.kind === 'ok' ? '✓' : state.toast.kind === 'error' ? '!' : 'i' }}</span>
+      <span class="ic">
+        <CircleCheck v-if="state.toast.kind === 'ok'" class="sm" />
+        <CircleAlert v-else-if="state.toast.kind === 'error'" class="sm" />
+        <Info v-else class="sm" />
+      </span>
       <span class="msg selectable">{{ state.toast.text }}</span>
-      <button class="x" @click="state.toast = null">✕</button>
+      <button class="x" title="Dismiss" @click="state.toast = null"><X class="sm" /></button>
     </div>
   </Transition>
 </template>
@@ -15,41 +20,47 @@ import { state } from '../core/store.js'
 <style scoped>
 .toast {
   position: fixed;
-  bottom: 18px;
+  bottom: 22px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 70;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   max-width: min(560px, 88vw);
-  padding: 9px 10px 9px 12px;
-  border-radius: var(--radius);
+  padding: 11px 11px 11px 14px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--line-strong);
   background: var(--overlay);
-  box-shadow: var(--shadow-overlay);
+  box-shadow: var(--shadow-md), var(--inset-top);
   font-size: var(--fs-sm);
   color: var(--text);
 }
 .ic {
   flex: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
-  font-weight: 700;
-  background: var(--hover);
   color: var(--text-muted);
 }
-.toast.ok .ic { background: var(--ok-soft); color: var(--ok); }
-.toast.error .ic { background: var(--danger-soft); color: var(--danger); }
-.msg { flex: 1; min-width: 0; line-height: 1.45; }
-.x { flex: none; color: var(--text-dim); font-size: 10px; padding: 2px; }
-.x:hover { color: var(--text); }
+.toast.ok .ic { color: var(--ok); }
+.toast.error .ic { color: var(--danger); }
+.msg { flex: 1; min-width: 0; line-height: 1.5; }
+.x {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
+}
+.x:hover { color: var(--text); background: var(--hover); }
 
-.t-enter-active, .t-leave-active { transition: opacity 140ms ease, transform 140ms ease; }
-.t-enter-from, .t-leave-to { opacity: 0; transform: translateX(-50%) translateY(6px); }
+.t-enter-active, .t-leave-active {
+  transition: opacity var(--dur-2) var(--ease-soft), transform var(--dur-2) var(--ease);
+}
+.t-enter-from, .t-leave-to { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.98); }
 </style>

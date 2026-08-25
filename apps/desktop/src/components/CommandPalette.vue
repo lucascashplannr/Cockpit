@@ -1,5 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import type { Component } from 'vue'
+import {
+  AppWindow, ArrowRight, ArrowUpFromLine, BookMarked, CornerDownLeft, FileCode, FolderOpen,
+  FolderPlus, GitBranch, GitCompareArrows, GitMerge, RefreshCw, ScrollText, Search, Sparkles,
+  SquareDot, SquareTerminal, TextSearch, Undo2, Zap,
+} from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
   activeWorkspace, client, guard, requestPlan, selectWorkspace, state, toast,
@@ -22,7 +28,7 @@ interface Item {
   label: string
   hint?: string
   group: string
-  icon: string
+  icon: Component
   run: () => void | Promise<void>
 }
 
@@ -40,6 +46,16 @@ const mode = computed<'default' | 'command' | 'file' | 'text'>(() => {
   if (q.startsWith('#')) return 'text'
   return 'default'
 })
+
+const leadIcon = computed<Component>(() =>
+  mode.value === 'file'
+    ? FolderOpen
+    : mode.value === 'text'
+      ? TextSearch
+      : mode.value === 'command'
+        ? ArrowRight
+        : Search,
+)
 
 const term = computed(() => (mode.value === 'default' ? query.value : query.value.slice(1).trim()))
 
@@ -62,38 +78,38 @@ const commands = computed<Item[]>(() => {
   const w = activeWorkspace.value
   const out: Item[] = []
 
-  const tab = (id: TabId, label: string) =>
+  const tab = (id: TabId, label: string, icon: Component) =>
     out.push({
       id: 'tab:' + id,
       label: 'Go to ' + label,
       group: 'View',
-      icon: '→',
+      icon,
       run: act(() => {
         state.activeTab = id
       }),
     })
 
   if (w) {
-    tab('code', 'Code')
-    if (w.git) tab('diff', 'Diff')
-    tab('agent', 'Agent')
-    tab('memory', 'Memory')
-    tab('journal', 'Journal')
-    tab('terminal', 'Terminal')
+    tab('code', 'Code', FileCode)
+    if (w.git) tab('diff', 'Diff', GitCompareArrows)
+    tab('agent', 'Agent', Sparkles)
+    tab('memory', 'Memory', BookMarked)
+    tab('journal', 'Journal', ScrollText)
+    tab('terminal', 'Terminal', SquareTerminal)
 
     out.push({
       id: 'ide',
       label: 'Open in IDE',
       hint: w.name,
       group: 'Open',
-      icon: '⌘',
+      icon: FileCode,
       run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'ide' }))),
     })
     out.push({
       id: 'finder',
       label: 'Reveal in Finder',
       group: 'Open',
-      icon: '⌘',
+      icon: FolderOpen,
       run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'finder' }))),
     })
 
@@ -103,7 +119,7 @@ const commands = computed<Item[]>(() => {
         label: w.runtime.status === 'up' ? 'Stop the servers' : 'Start the servers',
         hint: w.runtime.impl,
         group: 'Runtime',
-        icon: '⚡',
+        icon: Zap,
         run: act(() =>
           guard(() =>
             client.call(w.runtime!.status === 'up' ? 'runtime.down' : 'runtime.up', { workspaceId: w.id }),
@@ -116,20 +132,26 @@ const commands = computed<Item[]>(() => {
           label: 'Open the preview',
           hint: w.runtime.preview.value,
           group: 'Runtime',
-          icon: '◈',
+          icon: AppWindow,
           run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'browser' }))),
         })
       }
     }
 
     if (w.git) {
+      const gitIcon: Record<string, Component> = {
+        rebase: GitCompareArrows,
+        merge: GitMerge,
+        push: ArrowUpFromLine,
+        sync: RefreshCw,
+      }
       for (const op of ['rebase', 'merge', 'push', 'sync'] as const) {
         out.push({
           id: 'git:' + op,
           label: op[0]!.toUpperCase() + op.slice(1) + (op === 'rebase' || op === 'merge' ? ' onto the base branch' : ''),
           hint: 'shows a plan first',
           group: 'Git',
-          icon: '⌥',
+          icon: gitIcon[op]!,
           run: act(() => requestPlan(w.id, op)),
         })
       }
@@ -138,7 +160,7 @@ const commands = computed<Item[]>(() => {
         label: 'Create a branch here',
         hint: 'C1',
         group: 'Git',
-        icon: '⌥',
+        icon: GitBranch,
         run: act(() => {
           const name = window.prompt('Branch name')
           if (name) void requestPlan(w.id, 'branch', { name })
@@ -149,7 +171,7 @@ const commands = computed<Item[]>(() => {
         label: 'Create an isolated worktree',
         hint: 'C2 — promotes this work without losing it',
         group: 'Git',
-        icon: '⌥',
+        icon: GitBranch,
         run: act(() => {
           const name = window.prompt('Branch name for the worktree')
           if (name) void requestPlan(w.id, 'worktree', { name })
@@ -160,7 +182,7 @@ const commands = computed<Item[]>(() => {
         label: 'Undo the last operation',
         hint: 'restore point',
         group: 'Git',
-        icon: '↩',
+        icon: Undo2,
         run: act(() => guard(() => client.call('git.undo', { workspaceId: w.id }))),
       })
     }
@@ -171,7 +193,7 @@ const commands = computed<Item[]>(() => {
       label: 'Agent here',
       hint: 'C0 · traced, leased, restore point captured',
       group: 'Agent',
-      icon: '◆',
+      icon: Sparkles,
       run: act(() => {
         state.activeTab = 'agent'
       }),
@@ -182,14 +204,14 @@ const commands = computed<Item[]>(() => {
     id: 'rescan',
     label: 'Re-probe everything',
     group: 'Core',
-    icon: '⟳',
+    icon: RefreshCw,
     run: act(() => guard(() => client.call('core.reconcile', {}), 'rescanned')),
   })
   out.push({
     id: 'addproj',
     label: 'Add a project…',
     group: 'Core',
-    icon: '＋',
+    icon: FolderPlus,
     run: act(async () => {
       const root = window.prompt('Path of the project folder')
       if (root) await guard(() => client.call('project.add', { root }), 'project added')
@@ -210,7 +232,7 @@ const workspaceItems = computed<Item[]>(() =>
         (w.git ? ' · ↑' + w.git.ahead + ' ↓' + w.git.behind : '') +
         (w.runtime?.status === 'up' ? ' · running' : ''),
       group: 'Workspaces',
-      icon: w.kind === 'worktree' ? '⑂' : '▪',
+      icon: w.kind === 'worktree' ? GitBranch : SquareDot,
       run: act(() => selectWorkspace(w.id)),
     })),
 )
@@ -222,7 +244,7 @@ const fileItems = computed<Item[]>(() => {
     id: 'file:' + f,
     label: f,
     group: 'Files',
-    icon: '·',
+    icon: FileCode,
     run: act(() => {
       state.activeTab = 'code'
       toast('info', f)
@@ -236,7 +258,7 @@ const textItems = computed<Item[]>(() =>
     label: h.path + ':' + h.line,
     hint: h.text.trim().slice(0, 90),
     group: 'Matches',
-    icon: '⌕',
+    icon: TextSearch,
     run: act(() => {
       selectWorkspace(h.workspaceId)
       state.activeTab = 'code'
@@ -328,7 +350,7 @@ onMounted(() => {
   <div class="scrim" @mousedown.self="close">
     <div class="pal" role="dialog" aria-label="Command palette">
       <div class="inputrow">
-        <span class="lead">{{ mode === 'file' ? '/' : mode === 'text' ? '#' : mode === 'command' ? '>' : '⌕' }}</span>
+        <component :is="leadIcon" class="lead lg" />
         <input
           ref="input"
           v-model="query"
@@ -339,7 +361,7 @@ onMounted(() => {
           @keydown.up.prevent="move(-1)"
           @keydown.enter.prevent="choose"
         />
-        <span v-if="searching" class="chip">searching…</span>
+        <span v-if="searching" class="chip"><RefreshCw class="spin" />searching</span>
       </div>
 
       <div class="list">
@@ -353,7 +375,7 @@ onMounted(() => {
             @mousemove="cursor = indexOfItem(entry.item)"
             @click="entry.item.run()"
           >
-            <span class="icon">{{ entry.item.icon }}</span>
+            <span class="icon"><component :is="entry.item.icon" class="sm" /></span>
             <span class="lbl">
               <span
                 v-for="(part, i) in highlight(entry.item.label, entry.positions)"
@@ -363,6 +385,7 @@ onMounted(() => {
               >
             </span>
             <span v-if="entry.item.hint" class="hint">{{ entry.item.hint }}</span>
+            <CornerDownLeft v-if="indexOfItem(entry.item) === cursor" class="ret sm" />
           </button>
         </template>
 
@@ -372,7 +395,7 @@ onMounted(() => {
       </div>
 
       <footer class="pfoot">
-        <span><span class="kbd">↑↓</span> navigate</span>
+        <span><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span>
         <span><span class="kbd">⏎</span> run</span>
         <span><span class="kbd">esc</span> close</span>
         <span class="grow" />
@@ -391,24 +414,29 @@ onMounted(() => {
   justify-content: center;
   align-items: flex-start;
   padding-top: 12vh;
-  background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(3px);
+  background: var(--scrim);
+  backdrop-filter: blur(6px) saturate(1.1);
+  animation: fade var(--dur-2) var(--ease-soft);
+}
+@keyframes fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .pal {
-  width: min(660px, 92vw);
+  width: min(720px, 92vw);
   max-height: 68vh;
   display: flex;
   flex-direction: column;
   background: var(--overlay);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-overlay);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg), var(--inset-top);
   overflow: hidden;
-  animation: rise 120ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  animation: rise var(--dur-3) var(--ease);
 }
 @keyframes rise {
-  from { opacity: 0; transform: translateY(-6px) scale(0.99); }
+  from { opacity: 0; transform: translateY(-10px) scale(0.985); }
   to { opacity: 1; transform: none; }
 }
 
@@ -416,39 +444,55 @@ onMounted(() => {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 14px;
-  height: 48px;
+  gap: 12px;
+  padding: 0 18px;
+  height: 56px;
   border-bottom: 1px solid var(--line);
 }
-.lead { color: var(--text-dim); font-size: 15px; width: 12px; text-align: center; }
+.lead { color: var(--text-dim); }
 .q {
   flex: 1;
+  min-width: 0;
   background: none;
   border: none;
   color: var(--text);
   font: inherit;
   font-size: var(--fs-lg);
+  letter-spacing: -0.01em;
 }
 .q::placeholder { color: var(--text-dim); }
+/* The palette input is the whole row; a ring around it would box in nothing. */
+.q:focus-visible { outline: none; }
 
-.list { flex: 1; overflow-y: auto; padding: 6px; }
-.glabel { padding: 8px 10px 4px; }
+.list { flex: 1; overflow-y: auto; padding: 8px; }
+.glabel { padding: 10px 12px 5px; }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   width: 100%;
-  height: 32px;
-  padding: 0 10px;
+  height: 38px;
+  padding: 0 12px;
   border-radius: var(--radius-sm);
   text-align: left;
   color: var(--text-muted);
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
 .row.on { background: var(--selected); color: var(--text); }
-.icon { flex: none; width: 14px; text-align: center; color: var(--text-dim); font-size: 11px; }
-.row.on .icon { color: var(--accent); }
+.icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--hover);
+  color: var(--text-dim);
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
+}
+.row.on .icon { background: var(--accent-soft); color: var(--accent); }
 .lbl {
   flex: 1;
   min-width: 0;
@@ -460,28 +504,31 @@ onMounted(() => {
 .lbl .hit { color: var(--accent); font-weight: 620; }
 .hint {
   flex: none;
-  max-width: 46%;
+  max-width: 42%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--fs-xs);
   color: var(--text-dim);
 }
+.ret { color: var(--text-dim); opacity: 0.7; }
 
-.none { padding: 22px; text-align: center; color: var(--text-dim); font-size: var(--fs-sm); }
+.none { padding: 28px; text-align: center; color: var(--text-dim); font-size: var(--fs-sm); }
 
 .pfoot {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 14px;
-  height: 32px;
-  padding: 0 14px;
+  gap: 16px;
+  height: 38px;
+  padding: 0 16px;
   border-top: 1px solid var(--line);
   background: var(--bg-sunken);
   font-size: var(--fs-xs);
   color: var(--text-dim);
 }
+.pfoot > span { display: inline-flex; align-items: center; gap: 5px; }
 .pfoot .grow { flex: 1; }
-.dimhint { opacity: 0.8; }
+.dimhint { opacity: 0.85; }
+.chip .spin { width: 12px; height: 12px; }
 </style>

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Plus, Sun, Moon, MonitorCog } from '@lucide/vue'
+import Mark from './brand/Mark.vue'
 import { client, cycleTheme, guard, state } from '../core/store.js'
 
 /**
- * The far-left rail: one square per project, plus add. Deliberately iconless —
- * a two-letter monogram reads faster than a generic folder glyph and never
- * needs an icon set.
+ * The far-left rail: the mark, then one square per project, then add.
+ * Deliberately iconless for the projects themselves — a two-letter monogram
+ * reads faster than a generic folder glyph and never needs an icon set.
  */
 
 const projects = computed(() => state.projects)
@@ -31,6 +33,10 @@ function counts(projectId: string) {
   return { dirty, running, agents }
 }
 
+const themeLabel = computed(() =>
+  state.theme === 'dark' ? 'Dark' : state.theme === 'light' ? 'Light' : 'System',
+)
+
 async function addProject() {
   // §13 rule 1 — the renderer cannot open a file dialog onto the filesystem
   // itself; it asks for a path and the core resolves it.
@@ -44,29 +50,41 @@ async function addProject() {
   <nav class="rail">
     <div class="spacer" />
 
-    <button
-      v-for="p in projects"
-      :key="p.id"
-      class="tile"
-      :class="{ active: p.id === state.activeProjectId }"
-      :style="{ '--h': hue(p.id) }"
-      :title="p.name + ' — ' + p.root"
-      @click="state.activeProjectId = p.id"
-    >
-      <span class="mono-gram">{{ monogram(p.name) }}</span>
-      <span class="badges">
-        <i v-if="counts(p.id).running" class="b run" />
-        <i v-if="counts(p.id).agents" class="b agent" />
-        <i v-if="counts(p.id).dirty" class="b dirty" />
-      </span>
-    </button>
+    <div class="brand" title="Cockpit">
+      <Mark :height="16" />
+    </div>
 
-    <button class="tile add" title="Add a project" @click="addProject">＋</button>
+    <div class="rule" />
+
+    <div class="tiles">
+      <button
+        v-for="p in projects"
+        :key="p.id"
+        class="tile"
+        :class="{ active: p.id === state.activeProjectId }"
+        :style="{ '--h': hue(p.id) }"
+        :title="p.name + ' — ' + p.root"
+        @click="state.activeProjectId = p.id"
+      >
+        <span class="gram">{{ monogram(p.name) }}</span>
+        <span class="badges">
+          <i v-if="counts(p.id).running" class="b run" />
+          <i v-if="counts(p.id).agents" class="b agent" />
+          <i v-if="counts(p.id).dirty" class="b dirty" />
+        </span>
+      </button>
+
+      <button class="tile add" title="Add a project" @click="addProject">
+        <Plus />
+      </button>
+    </div>
 
     <div class="grow" />
 
-    <button class="tile ghost" :title="'Theme: ' + state.theme" @click="cycleTheme">
-      {{ state.theme === 'dark' ? '◐' : state.theme === 'light' ? '◑' : '◒' }}
+    <button class="icon-btn theme" :title="'Theme: ' + themeLabel" @click="cycleTheme">
+      <Moon v-if="state.theme === 'dark'" />
+      <Sun v-else-if="state.theme === 'light'" />
+      <MonitorCog v-else />
     </button>
   </nav>
 </template>
@@ -76,19 +94,50 @@ async function addProject() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 0 0 10px;
+  padding-bottom: 12px;
   background: var(--bg-sunken);
   border-right: 1px solid var(--line);
   overflow: hidden;
 }
-.spacer { height: 38px; flex: none; }
+.spacer { height: var(--titlebar-h); flex: none; }
 .grow { flex: 1; }
+
+.brand {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  color: var(--text-muted);
+  opacity: 0.9;
+}
+
+.rule {
+  flex: none;
+  width: 22px;
+  height: 1px;
+  margin: 10px 0 12px;
+  background: var(--line);
+}
+
+.tiles {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 4px;
+  /* The rail never shows a scrollbar; it is 40px wide. */
+  scrollbar-width: none;
+}
+.tiles::-webkit-scrollbar { display: none; }
 
 .tile {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   flex: none;
   border-radius: var(--radius);
   display: flex;
@@ -100,28 +149,51 @@ async function addProject() {
   color: var(--text-muted);
   background: var(--hover);
   border: 1px solid transparent;
-  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+  transition:
+    background var(--dur-2) var(--ease),
+    color var(--dur-2) var(--ease),
+    border-color var(--dur-2) var(--ease),
+    transform var(--dur-1) var(--ease);
 }
 .tile:hover { background: var(--active); color: var(--text); }
+.tile:active { transform: scale(0.94); }
 
 .tile.active {
   background: hsl(var(--h) 70% 55% / 0.16);
-  border-color: hsl(var(--h) 70% 55% / 0.45);
+  border-color: hsl(var(--h) 70% 55% / 0.4);
   /* One lightness that stays legible on both the light and the dark ground. */
   color: hsl(var(--h) 62% 58%);
 }
+/* The selected project also gets the rail's only vertical marker, so the
+   answer to "where am I" survives a colour-blind eye. */
+.tile.active::before {
+  content: '';
+  position: absolute;
+  left: -11px;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: hsl(var(--h) 62% 58%);
+}
 
-.tile.add { font-size: 15px; font-weight: 400; color: var(--text-dim); }
-.tile.ghost { background: transparent; font-size: 14px; }
-.tile.ghost:hover { background: var(--hover); }
+.tile.add {
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  color: var(--text-dim);
+}
+.tile.add:hover { background: var(--hover); color: var(--text-muted); border-style: solid; }
 
 .badges {
   position: absolute;
-  bottom: -3px;
+  bottom: -2px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 2px;
+  gap: 3px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
 }
 .b {
   width: 4px;
@@ -132,4 +204,6 @@ async function addProject() {
 .b.run { background: var(--ok); }
 .b.agent { background: var(--agent); }
 .b.dirty { background: var(--warn); }
+
+.theme { width: 34px; height: 34px; }
 </style>
