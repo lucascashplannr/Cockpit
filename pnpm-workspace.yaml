@@ -1,0 +1,12 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+
+# pnpm 11 gates dependency build scripts here.
+# better-sqlite3 and node-pty compile native bindings; electron and esbuild
+# fetch platform binaries. All four are required for the core and the app.
+allowBuilds:
+  better-sqlite3: true
+  node-pty: true
+  electron: true
+  esbuild: true

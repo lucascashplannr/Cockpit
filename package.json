@@ -1,0 +1,22 @@
+{
+  "name": "cockpit-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.mjs",
+    "build": "pnpm -r --filter @cockpit/shared build && pnpm -r --filter @cockpit/core build && pnpm -r --filter @cockpit/cli build",
+    "dev": "pnpm --filter @cockpit/desktop dev",
+    "daemon": "pnpm --filter @cockpit/core dev",
+    "cli": "pnpm --filter @cockpit/cli exec tsx src/index.ts",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

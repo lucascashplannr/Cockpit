@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+release/
+*.tsbuildinfo
+.DS_Store
+
+# §15 — the memory is versioned; the journal and sessions are local.
+.cockpit/journal.jsonl
+.cockpit/sessions/

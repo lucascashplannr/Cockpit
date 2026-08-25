@@ -1,0 +1,215 @@
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* A desktop app is not a document: nothing is selectable unless it is
+     content. Inputs and code re-enable it below. */
+  user-select: none;
+  cursor: default;
+}
+
+input,
+textarea,
+[contenteditable],
+.selectable,
+.cm-editor,
+code,
+pre {
+  user-select: text;
+  cursor: auto;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: default;
+}
+
+/* Counts must not jitter as they change — this is why every number in the
+   workspace list is tabular. */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+
+/* Scrollbars: present when scrolling, invisible at rest. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*:hover::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+  background-clip: content-box;
+}
+
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── shared primitives ─────────────────────────────────────────────── */
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+.dot.up { background: var(--ok); }
+.dot.starting { background: var(--warn); }
+.dot.down { background: var(--text-dim); opacity: 0.5; }
+.dot.unhealthy { background: var(--danger); }
+.dot.unknown { background: var(--text-dim); opacity: 0.3; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  background: var(--hover);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chip.danger { background: var(--danger-soft); color: var(--danger); }
+.chip.agent { background: var(--agent-soft); color: var(--agent); }
+.chip.accent { background: var(--accent-soft); color: var(--accent); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel-raised);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  transition: background 90ms ease, border-color 90ms ease;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: var(--hover); border-color: var(--line-strong); }
+.btn:active:not(:disabled) { background: var(--active); }
+.btn:disabled { opacity: 0.4; }
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.btn.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+.btn.danger { color: var(--danger); border-color: var(--danger-soft); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover:not(:disabled) { background: var(--hover); }
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--bg-sunken);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.section-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+.empty strong {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: var(--fs-md);
+}
+
+.spin {
+  animation: spin 900ms linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
