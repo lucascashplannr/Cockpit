@@ -4,11 +4,11 @@ import type { Component } from 'vue'
 import {
   AppWindow, ArrowRight, ArrowUpFromLine, BookMarked, CornerDownLeft, FileCode, FolderOpen,
   FolderPlus, GitBranch, GitCompareArrows, GitMerge, RefreshCw, ScrollText, Search, Sparkles,
-  SquareDot, SquareTerminal, TextSearch, Undo2, Zap,
+  Settings, SquareDot, SquareTerminal, TextSearch, Undo2, Zap,
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  activeWorkspace, client, guard, requestPlan, selectWorkspace, state, toast,
+  activeProject, activeWorkspace, client, guard, requestPlan, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { TabId } from '../core/store.js'
 
@@ -196,6 +196,21 @@ const commands = computed<Item[]>(() => {
       icon: Sparkles,
       run: act(() => {
         state.activeTab = 'agent'
+      }),
+    })
+  }
+
+  // Project-level, not workspace-level: it is the folder that gets renamed,
+  // moved, untracked or thrown away.
+  if (activeProject.value) {
+    out.push({
+      id: 'proj:settings',
+      label: 'Project settings…',
+      hint: activeProject.value.name + ' — rename, move, untrack',
+      group: 'Project',
+      icon: Settings,
+      run: act(() => {
+        state.editingProjectId = activeProject.value!.id
       }),
     })
   }

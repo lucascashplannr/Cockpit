@@ -18,13 +18,6 @@ function monogram(name: string): string {
   return name.slice(0, 2).toUpperCase()
 }
 
-/** Stable hue per project so the rail becomes muscle memory. */
-function hue(id: string): number {
-  let h = 0
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360
-  return h
-}
-
 function counts(projectId: string) {
   const ws = state.workspaces.filter((w) => w.projectId === projectId && w.kind !== 'group')
   const dirty = ws.filter((w) => w.git && w.git.staged + w.git.unstaged + w.git.untracked > 0).length
@@ -56,9 +49,9 @@ const themeLabel = computed(() =>
         :key="p.id"
         class="tile"
         :class="{ active: p.id === state.activeProjectId }"
-        :style="{ '--h': hue(p.id) }"
-        :title="p.name + ' — ' + p.root"
+        :title="p.name + ' — ' + p.root + '\nRight-click for settings'"
         @click="state.activeProjectId = p.id"
+        @contextmenu.prevent="state.editingProjectId = p.id"
       >
         <span class="gram">{{ monogram(p.name) }}</span>
         <span class="badges">
@@ -124,6 +117,25 @@ const themeLabel = computed(() =>
 .tile.mark { color: var(--text-dim); }
 .tile.mark:hover { color: var(--text); }
 
+.tiles {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* 12px, not 8: the status badges hang 2px below each tile, and a tighter
+     column makes them read as belonging to the tile underneath. */
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 4px;
+  /* The rail never shows a scrollbar; it is too narrow to spare the width. */
+  scrollbar-width: none;
+}
+.tiles::-webkit-scrollbar { display: none; }
+
+/* Adding a project is a different kind of act from switching to one. */
+.tile.add { margin-top: 4px; }
+
 .rule {
   flex: none;
   width: 28px;
@@ -132,11 +144,14 @@ const themeLabel = computed(() =>
   background: var(--line);
 }
 
+/* tokens.css: "one restrained accent, and colour reserved for meaning rather
+   than decoration". A hue per project was decoration — the monogram already
+   tells them apart, and the rail's only coloured thing should be the answer to
+   "where am I". */
 .tile.active {
-  background: hsl(var(--h) 70% 55% / 0.16);
-  border-color: hsl(var(--h) 70% 55% / 0.4);
-  /* One lightness that stays legible on both the light and the dark ground. */
-  color: hsl(var(--h) 62% 58%);
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
 }
 /* The selected project also gets the rail's only vertical marker, so the
    answer to "where am I" survives a colour-blind eye. */
@@ -148,7 +163,7 @@ const themeLabel = computed(() =>
   bottom: 11px;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: hsl(var(--h) 62% 58%);
+  background: var(--accent);
 }
 
 .tile.add {

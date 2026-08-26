@@ -10,8 +10,13 @@ export const COCKPIT_HOME = process.env.COCKPIT_HOME ?? join(homedir(), '.cockpi
 export const DEFAULT_PORT = Number(process.env.COCKPIT_PORT ?? 7717)
 
 export interface LocalConfig {
-  /** Roots the user has pointed the cockpit at. */
-  projects: { root: string; addedAt: number }[]
+  /**
+   * Roots the user has pointed the cockpit at. `name` is a machine-local
+   * display override (§15 — UI state lives here, not in the repo): renaming a
+   * project must not write a file into someone else's checkout. Absent means
+   * the manifest's name, or the folder's.
+   */
+  projects: { root: string; addedAt: number; name?: string }[]
   /** §11 — port allocation is global across projects, so it lives here. */
   portAssignments: Record<string, number>
   portRange: [number, number]

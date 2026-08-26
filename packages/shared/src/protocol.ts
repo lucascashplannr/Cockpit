@@ -39,6 +39,19 @@ export interface Rpc {
   'project.add': { params: { root: string }; result: Project }
   'project.forget': { params: { projectId: string }; result: { ok: true } }
   'project.rescan': { params: { projectId: string }; result: Project }
+  /** `name: null` clears the override and falls back to the manifest or folder. */
+  'project.rename': { params: { projectId: string; name: string | null }; result: Project }
+  /**
+   * Re-points the project at another folder. With `moveFiles`, the folder is
+   * moved there first. The project's id is derived from its path, so the result
+   * carries a new id — the caller must re-select it (§3.4).
+   */
+  'project.move': {
+    params: { projectId: string; root: string; moveFiles: boolean }
+    result: Project
+  }
+  /** To the system Trash, never `rm -rf`, and never over live or unpushed work. */
+  'project.trash': { params: { projectId: string }; result: { ok: true; trashed: string } }
 
   'workspace.list': { params: { projectId?: string }; result: Workspace[] }
   'workspace.get': { params: { workspaceId: string }; result: Workspace | null }

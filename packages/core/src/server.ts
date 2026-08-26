@@ -116,6 +116,23 @@ const handlers: Record<string, Handler> = {
     pushWorkspaces()
     return registry.allProjects().find((x) => x.id === p.projectId)
   },
+  'project.rename': async (p: { projectId: string; name: string | null }) => {
+    const project = registry.renameProject(p.projectId, p.name)
+    await registry.reconcile(project.id)
+    pushWorkspaces()
+    return registry.allProjects().find((x) => x.id === project.id) ?? project
+  },
+  'project.move': async (p: { projectId: string; root: string; moveFiles: boolean }) => {
+    const project = registry.moveProject(p.projectId, p.root, p.moveFiles)
+    await registry.reconcile(project.id)
+    pushWorkspaces()
+    return registry.allProjects().find((x) => x.id === project.id) ?? project
+  },
+  'project.trash': async (p: { projectId: string }) => {
+    const trashed = await registry.trashProject(p.projectId)
+    pushWorkspaces()
+    return { ok: true, trashed }
+  },
 
   'workspace.list': (p: { projectId?: string }) => registry.allWorkspaces(p?.projectId),
   'workspace.get': (p: { workspaceId: string }) => registry.getWorkspace(p.workspaceId),

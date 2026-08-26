@@ -5,6 +5,7 @@ import WorkspaceList from './components/WorkspaceList.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import PlanDialog from './components/PlanDialog.vue'
+import ProjectDialog from './components/ProjectDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import HomeView from './components/HomeView.vue'
@@ -31,7 +32,8 @@ function onKey(e: KeyboardEvent) {
     return
   }
   if (e.key === 'Escape') {
-    if (state.pendingPlan) state.pendingPlan = null
+    if (state.editingProjectId) state.editingProjectId = null
+    else if (state.pendingPlan) state.pendingPlan = null
     else if (state.paletteOpen) state.paletteOpen = false
     else if (state.homeOpen && canLeaveHome.value) state.homeOpen = false
     return
@@ -102,6 +104,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
     <CommandPalette v-if="state.paletteOpen" />
     <PlanDialog v-if="state.pendingPlan" />
+    <ProjectDialog />
     <ConnectionBanner />
     <Toast />
 

@@ -1,10 +1,11 @@
-import { basename, join, resolve } from 'node:path'
-import { existsSync, statSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { stableId } from '@cockpit/shared'
 import type { Capability, Ceremony, Feature, Project, Workspace } from '@cockpit/shared'
 import { loadConfig, updateConfig } from './config.js'
 import { childRepos, detectCapabilities, findManifest, projectNameFor, readManifest } from './detect.js'
 import { isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
+import { run } from './exec.js'
 import { append } from './journal.js'
 import { leaseCovering } from './leases.js'
 import { runtimeStateFor } from './runtime/index.js'
@@ -72,6 +73,140 @@ export function addProject(root: string): Project {
   return buildProject(abs)
 }
 
+/** The machine-local display override, if the user set one. */
+function configNameFor(root: string): string | null {
+  const entry = loadConfig().projects.find((p) => p.root === root)
+  const n = entry?.name?.trim()
+  return n ? n : null
+}
+
+function requireProject(projectId: string): Project {
+  const p = projects.get(projectId)
+  if (!p) throw new Error('unknown project: ' + projectId)
+  return p
+}
+
+/** Forget everything derived from a root, so it can be rebuilt from scratch. */
+function dropProject(p: Project): void {
+  for (const wid of p.workspaceIds) workspaces.delete(wid)
+  for (const fid of p.featureIds) features.delete(fid)
+  projects.delete(p.id)
+}
+
+/**
+ * §16 — what would be pulled out from under someone. Moving or trashing a
+ * folder while a dev server writes to it or an agent is mid-turn corrupts both,
+ * so both operations refuse rather than warn.
+ */
+function liveWork(p: Project): string[] {
+  const out: string[] = []
+  for (const wid of p.workspaceIds) {
+    const w = workspaces.get(wid)
+    if (!w) continue
+    if (w.runtime && (w.runtime.status === 'up' || w.runtime.status === 'starting')) {
+      out.push(w.name + ': runtime is ' + w.runtime.status)
+    }
+    if (w.agentSessions.length) {
+      out.push(w.name + ': ' + w.agentSessions.length + ' agent session(s) open')
+    }
+  }
+  return out
+}
+
+export function renameProject(projectId: string, name: string | null): Project {
+  const p = requireProject(projectId)
+  const next = name?.trim() ?? ''
+  updateConfig((c) => {
+    const entry = c.projects.find((x) => x.root === p.root)
+    if (!entry) return
+    if (next) entry.name = next
+    else delete entry.name
+  })
+  append({ type: 'project.renamed', projectId, payload: { root: p.root, name: next || null } })
+  return buildProject(p.root)
+}
+
+/**
+ * The project id is `stableId('prj', root)`, so a move is not a mutation: the
+ * old project and its workspaces cease to exist and a new set is built at the
+ * new path. The caller gets the new project and must re-select it.
+ */
+export function moveProject(projectId: string, root: string, moveFiles: boolean): Project {
+  const p = requireProject(projectId)
+  const abs = resolve(root)
+  if (abs === p.root) return p
+
+  const live = liveWork(p)
+  if (live.length) throw new Error('stop these first — ' + live.join('; '))
+
+  if (moveFiles) {
+    if (!existsSync(p.root)) throw new Error('nothing at ' + p.root + ' to move')
+    if (existsSync(abs)) throw new Error('already exists: ' + abs)
+    mkdirSync(dirname(abs), { recursive: true })
+    try {
+      renameSync(p.root, abs)
+    } catch (e) {
+      // EXDEV: rename cannot cross a filesystem, and copying a repo tree behind
+      // the user's back is worse than saying so.
+      const code = (e as NodeJS.ErrnoException).code
+      if (code === 'EXDEV') {
+        throw new Error(abs + ' is on another volume — move it yourself, then point Cockpit at it')
+      }
+      throw e
+    }
+  } else if (!existsSync(abs) || !statSync(abs).isDirectory()) {
+    throw new Error('not a directory: ' + abs)
+  }
+
+  const name = configNameFor(p.root)
+  updateConfig((c) => {
+    c.projects = c.projects.filter((x) => x.root !== abs && x.root !== p.root)
+    c.projects.push({ root: abs, addedAt: Date.now(), ...(name ? { name } : {}) })
+  })
+
+  dropProject(p)
+  append({ type: 'project.moved', projectId, payload: { from: p.root, to: abs, moveFiles } })
+  return buildProject(abs)
+}
+
+/**
+ * To the system Trash, never `rm -rf`: this is the one action in the app that
+ * touches somebody's source tree, and it has to stay recoverable.
+ */
+export async function trashProject(projectId: string): Promise<string> {
+  const p = requireProject(projectId)
+
+  const live = liveWork(p)
+  if (live.length) throw new Error('stop these first — ' + live.join('; '))
+
+  const unpushed = p.workspaceIds
+    .map((id) => workspaces.get(id))
+    .filter((w): w is Workspace => !!w && !!w.git?.hasUnpushedWork)
+    .map((w) => w.name)
+  if (unpushed.length) {
+    throw new Error('unpushed commits in ' + unpushed.join(', ') + ' — push or drop them first')
+  }
+
+  const root = p.root
+  if (existsSync(root)) {
+    const r =
+      process.platform === 'darwin'
+        ? await run('osascript', [
+            '-e',
+            'tell application "Finder" to delete POSIX file "' + root.replace(/"/g, '\\"') + '"',
+          ])
+        : await run('gio', ['trash', root])
+    if (!r.ok) throw new Error('could not move to Trash: ' + (r.stderr || r.stdout).trim())
+  }
+
+  updateConfig((c) => {
+    c.projects = c.projects.filter((x) => x.root !== root)
+  })
+  dropProject(p)
+  append({ type: 'project.trashed', projectId, payload: { root } })
+  return root
+}
+
 export function forgetProject(projectId: string): void {
   const p = projects.get(projectId)
   if (!p) return
@@ -94,7 +229,7 @@ function buildProject(root: string): Project {
   const parsed = manifestPath ? readManifest(manifestPath) : { manifest: null, issues: [] }
   const manifest = parsed.manifest
 
-  const name = projectNameFor(root, manifest)
+  const name = configNameFor(root) ?? projectNameFor(root, manifest)
   const defaultCeremony = (manifest?.ceremony ?? 'C1') as Ceremony
   const caps = detectCapabilities(root, manifest)
 

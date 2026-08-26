@@ -45,6 +45,8 @@ export const state = reactive({
   homeOpen: true,
 
   paletteOpen: false,
+  /** The project whose settings sheet is open, by id. */
+  editingProjectId: null as string | null,
   pendingPlan: null as PlanPreview | null,
   planBusy: false,
   toast: null as { kind: 'ok' | 'error' | 'info'; text: string } | null,
@@ -204,6 +206,75 @@ export async function addProject(): Promise<void> {
     : window.prompt('Path of the project folder to add')
   if (!root) return
   await guard(() => client.call('project.add', { root }), 'project added')
+}
+
+export const editingProject = computed(
+  () => state.projects.find((p) => p.id === state.editingProjectId) ?? null,
+)
+
+/**
+ * A project's id is derived from its path, so moving one replaces it rather
+ * than mutating it: the old id stops existing and everything selected under it
+ * has to follow to the new one.
+ */
+export async function moveProject(
+  projectId: string,
+  root: string,
+  moveFiles: boolean,
+): Promise<boolean> {
+  const next = await guard(
+    () => client.call('project.move', { projectId, root, moveFiles }),
+    moveFiles ? 'project moved' : 'project re-pointed',
+  )
+  if (!next) return false
+  state.activeProjectId = next.id
+  state.activeWorkspaceId = null
+  state.editingProjectId = next.id
+  await refreshProjects()
+  return true
+}
+
+export async function renameProject(projectId: string, name: string | null): Promise<boolean> {
+  const next = await guard(() => client.call('project.rename', { projectId, name }), 'project renamed')
+  if (!next) return false
+  await refreshProjects()
+  return true
+}
+
+/** Untrack: Cockpit forgets it, the folder stays exactly where it is. */
+export async function forgetProject(projectId: string): Promise<boolean> {
+  const ok = await guard(() => client.call('project.forget', { projectId }), 'project untracked')
+  if (!ok) return false
+  dropSelection(projectId)
+  await refreshProjects()
+  return true
+}
+
+/** The only action in the app that touches the source tree — and it goes to Trash. */
+export async function trashProject(projectId: string): Promise<boolean> {
+  const res = await guard(() => client.call('project.trash', { projectId }), 'moved to Trash')
+  if (!res) return false
+  dropSelection(projectId)
+  await refreshProjects()
+  return true
+}
+
+function dropSelection(projectId: string): void {
+  state.editingProjectId = null
+  if (state.activeProjectId === projectId) {
+    state.activeProjectId = null
+    state.activeWorkspaceId = null
+  }
+}
+
+async function refreshProjects(): Promise<void> {
+  const [projects, workspaces] = await Promise.all([
+    client.call('project.list', undefined),
+    client.call('workspace.list', {}),
+  ])
+  state.projects = projects
+  state.workspaces = workspaces
+  ensureSelection()
 }
 
 export function selectWorkspace(id: string): void {

@@ -42,6 +42,9 @@ export type EventType =
   | 'workspace.discovered'
   | 'workspace.forgotten'
   | 'workspace.probed'
+  | 'project.renamed'
+  | 'project.moved'
+  | 'project.trashed'
   // git
   | 'git.plan'
   | 'git.applied'
