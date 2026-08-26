@@ -6,6 +6,8 @@ import ContextPanel from './components/ContextPanel.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import PlanDialog from './components/PlanDialog.vue'
 import ProjectDialog from './components/ProjectDialog.vue'
+import NewProjectDialog from './components/NewProjectDialog.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
 import FeatureDialog from './components/FeatureDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
@@ -33,7 +35,9 @@ function onKey(e: KeyboardEvent) {
     return
   }
   if (e.key === 'Escape') {
-    if (state.editingProjectId) state.editingProjectId = null
+    if (state.newProjectOpen) state.newProjectOpen = false
+    else if (state.settingsOpen) state.settingsOpen = false
+    else if (state.editingProjectId) state.editingProjectId = null
     else if (state.pendingPlan) state.pendingPlan = null
     else if (state.paletteOpen) state.paletteOpen = false
     else if (state.homeOpen && canLeaveHome.value) state.homeOpen = false
@@ -106,6 +110,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <CommandPalette v-if="state.paletteOpen" />
     <PlanDialog v-if="state.pendingPlan" />
     <ProjectDialog />
+    <NewProjectDialog />
+    <SettingsDialog />
     <FeatureDialog />
     <ConnectionBanner />
     <Toast />

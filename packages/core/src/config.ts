@@ -17,6 +17,12 @@ export interface LocalConfig {
    * the manifest's name, or the folder's.
    */
   projects: { root: string; addedAt: number; name?: string }[]
+  /**
+   * §7 — the folder holding one folder per project. New projects are created
+   * inside it. Null until the user names one; nothing is ever created at a
+   * guessed path.
+   */
+  devRoot: string | null
   /** §11 — port allocation is global across projects, so it lives here. */
   portAssignments: Record<string, number>
   portRange: [number, number]
@@ -29,6 +35,7 @@ export interface LocalConfig {
 
 const DEFAULTS: LocalConfig = {
   projects: [],
+  devRoot: null,
   portAssignments: {},
   portRange: [7800, 8799],
   portBlocklist: [8081],

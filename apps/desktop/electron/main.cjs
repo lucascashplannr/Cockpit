@@ -59,13 +59,18 @@ async function ensureCore() {
  * the bridge tiny, but `window.prompt` does not exist in Electron at all, so
  * "add a project" needs a real dialog or it is a button that throws.
  */
-ipcMain.handle('dialog:pickFolder', async (event) => {
+ipcMain.handle('dialog:pickFolder', async (event, opts) => {
   const win = BrowserWindow.fromWebContents(event.sender)
+  // Read field by field rather than spread: the renderer is the untrusted side
+  // of this bridge, and `showOpenDialog` takes options that are not its business.
+  const o = opts && typeof opts === 'object' ? opts : {}
+  const str = (v, fallback) => (typeof v === 'string' && v ? v : fallback)
   const res = await dialog.showOpenDialog(win, {
-    title: 'Add a project',
-    message: 'Pick the folder Cockpit should watch',
+    title: str(o.title, 'Add a project'),
+    message: str(o.message, 'Pick the folder Cockpit should watch'),
+    buttonLabel: str(o.buttonLabel, 'Add'),
+    ...(typeof o.defaultPath === 'string' && o.defaultPath ? { defaultPath: o.defaultPath } : {}),
     properties: ['openDirectory', 'createDirectory'],
-    buttonLabel: 'Add',
   })
   return res.canceled ? null : (res.filePaths[0] ?? null)
 })

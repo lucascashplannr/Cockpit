@@ -258,3 +258,31 @@ export interface CoreStatus {
   activeLeases: number
   activeProcesses: number
 }
+
+/**
+ * §15 — what the machine remembers about how this person works, as opposed to
+ * what it remembers about any one project.
+ */
+export interface CockpitSettings {
+  /**
+   * The folder holding one folder per project (§7 layout). New projects are
+   * created inside it. Null until it is named: nothing is ever created at a
+   * guessed path, so the new-project sheet asks for a parent instead.
+   */
+  devRoot: string | null
+  /** Command run to open a workspace in an editor. */
+  ide: string
+}
+
+/** §7 — how a project comes into existence. Three sources, one layout. */
+export type NewProjectSource =
+  /** An empty project folder, optionally with a first repository inside it. */
+  | { kind: 'scratch'; repoName: string | null }
+  /**
+   * A folder that already exists. `wrap` moves it into a project folder of its
+   * own — the answer when the folder picked is itself a repository, which is
+   * the one shape the layout rules out.
+   */
+  | { kind: 'folder'; folder: string; wrap: boolean; repoName: string | null }
+  /** Cloned into `<project>/<repo>`, never into the project root. */
+  | { kind: 'clone'; url: string; repoName: string | null; branch: string | null }

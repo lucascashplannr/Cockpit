@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { FolderOpen, Trash2, TriangleAlert, X } from '@lucide/vue'
 import {
-  editingProject, forgetProject, moveProject, renameProject, state, trashProject,
+  editingProject, forgetProject, moveProject, pickFolder, renameProject, state, trashProject,
 } from '../core/store.js'
 
 /**
@@ -71,10 +71,13 @@ async function save() {
   }
 }
 
-async function pickFolder() {
-  const host = (window as unknown as { cockpitHost?: { pickFolder?: () => Promise<string | null> } })
-    .cockpitHost
-  const picked = host?.pickFolder ? await host.pickFolder() : window.prompt('New location', root.value)
+async function browse() {
+  const picked = await pickFolder({
+    title: 'Move ' + (p.value?.name ?? 'the project'),
+    message: 'Pick where the project folder should live',
+    buttonLabel: 'Use this folder',
+    ...(root.value ? { defaultPath: root.value } : {}),
+  })
   if (picked) root.value = picked
 }
 
@@ -138,7 +141,7 @@ function onKey(e: KeyboardEvent) {
           <span class="lbl">Location</span>
           <div class="row">
             <input v-model="root" class="input mono" type="text" spellcheck="false" />
-            <button class="btn" title="Choose a folder" @click="pickFolder">
+            <button class="btn" title="Choose a folder" @click="browse">
               <FolderOpen />Browse
             </button>
           </div>

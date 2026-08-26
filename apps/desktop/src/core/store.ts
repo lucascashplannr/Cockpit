@@ -1,6 +1,7 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
-  AgentSession, CockpitEvent, CoreStatus, Feature, PlanPreview, Project, Workspace,
+  AgentSession, CockpitEvent, CockpitSettings, CoreStatus, Feature, NewProjectSource, PlanPreview,
+  Project, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
@@ -11,11 +12,19 @@ import type { ConnectionState } from './client.js'
  * last push, it is not displayed.
  */
 
+/** What the folder picker is being opened for — it is not always a project. */
+export interface PickFolderOptions {
+  title?: string
+  message?: string
+  buttonLabel?: string
+  defaultPath?: string
+}
+
 /** §13 rule 1 — the whole of what the renderer may ask of its host. */
 interface CockpitHost {
   corePort: number
   /** Absolute path, or null when the user cancels. Absent outside Electron. */
-  pickFolder?: () => Promise<string | null>
+  pickFolder?: (opts?: PickFolderOptions) => Promise<string | null>
   /** Brings a core back after one was stopped. Absent outside Electron. */
   restartCore?: () => Promise<boolean>
 }
@@ -47,6 +56,15 @@ export const state = reactive({
   homeOpen: true,
 
   paletteOpen: false,
+  /** §7 — the sheet that creates a project rather than finding one. */
+  newProjectOpen: false,
+  /** Which of the three sources it opens on — chosen on the start page (§12). */
+  newProjectMode: 'scratch' as NewProjectSource['kind'],
+  /** §15 — machine-local settings: the Dev folder, the editor. */
+  settingsOpen: false,
+  settings: null as CockpitSettings | null,
+  /** Where projects already live, offered when no Dev folder is set. */
+  suggestedDevRoot: null as string | null,
   /** The project whose settings sheet is open, by id. */
   editingProjectId: null as string | null,
   /** §4 — the sheet that opens a feature across N repositories. */
@@ -108,13 +126,17 @@ export function onTermData(termId: string, fn: (d: string) => void): () => void 
 }
 
 async function bootstrap(): Promise<void> {
-  const [projects, workspaces, features, agents, events, status] = await Promise.all([
+  const [projects, workspaces, features, agents, events, status, config] = await Promise.all([
     client.call('project.list', undefined),
     client.call('workspace.list', {}),
     client.call('feature.list', { includeArchived: true }),
     client.call('agent.list', undefined),
     client.call('journal.tail', { limit: 300 }),
     client.call('core.status', undefined),
+    // Tolerated on its own: a core older than this window answers
+    // `unknown_method`, and losing the whole bootstrap over the Dev folder
+    // would take the projects down with it.
+    client.call('config.get', undefined).catch(() => null),
   ])
   state.projects = projects
   state.workspaces = workspaces
@@ -122,6 +144,10 @@ async function bootstrap(): Promise<void> {
   state.agents = agents
   state.events = events
   state.status = status
+  if (config) {
+    state.settings = config.settings
+    state.suggestedDevRoot = config.suggestedDevRoot
+  }
   ensureSelection()
 }
 
@@ -213,20 +239,68 @@ export async function guard<T>(fn: () => Promise<T>, okMessage?: string): Promis
  * dialog, the core decides what the folder turns out to be. Electron has no
  * `window.prompt`, so the fallback exists only for the browser dev server.
  */
-export async function addProject(): Promise<void> {
-  const root = host?.pickFolder
-    ? await host.pickFolder()
-    : window.prompt('Path of the project folder to add')
-  if (!root) return
-  const added = await guard(() => client.call('project.add', { root }), 'project added')
-  if (!added) return
-  // The core broadcasts the new rail, but selecting what was just added is
-  // this window's business, not every window's.
+export async function pickFolder(opts: PickFolderOptions = {}): Promise<string | null> {
+  if (host?.pickFolder) return host.pickFolder(opts)
+  return window.prompt(opts.message ?? 'Path of the folder', opts.defaultPath ?? '')
+}
+
+/**
+ * §7 — creating a project is a sheet, not a folder picker (see
+ * NewProjectDialog). Which of the three sources it opens on is chosen before
+ * the sheet, on the start page, so the first click already says something.
+ */
+export function newProject(mode: NewProjectSource['kind'] = 'scratch'): void {
+  state.newProjectMode = mode
+  state.newProjectOpen = true
+}
+
+/** Selects what was just created; the rail itself arrives by broadcast. */
+async function selectProject(id: string): Promise<void> {
   await refreshProjects()
-  state.activeProjectId = added.id
+  state.activeProjectId = id
   state.activeWorkspaceId = null
   ensureSelection()
 }
+
+export async function createProject(input: {
+  name: string
+  parent: string
+  source: NewProjectSource
+}): Promise<boolean> {
+  const created = await guard(() => client.call('project.create', input), 'project created')
+  if (!created) return false
+  state.newProjectOpen = false
+  await selectProject(created.id)
+  // The Dev folder is set the first time one is used, so the second project
+  // never asks the question again.
+  if (input.source.kind !== 'folder' && !state.settings?.devRoot) {
+    await saveSettings({ devRoot: input.parent })
+  }
+  return true
+}
+
+/* ── settings ──────────────────────────────────────────────────────────
+ * §15 — machine-local, and small on purpose: what lives here is what the
+ * repository has no business knowing.
+ */
+
+export async function loadSettings(): Promise<void> {
+  const view = await guard(() => client.call('config.get', undefined))
+  if (!view) return
+  state.settings = view.settings
+  state.suggestedDevRoot = view.suggestedDevRoot
+}
+
+export async function saveSettings(patch: Partial<CockpitSettings>): Promise<boolean> {
+  const view = await guard(() => client.call('config.set', patch))
+  if (!view) return false
+  state.settings = view.settings
+  state.suggestedDevRoot = view.suggestedDevRoot
+  return true
+}
+
+/** Where a new project would go: the Dev folder, or what the projects suggest. */
+export const devRoot = computed(() => state.settings?.devRoot ?? state.suggestedDevRoot ?? '')
 
 export const editingProject = computed(
   () => state.projects.find((p) => p.id === state.editingProjectId) ?? null,

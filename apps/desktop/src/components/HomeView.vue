@@ -2,13 +2,15 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
-  ArrowDown, ArrowUp, FolderPlus, GitBranch, Lightbulb, Search, Sparkles, SquareDot, X,
+  ArrowDown, ArrowUp, CloudDownload, FolderOpen, FolderPlus, GitBranch, Lightbulb, Search,
+  SlidersHorizontal, Sparkles, SquareDot, X,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import Wordmark from './brand/Wordmark.vue'
+import NewProjectSources from './NewProjectSources.vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  activeProject, addProject, canLeaveHome, closeHome, cycleTheme, recentWorkspaces,
+  activeProject, canLeaveHome, closeHome, cycleTheme, newProject, recentWorkspaces,
   selectWorkspace, state,
 } from '../core/store.js'
 
@@ -62,11 +64,34 @@ function toHit(w: Workspace): Hit {
 
 const actions = computed<Hit[]>(() => [
   {
-    id: 'act:add',
-    label: 'Add a project',
-    hint: 'point Cockpit at a folder',
+    id: 'act:new',
+    label: 'New project from scratch',
+    hint: 'an empty project, ready for its first repository',
     icon: FolderPlus,
-    run: addProject,
+    run: () => newProject('scratch'),
+  },
+  {
+    id: 'act:folder',
+    label: 'New project from a folder',
+    hint: 'something already on this machine',
+    icon: FolderOpen,
+    run: () => newProject('folder'),
+  },
+  {
+    id: 'act:clone',
+    label: 'New project from a repository',
+    hint: 'clone from GitHub or any git remote',
+    icon: CloudDownload,
+    run: () => newProject('clone'),
+  },
+  {
+    id: 'act:settings',
+    label: 'Settings',
+    hint: state.settings?.devRoot ?? 'the Dev folder, the editor',
+    icon: SlidersHorizontal,
+    run: () => {
+      state.settingsOpen = true
+    },
   },
   {
     id: 'act:theme',
@@ -158,9 +183,16 @@ onMounted(() => void nextTick(() => input.value?.focus()))
   <div class="home">
     <div class="drag" />
 
-    <button v-if="canLeaveHome" class="icon-btn leave" title="Back to the workspace (esc)" @click="closeHome">
-      <X class="sm" />
-    </button>
+    <!-- The rail is underneath the start page, so its settings button is out
+         of reach; the corner is the one place the chrome still has. -->
+    <div class="corner">
+      <button class="icon-btn" title="Settings" @click="state.settingsOpen = true">
+        <SlidersHorizontal class="sm" />
+      </button>
+      <button v-if="canLeaveHome" class="icon-btn" title="Back to the workspace (esc)" @click="closeHome">
+        <X class="sm" />
+      </button>
+    </div>
 
     <div class="stage">
       <header class="hero">
@@ -195,8 +227,12 @@ onMounted(() => void nextTick(() => input.value?.focus()))
 
       <!-- Nothing registered yet is the only state with a single answer. -->
       <div v-if="!state.projects.length" class="virgin">
-        <p>No project yet. Point Cockpit at a folder and it will find the rest.</p>
-        <button class="btn primary" @click="addProject"><FolderPlus />Add a project</button>
+        <p>
+          No project yet. However it starts, it lands the same way —
+          <code class="mono">Dev/Project/repo</code> — with the project folder left free so a
+          second repository can join the first.
+        </p>
+        <NewProjectSources @pick="newProject" />
       </div>
 
       <div v-else class="results">
@@ -235,6 +271,15 @@ onMounted(() => void nextTick(() => input.value?.focus()))
         <p v-if="!rows.length" class="none">
           Nothing matches <em>{{ query }}</em>
         </p>
+      </div>
+
+      <!-- The page's other answer to "where do I go now": nowhere yet — start
+           something. Three cards rather than one button, because which of the
+           three it is is the only question, and answering it here saves the
+           click the sheet would have charged for it (§12). -->
+      <div v-if="state.projects.length" class="newp">
+        <p class="section-label">New project</p>
+        <NewProjectSources @pick="newProject" />
       </div>
 
       <!-- §3.9 again: a legend for a list that is not there teaches nothing. -->
@@ -278,11 +323,13 @@ onMounted(() => void nextTick(() => input.value?.focus()))
   height: var(--titlebar-h);
   -webkit-app-region: drag;
 }
-.leave {
+.corner {
   position: absolute;
   top: 11px;
   right: 12px;
   z-index: 2;
+  display: flex;
+  gap: 2px;
   /* It sits inside the drag strip, which would otherwise swallow the click. */
   -webkit-app-region: no-drag;
 }
@@ -447,12 +494,27 @@ onMounted(() => void nextTick(() => input.value?.focus()))
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
-  max-width: 42ch;
+  gap: 16px;
+  width: 100%;
+  max-width: 560px;
   margin-top: 8px;
   text-align: center;
 }
+.virgin p { max-width: 52ch; }
 .virgin p { margin: 0; font-size: var(--fs-sm); color: var(--text-dim); line-height: 1.6; }
+.virgin code { color: var(--text-muted); }
+
+/* Same column as the field and the list above it, so the three cards line up
+   with everything else on the page rather than floating at their own width. */
+.newp {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.newp .section-label { margin-left: 4px; }
 
 /* ── the keyboard legend ─────────────────────────────────────────────── */
 .hints {

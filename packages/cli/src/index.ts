@@ -1,11 +1,11 @@
 import { existsSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
-import { MANIFEST_TEMPLATE } from '@cockpit/shared'
-import type { Workspace } from '@cockpit/shared'
+import { MANIFEST_TEMPLATE, parseRemote } from '@cockpit/shared'
+import type { NewProjectSource, Workspace } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 
 /**
@@ -233,6 +233,123 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     const p = await c.call('project.add', { root })
     out(C.green('added ') + C.bold(p.name) + ' ' + C.dim(p.root))
     out(C.dim('  capabilities: ' + (p.capabilities.map((x) => x.id + ':' + x.impl).join(', ') || 'none detected')))
+    c.close()
+  },
+
+  /**
+   * §7 — the layout, from a terminal. `add` takes a folder as it is; this one
+   * decides what the folder looks like, and there is only ever one answer:
+   * `<dev>/<Project>/<repo>/.git`, never `<dev>/<Project>/.git`.
+   */
+  async new(args) {
+    const flags = parseFlags(args)
+    const words = bareWords(args)
+    const c = await connect()
+    const cfg = await c.call('config.get', undefined)
+
+    const from = flags.from
+    const adopt = flags.adopt
+    const asIs = 'as-is' in flags
+
+    // The name is what was typed, or what the source is already called.
+    let name = words[0] ?? ''
+    if (!name && from) name = parseRemote(from)?.repo ?? ''
+    if (!name && adopt) name = basename(resolve(adopt))
+    if (!name) {
+      out(C.red('a project needs a name'))
+      out(C.dim('  cockpit new "Cashplannr" [--from owner/repo | --adopt <path>]'))
+      process.exit(1)
+    }
+
+    const parent = flags.in
+      ? resolve(flags.in)
+      : (cfg.settings.devRoot ?? cfg.suggestedDevRoot ?? '')
+    if (!parent && !(adopt && asIs)) {
+      out(C.red('no Dev folder set — where should the project go?'))
+      out(C.dim('  cockpit config dev <path>     set it once'))
+      out(C.dim('  cockpit new "' + name + '" --in <path>'))
+      process.exit(1)
+    }
+
+    let source: NewProjectSource
+    if (from) {
+      const remote = parseRemote(from)
+      if (!remote) {
+        out(C.red('not a repository URL: ' + from))
+        process.exit(1)
+      }
+      source = {
+        kind: 'clone',
+        url: from,
+        repoName: flags.repo ?? null,
+        branch: flags.branch ?? null,
+      }
+      out(C.dim('cloning ' + remote.url + ' …'))
+    } else if (adopt) {
+      source = {
+        kind: 'folder',
+        folder: resolve(adopt),
+        // A folder that is itself a repository is the one shape the layout
+        // rules out, so by default it moves down a level rather than becoming
+        // a root that can never gain a second repository.
+        wrap: !asIs,
+        repoName: flags.repo ?? null,
+      }
+    } else {
+      source = { kind: 'scratch', repoName: 'empty' in flags ? null : (flags.repo ?? name) }
+    }
+
+    const p = await c.call('project.create', {
+      name,
+      parent: adopt && asIs ? resolve(adopt) : parent,
+      source,
+    })
+    const workspaces = await c.call('workspace.list', { projectId: p.id })
+    out(C.green('created ') + C.bold(p.name) + '  ' + C.dim(p.root))
+    for (const w of workspaces.filter((w) => w.kind !== 'group')) {
+      out('  ' + C.dim(w.kind === 'external' ? 'dir ' : 'repo') + ' ' + w.path.slice(p.root.length + 1))
+    }
+    out(C.dim('  a second repository is a `git clone` inside ' + p.root))
+    c.close()
+  },
+
+  /** §15 — the machine-local settings, read and written from a terminal too. */
+  async config(args) {
+    const c = await connect()
+    const [key, ...rest] = args
+    const value = rest.join(' ').trim()
+
+    if (!key) {
+      const v = await c.call('config.get', undefined)
+      out('')
+      out(C.bold('  dev  ') + (v.settings.devRoot ?? C.dim('unset')))
+      if (!v.settings.devRoot && v.suggestedDevRoot) {
+        out(C.dim('       your projects sit in ' + v.suggestedDevRoot + ' — cockpit config dev ' + v.suggestedDevRoot))
+      }
+      out(C.bold('  ide  ') + v.settings.ide)
+      out('')
+      out(C.dim('  one folder per project, one folder per repo inside it:'))
+      out(C.dim('  <dev>/<Project>/<repo>/.git   — never <dev>/<Project>/.git'))
+      out('')
+      c.close()
+      return
+    }
+
+    if (key === 'dev' || key === 'devRoot') {
+      const v = await c.call('config.set', { devRoot: value || null })
+      out(C.green('dev folder ') + (v.settings.devRoot ?? C.dim('unset')))
+    } else if (key === 'ide') {
+      if (!value) {
+        out(C.red('usage: cockpit config ide <command>'))
+        process.exit(1)
+      }
+      const v = await c.call('config.set', { ide: value })
+      out(C.green('ide ') + v.settings.ide)
+    } else {
+      out(C.red('unknown setting: ' + key))
+      out(C.dim('  cockpit config [dev <path> | ide <command>]'))
+      process.exit(1)
+    }
     c.close()
   },
 
@@ -713,9 +830,15 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     out('    ports                       global port allocation')
     out('    leases                      active path leases')
     out('')
-    out(C.bold('  projects'))
+    out(C.bold('  projects') + C.dim('   — <dev>/<Project>/<repo>/.git, never <dev>/<Project>/.git'))
+    out('    new "<name>"                a project folder + its first repo  [--empty]')
+    out('        --from owner/repo       clone into <dev>/<name>/<repo>  [--branch b]')
+    out('        --adopt <path>          move an existing repo into a project of its own')
+    out('        --adopt <path> --as-is  or register that folder where it stands')
+    out('        --in <path>             somewhere other than the Dev folder')
+    out('    config [dev <path>]         the Dev folder every project lands in')
     out('    init [path]                 write a starter cockpit.yaml')
-    out('    add <path>                  register a project')
+    out('    add <path>                  register a project as it is')
     out('    forget <name>               unregister a project')
     out('')
     out(C.bold('  work'))

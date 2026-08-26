@@ -2,16 +2,18 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
-  AppWindow, ArrowRight, ArrowUpFromLine, BookMarked, CornerDownLeft, FileCode, FolderOpen,
+  AppWindow, ArrowRight, ArrowUpFromLine, BookMarked, CloudDownload, CornerDownLeft, FileCode,
+  FolderOpen,
   FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
-  Search, Sparkles, Settings, SquareDot, SquareTerminal, TextSearch, Trash2, Undo2,
+  Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, TextSearch,
+  Trash2, Undo2,
   RotateCcw, Archive, Zap,
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
   activateFeature, activeProject, activeWorkspace, archivedFeatures, client, closeFeature,
-  deleteFeature, guard, parkFeature, projectFeatures, reopenFeature, requestPlan, restartCore,
-  selectWorkspace, state, toast,
+  deleteFeature, guard, newProject, parkFeature, projectFeatures, reopenFeature, requestPlan,
+  restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { TabId } from '../core/store.js'
 
@@ -306,14 +308,41 @@ const commands = computed<Item[]>(() => {
     icon: RefreshCw,
     run: act(() => guard(() => client.call('core.reconcile', {}), 'rescanned')),
   })
+  // Three rows rather than one: "which of the three" is the only question the
+  // sheet asks that the palette can answer first, and typing "clone" should
+  // land on the one that matters.
   out.push({
-    id: 'addproj',
-    label: 'Add a project…',
+    id: 'newproj',
+    label: 'New project from scratch…',
+    hint: 'an empty project, ready for its first repository',
     group: 'Core',
     icon: FolderPlus,
-    run: act(async () => {
-      const root = window.prompt('Path of the project folder')
-      if (root) await guard(() => client.call('project.add', { root }), 'project added')
+    run: act(() => newProject('scratch')),
+  })
+  out.push({
+    id: 'newproj:folder',
+    label: 'New project from a folder…',
+    hint: 'something already on this machine',
+    group: 'Core',
+    icon: FolderOpen,
+    run: act(() => newProject('folder')),
+  })
+  out.push({
+    id: 'newproj:clone',
+    label: 'New project from a repository…',
+    hint: 'clone from GitHub or any git remote',
+    group: 'Core',
+    icon: CloudDownload,
+    run: act(() => newProject('clone')),
+  })
+  out.push({
+    id: 'settings',
+    label: 'Settings…',
+    hint: 'the Dev folder, the editor',
+    group: 'Core',
+    icon: SlidersHorizontal,
+    run: act(() => {
+      state.settingsOpen = true
     }),
   })
 

@@ -1,9 +1,13 @@
+import { resolve } from 'node:path'
 import { WebSocketServer, WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@cockpit/shared'
-import type { CockpitEvent, RpcRequest, RpcResponse, ServerPush } from '@cockpit/shared'
-import { DEFAULT_PORT, loadConfig } from './config.js'
+import type {
+  CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse, ServerPush,
+} from '@cockpit/shared'
+import { DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, tail } from './journal.js'
 import * as registry from './registry.js'
+import * as scaffold from './scaffold.js'
 import * as files from './files.js'
 import * as search from './search.js'
 import * as diff from './diff.js'
@@ -44,6 +48,13 @@ function status() {
       0,
     ),
   }
+}
+
+/** §15 — the machine-local settings, plus what the registry can suggest. */
+function configView(): ConfigView {
+  const c = loadConfig()
+  const settings: CockpitSettings = { devRoot: c.devRoot ?? null, ide: c.ide }
+  return { settings, suggestedDevRoot: scaffold.suggestedDevRoot() }
 }
 
 export function broadcast(msg: ServerPush): void {
@@ -156,6 +167,24 @@ const handlers: Record<string, Handler> = {
     const trashed = await registry.trashProject(p.projectId)
     pushAll()
     return { ok: true, trashed }
+  },
+  /** §7 — creates the folder layout first, then registers what it created. */
+  'project.create': async (p: scaffold.CreateProjectInput) => {
+    const project = await scaffold.createProject(p)
+    await registry.reconcile(project.id)
+    pushAll()
+    return registry.allProjects().find((x) => x.id === project.id) ?? project
+  },
+
+  'project.inspect': (p: { path: string }) => scaffold.inspectFolder(p.path),
+
+  'config.get': () => configView(),
+  'config.set': (p: Partial<CockpitSettings>) => {
+    updateConfig((c) => {
+      if ('devRoot' in p) c.devRoot = p.devRoot?.trim() ? resolve(p.devRoot.trim()) : null
+      if (p.ide?.trim()) c.ide = p.ide.trim()
+    })
+    return configView()
   },
 
   'workspace.list': (p: { projectId?: string }) => registry.allWorkspaces(p?.projectId),

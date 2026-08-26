@@ -175,6 +175,26 @@ function liveWork(p: Project): string[] {
   return out
 }
 
+/**
+ * The same question as `liveWork`, asked of a path rather than of a project:
+ * what is running under this folder that moving it would pull the ground out
+ * from under (§16). Used before a folder is wrapped into a project of its own.
+ */
+export function liveWorkUnder(path: string): string[] {
+  const p = resolve(path)
+  const out: string[] = []
+  for (const w of workspaces.values()) {
+    if (w.path !== p && !w.path.startsWith(p + '/')) continue
+    if (w.runtime && (w.runtime.status === 'up' || w.runtime.status === 'starting')) {
+      out.push(w.name + ': runtime is ' + w.runtime.status)
+    }
+    if (w.agentSessions.length) {
+      out.push(w.name + ': ' + w.agentSessions.length + ' agent session(s) open')
+    }
+  }
+  return out
+}
+
 export function renameProject(projectId: string, name: string | null): Project {
   const p = requireProject(projectId)
   const next = name?.trim() ?? ''

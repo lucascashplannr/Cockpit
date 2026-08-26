@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Plus, Sun, Moon, MonitorCog } from '@lucide/vue'
+import { Plus, SlidersHorizontal, Sun, Moon, MonitorCog } from '@lucide/vue'
 import Mark from './brand/Mark.vue'
-import { addProject, cycleTheme, openHome, state } from '../core/store.js'
+import { cycleTheme, newProject, openHome, state } from '../core/store.js'
 
 /**
  * The far-left rail: the mark, then one square per project, then add.
@@ -61,12 +61,16 @@ const themeLabel = computed(() =>
         </span>
       </button>
 
-      <button class="tile add" title="Add a project" @click="addProject">
+      <button class="tile add" title="New project" @click="newProject('scratch')">
         <Plus />
       </button>
     </div>
 
     <div class="grow" />
+
+    <button class="icon-btn" title="Settings" @click="state.settingsOpen = true">
+      <SlidersHorizontal />
+    </button>
 
     <button class="icon-btn theme" :title="'Theme: ' + themeLabel" @click="cycleTheme">
       <Moon v-if="state.theme === 'dark'" />

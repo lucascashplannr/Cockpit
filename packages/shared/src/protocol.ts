@@ -6,9 +6,39 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AgentSession, AgentSessionFile, CoreStatus, DiffFile, Feature, FileDiff,
-  MemoryDoc, Project, SearchHit, Workspace,
+  AgentSession, AgentSessionFile, CockpitSettings, CoreStatus, DiffFile, Feature, FileDiff,
+  MemoryDoc, NewProjectSource, Project, SearchHit, Workspace,
 } from './model.js'
+
+/** What a folder turns out to be, for a window that cannot look for itself. */
+export interface FolderInfo {
+  /** Absolute, resolved by the core. */
+  path: string
+  exists: boolean
+  isDirectory: boolean
+  /** Holds nothing but the odd `.DS_Store`. */
+  empty: boolean
+  /** `.git` is here — the one shape the project layout rules out (§7). */
+  isRepo: boolean
+  /** A worktree of a repository elsewhere: it cannot be moved on its own. */
+  isWorktree: boolean
+  /** Repositories one level down: the layout, already in place. */
+  childRepos: string[]
+  /** Its first remote, when it has one. */
+  remote: string | null
+  /** Already registered as a project — its id, or null. */
+  projectId: string | null
+}
+
+export interface ConfigView {
+  settings: CockpitSettings
+  /**
+   * Where projects already live, when they agree: the parent folder most of
+   * the registered ones share. It is a suggestion for the Dev folder and never
+   * a value — nothing is created at a path nobody confirmed.
+   */
+  suggestedDevRoot: string | null
+}
 
 export interface FileEntry {
   name: string
@@ -68,6 +98,27 @@ export interface Rpc {
   }
   /** To the system Trash, never `rm -rf`, and never over live or unpushed work. */
   'project.trash': { params: { projectId: string }; result: { ok: true; trashed: string } }
+  /**
+   * §7 — creates the folder layout, then registers what it created. `project.add`
+   * takes what is already there; this one is the other half, and the only path
+   * by which a repository ever lands one level below the project root rather
+   * than at it. All or nothing: a clone that fails leaves no folder behind.
+   */
+  'project.create': {
+    params: { name: string; parent: string; source: NewProjectSource }
+    result: Project
+  }
+
+  /**
+   * §13 rule 1 — the window has no filesystem, so it cannot know whether the
+   * folder someone just picked is a repository, is already the right shape, or
+   * is a name already taken. It asks.
+   */
+  'project.inspect': { params: { path: string }; result: FolderInfo }
+
+  'config.get': { params: void; result: ConfigView }
+  /** Only the keys present are written; the rest keep their value. */
+  'config.set': { params: Partial<CockpitSettings>; result: ConfigView }
 
   'workspace.list': { params: { projectId?: string }; result: Workspace[] }
   'workspace.get': { params: { workspaceId: string }; result: Workspace | null }
