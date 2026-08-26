@@ -2,9 +2,8 @@
 import { computed } from 'vue'
 import type { Component } from 'vue'
 import {
-  AppWindow, ArrowDown, ArrowUp, ArrowUpFromLine, BookMarked, CirclePlay, CircleStop,
-  FileCode, FileDiff, GitBranch, GitCompareArrows, MousePointerClick, Plug, ScrollText,
-  Sparkles, SquareTerminal, Undo2,
+  ArrowDown, ArrowUp, BookMarked, FileCode, FileDiff, GitBranch, GitCompareArrows,
+  MousePointerClick, Plug, ScrollText, Sparkles, SquareTerminal,
 } from '@lucide/vue'
 import CodeTab from './tabs/CodeTab.vue'
 import DiffTab from './tabs/DiffTab.vue'
@@ -13,7 +12,7 @@ import MemoryTab from './tabs/MemoryTab.vue'
 import JournalTab from './tabs/JournalTab.vue'
 import TerminalTab from './tabs/TerminalTab.vue'
 import Wordmark from './brand/Wordmark.vue'
-import { activeWorkspace, client, guard, has, requestPlan, state } from '../core/store.js'
+import { activeWorkspace, has, state } from '../core/store.js'
 import type { TabId } from '../core/store.js'
 
 const w = computed(() => activeWorkspace.value)
@@ -50,37 +49,11 @@ const tabs = computed<Tab[]>(() => {
   return list
 })
 
-const preview = computed(() => w.value?.runtime?.preview ?? null)
-
 const changed = computed(() => {
   const g = w.value?.git
   return g ? g.staged + g.unstaged + g.untracked : 0
 })
 
-async function toggleRuntime() {
-  const ws = w.value
-  if (!ws?.runtime) return
-  const method = ws.runtime.status === 'up' ? 'runtime.down' : 'runtime.up'
-  await guard(() => client.call(method, { workspaceId: ws.id }))
-}
-
-async function openIde() {
-  const ws = w.value
-  if (!ws) return
-  await guard(() => client.call('workspace.openIn', { workspaceId: ws.id, target: 'ide' }))
-}
-
-async function openPreview() {
-  const ws = w.value
-  if (!ws) return
-  await guard(() => client.call('workspace.openIn', { workspaceId: ws.id, target: 'browser' }))
-}
-
-async function undo() {
-  const ws = w.value
-  if (!ws) return
-  await guard(() => client.call('git.undo', { workspaceId: ws.id }))
-}
 </script>
 
 <template>
@@ -97,47 +70,9 @@ async function undo() {
 
     <template v-else>
       <header class="head">
-        <!-- The title band is the only strip in this column with room to spare:
-             the traffic lights stop well to the left of it. Putting the verbs
-             there buys the tab row back and lifts everything up a row. -->
-        <div class="idline">
-          <h1 class="wname">{{ w.name }}</h1>
-          <span class="chip" v-if="w.kind !== 'main'">
-            <GitBranch />{{ w.kind }}
-          </span>
-          <span v-if="w.git && w.git.headState !== 'attached'" class="chip danger">
-            {{ w.git.headState }}
-          </span>
-          <span class="grow" />
-
-          <div class="actions">
-            <button v-if="w.runtime" class="btn ghost" @click="toggleRuntime">
-              <component :is="w.runtime.status === 'up' ? CircleStop : CirclePlay" />
-              {{ w.runtime.status === 'up' ? 'Stop' : 'Start' }}
-            </button>
-            <button v-if="preview && preview.kind === 'url'" class="btn ghost" @click="openPreview">
-              <AppWindow />Preview
-            </button>
-            <button class="btn ghost" @click="openIde"><FileCode />IDE</button>
-            <span v-if="w.git" class="vrule" />
-            <button v-if="w.git" class="btn ghost" @click="requestPlan(w.id, 'rebase')">
-              <GitCompareArrows />Rebase
-            </button>
-            <button v-if="w.git" class="btn ghost" @click="requestPlan(w.id, 'push')">
-              <ArrowUpFromLine />Push
-            </button>
-            <button
-              v-if="w.git"
-              class="icon-btn"
-              title="Roll back to the last restore point"
-              @click="undo"
-            >
-              <Undo2 class="sm" />
-            </button>
-          </div>
-        </div>
-
-        <!-- One status strip: git, runtime, agent, cost. §12's summary row. -->
+        <!-- The name and the verbs for this workspace are in the title band
+             (WorkspaceTitle / WorkspaceActions); this column carries its state.
+             One status strip: git, runtime, agent, cost. §12's summary row. -->
         <div class="status">
           <template v-if="w.git">
             <span class="stat">
@@ -250,24 +185,6 @@ async function undo() {
   flex: none;
   padding: var(--col-top) 18px 0;
 }
-.idline {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  /* 34px is the height of the search field in the column to the left, so the
-     title and the field share a centre line. */
-  min-height: 34px;
-  min-width: 0;
-}
-.wname {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: 640;
-  letter-spacing: -0.02em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .grow { flex: 1; }
 .path {
   flex: none;
@@ -288,7 +205,10 @@ async function undo() {
   display: flex;
   align-items: center;
   gap: 8px 10px;
-  padding: 11px 0 12px;
+  /* 34px is the height of the search field in the column to the left, so the
+     two columns start their content on one line. */
+  min-height: 34px;
+  padding: 0 0 12px;
   min-width: 0;
 }
 .stat {
@@ -358,28 +278,6 @@ async function undo() {
   color: var(--text-muted);
 }
 .tab.on .tbadge { background: var(--accent-soft); color: var(--accent); }
-
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex: none;
-}
-.actions .btn {
-  height: 28px;
-  padding: 0 10px;
-  font-size: var(--fs-xs);
-  border-color: transparent;
-}
-.actions .btn:hover:not(:disabled) { border-color: var(--line); }
-.actions .btn .lucide { width: 13px; height: 13px; }
-.actions .icon-btn { width: 28px; height: 28px; }
-.vrule {
-  width: 1px;
-  height: 16px;
-  margin: 0 7px;
-  background: var(--line);
-}
 
 .body { flex: 1; min-height: 0; overflow: hidden; }
 </style>

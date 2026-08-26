@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Plus, Sun, Moon, MonitorCog } from '@lucide/vue'
-import { addProject, cycleTheme, state } from '../core/store.js'
+import Mark from './brand/Mark.vue'
+import { addProject, cycleTheme, openHome, state } from '../core/store.js'
 
 /**
  * The far-left rail: the mark, then one square per project, then add.
@@ -39,6 +40,16 @@ const themeLabel = computed(() =>
 
 <template>
   <nav class="rail">
+    <!-- The mark reads as the zeroth project: same tile, same vertical axis,
+         and it selects the start page the way the others select a project.
+         Not `.brand` — that is Mark's own root class, and this component's
+         scope id lands on it too. -->
+    <button class="tile mark" title="Start page" @click="openHome">
+      <Mark :height="27" crisp />
+    </button>
+
+    <div class="rule" />
+
     <div class="tiles">
       <button
         v-for="p in projects"
@@ -107,6 +118,19 @@ const themeLabel = computed(() =>
 }
 .tile:hover { background: var(--active); color: var(--text); }
 .tile:active { transform: scale(0.94); }
+
+/* Same tile as a project, one step quieter in ink: it belongs to the column
+   but it is the way out, not one of the things in it. */
+.tile.mark { color: var(--text-dim); }
+.tile.mark:hover { color: var(--text); }
+
+.rule {
+  flex: none;
+  width: 28px;
+  height: 1px;
+  margin: 10px 0 12px;
+  background: var(--line);
+}
 
 .tile.active {
   background: hsl(var(--h) 70% 55% / 0.16);

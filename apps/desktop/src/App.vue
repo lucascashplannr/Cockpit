@@ -8,8 +8,9 @@ import PlanDialog from './components/PlanDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import HomeView from './components/HomeView.vue'
-import Mark from './components/brand/Mark.vue'
-import { activeWorkspace, canLeaveHome, client, openHome, state, guard, requestPlan } from './core/store.js'
+import WorkspaceActions from './components/WorkspaceActions.vue'
+import WorkspaceTitle from './components/WorkspaceTitle.vue'
+import { activeWorkspace, canLeaveHome, client, state, guard, requestPlan } from './core/store.js'
 
 /**
  * §12 — the three-column shell: projects, workspaces, context.
@@ -89,10 +90,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
          60px-wide rail. The lights grey out when the window loses focus, and
          the mark beside them keeps the corner from reading as empty. -->
     <header class="titlebar">
-      <span class="lights" />
-      <button class="markbtn" title="Start page" @click="openHome">
-        <Mark :height="27" crisp />
-      </button>
+      <span class="lead" />
+      <div class="title"><WorkspaceTitle /></div>
+      <span class="grow" />
+      <WorkspaceActions />
     </header>
 
     <ProjectRail />
@@ -123,40 +124,34 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding-left: 10px;
+  padding-right: 18px;
   /* Continuous with the rail below it, so the two read as one chrome surface. */
   background: var(--bg-sunken);
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
 }
+.grow { flex: 1; }
 
-/* macOS paints its three lights over this; the span only reserves the room. */
-.lights {
-  width: 52px;
+/* The rail's own width, holding nothing: macOS paints its three lights here.
+   Carrying the rail's right border up through the band means the divider the
+   eye sees beside the lights is the same line the rail draws below. */
+.lead {
+  width: var(--rail-w);
+  height: 100%;
   flex: none;
+  border-right: 1px solid var(--line);
 }
 
-/* Named `markbtn`, not `home` or `brand`: Vue stamps this component's scope id
-   onto a child component's root node as well, so a rule here matching a child's
-   root class silently restyles that whole component. `.home` is HomeView's root
-   and `.brand` is Mark's — either name would have collapsed them into a 40px
-   button. */
-.markbtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 30px;
-  flex: none;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  -webkit-app-region: no-drag;
-  transition:
-    background var(--dur-1) var(--ease-soft),
-    color var(--dur-1) var(--ease-soft),
-    transform var(--dur-1) var(--ease);
+/* The title starts at x = rail + 12: the exact left edge of the search field
+   in the column below it. Beware naming rules here after a child's root class —
+   Vue stamps this component's scope id onto a child component's root node too,
+   so `.home` (HomeView) or `.brand` (Mark) would silently restyle them. */
+/* x = rail + 12: the exact left edge of the search field in the column below.
+   Beware naming a rule here after a child component's root class — Vue stamps
+   this component's scope id onto that root too, so `.home` (HomeView) or
+   `.brand` (Mark) would silently restyle the whole child. */
+.title {
+  margin-left: 12px;
+  min-width: 0;
 }
-.markbtn:hover { background: var(--hover); color: var(--text); }
-.markbtn:active { transform: scale(0.92); }
 </style>
