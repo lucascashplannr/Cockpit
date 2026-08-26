@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { Plus, Sun, Moon, MonitorCog } from '@lucide/vue'
 import Mark from './brand/Mark.vue'
-import { client, cycleTheme, guard, state } from '../core/store.js'
+import { addProject, cycleTheme, openHome, state } from '../core/store.js'
 
 /**
  * The far-left rail: the mark, then one square per project, then add.
@@ -36,23 +36,19 @@ function counts(projectId: string) {
 const themeLabel = computed(() =>
   state.theme === 'dark' ? 'Dark' : state.theme === 'light' ? 'Light' : 'System',
 )
-
-async function addProject() {
-  // §13 rule 1 — the renderer cannot open a file dialog onto the filesystem
-  // itself; it asks for a path and the core resolves it.
-  const root = window.prompt('Path of the project folder to add')
-  if (!root) return
-  await guard(() => client.call('project.add', { root }), 'project added')
-}
 </script>
 
 <template>
   <nav class="rail">
     <div class="spacer" />
 
-    <div class="brand" title="Cockpit">
-      <Mark :height="16" />
-    </div>
+    <!-- The mark is the way home; nothing else in the rail leaves the shell.
+         The class is deliberately not `brand`: Vue stamps this component's
+         scope id onto a child's root node too, and Mark's own root is
+         `.brand` — sharing the name let this rule resize the SVG. -->
+    <button class="home" title="Start page" @click="openHome">
+      <Mark :height="18" crisp />
+    </button>
 
     <div class="rule" />
 
@@ -102,21 +98,28 @@ async function addProject() {
 .spacer { height: var(--titlebar-h); flex: none; }
 .grow { flex: 1; }
 
-.brand {
+.home {
   flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 30px;
+  width: 30px;
+  height: 26px;
+  border-radius: var(--radius-sm);
   color: var(--text-muted);
-  opacity: 0.9;
+  transition:
+    background var(--dur-1) var(--ease-soft),
+    color var(--dur-1) var(--ease-soft),
+    transform var(--dur-1) var(--ease);
 }
+.home:hover { background: var(--hover); color: var(--text); }
+.home:active { transform: scale(0.92); }
 
 .rule {
   flex: none;
   width: 22px;
   height: 1px;
-  margin: 10px 0 12px;
+  margin: 8px 0 10px;
   background: var(--line);
 }
 

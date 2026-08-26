@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld('cockpitHost', {
   platform: process.platform,
   corePort: Number(process.env.COCKPIT_PORT || 7717),
   isElectron: true,
+  /** Resolves to an absolute path, or null when the user cancels. */
+  pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
 })
-void ipcRenderer

@@ -97,6 +97,9 @@ async function undo() {
 
     <template v-else>
       <header class="head">
+        <!-- The title band is the only strip in this column with room to spare:
+             the traffic lights stop well to the left of it. Putting the verbs
+             there buys the tab row back and lifts everything up a row. -->
         <div class="idline">
           <h1 class="wname">{{ w.name }}</h1>
           <span class="chip" v-if="w.kind !== 'main'">
@@ -106,7 +109,32 @@ async function undo() {
             {{ w.git.headState }}
           </span>
           <span class="grow" />
-          <span class="path mono" :title="w.path">{{ w.path }}</span>
+
+          <div class="actions">
+            <button v-if="w.runtime" class="btn ghost" @click="toggleRuntime">
+              <component :is="w.runtime.status === 'up' ? CircleStop : CirclePlay" />
+              {{ w.runtime.status === 'up' ? 'Stop' : 'Start' }}
+            </button>
+            <button v-if="preview && preview.kind === 'url'" class="btn ghost" @click="openPreview">
+              <AppWindow />Preview
+            </button>
+            <button class="btn ghost" @click="openIde"><FileCode />IDE</button>
+            <span v-if="w.git" class="vrule" />
+            <button v-if="w.git" class="btn ghost" @click="requestPlan(w.id, 'rebase')">
+              <GitCompareArrows />Rebase
+            </button>
+            <button v-if="w.git" class="btn ghost" @click="requestPlan(w.id, 'push')">
+              <ArrowUpFromLine />Push
+            </button>
+            <button
+              v-if="w.git"
+              class="icon-btn"
+              title="Roll back to the last restore point"
+              @click="undo"
+            >
+              <Undo2 class="sm" />
+            </button>
+          </div>
         </div>
 
         <!-- One status strip: git, runtime, agent, cost. §12's summary row. -->
@@ -146,51 +174,24 @@ async function undo() {
           </span>
 
           <span v-if="w.lease" class="chip warn" :title="w.lease.reason">leased</span>
+
+          <span class="grow" />
+          <span class="path mono" :title="w.path">{{ w.path }}</span>
         </div>
       </header>
 
       <nav class="tabs">
-        <div class="tablist">
-          <button
-            v-for="t in tabs"
-            :key="t.id"
-            class="tab"
-            :class="{ on: state.activeTab === t.id }"
-            @click="state.activeTab = t.id"
-          >
-            <component :is="t.icon" class="sm" />
-            <span>{{ t.label }}</span>
-            <span v-if="t.badge !== undefined" class="tbadge num">{{ t.badge }}</span>
-          </button>
-        </div>
-
-        <span class="grow" />
-
-        <div class="actions">
-          <button v-if="w.runtime" class="btn ghost" @click="toggleRuntime">
-            <component :is="w.runtime.status === 'up' ? CircleStop : CirclePlay" />
-            {{ w.runtime.status === 'up' ? 'Stop' : 'Start' }}
-          </button>
-          <button v-if="preview && preview.kind === 'url'" class="btn ghost" @click="openPreview">
-            <AppWindow />Preview
-          </button>
-          <button class="btn ghost" @click="openIde"><FileCode />IDE</button>
-          <span v-if="w.git" class="vrule" />
-          <button v-if="w.git" class="btn ghost" @click="requestPlan(w.id, 'rebase')">
-            <GitCompareArrows />Rebase
-          </button>
-          <button v-if="w.git" class="btn ghost" @click="requestPlan(w.id, 'push')">
-            <ArrowUpFromLine />Push
-          </button>
-          <button
-            v-if="w.git"
-            class="icon-btn"
-            title="Roll back to the last restore point"
-            @click="undo"
-          >
-            <Undo2 class="sm" />
-          </button>
-        </div>
+        <button
+          v-for="t in tabs"
+          :key="t.id"
+          class="tab"
+          :class="{ on: state.activeTab === t.id }"
+          @click="state.activeTab = t.id"
+        >
+          <component :is="t.icon" class="sm" />
+          <span>{{ t.label }}</span>
+          <span v-if="t.badge !== undefined" class="tbadge num">{{ t.badge }}</span>
+        </button>
       </nav>
 
       <div class="body">
@@ -247,12 +248,15 @@ async function undo() {
 /* ── header ──────────────────────────────────────────────────────────── */
 .head {
   flex: none;
-  padding: calc(var(--titlebar-h) + 4px) 22px 0;
+  /* No traffic lights above this column — the old titlebar-sized inset was
+     44px of nothing. The title now sits in that band. */
+  padding: 7px 18px 0;
 }
 .idline {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-height: 30px;
   min-width: 0;
 }
 .wname {
@@ -266,9 +270,14 @@ async function undo() {
 }
 .grow { flex: 1; }
 .path {
+  flex: none;
+  margin-left: 4px;
   color: var(--text-dim);
   font-size: var(--fs-xs);
+  /* Truncate from the left; `plaintext` keeps the string itself in reading
+     order, which bare `rtl` does not — it moves the leading slash to the end. */
   direction: rtl;
+  unicode-bidi: plaintext;
   max-width: 45%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -278,9 +287,9 @@ async function undo() {
 .status {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 8px 10px;
-  padding: 14px 0 14px;
+  padding: 11px 0 12px;
+  min-width: 0;
 }
 .stat {
   display: inline-flex;
@@ -307,11 +316,10 @@ async function undo() {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 2px;
   padding: 0 18px;
   border-bottom: 1px solid var(--line);
 }
-.tablist { display: flex; align-items: center; gap: 2px; }
 .tab {
   position: relative;
   display: inline-flex;
@@ -351,14 +359,27 @@ async function undo() {
 }
 .tab.on .tbadge { background: var(--accent-soft); color: var(--accent); }
 
-.actions { display: flex; align-items: center; gap: 3px; padding-bottom: 3px; }
-.actions .btn { height: 27px; padding: 0 9px; font-size: var(--fs-xs); }
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  /* It overlaps the window's drag strip, which would otherwise eat the click. */
+  -webkit-app-region: no-drag;
+}
+.actions .btn {
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--fs-xs);
+  border-color: transparent;
+}
+.actions .btn:hover:not(:disabled) { border-color: var(--line); }
 .actions .btn .lucide { width: 13px; height: 13px; }
-.actions .icon-btn { width: 27px; height: 27px; }
+.actions .icon-btn { width: 28px; height: 28px; }
 .vrule {
   width: 1px;
-  height: 18px;
-  margin: 0 5px;
+  height: 16px;
+  margin: 0 7px;
   background: var(--line);
 }
 

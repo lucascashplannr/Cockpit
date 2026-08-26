@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { ArrowDown, ArrowUp, GitBranch, Lock, Sparkles, SquareDot, TriangleAlert } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
-import { state } from '../core/store.js'
+import { selectWorkspace, state } from '../core/store.js'
 
 const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
 
@@ -20,7 +20,7 @@ const kindLabel = computed(() =>
 </script>
 
 <template>
-  <button class="row" :class="{ selected, compact }" @click="state.activeWorkspaceId = w.id">
+  <button class="row" :class="{ selected, compact }" @click="selectWorkspace(w.id)">
     <!-- The kind is the one thing an icon says faster than a word. -->
     <span class="kind" :title="kindLabel">
       <component :is="w.kind === 'worktree' ? GitBranch : SquareDot" class="sm" />

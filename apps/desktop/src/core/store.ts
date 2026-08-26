@@ -1,6 +1,6 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
-  AgentSession, CockpitEvent, Feature, PlanPreview, Project, Workspace,
+  AgentSession, CockpitEvent, CoreStatus, Feature, PlanPreview, Project, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
@@ -11,7 +11,14 @@ import type { ConnectionState } from './client.js'
  * last push, it is not displayed.
  */
 
-const host = (window as unknown as { cockpitHost?: { corePort: number } }).cockpitHost
+/** §13 rule 1 — the whole of what the renderer may ask of its host. */
+interface CockpitHost {
+  corePort: number
+  /** Absolute path, or null when the user cancels. Absent outside Electron. */
+  pickFolder?: () => Promise<string | null>
+}
+
+const host = (window as unknown as { cockpitHost?: CockpitHost }).cockpitHost
 const PORT = host?.corePort ?? 7717
 const URL = 'ws://127.0.0.1:' + PORT
 
@@ -26,9 +33,16 @@ export const state = reactive({
   agents: [] as AgentSession[],
   events: [] as CockpitEvent[],
 
+  status: null as CoreStatus | null,
+
   activeProjectId: null as string | null,
   activeWorkspaceId: null as string | null,
   activeTab: 'diff' as TabId,
+
+  /** The start page. It owns the window on launch and whenever the mark is
+   *  clicked; §12's "zero click" target starts from a search field, not from
+   *  whatever workspace happened to be selected last session. */
+  homeOpen: true,
 
   paletteOpen: false,
   pendingPlan: null as PlanPreview | null,
@@ -79,18 +93,20 @@ export function onTermData(termId: string, fn: (d: string) => void): () => void 
 }
 
 async function bootstrap(): Promise<void> {
-  const [projects, workspaces, features, agents, events] = await Promise.all([
+  const [projects, workspaces, features, agents, events, status] = await Promise.all([
     client.call('project.list', undefined),
     client.call('workspace.list', {}),
     client.call('feature.list', {}),
     client.call('agent.list', undefined),
     client.call('journal.tail', { limit: 300 }),
+    client.call('core.status', undefined),
   ])
   state.projects = projects
   state.workspaces = workspaces
   state.features = features
   state.agents = agents
   state.events = events
+  state.status = status
   ensureSelection()
 }
 
@@ -177,10 +193,69 @@ export async function guard<T>(fn: () => Promise<T>, okMessage?: string): Promis
   }
 }
 
+/**
+ * §13 rule 1 — the renderer never resolves a path itself: the host opens the
+ * dialog, the core decides what the folder turns out to be. Electron has no
+ * `window.prompt`, so the fallback exists only for the browser dev server.
+ */
+export async function addProject(): Promise<void> {
+  const root = host?.pickFolder
+    ? await host.pickFolder()
+    : window.prompt('Path of the project folder to add')
+  if (!root) return
+  await guard(() => client.call('project.add', { root }), 'project added')
+}
+
 export function selectWorkspace(id: string): void {
   state.activeWorkspaceId = id
   const w = state.workspaces.find((x) => x.id === id)
   if (w && w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
+  remember(id)
+  state.homeOpen = false
+}
+
+/* ── the start page ────────────────────────────────────────────────────
+ * Recency is the one thing the start page needs that the core does not
+ * store: it is a property of this machine's habits, not of the projects.
+ * Ids only, so a workspace that disappears simply drops out of the list.
+ */
+const RECENT_KEY = 'cockpit.recent'
+const RECENT_MAX = 8
+
+export const recentIds = ref<string[]>(readRecent())
+
+function readRecent(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')
+    return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function remember(id: string): void {
+  const next = [id, ...recentIds.value.filter((x) => x !== id)].slice(0, RECENT_MAX)
+  recentIds.value = next
+  localStorage.setItem(RECENT_KEY, JSON.stringify(next))
+}
+
+/** The recent list, resolved against what actually exists right now. */
+export const recentWorkspaces = computed<Workspace[]>(() =>
+  recentIds.value
+    .map((id) => state.workspaces.find((w) => w.id === id))
+    .filter((w): w is Workspace => !!w && w.kind !== 'group'),
+)
+
+export function openHome(): void {
+  state.homeOpen = true
+  state.paletteOpen = false
+}
+
+/** Leaving the start page needs somewhere to go; with no project there is not. */
+export const canLeaveHome = computed(() => state.projects.length > 0)
+
+export function closeHome(): void {
+  if (canLeaveHome.value) state.homeOpen = false
 }
 
 export function applyTheme(): void {

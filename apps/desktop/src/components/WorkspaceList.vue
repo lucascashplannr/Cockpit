@@ -168,7 +168,10 @@ async function rescan() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Truncate from the left; `plaintext` keeps the string itself in reading
+     order, which bare `rtl` does not — it moves the leading slash to the end. */
   direction: rtl;
+  unicode-bidi: plaintext;
   text-align: left;
   font-size: var(--fs-xs);
   color: var(--text-dim);

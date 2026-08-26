@@ -89,7 +89,9 @@
   --radius-xl: 18px;
   --rail-w: 60px;
   --list-w: 340px;
-  --titlebar-h: 44px;
+  /* Only as tall as the traffic lights need (they sit at y=12 and are 12px);
+     every pixel above that is dead space in all three columns. */
+  --titlebar-h: 36px;
 
   /* Icons — three sizes, so a stroke never lands on a half pixel. */
   --ic-sm: 14px;

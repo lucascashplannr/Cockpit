@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, nativeTheme } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, shell, nativeTheme } = require('electron')
 const { spawn } = require('node:child_process')
 const { join, resolve } = require('node:path')
 const { existsSync } = require('node:fs')
@@ -54,6 +54,22 @@ async function ensureCore() {
   console.error('[cockpit] core did not come up in time')
 }
 
+/**
+ * The one thing the renderer genuinely cannot do for itself. §13 rule 1 keeps
+ * the bridge tiny, but `window.prompt` does not exist in Electron at all, so
+ * "add a project" needs a real dialog or it is a button that throws.
+ */
+ipcMain.handle('dialog:pickFolder', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Add a project',
+    message: 'Pick the folder Cockpit should watch',
+    properties: ['openDirectory', 'createDirectory'],
+    buttonLabel: 'Add',
+  })
+  return res.canceled ? null : (res.filePaths[0] ?? null)
+})
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
@@ -63,7 +79,7 @@ function createWindow() {
     show: false,
     // Raycast-style chrome: the traffic lights float over the rail.
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 18 },
+    trafficLightPosition: { x: 14, y: 12 },
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0b0d' : '#f7f7f8',
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),

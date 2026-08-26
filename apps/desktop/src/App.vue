@@ -7,7 +7,8 @@ import CommandPalette from './components/CommandPalette.vue'
 import PlanDialog from './components/PlanDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
-import { activeWorkspace, client, state, guard, requestPlan } from './core/store.js'
+import HomeView from './components/HomeView.vue'
+import { activeWorkspace, canLeaveHome, client, state, guard, requestPlan } from './core/store.js'
 
 /**
  * §12 — the three-column shell: projects, workspaces, context.
@@ -30,9 +31,14 @@ function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     if (state.pendingPlan) state.pendingPlan = null
     else if (state.paletteOpen) state.paletteOpen = false
+    else if (state.homeOpen && canLeaveHome.value) state.homeOpen = false
     return
   }
   if (typing) return
+
+  // The start page covers the shell, so the shell's shortcuts would act on
+  // something nobody can see. Only ⌘K and Escape, handled above, cross it.
+  if (state.homeOpen) return
 
   // Tabs, in the order they appear (§12).
   const tabKeys: Record<string, typeof state.activeTab> = {
@@ -86,6 +92,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <PlanDialog v-if="state.pendingPlan" />
     <ConnectionBanner />
     <Toast />
+
+    <!-- Last, and over everything: the start page is the whole window. -->
+    <HomeView v-if="state.homeOpen" />
   </div>
 </template>
 
