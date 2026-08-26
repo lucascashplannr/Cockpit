@@ -8,7 +8,8 @@ import PlanDialog from './components/PlanDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import HomeView from './components/HomeView.vue'
-import { activeWorkspace, canLeaveHome, client, state, guard, requestPlan } from './core/store.js'
+import Mark from './components/brand/Mark.vue'
+import { activeWorkspace, canLeaveHome, client, openHome, state, guard, requestPlan } from './core/store.js'
 
 /**
  * §12 — the three-column shell: projects, workspaces, context.
@@ -83,7 +84,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 <template>
   <div class="shell">
-    <div class="titlebar" />
+    <!-- One band across the top, the way macOS apps carry their chrome: the
+         traffic lights and the mark on a single row rather than stacked in a
+         60px-wide rail. The lights grey out when the window loses focus, and
+         the mark beside them keeps the corner from reading as empty. -->
+    <header class="titlebar">
+      <span class="lights" />
+      <button class="markbtn" title="Start page" @click="openHome">
+        <Mark :height="27" crisp />
+      </button>
+    </header>
+
     <ProjectRail />
     <WorkspaceList />
     <ContextPanel />
@@ -101,21 +112,51 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 <style scoped>
 .shell {
   display: grid;
+  grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
   grid-template-columns: var(--rail-w) var(--list-w) minmax(0, 1fr);
   height: 100vh;
   background: var(--bg);
   position: relative;
 }
 
-/* Draggable strip behind the traffic lights; the columns scroll under it. */
 .titlebar {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: var(--titlebar-h);
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-left: 10px;
+  /* Continuous with the rail below it, so the two read as one chrome surface. */
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
-  pointer-events: none;
-  z-index: 5;
 }
+
+/* macOS paints its three lights over this; the span only reserves the room. */
+.lights {
+  width: 52px;
+  flex: none;
+}
+
+/* Named `markbtn`, not `home` or `brand`: Vue stamps this component's scope id
+   onto a child component's root node as well, so a rule here matching a child's
+   root class silently restyles that whole component. `.home` is HomeView's root
+   and `.brand` is Mark's — either name would have collapsed them into a 40px
+   button. */
+.markbtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 30px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  -webkit-app-region: no-drag;
+  transition:
+    background var(--dur-1) var(--ease-soft),
+    color var(--dur-1) var(--ease-soft),
+    transform var(--dur-1) var(--ease);
+}
+.markbtn:hover { background: var(--hover); color: var(--text); }
+.markbtn:active { transform: scale(0.92); }
 </style>

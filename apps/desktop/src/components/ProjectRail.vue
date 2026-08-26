@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Plus, Sun, Moon, MonitorCog } from '@lucide/vue'
-import Mark from './brand/Mark.vue'
-import { addProject, cycleTheme, openHome, state } from '../core/store.js'
+import { addProject, cycleTheme, state } from '../core/store.js'
 
 /**
  * The far-left rail: the mark, then one square per project, then add.
@@ -40,18 +39,6 @@ const themeLabel = computed(() =>
 
 <template>
   <nav class="rail">
-    <div class="spacer" />
-
-    <!-- The mark is the way home; nothing else in the rail leaves the shell.
-         The class is deliberately not `brand`: Vue stamps this component's
-         scope id onto a child's root node too, and Mark's own root is
-         `.brand` — sharing the name let this rule resize the SVG. -->
-    <button class="home" title="Start page" @click="openHome">
-      <Mark :height="18" crisp />
-    </button>
-
-    <div class="rule" />
-
     <div class="tiles">
       <button
         v-for="p in projects"
@@ -90,57 +77,17 @@ const themeLabel = computed(() =>
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-bottom: 12px;
+  padding: var(--col-top) 0 12px;
   background: var(--bg-sunken);
   border-right: 1px solid var(--line);
   overflow: hidden;
 }
-.spacer { height: var(--titlebar-h); flex: none; }
 .grow { flex: 1; }
-
-.home {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 26px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  transition:
-    background var(--dur-1) var(--ease-soft),
-    color var(--dur-1) var(--ease-soft),
-    transform var(--dur-1) var(--ease);
-}
-.home:hover { background: var(--hover); color: var(--text); }
-.home:active { transform: scale(0.92); }
-
-.rule {
-  flex: none;
-  width: 22px;
-  height: 1px;
-  margin: 8px 0 10px;
-  background: var(--line);
-}
-
-.tiles {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-bottom: 4px;
-  /* The rail never shows a scrollbar; it is 40px wide. */
-  scrollbar-width: none;
-}
-.tiles::-webkit-scrollbar { display: none; }
 
 .tile {
   position: relative;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   flex: none;
   border-radius: var(--radius);
   display: flex;
@@ -172,9 +119,9 @@ const themeLabel = computed(() =>
 .tile.active::before {
   content: '';
   position: absolute;
-  left: -11px;
-  top: 9px;
-  bottom: 9px;
+  left: -14px;
+  top: 11px;
+  bottom: 11px;
   width: 3px;
   border-radius: 0 3px 3px 0;
   background: hsl(var(--h) 62% 58%);
@@ -208,5 +155,5 @@ const themeLabel = computed(() =>
 .b.agent { background: var(--agent); }
 .b.dirty { background: var(--warn); }
 
-.theme { width: 34px; height: 34px; }
+.theme { width: 38px; height: 38px; }
 </style>

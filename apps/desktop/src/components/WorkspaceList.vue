@@ -86,7 +86,7 @@ async function rescan() {
 }
 
 .head {
-  padding: calc(var(--titlebar-h) + 6px) 12px 10px;
+  padding: var(--col-top) 12px 10px;
   flex: none;
 }
 

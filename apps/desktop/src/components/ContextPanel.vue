@@ -87,7 +87,7 @@ async function undo() {
   <section class="panel">
     <!-- Nothing selected is still a first impression: the app says its name. -->
     <div v-if="!w" class="welcome">
-      <Wordmark :height="64" class="wm" />
+      <Wordmark :height="48" class="wm" />
       <p class="tag">Everything in flight, in one window.</p>
       <div class="hints">
         <span class="hint"><span class="kbd">⌘K</span> jump to a workspace or run anything</span>
@@ -248,15 +248,15 @@ async function undo() {
 /* ── header ──────────────────────────────────────────────────────────── */
 .head {
   flex: none;
-  /* No traffic lights above this column — the old titlebar-sized inset was
-     44px of nothing. The title now sits in that band. */
-  padding: 7px 18px 0;
+  padding: var(--col-top) 18px 0;
 }
 .idline {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 30px;
+  /* 34px is the height of the search field in the column to the left, so the
+     title and the field share a centre line. */
+  min-height: 34px;
   min-width: 0;
 }
 .wname {
@@ -364,8 +364,6 @@ async function undo() {
   align-items: center;
   gap: 2px;
   flex: none;
-  /* It overlaps the window's drag strip, which would otherwise eat the click. */
-  -webkit-app-region: no-drag;
 }
 .actions .btn {
   height: 28px;

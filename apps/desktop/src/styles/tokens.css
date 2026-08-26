@@ -87,11 +87,20 @@
   --radius: 10px;
   --radius-lg: 14px;
   --radius-xl: 18px;
-  --rail-w: 60px;
+  /* macOS draws its three traffic lights 52px wide (12px buttons, 20px apart).
+     At 60px the cluster ran past the rail and into the workspace list, so the
+     rail is sized around them: 52 + 10 either side. Everything else in the rail
+     is then centred on that width. */
+  --rail-w: 72px;
   --list-w: 340px;
   /* Only as tall as the traffic lights need (they sit at y=12 and are 12px);
      every pixel above that is dead space in all three columns. */
-  --titlebar-h: 36px;
+  /* The title band spans the window and holds the traffic lights and the mark
+     side by side; 44px centres the 12px lights and the 27px mark in one row. */
+  --titlebar-h: 44px;
+  /* Every column starts at the same distance below the band, so the search
+     field and the workspace title sit on one line. */
+  --col-top: 14px;
 
   /* Icons — three sizes, so a stroke never lands on a half pixel. */
   --ic-sm: 14px;

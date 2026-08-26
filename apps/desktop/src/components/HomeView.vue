@@ -164,7 +164,7 @@ onMounted(() => void nextTick(() => input.value?.focus()))
 
     <div class="stage">
       <header class="hero">
-        <Wordmark :height="64" class="wm" />
+        <Wordmark :height="48" class="wm" />
         <p class="tag">Everything in flight, in one window.</p>
       </header>
 
@@ -267,7 +267,7 @@ onMounted(() => void nextTick(() => input.value?.focus()))
   background: var(--bg);
   /* One soft pool of light behind the wordmark, so the page has a centre even
      before anything is on it. */
-  background-image: radial-gradient(120% 70% at 50% 26%, var(--accent-soft), transparent 62%);
+  background-image: radial-gradient(110% 60% at 50% 12%, var(--accent-soft), transparent 62%);
 }
 
 .drag {
@@ -293,17 +293,20 @@ onMounted(() => void nextTick(() => input.value?.focus()))
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: var(--titlebar-h) 32px 8px;
+  /* Anchored near the top rather than centred: the field is the first thing
+     the hands go to, and a centred column moves it every time the list under
+     it grows or shrinks. */
+  justify-content: flex-start;
+  gap: 14px;
+  padding: calc(var(--titlebar-h) + 52px) 32px 8px;
 }
 
 .hero {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
+  gap: 8px;
+  margin-bottom: 2px;
 }
 .wm { color: var(--text); }
 .tag {
