@@ -100,9 +100,9 @@ function createWindow() {
     show: false,
     // Raycast-style chrome: the traffic lights float over the rail.
     titleBarStyle: 'hiddenInset',
-    // 10px in from the left of the 72px rail (--rail-w), 16px down so the
-    // 12px buttons centre in the 44px title band (--titlebar-h).
-    trafficLightPosition: { x: 10, y: 16 },
+    // 10px in from the left of the 72px rail (--rail-w), 23px down so the
+    // 12px buttons centre in the 58px title band (--titlebar-h).
+    trafficLightPosition: { x: 10, y: 23 },
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0b0d' : '#f7f7f8',
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),

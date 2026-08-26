@@ -324,8 +324,9 @@ onMounted(() => void nextTick(() => input.value?.focus()))
   -webkit-app-region: drag;
 }
 .corner {
+  /* Centred in the drag strip: (58 - 28) / 2. */
   position: absolute;
-  top: 11px;
+  top: 15px;
   right: 12px;
   z-index: 2;
   display: flex;
@@ -345,7 +346,7 @@ onMounted(() => void nextTick(() => input.value?.focus()))
      it grows or shrinks. */
   justify-content: flex-start;
   gap: 14px;
-  padding: calc(var(--titlebar-h) + 52px) 32px 8px;
+  padding: calc(var(--titlebar-h) + 38px) 32px 8px;
 }
 
 .hero {

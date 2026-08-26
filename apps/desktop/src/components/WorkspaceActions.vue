@@ -77,26 +77,27 @@ async function undo() {
 .verbs {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   flex: none;
   /* The band is the window's drag strip; without this it eats every click. */
   -webkit-app-region: no-drag;
 }
+/* Only 2px shorter than a standard .btn, and on the app's normal type and icon
+   scale. The earlier 28px/12px shrink was there to fit a 44px band, and it
+   made the primary verbs of the window read as the smallest controls in it. */
 .verbs .btn {
-  height: 28px;
-  padding: 0 10px;
-  font-size: var(--fs-xs);
+  height: 30px;
+  padding: 0 11px;
   border-color: transparent;
   background: transparent;
   box-shadow: none;
 }
 .verbs .btn:hover:not(:disabled) { background: var(--hover); border-color: var(--line); }
-.verbs .btn .lucide { width: 13px; height: 13px; }
-.verbs .icon-btn { width: 28px; height: 28px; }
+.verbs .icon-btn { width: 30px; height: 30px; }
 .vrule {
   width: 1px;
-  height: 16px;
-  margin: 0 6px;
+  height: 18px;
+  margin: 0 7px;
   background: var(--line);
 }
 </style>

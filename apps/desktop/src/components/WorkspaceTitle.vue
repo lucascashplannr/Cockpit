@@ -52,10 +52,14 @@ const showProject = computed(() => !!project.value && project.value.name !== w.v
   color: var(--text-dim);
   opacity: 0.6;
 }
+/* 18px/650 rather than 16px/620: in a 58px band the name is what anchors the
+   left half against the verbs on the right, and at --fs-lg it was the same
+   weight as body copy sitting in a lot of empty chrome. Between --fs-lg and
+   --fs-xl on purpose — 20px starts competing with the app's own name. */
 .name {
   margin: 0;
-  font-size: var(--fs-lg);
-  font-weight: 620;
+  font-size: 18px;
+  font-weight: 650;
   letter-spacing: -0.015em;
   white-space: nowrap;
   overflow: hidden;
@@ -63,7 +67,7 @@ const showProject = computed(() => !!project.value && project.value.name !== w.v
 }
 .wsid .chip {
   align-self: center;
-  height: 20px;
+  height: 21px;
   font-size: 11px;
 }
 </style>

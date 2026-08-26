@@ -93,11 +93,14 @@
      is then centred on that width. */
   --rail-w: 72px;
   --list-w: 340px;
-  /* Only as tall as the traffic lights need (they sit at y=12 and are 12px);
-     every pixel above that is dead space in all three columns. */
-  /* The title band spans the window and holds the traffic lights and the mark
-     side by side; 44px centres the 12px lights and the 27px mark in one row. */
-  --titlebar-h: 44px;
+  /* The title band spans the window and carries the workspace's name and its
+     verbs. It is sized around the tallest thing in it — a 30px button — not
+     around the 12px traffic lights: at 44px the buttons cleared the band's
+     edges by 8px and the strip read as squeezed. 58px is the height of the
+     status row directly beneath it (14 + 34 + 12 minus its hairline), so the
+     window's two full-width horizontal bands share one rhythm instead of the
+     top one looking clipped. Lights centre at y = 23. */
+  --titlebar-h: 58px;
   /* Every column starts at the same distance below the band, so the search
      field and the workspace title sit on one line. */
   --col-top: 14px;
