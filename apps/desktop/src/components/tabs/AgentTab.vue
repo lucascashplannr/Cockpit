@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import type { Workspace } from '@cockpit/shared'
-import { CircleStop, Sparkles, Wrench } from '@lucide/vue'
-import { client, guard, state, toast } from '../../core/store.js'
+import { CircleStop, RotateCcw, Sparkles, Wrench } from '@lucide/vue'
+import { client, guard, resumeSession, state, toast } from '../../core/store.js'
 
 /**
  * §7 — a session is a set of paths + an engine + a lease. The scope selector
@@ -34,6 +34,29 @@ const transcript = computed(() =>
 
 const totalCost = computed(() => sessions.value.reduce((n, s) => n + s.costUsd, 0))
 
+/** The session being picked back up, and what to say to it. */
+const resuming = ref<string | null>(null)
+const followUp = ref('')
+
+/**
+ * §6 — clearing a session is free because the memory is elsewhere. Resuming is
+ * the same idea from the other side: the conversation is still with the engine,
+ * and the memory is re-read on the way in, so it starts from what is true now.
+ */
+function beginResume(id: string) {
+  resuming.value = resuming.value === id ? null : id
+  followUp.value = ''
+}
+
+async function confirmResume(id: string) {
+  if (!followUp.value.trim()) return
+  const ok = await resumeSession(id, followUp.value.trim())
+  if (ok) {
+    resuming.value = null
+    followUp.value = ''
+  }
+}
+
 const siblings = computed(() =>
   state.workspaces.filter((w) => w.projectId === props.workspace.projectId && w.kind !== 'group'),
 )
@@ -51,7 +74,14 @@ async function start() {
   starting.value = true
   const ids = scope.value.length ? scope.value : [props.workspace.id]
   const res = await guard(() =>
-    client.call('agent.start', { engine: engine.value, workspaceIds: ids, prompt: prompt.value }),
+    client.call('agent.start', {
+      engine: engine.value,
+      workspaceIds: ids,
+      prompt: prompt.value,
+      // The core falls back to the workspace's own feature; passing it makes
+      // the memory that will be prepended explicit at the call site.
+      ...(props.workspace.featureId ? { featureId: props.workspace.featureId } : {}),
+    }),
   )
   starting.value = false
   if (!res) return
@@ -146,20 +176,45 @@ function payloadText(p: unknown): string {
 
       <div class="block">
         <span class="section-label">sessions</span>
-        <div v-for="s in sessions.slice(0, 12)" :key="s.id" class="srow">
-          <span class="dot" :class="s.status === 'ended' ? 'down' : s.status === 'failed' ? 'unhealthy' : 'up'" />
-          <span class="sname">{{ s.engine }}</span>
-          <span class="sst">{{ s.status }}</span>
-          <span class="scost num">${{ s.costUsd.toFixed(2) }}</span>
-          <button
-            v-if="s.status !== 'ended' && s.status !== 'failed'"
-            class="icon-btn x"
-            title="Stop this session"
-            @click="stop(s.id)"
-          >
-            <CircleStop class="sm" />
-          </button>
-        </div>
+        <template v-for="s in sessions.slice(0, 12)" :key="s.id">
+          <div class="srow">
+            <span class="dot" :class="s.status === 'ended' ? 'down' : s.status === 'failed' ? 'unhealthy' : 'up'" />
+            <span class="sname">{{ s.engine }}</span>
+            <span class="sst">{{ s.status }}</span>
+            <span class="scost num">${{ s.costUsd.toFixed(2) }}</span>
+            <!-- §3.9 — no resume handle, no button; never a disabled one. -->
+            <button
+              v-if="s.resumable"
+              class="icon-btn x"
+              :class="{ on: resuming === s.id }"
+              title="Resume this conversation — the memory is re-read first"
+              @click="beginResume(s.id)"
+            >
+              <RotateCcw class="sm" />
+            </button>
+            <button
+              v-if="s.status !== 'ended' && s.status !== 'failed'"
+              class="icon-btn x"
+              title="Stop this session"
+              @click="stop(s.id)"
+            >
+              <CircleStop class="sm" />
+            </button>
+          </div>
+          <div v-if="resuming === s.id" class="resume">
+            <p class="was">{{ s.prompt || 'no prompt recorded' }}</p>
+            <textarea
+              v-model="followUp"
+              class="input selectable"
+              rows="3"
+              placeholder="What next?"
+              @keydown.meta.enter="confirmResume(s.id)"
+            />
+            <button class="btn primary full" :disabled="!followUp.trim()" @click="confirmResume(s.id)">
+              Resume <span class="kbd">⌘⏎</span>
+            </button>
+          </div>
+        </template>
         <p v-if="!sessions.length" class="none">No session recorded.</p>
         <div v-if="live.length || totalCost" class="totals">
           <span>{{ live.length }} live</span>
@@ -259,6 +314,26 @@ function payloadText(p: unknown): string {
 .scost { color: var(--text-muted); }
 .icon-btn.x { width: 22px; height: 22px; }
 .icon-btn.x:hover { color: var(--danger); }
+.icon-btn.x.on { color: var(--accent); }
+
+.resume {
+  margin: 2px 0 10px;
+  padding: 9px 10px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-sunken);
+}
+.resume .was {
+  margin: 0 0 7px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.resume textarea { resize: vertical; margin-bottom: 7px; }
 .none { margin: 0; color: var(--text-dim); font-size: var(--fs-xs); }
 .totals {
   display: flex;

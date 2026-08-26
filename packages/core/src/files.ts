@@ -111,3 +111,22 @@ export async function tracked(workspaceId: string): Promise<string[]> {
   if (!ws.repo) return []
   return trackedFiles(ws.path)
 }
+
+/**
+ * §16 — "Corbeille à durée de vie plutôt que suppression immédiate." The one
+ * rule that holds everywhere in this app: user data leaves via the Trash, so
+ * a wrong click is an undo rather than a loss.
+ */
+export async function moveToTrash(path: string): Promise<void> {
+  const { existsSync } = await import('node:fs')
+  const { run } = await import('./exec.js')
+  if (!existsSync(path)) return
+  const r =
+    process.platform === 'darwin'
+      ? await run('osascript', [
+          '-e',
+          'tell application "Finder" to delete POSIX file "' + path.replace(/"/g, '\\"') + '"',
+        ])
+      : await run('gio', ['trash', path])
+  if (!r.ok) throw new Error('could not move to Trash: ' + (r.stderr || r.stdout).trim())
+}

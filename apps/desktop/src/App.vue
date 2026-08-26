@@ -6,6 +6,7 @@ import ContextPanel from './components/ContextPanel.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import PlanDialog from './components/PlanDialog.vue'
 import ProjectDialog from './components/ProjectDialog.vue'
+import FeatureDialog from './components/FeatureDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import HomeView from './components/HomeView.vue'
@@ -105,6 +106,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <CommandPalette v-if="state.paletteOpen" />
     <PlanDialog v-if="state.pendingPlan" />
     <ProjectDialog />
+    <FeatureDialog />
     <ConnectionBanner />
     <Toast />
 

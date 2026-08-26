@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
+import { createConnection } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { MANIFEST_TEMPLATE } from '@cockpit/shared'
@@ -77,6 +78,59 @@ function workspaceLine(w: Workspace): string {
   return parts.join(' ')
 }
 
+/** Waits for the core's port to become bound (or free). */
+async function waitForPort(wantOpen: boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const open = await new Promise<boolean>((res) => {
+      const sock = createConnection({ host: '127.0.0.1', port: PORT })
+      const done = (v: boolean) => {
+        sock.destroy()
+        res(v)
+      }
+      sock.once('connect', () => done(true))
+      sock.once('error', () => done(false))
+      setTimeout(() => done(false), 800)
+    })
+    if (open === wantOpen) return true
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  return false
+}
+
+/** `--key value` and `--flag` — enough for a CLI whose arguments are mostly prose. */
+function parseFlags(argv: string[]): Record<string, string | undefined> & { yes?: string } {
+  const out: Record<string, string | undefined> = {}
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (!a?.startsWith('--')) continue
+    const key = a.slice(2)
+    const next = argv[i + 1]
+    if (next && !next.startsWith('--')) {
+      out[key] = next
+      i++
+    } else {
+      out[key] = ''
+    }
+  }
+  return out
+}
+
+/** Everything that is not a flag or a flag's value — i.e. the prose. */
+function bareWords(argv: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!
+    if (a.startsWith('--')) {
+      const next = argv[i + 1]
+      if (next && !next.startsWith('--')) i++
+      continue
+    }
+    out.push(a)
+  }
+  return out
+}
+
 const commands: Record<string, (args: string[]) => Promise<void>> = {
   async daemon() {
     // Runs the core in the foreground; launchd/systemd wraps this in packaging.
@@ -85,6 +139,55 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     const child = spawn('npx', ['tsx', entry], { stdio: 'inherit', env: process.env })
     child.on('exit', (code) => process.exit(code ?? 0))
     await new Promise(() => undefined)
+  },
+
+  /**
+   * §13 — the core is a permanent service, which is exactly why stopping it
+   * needed a verb. It is usually started detached by the app, so there is no
+   * terminal to interrupt and no obvious way to pick up new code.
+   */
+  async stop() {
+    const c = await connect()
+    await c.call('core.shutdown', undefined)
+    c.close()
+    const freed = await waitForPort(false, 8000)
+    out(freed ? C.green('core stopped') : C.yellow('shutdown sent, but the port is still bound'))
+    out(C.dim('  dev servers and agents were left running — they outlive the core (§13)'))
+  },
+
+  async restart() {
+    // Best effort: a core that is not running is not an error here, because
+    // "restart" and "start" are the same intent from the user's side.
+    try {
+      const c = new CoreClient(URL)
+      await c.connect()
+      await c.call('core.shutdown', undefined)
+      c.close()
+      await waitForPort(false, 8000)
+      out(C.dim('  stopped the running core'))
+    } catch {
+      out(C.dim('  no core was running'))
+    }
+
+    const here = dirname(fileURLToPath(import.meta.url))
+    const entry = resolve(here, '..', '..', 'core', 'src', 'index.ts')
+    // Detached, so it survives this command exiting — same contract as the app.
+    const child = spawn('npx', ['tsx', entry], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, COCKPIT_PORT: String(PORT) },
+    })
+    child.unref()
+
+    if (!(await waitForPort(true, 30_000))) {
+      out(C.red('the core did not come up within 30s'))
+      out(C.dim('  run it in the foreground to see why:  cockpit daemon'))
+      process.exit(1)
+    }
+    const c = await connect()
+    const st = await c.call('core.status', undefined)
+    c.close()
+    out(C.green('core restarted') + '  ' + C.dim('pid ' + st.pid + ' · protocol v' + st.protocol.major + '.' + st.protocol.minor))
   },
 
   async status() {
@@ -256,17 +359,238 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     c.close()
   },
 
+  /**
+   * §4 — the durable unit of work. Open it once, park it, come back on
+   * Thursday. Everything the window does with a feature is here too (§15).
+   */
+  async feature(args) {
+    const c = await connect()
+    const sub = args[0] ?? 'ls'
+
+    const pickFeature = async (hint?: string) => {
+      const all = await c.call('feature.list', { includeArchived: true })
+      if (!all.length) {
+        out(C.dim('no feature open. Start one with:  cockpit feature open "<name>"'))
+        process.exit(1)
+      }
+      const f = hint
+        ? all.find((x) => x.id === hint || x.slug === hint || x.name === hint)
+        : all.find((x) => x.state === 'live') ?? all[0]
+      if (!f) {
+        out(C.red('no feature matching "' + hint + '"'))
+        process.exit(1)
+      }
+      return f
+    }
+
+    if (sub === 'ls' || sub === 'list') {
+      const all = args.includes('--all')
+      const featues = await c.call('feature.list', { includeArchived: all })
+      const workspaces = await c.call('workspace.list', {})
+      if (!featues.length) out(C.dim('  no feature'))
+      for (const f of featues) {
+        const dot = f.state === 'live' ? C.green('●') : f.state === 'archived' ? C.dim('○') : C.yellow('◐')
+        const cost = f.costUsd > 0 ? C.dim(' · $' + f.costUsd.toFixed(2)) : ''
+        const origin = f.derived ? C.dim(' · inferred') : ''
+        out('')
+        out('  ' + dot + ' ' + C.bold(f.name) + '  ' + C.dim(f.slug + ' · ' + f.ceremony) + cost + origin)
+        if (f.rootPath) out('    ' + C.dim(f.rootPath))
+        for (const w of workspaces.filter((w) => f.workspaceIds.includes(w.id) && w.kind !== 'group')) {
+          out('    ' + workspaceLine(w))
+        }
+      }
+      if (!all) {
+        const closed = (await c.call('feature.list', { includeArchived: true })).filter(
+          (f) => f.state === 'archived',
+        ).length
+        if (closed) out(C.dim('  ' + closed + ' closed — cockpit feature ls --all'))
+      }
+      out('')
+      c.close()
+      return
+    }
+
+    if (sub === 'reopen') {
+      const f = await pickFeature(args[1])
+      const res = await c.call('feature.reopen', { featureId: f.id })
+      if (!res.ok) {
+        out(C.red(res.detail))
+        c.close()
+        process.exit(1)
+      }
+      out(C.green('reopened ') + C.bold(f.name) + '  ' + C.dim(res.detail))
+      c.close()
+      return
+    }
+
+    /**
+     * §16 — close archives, delete drops the record for good. Keeping them as
+     * separate verbs is the point: the safe one is the short one.
+     */
+    if (sub === 'delete' || sub === 'rm') {
+      const f = await pickFeature(args[1])
+      const branches = args.includes('--branches')
+      const keep = args.includes('--keep-worktrees')
+      const res = await c.call('feature.delete', {
+        featureId: f.id,
+        removeWorktrees: !keep,
+        deleteBranches: branches,
+        force: args.includes('--force'),
+      })
+      if (!res.ok) {
+        out(C.red('refusing: ') + res.detail)
+        c.close()
+        process.exit(1)
+      }
+      for (const w of res.warnings) out('  ' + C.yellow('! ' + w))
+      if (res.plan) {
+        printPlan(res.plan)
+        out(C.dim('  nothing has run. Apply it with:  cockpit apply ' + res.plan.planId))
+      } else {
+        out(C.green(res.detail))
+      }
+      c.close()
+      return
+    }
+
+    if (sub === 'open') {
+      const name = args[1]
+      if (!name) {
+        out('usage: cockpit feature open "<name>" [--repos a,b] [--base main] [--ceremony C2|C3]')
+        process.exit(1)
+      }
+      const flags = parseFlags(args.slice(2))
+      const projects = await c.call('project.list', undefined)
+      const here = await pickWorkspace(c, undefined)
+      const project = projects.find((x) => x.id === here.projectId) ?? projects[0]
+      if (!project) {
+        out(C.red('no project registered'))
+        process.exit(1)
+      }
+      const workspaces = await c.call('workspace.list', { projectId: project.id })
+      const wanted = flags.repos?.split(',').map((x) => x.trim()).filter(Boolean)
+      const repoWorkspaceIds = wanted?.length
+        ? workspaces.filter((w) => w.kind === 'main' && wanted.includes(w.name)).map((w) => w.id)
+        : undefined
+
+      const { plan } = await c.call('feature.open', {
+        projectId: project.id,
+        name,
+        ceremony: (flags.ceremony as 'C1' | 'C2' | 'C3') ?? 'C3',
+        repoWorkspaceIds,
+        base: flags.base,
+      })
+      printPlan(plan)
+      if (flags.yes === undefined) {
+        out(C.dim('  nothing has run. Apply it with:  cockpit apply ' + plan.planId))
+        c.close()
+        return
+      }
+      const res = await c.call('git.apply', { planId: plan.planId })
+      out(res.output)
+      out(res.ok ? C.green('feature open') : C.red('failed — nothing was left behind'))
+      c.close()
+      return
+    }
+
+    if (sub === 'live' || sub === 'activate') {
+      const f = await pickFeature(args[1])
+      const res = await c.call('feature.activate', { featureId: f.id, force: args.includes('--force') })
+      if (!res.ok) {
+        for (const x of res.conflicts) out('  ' + C.yellow('! ' + x))
+        out(C.red(res.detail))
+        c.close()
+        process.exit(1)
+      }
+      for (const x of res.parked) out(C.dim('  parked ' + x))
+      out(C.green('live ') + C.bold(f.name))
+      if (res.detail) out(C.dim(res.detail.split('\n').map((l) => '  ' + l).join('\n')))
+      c.close()
+      return
+    }
+
+    if (sub === 'park') {
+      const f = await pickFeature(args[1])
+      const res = await c.call('feature.park', { featureId: f.id })
+      out(C.green('parked ') + C.bold(f.name) + '  ' + C.dim(res.detail))
+      c.close()
+      return
+    }
+
+    if (sub === 'close') {
+      const f = await pickFeature(args[1])
+      const remove = args.includes('--remove')
+      const res = await c.call('feature.close', { featureId: f.id, removeWorktrees: remove })
+      if (!res.ok) {
+        out(C.red('refusing: ') + res.detail)
+        c.close()
+        process.exit(1)
+      }
+      if (res.plan) {
+        printPlan(res.plan)
+        out(C.dim('  nothing has run. Apply it with:  cockpit apply ' + res.plan.planId))
+      } else {
+        out(C.green('closed ') + C.bold(f.name) + '  ' + C.dim(res.detail))
+      }
+      c.close()
+      return
+    }
+
+    out('usage: cockpit feature <command>')
+    out('  ls [--all]                    every feature; --all includes closed ones')
+    out('  open "<name>"                 [--repos a,b --base main --ceremony C3 --yes]')
+    out('  live [name] [--force]         bring its runtimes up')
+    out('  park [name]                   servers down, worktrees kept')
+    out('  close [name] [--remove]       archive it; reversible with reopen')
+    out('  reopen [name]                 bring a closed one back')
+    out('  delete [name]                 drop the record for good')
+    out('      --branches                also delete the branch in every repo')
+    out('      --keep-worktrees          leave the checkouts on disk')
+    out('      --force                   proceed over UNMERGED branches')
+    c.close()
+    process.exit(1)
+  },
+
   async agent(args) {
     const c = await connect()
     const sub = args[0]
     if (sub === 'list') {
       const sessions = await c.call('agent.list', undefined)
       for (const s of sessions) {
+        // §6 — the mark that says "this conversation is still there".
+        const mark = s.resumable ? C.green(' ↻') : '  '
         out(
-          '  ' + C.mag(s.engine.padEnd(8)) + s.status.padEnd(10) +
+          '  ' + C.dim(s.id.slice(-6)) + mark + ' ' + C.mag(s.engine.padEnd(8)) + s.status.padEnd(9) +
             C.dim(s.turns + ' turns · $' + s.costUsd.toFixed(2)) + '  ' + C.dim(s.paths.join(', ')),
         )
+        if (s.prompt) out('         ' + C.dim(s.prompt.replace(/\s+/g, ' ').slice(0, 76)))
       }
+      out('')
+      out(C.dim('  ↻ = resumable:  cockpit agent resume <id> "<what next>"'))
+      c.close()
+      return
+    }
+
+    if (sub === 'resume') {
+      const id = args[1]
+      const prompt = args.slice(2).join(' ')
+      if (!id || !prompt) {
+        out('usage: cockpit agent resume <session-id> "<what next>"')
+        process.exit(1)
+      }
+      const sessions = await c.call('agent.list', undefined)
+      const prev = sessions.find((x) => x.id === id || x.id.endsWith(id))
+      if (!prev) {
+        out(C.red('no session matching "' + id + '"'))
+        process.exit(1)
+      }
+      const r = await c.call('agent.resume', { sessionId: prev.id, prompt })
+      if ('denied' in r) {
+        out(C.red('denied: ') + r.reason)
+        c.close()
+        process.exit(1)
+      }
+      out(C.green('resumed ') + r.sessionId + C.dim(' · the memory is re-read, the conversation continues'))
       c.close()
       return
     }
@@ -279,13 +603,19 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     }
     // `cockpit agent <engine> <prompt...>` — C0, two keystrokes' worth (§12).
     const engine = sub ?? 'claude'
-    const prompt = args.slice(1).join(' ')
+    const prompt = bareWords(args.slice(1)).join(' ')
     if (!prompt) {
       out('usage: cockpit agent <engine> <prompt>   |   cockpit agent list | engines')
       process.exit(1)
     }
-    const w = await pickWorkspace(c, undefined)
-    const r = await c.call('agent.start', { engine, workspaceIds: [w.id], prompt })
+    const flags = parseFlags(args.slice(1))
+    const w = await pickWorkspace(c, flags.at)
+    const r = await c.call('agent.start', {
+      engine,
+      workspaceIds: [w.id],
+      prompt,
+      ...(flags.feature ? { featureId: flags.feature } : {}),
+    })
     if ('denied' in r) {
       out(C.red('denied: ') + r.reason)
       c.close()
@@ -396,15 +726,28 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     out('    undo [workspace]            roll back to the last restore point')
     out('    up | down [workspace]       start / stop the runtime')
     out('')
+    out(C.bold('  features') + C.dim('   — the durable unit of work: multi-repo, multi-day'))
+    out('    feature ls                  every feature, live or parked')
+    out('    feature open "<name>"        one plan, a worktree per repo  [--repos a,b --base main]')
+    out('    feature live [name]         bring its runtimes up  [--force to park whatever blocks it]')
+    out('    feature park [name]         servers down, worktrees kept')
+    out('    feature close [name]        archive it  [--remove to drop the worktrees too]')
+    out('    feature reopen [name]       bring a closed one back')
+    out('    feature delete [name]       drop the record for good  [--branches --force]')
+    out('')
     out(C.bold('  agents & memory'))
     out('    agent engines               which engines are installed')
-    out('    agent list                  running sessions')
-    out('    agent <engine> <prompt>     start a session here (C0)')
+    out('    agent list                  sessions; ↻ marks the resumable ones')
+    out('    agent <engine> <prompt>     start a session here  [--at ws --feature id]')
+    out('    agent resume <id> <prompt>  pick yesterday\'s conversation back up')
     out('    memory show [workspace]     read the feature memory')
     out('    memory promote <s> <text>   push a decision into the memory')
     out('')
     out(C.bold('  service'))
     out('    daemon                      run the core in the foreground')
+    out('    restart                     stop it and start it again, detached')
+    out('    stop                        stop it; dev servers keep running')
+    out(C.dim('    (restart after changing core code — the window will say so too)'))
     out('')
   },
 }

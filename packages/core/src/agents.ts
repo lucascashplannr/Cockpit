@@ -21,6 +21,12 @@ export interface EngineSpec {
   bin: string
   /** Non-interactive mode with structured output (§7, multi-moteurs). */
   buildArgs(prompt: string): string[]
+  /**
+   * §6 — the same conversation, picked back up. Without this a session cannot
+   * outlive the daemon, and "work on it over several days" is a fiction: every
+   * morning would start from an empty context against a stale memory.
+   */
+  buildResumeArgs(prompt: string, engineSessionId: string): string[]
   parse(line: string): NormalizedEvent | null
 }
 
@@ -30,6 +36,20 @@ export interface NormalizedEvent {
   tool?: string
   paths?: string[]
   costUsd?: number
+}
+
+/**
+ * Both engines announce their own session id on their own event shape; neither
+ * is worth a parser branch, because the field name is the only difference.
+ */
+function engineSessionIdIn(line: string): string | null {
+  const o = safeJson(line)
+  if (!o) return null
+  for (const key of ['session_id', 'sessionId', 'thread_id', 'threadId', 'conversation_id']) {
+    const v = o[key]
+    if (typeof v === 'string' && v) return v
+  }
+  return null
 }
 
 function safeJson(line: string): Record<string, unknown> | null {
@@ -46,6 +66,9 @@ const claudeEngine: EngineSpec = {
   id: 'claude',
   bin: 'claude',
   buildArgs: (prompt) => ['-p', prompt, '--output-format', 'stream-json', '--verbose'],
+  buildResumeArgs: (prompt, id) => [
+    '-p', prompt, '--output-format', 'stream-json', '--verbose', '--resume', id,
+  ],
   parse(line) {
     const o = safeJson(line)
     if (!o) return null
@@ -76,6 +99,7 @@ const codexEngine: EngineSpec = {
   id: 'codex',
   bin: 'codex',
   buildArgs: (prompt) => ['exec', '--json', prompt],
+  buildResumeArgs: (prompt, id) => ['exec', 'resume', id, '--json', prompt],
   parse(line) {
     const o = safeJson(line)
     if (!o) return null
@@ -116,10 +140,11 @@ const live = new Map<string, Live>()
 function persist(s: AgentSession): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, cost_usd, turns, lease_id, last_message)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, cost_usd, turns, lease_id, last_message, feature_id, engine_session_id, prompt)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET status=excluded.status, ended_at=excluded.ended_at,
-         cost_usd=excluded.cost_usd, turns=excluded.turns, last_message=excluded.last_message`,
+         cost_usd=excluded.cost_usd, turns=excluded.turns, last_message=excluded.last_message,
+         lease_id=excluded.lease_id, engine_session_id=excluded.engine_session_id`,
     )
     .run(
       s.id,
@@ -133,26 +158,56 @@ function persist(s: AgentSession): void {
       s.turns,
       s.leaseId,
       s.lastMessage,
+      s.featureId,
+      s.engineSessionId,
+      s.prompt,
     )
 }
 
-export function list(): AgentSession[] {
-  const rows = getDb()
-    .prepare('SELECT * FROM agent_sessions ORDER BY started_at DESC LIMIT 100')
-    .all() as Record<string, unknown>[]
-  return rows.map((r) => ({
+function hydrate(r: Record<string, unknown>): AgentSession {
+  const engineSessionId = r.engine_session_id == null ? null : String(r.engine_session_id)
+  const status = String(r.status) as AgentSession['status']
+  return {
     id: String(r.id),
     engine: String(r.engine),
     paths: JSON.parse(String(r.paths)) as string[],
     workspaceIds: JSON.parse(String(r.workspace_ids)) as string[],
-    status: String(r.status) as AgentSession['status'],
+    status,
     startedAt: Number(r.started_at),
     endedAt: r.ended_at === null ? null : Number(r.ended_at),
     costUsd: Number(r.cost_usd),
     turns: Number(r.turns),
     leaseId: r.lease_id === null ? null : String(r.lease_id),
     lastMessage: r.last_message === null ? null : String(r.last_message),
-  }))
+    featureId: r.feature_id == null ? null : String(r.feature_id),
+    engineSessionId,
+    // §6 — an ended session is not a dead one. As long as the engine still
+    // holds the conversation, picking it back up tomorrow is one click.
+    resumable: !!engineSessionId && (status === 'ended' || status === 'failed'),
+    prompt: r.prompt == null ? '' : String(r.prompt),
+  }
+}
+
+export function list(): AgentSession[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM agent_sessions ORDER BY started_at DESC LIMIT 100')
+    .all() as Record<string, unknown>[]
+  return rows.map(hydrate)
+}
+
+export function get(sessionId: string): AgentSession | null {
+  const row = getDb().prepare('SELECT * FROM agent_sessions WHERE id = ?').get(sessionId) as
+    | Record<string, unknown>
+    | undefined
+  return row ? hydrate(row) : null
+}
+
+/** §7 — cost per feature, so it stays visible where the work accumulates. */
+export function listForFeature(featureId: string): AgentSession[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM agent_sessions WHERE feature_id = ? ORDER BY started_at DESC')
+    .all(featureId) as Record<string, unknown>[]
+  return rows.map(hydrate)
 }
 
 export function sessionsTouching(path: string): AgentSession[] {
@@ -173,6 +228,13 @@ export interface StartAgentInput {
   /** Branch the agent must never touch (§7, "jamais sur la branche principale"). */
   protectedBranch?: string | null
   currentBranch?: string | null
+  /** §4 — the feature this session belongs to, when it belongs to one. */
+  featureId?: string | null
+  /**
+   * §7 — the feature memory and cross-repo context, prepended to the prompt.
+   * Kept out of `prompt` so the list shows what the user actually asked.
+   */
+  preamble?: string
 }
 
 export type StartAgentResult = { sessionId: string } | { denied: true; reason: string }
@@ -196,11 +258,71 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
     }
   }
 
-  // §7 — the lease is what makes two overlapping agents impossible.
+  const session: AgentSession = {
+    id: newId('agent_'),
+    engine: input.engine,
+    workspaceIds: input.workspaceIds,
+    paths: input.paths.map((p) => resolve(p)),
+    status: 'starting',
+    startedAt: Date.now(),
+    endedAt: null,
+    costUsd: 0,
+    turns: 0,
+    leaseId: null,
+    lastMessage: null,
+    featureId: input.featureId ?? null,
+    engineSessionId: null,
+    resumable: false,
+    prompt: input.prompt,
+  }
+
+  return launch(session, spec, (input.preamble ?? '') + input.prompt, false)
+}
+
+/**
+ * §6 — "vider devient gratuit : la conversation part, la mémoire reste."
+ * Resuming is the other half: the conversation is still there, and the memory
+ * has moved on since. Both are one call away, which is the whole point.
+ */
+export function resumeAgent(sessionId: string, prompt: string, preamble = ''): StartAgentResult {
+  const prev = get(sessionId)
+  if (!prev) return { denied: true, reason: 'unknown session: ' + sessionId }
+  if (!prev.engineSessionId) {
+    return {
+      denied: true,
+      reason:
+        'this session predates resume support, or the engine never announced an id — start a fresh one against the same memory instead',
+    }
+  }
+  if (live.has(sessionId)) return { denied: true, reason: 'that session is already running' }
+
+  const spec = ENGINES[prev.engine]
+  if (!spec) return { denied: true, reason: 'unknown engine: ' + prev.engine }
+
+  const session: AgentSession = {
+    ...prev,
+    status: 'starting',
+    endedAt: null,
+    leaseId: null,
+    lastMessage: null,
+    prompt,
+  }
+  return launch(session, spec, preamble + prompt, true)
+}
+
+function launch(
+  session: AgentSession,
+  spec: EngineSpec,
+  fullPrompt: string,
+  resuming: boolean,
+): StartAgentResult {
+  // §7 — the lease is what makes two overlapping agents impossible. It is taken
+  // on paths, so a feature-wide session and a repo session inside it collide
+  // exactly as they should.
   const lease = leases.acquire({
-    holder: 'agent:' + input.engine,
-    paths: input.paths,
-    reason: input.prompt.slice(0, 120),
+    holder: 'agent:' + session.engine,
+    paths: session.paths,
+    reason: session.prompt.slice(0, 120),
     ttlMs: 6 * 3600_000,
   })
   if (!lease.ok || !lease.lease) {
@@ -213,35 +335,32 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
         (lease.conflict?.path ?? '?'),
     }
   }
-
-  const session: AgentSession = {
-    id: newId('agent_'),
-    engine: input.engine,
-    workspaceIds: input.workspaceIds,
-    paths: input.paths.map((p) => resolve(p)),
-    status: 'starting',
-    startedAt: Date.now(),
-    endedAt: null,
-    costUsd: 0,
-    turns: 0,
-    leaseId: lease.lease.id,
-    lastMessage: null,
-  }
+  session.leaseId = lease.lease.id
   persist(session)
 
   const cwd = session.paths[0]!
-  const child = spawn(spec.bin, spec.buildArgs(input.prompt), {
+  const args = resuming
+    ? spec.buildResumeArgs(fullPrompt, session.engineSessionId!)
+    : spec.buildArgs(fullPrompt)
+  const child = spawn(spec.bin, args, {
     cwd,
     env: { ...process.env },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
 
-  const actor = { kind: 'agent' as const, engine: input.engine, sessionId: session.id }
+  const actor = { kind: 'agent' as const, engine: session.engine, sessionId: session.id }
+  const workspaceId = session.workspaceIds[0] ?? null
   append({
-    type: 'agent.session_started',
+    type: resuming ? 'agent.session_resumed' : 'agent.session_started',
     actor,
-    workspaceId: input.workspaceIds[0] ?? null,
-    payload: { engine: input.engine, paths: session.paths, prompt: input.prompt.slice(0, 500) },
+    workspaceId,
+    payload: {
+      engine: session.engine,
+      paths: session.paths,
+      featureId: session.featureId,
+      prompt: session.prompt.slice(0, 500),
+      ...(resuming ? { engineSessionId: session.engineSessionId } : {}),
+    },
   })
 
   const l: Live = { session, child, buffer: '' }
@@ -250,25 +369,35 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
   persist(session)
 
   const handleLine = (line: string) => {
+    // Captured before parsing: the id arrives on an init event neither parser
+    // cares about, and without it the session dies with this process.
+    if (!session.engineSessionId) {
+      const eid = engineSessionIdIn(line)
+      if (eid) {
+        session.engineSessionId = eid
+        persist(session)
+      }
+    }
+
     const ev = spec.parse(line)
     if (!ev) return
     if (ev.kind === 'text' && ev.text) {
       session.turns++
       session.lastMessage = ev.text.slice(0, 400)
-      append({ type: 'agent.output', actor, workspaceId: input.workspaceIds[0] ?? null, payload: { text: ev.text } })
+      append({ type: 'agent.output', actor, workspaceId, payload: { text: ev.text } })
     } else if (ev.kind === 'tool') {
       append({
         type: 'agent.tool_use',
         actor,
-        workspaceId: input.workspaceIds[0] ?? null,
+        workspaceId,
         payload: { tool: ev.tool, paths: ev.paths ?? [] },
       })
       // §12 — attribution: this is what makes the diff splittable later.
       for (const p of ev.paths ?? []) {
-        for (const wsId of input.workspaceIds) recordTouch(wsId, relativeTo(cwd, p), actor, session.id)
+        for (const wsId of session.workspaceIds) recordTouch(wsId, relativeTo(cwd, p), actor, session.id)
       }
     } else if (ev.kind === 'end') {
-      session.costUsd = ev.costUsd ?? session.costUsd
+      session.costUsd += ev.costUsd ?? 0
       session.status = 'idle'
       append({ type: 'agent.cost', actor, payload: { costUsd: session.costUsd, turns: session.turns } })
     }
@@ -297,7 +426,12 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
       type: 'agent.session_ended',
       level: code === 0 ? 'info' : 'error',
       actor,
-      payload: { code, costUsd: session.costUsd, turns: session.turns },
+      payload: {
+        code,
+        costUsd: session.costUsd,
+        turns: session.turns,
+        resumable: !!session.engineSessionId,
+      },
     })
   })
 
@@ -326,7 +460,11 @@ export function send(sessionId: string, text: string): void {
   l?.child.stdin?.write(text.endsWith('\n') ? text : text + '\n')
 }
 
-/** Sessions cannot survive the core; mark them dead at boot. */
+/**
+ * A child process cannot survive the core, so nothing is left running at boot.
+ * The conversation is another matter: `engine_session_id` stays, and that is
+ * what makes yesterday's session resumable rather than merely readable (§6).
+ */
 export function reapSessions(): void {
   getDb()
     .prepare("UPDATE agent_sessions SET status = 'ended', ended_at = ? WHERE status IN ('starting','thinking','idle')")

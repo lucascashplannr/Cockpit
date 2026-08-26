@@ -157,6 +157,9 @@ export function detectCapabilities(dir: string, manifest: ManifestV1 | null): Ca
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'vendor', 'dist', 'build', 'out', '.next', '.nuxt',
   'target', '.venv', 'venv', '__pycache__', '.turbo', '.cache', 'Pods',
+  // Worktrees are discovered from the repo that owns them, never by scanning.
+  // Without this a flat layout re-registers every worktree as a main checkout.
+  'worktrees',
 ])
 
 /** Finds candidate repo folders one level down — the multi-repo group case. */

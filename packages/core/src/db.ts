@@ -17,7 +17,7 @@ export type Db = Database.Database
  * indexes, which is exactly the kind of opaque breakage §13 rule 3 exists to
  * avoid.
  */
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 export type SchemaOutcome =
   | { kind: 'fresh' }
@@ -191,7 +191,38 @@ function migrate(d: Db): void {
       ts           INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS touches_ws ON touches(workspace_id, path);
+
+    -- §4 — the durable half of the model. Worktrees, branches and running
+    -- processes are all probed; what cannot be probed is the intent that
+    -- grouped them, and that is the only thing this table holds.
+    CREATE TABLE IF NOT EXISTS features (
+      id           TEXT PRIMARY KEY,
+      project_id   TEXT NOT NULL,
+      name         TEXT NOT NULL,
+      slug         TEXT NOT NULL,
+      root_path    TEXT,
+      state        TEXT NOT NULL,
+      ceremony     TEXT NOT NULL,
+      ticket       TEXT,
+      review       TEXT,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS features_project ON features(project_id, updated_at DESC);
   `)
+
+  // Added in v2. `CREATE TABLE IF NOT EXISTS` cannot add a column to a table
+  // that already exists, and an adopted v1 database has agent_sessions in it.
+  addColumn(d, 'agent_sessions', 'feature_id', 'TEXT')
+  addColumn(d, 'agent_sessions', 'engine_session_id', 'TEXT')
+  addColumn(d, 'agent_sessions', 'prompt', "TEXT NOT NULL DEFAULT ''")
+}
+
+/** Idempotent ALTER, so migrating an adopted database never loses its journal. */
+function addColumn(d: Db, table: string, column: string, decl: string): void {
+  const cols = d.prepare('PRAGMA table_info(' + table + ')').all() as { name: string }[]
+  if (cols.some((c) => c.name === column)) return
+  d.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + decl)
 }
 
 /** §13 — log rotation: a permanent service fills a disk in weeks. */

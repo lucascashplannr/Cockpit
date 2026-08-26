@@ -10,4 +10,6 @@ contextBridge.exposeInMainWorld('cockpitHost', {
   isElectron: true,
   /** Resolves to an absolute path, or null when the user cancels. */
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
+  /** Spawns a core if none is listening. Resolves true once one answers. */
+  restartCore: () => ipcRenderer.invoke('core:restart'),
 })

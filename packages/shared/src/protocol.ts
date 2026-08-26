@@ -20,13 +20,29 @@ export interface FileEntry {
   gitStatus: string | null
 }
 
+export interface PlanStep {
+  title: string
+  command: string
+  cwd: string
+  /** Destructive steps are rendered in red and require confirmation (§3.7). */
+  destructive: boolean
+  /**
+   * How to take this step back. A plan spanning several repos must not be left
+   * half-applied: if step 3 fails, the undos of steps 1-2 run in reverse (§3.7).
+   * A list, because undoing `git worktree add -b` is two commands, not one.
+   */
+  undo?: { title: string; command: string; cwd: string }[]
+}
+
 export interface PlanPreview {
   planId: string
   operation: string
-  steps: { title: string; command: string; cwd: string; destructive: boolean }[]
+  steps: PlanStep[]
   warnings: string[]
   /** Whether applying will first capture a restore point (§16). */
   capturesRestorePoint: boolean
+  /** Every repository the plan touches, so the UI can say how wide it reaches. */
+  repos?: string[]
 }
 
 /** Every method: params in, result out. */
@@ -61,10 +77,57 @@ export interface Rpc {
     result: { ok: boolean; detail?: string }
   }
 
-  'feature.list': { params: { projectId?: string }; result: Feature[] }
-  'feature.create': {
-    params: { projectId: string; name: string; ceremony: 'C1' | 'C2' | 'C3'; repos?: string[] }
-    result: { plan: PlanPreview }
+  'feature.list': { params: { projectId?: string; includeArchived?: boolean }; result: Feature[] }
+  'feature.get': { params: { featureId: string }; result: Feature | null }
+  /**
+   * §4 — opening a feature is one plan across N repositories, previewed before
+   * anything is created and rolled back as a unit if any repo fails. The
+   * feature is only recorded once that plan applies.
+   */
+  'feature.open': {
+    params: {
+      projectId: string
+      name: string
+      ceremony: 'C1' | 'C2' | 'C3'
+      /** Workspace ids of the main checkouts to span. Empty means all of them. */
+      repoWorkspaceIds?: string[]
+      /** Branch to fork from; defaults to each repo's own default branch. */
+      base?: string
+      ticketUrl?: string
+    }
+    result: { plan: PlanPreview; featureId: string }
+  }
+  /** Bring its runtimes up. Refuses when an exclusive runtime is held elsewhere. */
+  'feature.activate': {
+    params: { featureId: string; force?: boolean }
+    result: { ok: boolean; detail: string; parked: string[]; conflicts: string[] }
+  }
+  /** Take its runtimes down and free the exclusive resources. Worktrees stay. */
+  'feature.park': { params: { featureId: string }; result: { ok: boolean; detail: string } }
+  'feature.rename': { params: { featureId: string; name: string }; result: Feature }
+  /**
+   * §16 — closing refuses over unpushed commits and live work; removing the
+   * worktrees is a plan of its own, never a silent `rm -rf`.
+   */
+  'feature.close': {
+    params: { featureId: string; removeWorktrees: boolean }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null }
+  }
+  /** Archiving is not a one-way door; this is how a closed feature comes back. */
+  'feature.reopen': { params: { featureId: string }; result: { ok: boolean; detail: string } }
+  /**
+   * §16 — the record goes for good. Refuses over anything that would lose work;
+   * deleting a branch with unmerged commits is the one thing `force` unlocks,
+   * because it is the one thing nothing can undo.
+   */
+  'feature.delete': {
+    params: {
+      featureId: string
+      removeWorktrees: boolean
+      deleteBranches: boolean
+      force?: boolean
+    }
+    result: { ok: boolean; detail: string; warnings: string[]; plan: PlanPreview | null }
   }
 
   'fs.list': { params: { workspaceId: string; rel: string }; result: FileEntry[] }
@@ -106,7 +169,23 @@ export interface Rpc {
 
   'agent.engines': { params: void; result: { id: string; available: boolean; bin: string }[] }
   'agent.start': {
-    params: { engine: string; workspaceIds: string[]; prompt: string; ceremony?: string }
+    params: {
+      engine: string
+      workspaceIds: string[]
+      prompt: string
+      ceremony?: string
+      /** Scopes the session to a feature: its memory and CONTEXT.md are prepended. */
+      featureId?: string
+    }
+    result: { sessionId: string } | { denied: true; reason: string }
+  }
+  /**
+   * §6 — the session is disposable, the memory is not. Resuming hands the
+   * engine back its own conversation; starting fresh against the same memory
+   * is the other half of the same idea.
+   */
+  'agent.resume': {
+    params: { sessionId: string; prompt: string }
     result: { sessionId: string } | { denied: true; reason: string }
   }
   'agent.list': { params: void; result: AgentSession[] }
@@ -155,7 +234,10 @@ export interface RpcResponse {
 export type ServerPush =
   | { t: 'hello'; protocol: typeof PROTOCOL_VERSION; core: CoreStatus }
   | { t: 'event'; event: CockpitEvent }
+  /** Pushed on every project mutation, so every window's rail stays true. */
+  | { t: 'projects'; projects: Project[] }
   | { t: 'workspaces'; workspaces: Workspace[] }
+  | { t: 'features'; features: Feature[] }
   | { t: 'agents'; sessions: AgentSession[] }
   | { t: 'term'; termId: string; data: string }
   | { t: 'term-exit'; termId: string; code: number }

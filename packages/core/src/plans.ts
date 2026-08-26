@@ -1,7 +1,7 @@
 import { basename, dirname, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { newId } from '@cockpit/shared'
-import type { PlanPreview } from '@cockpit/shared'
+import type { PlanPreview, PlanStep } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { defaultBranch, git } from './git.js'
 import { append } from './journal.js'
@@ -18,9 +18,16 @@ import { readManifest, findManifest } from './detect.js'
  */
 
 interface StoredPlan extends PlanPreview {
-  workspaceId: string
+  /** Every workspace the plan touches; the first is the one `undo` targets. */
+  workspaceIds: string[]
   cwd: string
   createdAt: number
+  /**
+   * Run once every step succeeded. This is what keeps a feature from being
+   * recorded before its worktrees actually exist on disk (§3.4: never remember
+   * what can be probed, and never remember something that is not there).
+   */
+  onApplied?: (res: { output: string }) => void | Promise<void>
 }
 
 const plans = new Map<string, StoredPlan>()
@@ -29,6 +36,32 @@ const PLAN_TTL = 10 * 60_000
 function gc(): void {
   const now = Date.now()
   for (const [id, p] of plans) if (now - p.createdAt > PLAN_TTL) plans.delete(id)
+}
+
+export interface RegisterOptions {
+  workspaceIds: string[]
+  onApplied?: StoredPlan['onApplied']
+}
+
+/**
+ * Stores a preview built elsewhere — a feature spans several repositories, so
+ * its plan cannot be produced by a function keyed on a single workspace.
+ */
+export function register(preview: PlanPreview, opts: RegisterOptions): PlanPreview {
+  gc()
+  plans.set(preview.planId, {
+    ...preview,
+    workspaceIds: opts.workspaceIds,
+    cwd: preview.steps[0]?.cwd ?? process.cwd(),
+    createdAt: Date.now(),
+    onApplied: opts.onApplied,
+  })
+  append({
+    type: 'git.plan',
+    workspaceId: opts.workspaceIds[0] ?? null,
+    payload: { operation: preview.operation, steps: preview.steps, warnings: preview.warnings },
+  })
+  return preview
 }
 
 export type Operation = 'rebase' | 'merge' | 'branch' | 'worktree' | 'push' | 'sync'
@@ -42,7 +75,7 @@ export async function plan(
   const ws = requireWorkspace(workspaceId)
   if (!ws.repo) throw new Error('workspace has no repository')
 
-  const steps: PlanPreview['steps'] = []
+  const steps: PlanStep[] = []
   const warnings: string[] = []
   const base = args.base ?? (await defaultBranch(ws.path))
   const branch = ws.git?.branch ?? '(detached)'
@@ -91,7 +124,7 @@ export async function plan(
     case 'worktree': {
       const name = args.name
       if (!name) throw new Error('worktree requires a branch name')
-      const root = worktreeRoot(ws.path, args.root)
+      const root = worktreeRoot(ws.path, { override: args.root })
       const target = join(root, name)
       if (existsSync(target)) warnings.push('Target folder already exists: ' + target)
       steps.push({ title: 'Fetch origin', command: 'git fetch origin', cwd: ws.path, destructive: false })
@@ -136,24 +169,46 @@ export async function plan(
     steps,
     warnings,
     capturesRestorePoint: steps.some((s) => s.destructive),
+    repos: [ws.name],
   }
-  plans.set(preview.planId, { ...preview, workspaceId, cwd: ws.path, createdAt: Date.now() })
+  plans.set(preview.planId, { ...preview, workspaceIds: [workspaceId], cwd: ws.path, createdAt: Date.now() })
   append({ type: 'git.plan', workspaceId, payload: { operation, steps, warnings } })
   return preview
 }
 
-function worktreeRoot(repoPath: string, override?: string): string {
-  if (override) return resolve(repoPath, override)
-  // §21.4 — resolved per project via the manifest; default is a sibling
-  // `worktrees/` folder, which keeps the main checkout uncluttered.
+export interface WorktreeRootOptions {
+  override?: string
+  /**
+   * §21.4, now decided: when a feature slug is given the layout is GROUPED —
+   * `worktrees/<feature>/<repo>` — because one folder per feature is the only
+   * place a cross-repo CONTEXT.md and a shared memory can live (§7). Without a
+   * slug the old per-repo layout stands, which is right for a C2 one-off.
+   */
+  featureSlug?: string
+}
+
+export function worktreeRoot(repoPath: string, opts: WorktreeRootOptions = {}): string {
+  if (opts.override) return resolve(repoPath, opts.override)
+
   const manifestPath = findManifest(repoPath) ?? findManifest(dirname(repoPath))
-  if (manifestPath) {
-    const { manifest } = readManifest(manifestPath)
-    const root = manifest?.worktrees?.root
-    if (root) return resolve(dirname(manifestPath), root)
-    if (manifest?.worktrees?.strategy === 'flat') return resolve(dirname(repoPath), 'worktrees')
-  }
-  return resolve(dirname(repoPath), 'worktrees', basename(repoPath))
+  const manifest = manifestPath ? readManifest(manifestPath).manifest : null
+  const base = manifest?.worktrees?.root
+    ? resolve(dirname(manifestPath!), manifest.worktrees.root)
+    : resolve(dirname(repoPath), 'worktrees')
+
+  if (opts.featureSlug) return join(base, opts.featureSlug)
+  if (manifest?.worktrees?.strategy === 'flat') return base
+  return join(base, basename(repoPath))
+}
+
+/** Where a given repo's worktree lands inside a feature (§21.4, grouped). */
+export function featureWorktreePath(repoPath: string, featureSlug: string, override?: string): string {
+  return join(worktreeRoot(repoPath, { featureSlug, override }), basename(repoPath))
+}
+
+/** The feature's own folder — parent of every repo worktree it owns. */
+export function featureRootPath(repoPath: string, featureSlug: string, override?: string): string {
+  return worktreeRoot(repoPath, { featureSlug, override })
 }
 
 /**
@@ -179,14 +234,22 @@ export async function apply(planId: string): Promise<{ ok: boolean; output: stri
 
   let restorePoint: string | null = null
   if (stored.capturesRestorePoint) {
-    const rp = await captureRestorePoint(stored.workspaceId, stored.cwd, stored.operation)
-    restorePoint = rp?.head ?? null
+    // One per repository the plan touches: a multi-repo plan that rewrites two
+    // histories needs two anchors, not one.
+    for (const wsId of stored.workspaceIds) {
+      const ws = requireWorkspace(wsId)
+      if (!ws.repo) continue
+      const rp = await captureRestorePoint(wsId, ws.path, stored.operation)
+      restorePoint ??= rp?.head ?? null
+    }
   }
 
   const lines: string[] = []
+  /** Steps that already ran, newest last — the rollback order is their reverse. */
+  const done: PlanStep[] = []
+
   for (const step of stored.steps) {
     const parts = tokenize(step.command)
-    const bin = parts[0]!
     const r = await git(step.cwd, parts.slice(1), 180_000)
     lines.push('$ ' + step.command)
     if (r.stdout.trim()) lines.push(r.stdout.trim())
@@ -196,23 +259,48 @@ export async function apply(planId: string): Promise<{ ok: boolean; output: stri
       append({
         type: 'git.failed',
         level: 'error',
-        workspaceId: stored.workspaceId,
+        workspaceId: stored.workspaceIds[0] ?? null,
         payload: { operation: stored.operation, step: step.title, code: r.code, output: r.stderr.slice(-2000) },
       })
       lines.push('')
       lines.push('[cockpit] stopped at "' + step.title + '" (exit ' + r.code + ').')
+
+      // §3.7 — a plan spanning several repositories is all-or-nothing. Leaving
+      // two of three worktrees behind is worse than not starting: the feature
+      // would look opened and be unusable.
+      const rolled = await rollback(done, lines)
+      if (rolled) lines.push('[cockpit] rolled back ' + rolled + ' step(s); nothing was left behind.')
       if (restorePoint) lines.push('[cockpit] restore point ' + restorePoint.slice(0, 8) + ' is available via undo.')
       return { ok: false, output: lines.join('\n'), restorePoint }
     }
-    void bin
+    done.push(step)
   }
 
   append({
     type: 'git.applied',
-    workspaceId: stored.workspaceId,
+    workspaceId: stored.workspaceIds[0] ?? null,
     payload: { operation: stored.operation, steps: stored.steps.length, restorePoint },
   })
-  return { ok: true, output: lines.join('\n'), restorePoint }
+
+  const output = lines.join('\n')
+  // Only now is the intent real enough to record (§3.4).
+  if (stored.onApplied) await stored.onApplied({ output })
+  return { ok: true, output, restorePoint }
+}
+
+/** Undoes completed steps in reverse. Best effort: a failed undo is reported,
+ *  never thrown, because the caller is already handling a failure. */
+async function rollback(done: PlanStep[], lines: string[]): Promise<number> {
+  let n = 0
+  for (const step of [...done].reverse()) {
+    for (const u of step.undo ?? []) {
+      const parts = tokenize(u.command)
+      const r = await git(u.cwd, parts.slice(1), 120_000)
+      lines.push('$ ' + u.command + (r.ok ? '' : '   # failed: ' + r.stderr.trim().slice(-200)))
+      if (r.ok) n++
+    }
+  }
+  return n
 }
 
 function tokenize(cmd: string): string[] {

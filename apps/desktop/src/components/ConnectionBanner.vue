@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { LoaderCircle, RefreshCw, Unplug } from '@lucide/vue'
-import { client, state } from '../core/store.js'
+import { LoaderCircle, RefreshCw, TriangleAlert, Unplug } from '@lucide/vue'
+import { client, restartCore, state } from '../core/store.js'
 
 /**
  * §13 — one of the four consequences of a permanent service that must be
@@ -13,18 +13,30 @@ import { client, state } from '../core/store.js'
 <template>
   <div v-if="state.connection !== 'connected'" class="banner" :class="state.connection">
     <LoaderCircle v-if="state.connection === 'connecting'" class="sm spin" />
+    <TriangleAlert v-else-if="state.connection === 'outdated'" class="sm" />
     <Unplug v-else class="sm" />
     <span class="txt">
       <template v-if="state.connection === 'connecting'">Connecting to the core…</template>
       <template v-else-if="state.connection === 'incompatible'">
         Version mismatch — {{ state.connectionDetail }}
       </template>
+      <template v-else-if="state.connection === 'outdated'">
+        {{ state.connectionDetail }}
+      </template>
       <template v-else>
         Core unreachable. Servers and agents keep running; this window is showing stale state.
       </template>
     </span>
+    <!-- A stale core has one fix, and it is not "retry". -->
     <button
-      v-if="state.connection !== 'connecting'"
+      v-if="state.connection === 'outdated'"
+      class="btn primary small"
+      @click="restartCore()"
+    >
+      <RefreshCw />Restart the core
+    </button>
+    <button
+      v-else-if="state.connection !== 'connecting'"
       class="btn ghost small"
       @click="client.reconnectNow()"
     >
@@ -53,7 +65,9 @@ import { client, state } from '../core/store.js'
   -webkit-app-region: no-drag;
 }
 .banner.disconnected, .banner.incompatible { color: var(--danger); }
-.txt { white-space: nowrap; }
+/* Usable, so not red: a stale core is an instruction, not a failure. */
+.banner.outdated { color: var(--warn); }
+.txt { white-space: normal; max-width: 62ch; }
 .btn.small { height: 24px; padding: 0 10px; font-size: var(--fs-xs); }
 .btn.small .lucide { width: 12px; height: 12px; }
 </style>

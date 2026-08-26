@@ -70,6 +70,22 @@ ipcMain.handle('dialog:pickFolder', async (event) => {
   return res.canceled ? null : (res.filePaths[0] ?? null)
 })
 
+/**
+ * §13 — `ensureCore` only ran at launch, so a core stopped mid-session stayed
+ * stopped until the app was quit and reopened. That is the one thing the
+ * renderer cannot do for itself: it has no child processes (rule 1).
+ */
+ipcMain.handle('core:restart', async () => {
+  // The core is asked to stop over its own socket before this point; wait for
+  // the port to clear so `ensureCore` does not adopt the dying one.
+  for (let i = 0; i < 40; i++) {
+    if (!(await probeCore(CORE_PORT))) break
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  await ensureCore()
+  return probeCore(CORE_PORT)
+})
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440,

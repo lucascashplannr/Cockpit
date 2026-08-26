@@ -95,17 +95,44 @@ export interface Workspace {
   diskBytes: number | null
 }
 
-/** §4 — a name + a set of workspaces, plus optional decorations. */
+/**
+ * §4 — a name + a set of workspaces, plus optional decorations.
+ *
+ * Durable on purpose: a feature outlives the daemon, the window and the day,
+ * because that is the granularity at which work is actually picked up and put
+ * down. Sessions inside it stay disposable (§6) — that separation is the point.
+ */
+export type FeatureState =
+  /** Worktrees on disk, agents may run, no server is bound. */
+  | 'parked'
+  /** Runtime up, ports bound, preview reachable. */
+  | 'live'
+  | 'archived'
+
 export interface Feature {
   id: string
   projectId: string
+  /** Human name, e.g. "Two-factor auth". */
   name: string
+  /** Branch- and folder-safe form; the branch created in every repo it spans. */
+  slug: string
+  /**
+   * §7 — the folder holding `.cockpit/memory.md` and the cross-repo
+   * `CONTEXT.md`. Null for a feature merely inferred from branch names, which
+   * has nowhere to keep either.
+   */
+  rootPath: string | null
   workspaceIds: string[]
+  state: FeatureState
   ticket: TicketRef | null
   review: ReviewRef | null
   ceremony: Ceremony
+  /** Inferred from matching branch names rather than opened deliberately. */
+  derived: boolean
   createdAt: number
-  archived: boolean
+  updatedAt: number
+  /** §7 — every session ever run inside it, summed. Cost stays visible. */
+  costUsd: number
 }
 
 export interface TicketRef {
@@ -160,6 +187,17 @@ export interface AgentSession {
   turns: number
   leaseId: string | null
   lastMessage: string | null
+  /** Which feature it was run under, when it was run under one (§4). */
+  featureId: string | null
+  /**
+   * The engine's own resume handle (`claude --resume`, `codex exec resume`).
+   * Without it a session dies with the daemon, and multi-day work is a fiction.
+   */
+  engineSessionId: string | null
+  /** Ended, but the engine can pick the conversation back up. */
+  resumable: boolean
+  /** The opening prompt, kept so a resumed session is recognisable in a list. */
+  prompt: string
 }
 
 export interface DiffFile {

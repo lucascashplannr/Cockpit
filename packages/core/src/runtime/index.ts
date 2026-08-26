@@ -5,6 +5,7 @@ import { run } from '../exec.js'
 import { allocate, portKey } from '../ports.js'
 import { append } from '../journal.js'
 import * as sup from '../supervisor.js'
+import * as featureStore from '../features/store.js'
 
 /**
  * §8 — "Il unifie les questions qu'il pose, pas les réponses."
@@ -26,6 +27,23 @@ export interface Runtime {
 
 function runtimeDetail(ws: Workspace): Record<string, unknown> {
   return (ws.capabilities.find((c) => c.id === 'runtime')?.detail ?? {}) as Record<string, unknown>
+}
+
+/**
+ * A name unique across features, for runtimes that key on the folder name.
+ *
+ * This is the collision that breaks running two features at once, and it is
+ * silent: `worktrees/2fa/api` and `worktrees/search/api` are both `api`, so
+ * Docker Compose adopts the other feature's containers and Herd serves one
+ * feature's code at the other's hostname. The disambiguator is the feature.
+ */
+function scopedName(ws: Workspace): string {
+  const base = basename(ws.path)
+  if (!ws.featureId) return base
+  const slug = featureStore.get(ws.featureId)?.slug ?? ws.git?.branch ?? null
+  if (!slug) return base
+  const clean = featureStore.slugify(slug)
+  return base === clean ? base : base + '-' + clean
 }
 
 async function httpOk(url: string): Promise<boolean> {
@@ -131,24 +149,36 @@ const expoRuntime: Runtime = {
   },
 }
 
+/** Every invocation carries the project namespace; forgetting one on `down`
+ *  would tear down the default project instead of this feature's. */
+function composeArgs(ws: Workspace, rest: string[]): string[] {
+  return ['compose', '-p', 'cockpit-' + scopedName(ws), ...rest]
+}
+
 const composeRuntime: Runtime = {
   id: 'compose',
   portable: true,
-  exclusive: false,
+  /**
+   * §8 — host ports published in a compose file are literals, so two features
+   * running the same file want the same port and the second one fails deep
+   * inside Docker. Cockpit refuses up front and offers to park the other (§11
+   * only allocates the ports it owns; it cannot rewrite someone's compose.yaml).
+   */
+  exclusive: true,
   async provision(ws) {
-    const r = await run('docker', ['compose', 'build'], { cwd: ws.path, timeoutMs: 900_000 })
+    const r = await run('docker', composeArgs(ws, ['build']), { cwd: ws.path, timeoutMs: 900_000 })
     return { ok: r.ok, detail: r.ok ? 'built' : r.stderr.slice(-800) }
   },
   async up(ws) {
-    const r = await run('docker', ['compose', 'up', '-d'], { cwd: ws.path, timeoutMs: 300_000 })
-    return { ok: r.ok, detail: r.ok ? 'compose up' : r.stderr.slice(-800) }
+    const r = await run('docker', composeArgs(ws, ['up', '-d']), { cwd: ws.path, timeoutMs: 300_000 })
+    return { ok: r.ok, detail: r.ok ? 'compose up (' + 'cockpit-' + scopedName(ws) + ')' : r.stderr.slice(-800) }
   },
   async down(ws) {
-    const r = await run('docker', ['compose', 'down'], { cwd: ws.path, timeoutMs: 120_000 })
+    const r = await run('docker', composeArgs(ws, ['down']), { cwd: ws.path, timeoutMs: 120_000 })
     return { ok: r.ok, detail: r.ok ? 'compose down' : r.stderr.slice(-800) }
   },
   async health(ws) {
-    const r = await run('docker', ['compose', 'ps', '--format', 'json'], { cwd: ws.path, timeoutMs: 20_000 })
+    const r = await run('docker', composeArgs(ws, ['ps', '--format', 'json']), { cwd: ws.path, timeoutMs: 20_000 })
     if (!r.ok) return { status: 'unknown', detail: 'docker unavailable' }
     const lines = r.stdout.split('\n').filter(Boolean)
     if (!lines.length) return { status: 'down', detail: 'no containers' }
@@ -182,11 +212,12 @@ const herdRuntime: Runtime = {
   },
   async up(ws) {
     // Herd serves linked folders permanently; "up" means link + ensure served.
-    const r = await run('herd', ['link', basename(ws.path)], { cwd: ws.path, timeoutMs: 30_000 })
-    return { ok: r.ok, detail: r.ok ? 'linked' : 'herd CLI unavailable' }
+    // The link name carries the feature, or two features fight over one host.
+    const r = await run('herd', ['link', scopedName(ws)], { cwd: ws.path, timeoutMs: 30_000 })
+    return { ok: r.ok, detail: r.ok ? 'linked as ' + scopedName(ws) : 'herd CLI unavailable' }
   },
   async down(ws) {
-    const r = await run('herd', ['unlink', basename(ws.path)], { cwd: ws.path, timeoutMs: 30_000 })
+    const r = await run('herd', ['unlink', scopedName(ws)], { cwd: ws.path, timeoutMs: 30_000 })
     return { ok: r.ok, detail: r.ok ? 'unlinked' : 'herd CLI unavailable' }
   },
   async health(ws) {
@@ -205,12 +236,13 @@ const herdRuntime: Runtime = {
 function herdUrl(ws: Workspace): string {
   const detail = runtimeDetail(ws)
   const tld = String(detail.tld ?? 'test')
-  return 'http://' + basename(ws.path) + '.' + tld
+  return 'http://' + scopedName(ws) + '.' + tld
 }
 
 const devcontainerRuntime: Runtime = {
   ...composeRuntime,
   id: 'devcontainer',
+  exclusive: true,
   async up(ws) {
     const r = await run('devcontainer', ['up', '--workspace-folder', ws.path], { timeoutMs: 900_000 })
     return { ok: r.ok, detail: r.ok ? 'devcontainer up' : r.stderr.slice(-800) }

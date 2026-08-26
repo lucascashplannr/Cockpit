@@ -1,6 +1,7 @@
-import { PROTOCOL_VERSION, protocolCompatible } from '@cockpit/shared'
+import { PROTOCOL_VERSION, coreIsBehind, protocolCompatible } from '@cockpit/shared'
 import type {
-  CockpitEvent, RpcMethod, RpcParams, RpcResult, ServerMessage, Workspace, AgentSession,
+  CockpitEvent, Feature, Project, RpcMethod, RpcParams, RpcResult, ServerMessage, Workspace,
+  AgentSession,
 } from '@cockpit/shared'
 
 /**
@@ -9,9 +10,18 @@ import type {
  * core to another machine is an address change and not a rewrite.
  */
 
-export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'incompatible'
+export type ConnectionState =
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
+  /** Major mismatch: refuse to talk rather than mis-decode. */
+  | 'incompatible'
+  /** Same major, older minor: usable, but methods added since are missing. */
+  | 'outdated'
 
 interface Handlers {
+  onProjects(p: Project[]): void
+  onFeatures(f: Feature[]): void
   onWorkspaces(w: Workspace[]): void
   onAgents(s: AgentSession[]): void
   onEvent(e: CockpitEvent): void
@@ -61,6 +71,18 @@ export class CoreClient {
             return
           }
           this.retry = 0
+          // Compatible but incomplete. Saying so here is the difference between
+          // "restart your daemon" and hunting a phantom bug in a new feature.
+          if (coreIsBehind(msg.protocol, PROTOCOL_VERSION)) {
+            this.h.onState(
+              'outdated',
+              'the core is running an older build (protocol v' +
+                msg.protocol.major + '.' + msg.protocol.minor +
+                ' against this window\'s v' + PROTOCOL_VERSION.major + '.' + PROTOCOL_VERSION.minor +
+                '). Restart it to get the newer commands.',
+            )
+            break
+          }
           this.h.onState('connected')
           break
         case 'res': {
@@ -71,6 +93,12 @@ export class CoreClient {
           else p.reject(new Error(msg.error?.message ?? 'rpc error'))
           break
         }
+        case 'projects':
+          this.h.onProjects(msg.projects)
+          break
+        case 'features':
+          this.h.onFeatures(msg.features)
+          break
         case 'workspaces':
           this.h.onWorkspaces(msg.workspaces)
           break

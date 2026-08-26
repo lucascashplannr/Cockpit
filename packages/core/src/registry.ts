@@ -2,6 +2,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { stableId } from '@cockpit/shared'
 import type { Capability, Ceremony, Feature, Project, Workspace } from '@cockpit/shared'
+import * as featureStore from './features/store.js'
 import { loadConfig, updateConfig } from './config.js'
 import { childRepos, detectCapabilities, findManifest, projectNameFor, readManifest } from './detect.js'
 import { isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
@@ -36,9 +37,70 @@ export function allWorkspaces(projectId?: string): Workspace[] {
   })
 }
 
-export function allFeatures(projectId?: string): Feature[] {
-  const list = [...features.values()]
-  return projectId ? list.filter((f) => f.projectId === projectId) : list
+/**
+ * §4 — persisted features first, inferred ones after. A feature Cockpit merely
+ * guessed from matching branch names is real enough to display, but it is
+ * never allowed to shadow one the user actually opened.
+ */
+export function allFeatures(projectId?: string, includeArchived = false): Feature[] {
+  const list = [...features.values()].map(withRecord)
+  // An archived feature has no workspaces left to derive it from, so it never
+  // enters the map. Without this it was a row nobody could see, reopen or
+  // remove — invisible state, which §3.4 exists to prevent.
+  if (includeArchived) {
+    for (const rec of featureStore.list(projectId)) {
+      if (rec.state !== 'archived' || list.some((f) => f.id === rec.id)) continue
+      list.push({
+        id: rec.id,
+        projectId: rec.projectId,
+        name: rec.name,
+        slug: rec.slug,
+        rootPath: rec.rootPath,
+        workspaceIds: [],
+        state: 'archived',
+        ticket: rec.ticket,
+        review: rec.review,
+        ceremony: rec.ceremony,
+        derived: false,
+        createdAt: rec.createdAt,
+        updatedAt: rec.updatedAt,
+        costUsd: featureStore.costFor(rec.id),
+      })
+    }
+  }
+  const filtered = projectId ? list.filter((f) => f.projectId === projectId) : list
+  return filtered.sort((a, b) => {
+    if ((a.state === 'archived') !== (b.state === 'archived')) return a.state === 'archived' ? 1 : -1
+    if (a.derived !== b.derived) return a.derived ? 1 : -1
+    return b.updatedAt - a.updatedAt
+  })
+}
+
+export function getFeature(id: string): Feature | null {
+  const f = features.get(id)
+  if (f) return withRecord(f)
+  return allFeatures(undefined, true).find((x) => x.id === id) ?? null
+}
+
+/**
+ * §3.4 applied to the feature itself: membership is probed and cached in the
+ * map, but the mutable half — its name, its live/parked state, what it has
+ * cost — lives in the table and is read back on every call. Activating a
+ * feature must not have to trigger a full reconcile to become true.
+ */
+function withRecord(f: Feature): Feature {
+  if (f.derived) return f
+  const rec = featureStore.get(f.id)
+  if (!rec) return f
+  return {
+    ...f,
+    name: rec.name,
+    state: rec.state,
+    ticket: rec.ticket,
+    review: rec.review,
+    updatedAt: rec.updatedAt,
+    costUsd: featureStore.costFor(f.id),
+  }
 }
 
 export function getWorkspace(id: string): Workspace | null {
@@ -350,14 +412,32 @@ async function discoverWorktrees(project: Project): Promise<void> {
 }
 
 /**
- * §4 — a feature is a decoration over workspaces. We infer it from the branch
- * name shared by several worktrees; nothing is invented when there is no match.
+ * §4 — a feature is a decoration over workspaces, and it comes from two places.
+ *
+ * Persisted: the user opened it, so its identity, name and live/parked state
+ * outlive the daemon (that is the whole point of the table). Its membership is
+ * still probed — matched by branch — because a worktree deleted by hand must
+ * drop out of the feature rather than linger in a list.
+ *
+ * Inferred: several worktrees happen to share a branch name. Nothing is
+ * invented when there is no match, and an inferred feature has no root folder,
+ * so it can hold neither a memory nor a cross-repo context.
  */
 function deriveFeatures(project: Project): void {
+  // Keyed on the project, not on the previous `featureIds`: buildProject hands
+  // back a fresh Project whose list is already empty, so trusting it left every
+  // stale feature — an archived one above all — in the map for good.
+  for (const [fid, f] of [...features]) {
+    if (f.projectId === project.id) features.delete(fid)
+  }
+  project.featureIds = []
+
+  const claimed = new Set<string>()
   const byBranch = new Map<string, Workspace[]>()
   for (const id of project.workspaceIds) {
     const w = workspaces.get(id)
     if (!w || w.kind !== 'worktree') continue
+    w.featureId = null
     const branch = w.git?.branch ?? w.name
     if (!branch) continue
     const arr = byBranch.get(branch) ?? []
@@ -365,24 +445,127 @@ function deriveFeatures(project: Project): void {
     byBranch.set(branch, arr)
   }
 
-  project.featureIds = []
+  for (const rec of featureStore.list(project.id)) {
+    if (rec.state === 'archived') continue
+
+    // Membership is probed, never stored: the worktrees on that branch, plus
+    // the feature's own root folder when it has one.
+    const group = byBranch.get(rec.slug) ?? []
+    const rootWs = rec.rootPath ? workspaces.get(stableId('ws', rec.rootPath)) : undefined
+
+    const feature: Feature = {
+      id: rec.id,
+      projectId: project.id,
+      name: rec.name,
+      slug: rec.slug,
+      rootPath: rec.rootPath,
+      workspaceIds: [...(rootWs ? [rootWs.id] : []), ...group.map((w) => w.id)],
+      state: rec.state,
+      ticket: rec.ticket,
+      review: rec.review,
+      ceremony: rec.ceremony,
+      derived: false,
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt,
+      costUsd: featureStore.costFor(rec.id),
+    }
+    features.set(feature.id, feature)
+    project.featureIds.push(feature.id)
+    for (const w of group) {
+      w.featureId = feature.id
+      // Inside a feature every worktree is on the same branch by construction,
+      // so the branch name distinguishes nothing. The repository does.
+      w.name = basename(w.path)
+      claimed.add(w.id)
+    }
+    if (rootWs) {
+      rootWs.featureId = feature.id
+      claimed.add(rootWs.id)
+    }
+    if (rec.state === 'live' && !group.length) {
+      // The worktrees are gone from under it; a live feature with nothing in it
+      // is a lie, and parking it is the honest reading.
+      featureStore.patch(rec.id, (x) => {
+        x.state = 'parked'
+      })
+      feature.state = 'parked'
+    }
+  }
+
+  // Branches a persisted record already owns — including a closed one, whose
+  // worktrees may still be on disk. Without this the leftovers of a closed
+  // feature are re-derived as an "inferred" feature under the same stable id,
+  // which resurrects it under its branch name and hides the real record.
+  const owned = new Set(featureStore.list(project.id).map((r) => r.slug))
+
   for (const [branch, group] of byBranch) {
+    if (owned.has(branch)) continue
+    if (group.every((w) => claimed.has(w.id))) continue
+    const rest = group.filter((w) => !claimed.has(w.id))
     const id = stableId('feat', project.id, branch)
+    if (features.has(id)) continue
     const existing = features.get(id)
     const feature: Feature = {
       id,
       projectId: project.id,
       name: branch,
-      workspaceIds: group.map((w) => w.id),
+      slug: branch,
+      rootPath: null,
+      workspaceIds: rest.map((w) => w.id),
+      state: 'parked',
       ticket: existing?.ticket ?? null,
       review: existing?.review ?? null,
-      ceremony: group.length > 1 ? 'C3' : 'C2',
+      ceremony: rest.length > 1 ? 'C3' : 'C2',
+      derived: true,
       createdAt: existing?.createdAt ?? Date.now(),
-      archived: false,
+      updatedAt: Date.now(),
+      costUsd: 0,
     }
     features.set(id, feature)
     project.featureIds.push(id)
-    for (const w of group) w.featureId = id
+    for (const w of rest) w.featureId = id
+  }
+}
+
+/**
+ * A feature's folder sits in `worktrees/<slug>/`, outside the project root, so
+ * no amount of scanning finds it. It is registered explicitly: it is the group
+ * workspace that holds the memory and the cross-repo CONTEXT.md (§7), and an
+ * agent can be scoped to it to reach every repository at once.
+ */
+function addFeatureRoots(project: Project): void {
+  for (const rec of featureStore.list(project.id)) {
+    if (rec.state === 'archived' || !rec.rootPath || !existsSync(rec.rootPath)) continue
+    const id = stableId('ws', rec.rootPath)
+    if (workspaces.has(id)) {
+      if (!project.workspaceIds.includes(id)) project.workspaceIds.push(id)
+      continue
+    }
+    const ws: Workspace = {
+      id,
+      projectId: project.id,
+      kind: 'group',
+      name: rec.name,
+      path: rec.rootPath,
+      repo: null,
+      git: null,
+      runtime: null,
+      featureId: rec.id,
+      capabilities: detectCapabilities(rec.rootPath, null),
+      agentSessions: [],
+      lease: null,
+      hasMemory: existsSync(join(rec.rootPath, '.cockpit', 'memory.md')),
+      lastProbedAt: 0,
+      diskBytes: null,
+    }
+    workspaces.set(id, ws)
+    project.workspaceIds.push(id)
+    append({
+      type: 'workspace.discovered',
+      projectId: project.id,
+      workspaceId: id,
+      payload: { path: rec.rootPath, kind: 'group', featureId: rec.id },
+    })
   }
 }
 
@@ -425,6 +608,7 @@ export async function reconcile(projectId?: string): Promise<number> {
     for (const root of roots) {
       if (!existsSync(root)) continue
       const project = buildProject(root)
+      addFeatureRoots(project)
       await discoverWorktrees(project)
       for (const wid of project.workspaceIds) {
         await probeWorkspace(wid)

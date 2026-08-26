@@ -45,6 +45,13 @@ export type EventType =
   | 'project.renamed'
   | 'project.moved'
   | 'project.trashed'
+  // features — the durable unit of work (§4)
+  | 'feature.opened'
+  | 'feature.activated'
+  | 'feature.parked'
+  | 'feature.renamed'
+  | 'feature.closed'
+  | 'feature.deleted'
   // git
   | 'git.plan'
   | 'git.applied'
@@ -62,6 +69,7 @@ export type EventType =
   | 'process.exited'
   // agents
   | 'agent.session_started'
+  | 'agent.session_resumed'
   | 'agent.output'
   | 'agent.tool_use'
   | 'agent.session_ended'

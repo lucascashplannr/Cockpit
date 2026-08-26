@@ -16,6 +16,8 @@ interface CockpitHost {
   corePort: number
   /** Absolute path, or null when the user cancels. Absent outside Electron. */
   pickFolder?: () => Promise<string | null>
+  /** Brings a core back after one was stopped. Absent outside Electron. */
+  restartCore?: () => Promise<boolean>
 }
 
 const host = (window as unknown as { cockpitHost?: CockpitHost }).cockpitHost
@@ -47,6 +49,8 @@ export const state = reactive({
   paletteOpen: false,
   /** The project whose settings sheet is open, by id. */
   editingProjectId: null as string | null,
+  /** §4 — the sheet that opens a feature across N repositories. */
+  featureDialogOpen: false,
   pendingPlan: null as PlanPreview | null,
   planBusy: false,
   toast: null as { kind: 'ok' | 'error' | 'info'; text: string } | null,
@@ -60,7 +64,16 @@ export const client = new CoreClient(URL, {
   onState(s, detail) {
     state.connection = s
     state.connectionDetail = detail ?? ''
-    if (s === 'connected') void bootstrap()
+    // 'outdated' is a working connection, just an incomplete one: everything
+    // that does exist should still load, and the banner explains the rest.
+    if (s === 'connected' || s === 'outdated') void bootstrap()
+  },
+  onProjects(p) {
+    state.projects = p
+    ensureSelection()
+  },
+  onFeatures(f) {
+    state.features = f
   },
   onWorkspaces(w) {
     state.workspaces = w
@@ -98,7 +111,7 @@ async function bootstrap(): Promise<void> {
   const [projects, workspaces, features, agents, events, status] = await Promise.all([
     client.call('project.list', undefined),
     client.call('workspace.list', {}),
-    client.call('feature.list', {}),
+    client.call('feature.list', { includeArchived: true }),
     client.call('agent.list', undefined),
     client.call('journal.tail', { limit: 300 }),
     client.call('core.status', undefined),
@@ -205,7 +218,14 @@ export async function addProject(): Promise<void> {
     ? await host.pickFolder()
     : window.prompt('Path of the project folder to add')
   if (!root) return
-  await guard(() => client.call('project.add', { root }), 'project added')
+  const added = await guard(() => client.call('project.add', { root }), 'project added')
+  if (!added) return
+  // The core broadcasts the new rail, but selecting what was just added is
+  // this window's business, not every window's.
+  await refreshProjects()
+  state.activeProjectId = added.id
+  state.activeWorkspaceId = null
+  ensureSelection()
 }
 
 export const editingProject = computed(
@@ -358,7 +378,197 @@ export async function applyPendingPlan(): Promise<void> {
   const res = await guard(() => client.call('git.apply', { planId: plan.planId }))
   state.planBusy = false
   state.pendingPlan = null
-  if (res) toast(res.ok ? 'ok' : 'error', res.ok ? plan.operation + ' applied' : 'stopped: see journal')
+  if (!res) return
+  // The feature row is written by the plan's own apply hook, so the list is
+  // only true again once that has run.
+  await refreshFeatures()
+  toast(
+    res.ok ? 'ok' : 'error',
+    res.ok ? plan.operation + ' applied' : 'stopped — nothing was left behind; see the journal',
+  )
+}
+
+/* ── features ────────────────────────────────────────────────────────────
+ * §4 — the durable unit of work. Everything here is a thin call: the core
+ * decides what is possible, the window only asks.
+ */
+
+export async function refreshFeatures(): Promise<void> {
+  const [features, workspaces] = await Promise.all([
+    // Closed ones included: you cannot reopen or delete what is not listed.
+    client.call('feature.list', { includeArchived: true }),
+    client.call('workspace.list', {}),
+  ])
+  state.features = features
+  state.workspaces = workspaces
+  ensureSelection()
+}
+
+export const projectFeatures = computed(() =>
+  state.features.filter((f) => f.projectId === state.activeProjectId && f.state !== 'archived'),
+)
+
+export const liveFeature = computed(() => projectFeatures.value.find((f) => f.state === 'live') ?? null)
+
+/** Closed, but still on record — reopenable, and deletable. */
+export const archivedFeatures = computed(() =>
+  state.features.filter((f) => f.projectId === state.activeProjectId && f.state === 'archived'),
+)
+
+export async function reopenFeature(featureId: string): Promise<void> {
+  const res = await guard(() => client.call('feature.reopen', { featureId }))
+  if (!res) return
+  if (!res.ok) {
+    toast('error', res.detail)
+    return
+  }
+  await refreshFeatures()
+  toast('ok', res.detail)
+}
+
+/**
+ * §16 — every refusal below is a refusal to lose work, so the confirmations
+ * are not ceremony. Unmerged commits are the only thing `force` unlocks,
+ * because they are the only thing nothing can bring back.
+ */
+export async function deleteFeature(
+  featureId: string,
+  opts: { removeWorktrees: boolean; deleteBranches: boolean },
+): Promise<void> {
+  const f = state.features.find((x) => x.id === featureId)
+  const run = (force: boolean) =>
+    guard(() => client.call('feature.delete', { featureId, ...opts, force }))
+
+  let res = await run(false)
+  if (!res) return
+
+  if (!res.ok) {
+    // Only the unmerged-branch refusal is forceable; anything else is a state
+    // to fix, not a prompt to click through.
+    if (!/UNMERGED|not merged/i.test(res.detail)) {
+      toast('error', res.detail)
+      return
+    }
+    if (!window.confirm(res.detail + '\n\nDelete anyway? This cannot be undone.')) return
+    res = await run(true)
+    if (!res?.ok) {
+      if (res) toast('error', res.detail)
+      return
+    }
+  }
+
+  if (res.plan) {
+    const lines = [
+      'Delete "' + (f?.name ?? 'this feature') + '" for good?',
+      '',
+      ...res.warnings.map((w) => '• ' + w),
+    ]
+    if (!window.confirm(lines.join('\n'))) return
+    state.pendingPlan = res.plan
+    return
+  }
+  await refreshFeatures()
+  toast('ok', res.detail)
+}
+
+/** §3.7 — opening a feature is a plan like any other: previewed, then applied. */
+export async function openFeature(input: {
+  name: string
+  ceremony: 'C1' | 'C2' | 'C3'
+  repoWorkspaceIds?: string[]
+  base?: string
+}): Promise<void> {
+  if (!state.activeProjectId) return
+  const res = await guard(() =>
+    client.call('feature.open', { projectId: state.activeProjectId!, ...input }),
+  )
+  if (!res) return
+  state.featureDialogOpen = false
+  state.pendingPlan = res.plan
+}
+
+/**
+ * §8 — an exclusive runtime held elsewhere is a refusal, not a failure. The
+ * second call is the user answering "yes, park the other one".
+ */
+export async function activateFeature(featureId: string): Promise<void> {
+  const res = await guard(() => client.call('feature.activate', { featureId, force: false }))
+  if (!res) return
+  if (!res.ok) {
+    if (!res.conflicts.length) {
+      toast('error', res.detail)
+      return
+    }
+    const ok = window.confirm(res.conflicts.join('\n') + '\n\nPark it and continue?')
+    if (!ok) return
+    const forced = await guard(() => client.call('feature.activate', { featureId, force: true }))
+    if (!forced?.ok) return
+    await refreshFeatures()
+    toast('ok', forced.parked.length ? 'live — parked ' + forced.parked.join(', ') : 'live')
+    return
+  }
+  await refreshFeatures()
+  toast('ok', 'live')
+}
+
+export async function parkFeature(featureId: string): Promise<void> {
+  const res = await guard(() => client.call('feature.park', { featureId }))
+  if (!res) return
+  await refreshFeatures()
+  toast('ok', 'parked — the worktrees stay exactly where they are')
+}
+
+/** §16 — refuses over unpushed work; removing the checkouts is its own plan. */
+export async function closeFeature(featureId: string, removeWorktrees: boolean): Promise<void> {
+  const res = await guard(() => client.call('feature.close', { featureId, removeWorktrees }))
+  if (!res) return
+  if (!res.ok) {
+    toast('error', res.detail)
+    return
+  }
+  if (res.plan) {
+    state.pendingPlan = res.plan
+    return
+  }
+  await refreshFeatures()
+  toast('ok', res.detail)
+}
+
+/**
+ * §13 — stop the core over its own socket, then have the host spawn a fresh
+ * one. Needed because this app starts the core detached: without it, picking
+ * up new core code means finding a pid by hand.
+ */
+export async function restartCore(): Promise<void> {
+  if (!host?.restartCore) {
+    toast('info', 'run `cockpit restart` in a terminal — this window cannot spawn a core')
+    return
+  }
+  toast('info', 'stopping the core…')
+  try {
+    await client.call('core.shutdown', undefined)
+  } catch {
+    // Already down, or it dropped the socket before answering. Either is fine.
+  }
+  const ok = await host.restartCore()
+  if (!ok) {
+    toast('error', 'the core did not come back — run `cockpit daemon` to see why')
+    return
+  }
+  client.reconnectNow()
+  toast('ok', 'core restarted')
+}
+
+/** §6 — the conversation is still there; the memory has moved on since. */
+export async function resumeSession(sessionId: string, prompt: string): Promise<boolean> {
+  const res = await guard(() => client.call('agent.resume', { sessionId, prompt }))
+  if (!res) return false
+  if ('denied' in res) {
+    toast('error', res.reason)
+    return false
+  }
+  toast('ok', 'resumed')
+  return true
 }
 
 export const busy = ref(false)

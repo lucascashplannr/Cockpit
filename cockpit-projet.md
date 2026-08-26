@@ -561,5 +561,9 @@ Le critère d'abandon se décide **maintenant**, à froid, pour un soi futur tro
 1. **Nom du projet.**
 2. **Où vit la mémoire quand il n'y a pas de feature ?** Un workspace C0 a-t-il droit à une mémoire persistante, ou seulement à un journal ?
 3. **Le manifest est-il unique par projet, ou peut-il être composé** (un fichier racine + des fichiers par repo) ?
-4. **Stratégie d'arborescence par défaut** pour un nouveau projet multi-repo : groupée par feature, ou plate par repo ?
+4. ~~**Stratégie d'arborescence par défaut** pour un nouveau projet multi-repo : groupée par feature, ou plate par repo ?~~
+   **Tranchée : groupée pour C3, plate disponible pour un C2 ponctuel.** `worktrees/<feature>/<repo>` —
+   un dossier par feature, parce que c'est le seul endroit où peuvent vivre la mémoire partagée et le
+   fichier d'instructions inter-repos qu'exige §7. Une disposition plate par repo éparpille une feature
+   entre trois parents et ne laisse nulle part où mettre son cerveau.
 5. **Politique de rétention** des sessions et journaux.

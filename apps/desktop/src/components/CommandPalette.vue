@@ -3,12 +3,15 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
   AppWindow, ArrowRight, ArrowUpFromLine, BookMarked, CornerDownLeft, FileCode, FolderOpen,
-  FolderPlus, GitBranch, GitCompareArrows, GitMerge, RefreshCw, ScrollText, Search, Sparkles,
-  Settings, SquareDot, SquareTerminal, TextSearch, Undo2, Zap,
+  FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
+  Search, Sparkles, Settings, SquareDot, SquareTerminal, TextSearch, Trash2, Undo2,
+  RotateCcw, Archive, Zap,
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  activeProject, activeWorkspace, client, guard, requestPlan, selectWorkspace, state, toast,
+  activateFeature, activeProject, activeWorkspace, archivedFeatures, client, closeFeature,
+  deleteFeature, guard, parkFeature, projectFeatures, reopenFeature, requestPlan, restartCore,
+  selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { TabId } from '../core/store.js'
 
@@ -77,6 +80,87 @@ function act(fn: () => unknown) {
 const commands = computed<Item[]>(() => {
   const w = activeWorkspace.value
   const out: Item[] = []
+
+  // §13 — the core is started detached by this app, so without this there is
+  // no way to pick up new core code short of hunting the pid.
+  out.push({
+    id: 'core:restart',
+    label: 'Restart the core',
+    hint: 'dev servers keep running; agent sessions end but stay resumable',
+    group: 'Core',
+    icon: RefreshCw,
+    run: act(() => restartCore()),
+  })
+
+  // §4 — the durable unit of work, and the switch between two of them. Listed
+  // before anything workspace-scoped: it is the level the day is organised at.
+  if (activeProject.value) {
+    out.push({
+      id: 'feature:open',
+      label: 'Open a feature',
+      hint: 'a branch per repository, one plan',
+      group: 'Feature',
+      icon: Layers,
+      run: act(() => {
+        state.featureDialogOpen = true
+      }),
+    })
+  }
+  for (const f of projectFeatures.value) {
+    if (f.derived) continue
+    const isLive = f.state === 'live'
+    out.push({
+      id: 'feature:toggle:' + f.id,
+      label: (isLive ? 'Park ' : 'Make live ') + f.name,
+      hint: isLive ? 'servers down, worktrees kept' : 'bring its runtimes up',
+      group: 'Feature',
+      icon: isLive ? Pause : Play,
+      run: act(() => (isLive ? parkFeature(f.id) : activateFeature(f.id))),
+    })
+    out.push({
+      id: 'feature:close:' + f.id,
+      label: 'Close ' + f.name,
+      hint: 'archives it — reversible, worktrees removed by their own plan',
+      group: 'Feature',
+      icon: Archive,
+      run: act(() => closeFeature(f.id, true)),
+    })
+    out.push({
+      id: 'feature:delete:' + f.id,
+      label: 'Delete ' + f.name + '…',
+      hint: 'drops the record for good; refuses over anything unmerged',
+      group: 'Feature',
+      icon: Trash2,
+      run: act(() =>
+        deleteFeature(f.id, {
+          removeWorktrees: true,
+          deleteBranches: window.confirm(
+            'Delete the branch "' + f.slug + '" in every repository too?\n\n' +
+              'Cancel keeps the branches and removes only the checkouts and the record.',
+          ),
+        }),
+      ),
+    })
+  }
+  // §3.9 — a closed feature is listed only where it can be acted on.
+  for (const f of archivedFeatures.value) {
+    out.push({
+      id: 'feature:reopen:' + f.id,
+      label: 'Reopen ' + f.name,
+      hint: 'closed ' + new Date(f.updatedAt).toLocaleDateString(),
+      group: 'Feature',
+      icon: RotateCcw,
+      run: act(() => reopenFeature(f.id)),
+    })
+    out.push({
+      id: 'feature:delete:' + f.id,
+      label: 'Delete ' + f.name + '…',
+      hint: 'closed — remove it from the record for good',
+      group: 'Feature',
+      icon: Trash2,
+      run: act(() => deleteFeature(f.id, { removeWorktrees: true, deleteBranches: false })),
+    })
+  }
 
   const tab = (id: TabId, label: string, icon: Component) =>
     out.push({

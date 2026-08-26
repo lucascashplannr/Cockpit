@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowUp, FolderPlus, Layers, RefreshCw, Search } from '@lucide/vue'
+import { ArrowUp, FolderPlus, Layers, Pause, Play, Plus, RefreshCw, Search } from '@lucide/vue'
+import type { Feature } from '@cockpit/shared'
 import WorkspaceRow from './WorkspaceRow.vue'
-import { activeProject, client, guard, state, workspaceGroups } from '../core/store.js'
+import {
+  activateFeature, activeProject, client, guard, parkFeature, state, workspaceGroups,
+} from '../core/store.js'
 
 /**
  * §12 — "La liste centrale liste des workspaces, groupés par feature quand une
@@ -22,6 +25,21 @@ function featureSummary(ws: { git: { ahead: number } | null; runtime: { status: 
 
 async function rescan() {
   await guard(() => client.call('core.reconcile', {}), 'rescanned')
+}
+
+/**
+ * §8 + §11 — the switch. Parked means the worktrees are on disk and agents may
+ * still run in them; live means the servers are up and the ports are bound.
+ * Only a feature Cockpit actually opened has somewhere to keep that state, so
+ * an inferred one gets no toggle (§3.9 — absent, not disabled).
+ */
+function togglable(f: Feature | null): boolean {
+  return !!f && !f.derived && f.state !== 'archived'
+}
+
+async function toggle(f: Feature) {
+  if (f.state === 'live') await parkFeature(f.id)
+  else await activateFeature(f.id)
 }
 </script>
 
@@ -48,15 +66,28 @@ async function rescan() {
       <template v-else>
         <div v-for="(g, i) in groups" :key="g.featureId ?? 'loose-' + i" class="group">
           <!-- A feature is a decoration (§4): no feature, no header. -->
-          <div v-if="g.title" class="group-head">
+          <div v-if="g.title" class="group-head" :class="{ live: g.feature?.state === 'live' }">
             <Layers class="sm gi" />
             <span class="title">{{ g.title }}</span>
             <span class="summary num">
+              <span v-if="g.feature && g.feature.costUsd > 0" class="dim cost">
+                ${{ g.feature.costUsd.toFixed(2) }}
+              </span>
               <span v-if="featureSummary(g.workspaces).ahead" class="up">
                 <ArrowUp class="sm" />{{ featureSummary(g.workspaces).ahead }}
               </span>
               <span class="dim">{{ featureSummary(g.workspaces).total }}</span>
             </span>
+            <!-- §3.9 - an inferred feature has no state to toggle, so no button. -->
+            <button
+              v-if="togglable(g.feature)"
+              class="icon-btn small toggle"
+              :class="{ on: g.feature!.state === 'live' }"
+              :title="g.feature!.state === 'live' ? 'Park - servers down, worktrees kept' : 'Make live - bring its runtimes up'"
+              @click="toggle(g.feature!)"
+            >
+              <component :is="g.feature!.state === 'live' ? Pause : Play" class="sm" />
+            </button>
           </div>
           <div v-else-if="groups.length > 1 && i > 0" class="divider">
             <span class="section-label">other workspaces</span>
@@ -69,6 +100,13 @@ async function rescan() {
 
     <footer v-if="activeProject" class="foot">
       <span class="root" :title="activeProject.root">{{ activeProject.root }}</span>
+      <button
+        class="icon-btn small"
+        title="Open a feature - a branch per repository, one plan"
+        @click="state.featureDialogOpen = true"
+      >
+        <Plus class="sm" />
+      </button>
       <button class="icon-btn small" title="Re-probe everything" @click="rescan">
         <RefreshCw class="sm" />
       </button>
@@ -149,6 +187,14 @@ async function rescan() {
 .summary .up { color: var(--ok); display: inline-flex; align-items: center; gap: 2px; }
 .summary .up .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
 .summary .dim { color: var(--text-dim); }
+.summary .cost { font-variant-numeric: tabular-nums; }
+
+/* Live reads as a state of the header, not as a badge to hunt for. */
+.group-head.live .gi { color: var(--ok); }
+.toggle { margin-left: 4px; opacity: 0; transition: opacity var(--dur-2) var(--ease-soft); }
+.group-head:hover .toggle,
+.toggle.on { opacity: 1; }
+.toggle.on { color: var(--ok); }
 
 .divider { padding: 16px 11px 6px; }
 

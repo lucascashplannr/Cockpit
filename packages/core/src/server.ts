@@ -11,6 +11,7 @@ import * as plans from './plans.js'
 import * as memory from './memory.js'
 import * as leases from './leases.js'
 import * as agents from './agents.js'
+import * as features from './features/index.js'
 import * as terminals from './terminals.js'
 import * as runtime from './runtime/index.js'
 import * as supervisor from './supervisor.js'
@@ -56,6 +57,26 @@ export function pushWorkspaces(): void {
   broadcast({ t: 'workspaces', workspaces: registry.allWorkspaces() })
 }
 
+/**
+ * §3.3 — the UI is a view over what the core pushes, never a source of truth
+ * of its own. Without this a window that adds a project sees its own rail go
+ * stale, and every other window never learns at all.
+ */
+export function pushProjects(): void {
+  broadcast({ t: 'projects', projects: registry.allProjects() })
+}
+
+export function pushFeatures(): void {
+  broadcast({ t: 'features', features: registry.allFeatures() })
+}
+
+/** Everything derived from the registry, after a change that could move any of it. */
+function pushAll(): void {
+  pushProjects()
+  pushWorkspaces()
+  pushFeatures()
+}
+
 export function pushAgents(): void {
   broadcast({ t: 'agents', sessions: agents.list() })
 }
@@ -91,11 +112,14 @@ const handlers: Record<string, Handler> = {
   'core.status': () => status(),
   'core.reconcile': async (p: { projectId?: string }) => {
     const changed = await registry.reconcile(p?.projectId)
-    pushWorkspaces()
+    pushAll()
     return { changed }
   },
   'core.shutdown': () => {
-    setTimeout(() => process.exit(0), 100)
+    // Through the signal handler, not straight to process.exit: that is where
+    // the terminals get closed and `core.stopping` reaches the journal. A
+    // permanent service that vanishes without a trace is a debugging problem.
+    setTimeout(() => process.kill(process.pid, 'SIGTERM'), 100)
     return { ok: true }
   },
 
@@ -103,34 +127,34 @@ const handlers: Record<string, Handler> = {
   'project.add': async (p: { root: string }) => {
     const project = registry.addProject(p.root)
     await registry.reconcile(project.id)
-    pushWorkspaces()
+    pushAll()
     return registry.allProjects().find((x) => x.id === project.id) ?? project
   },
   'project.forget': (p: { projectId: string }) => {
     registry.forgetProject(p.projectId)
-    pushWorkspaces()
+    pushAll()
     return { ok: true }
   },
   'project.rescan': async (p: { projectId: string }) => {
     await registry.reconcile(p.projectId)
-    pushWorkspaces()
+    pushAll()
     return registry.allProjects().find((x) => x.id === p.projectId)
   },
   'project.rename': async (p: { projectId: string; name: string | null }) => {
     const project = registry.renameProject(p.projectId, p.name)
     await registry.reconcile(project.id)
-    pushWorkspaces()
+    pushAll()
     return registry.allProjects().find((x) => x.id === project.id) ?? project
   },
   'project.move': async (p: { projectId: string; root: string; moveFiles: boolean }) => {
     const project = registry.moveProject(p.projectId, p.root, p.moveFiles)
     await registry.reconcile(project.id)
-    pushWorkspaces()
+    pushAll()
     return registry.allProjects().find((x) => x.id === project.id) ?? project
   },
   'project.trash': async (p: { projectId: string }) => {
     const trashed = await registry.trashProject(p.projectId)
-    pushWorkspaces()
+    pushAll()
     return { ok: true, trashed }
   },
 
@@ -144,18 +168,50 @@ const handlers: Record<string, Handler> = {
   'workspace.openIn': (p: { workspaceId: string; target: string; path?: string }) =>
     openIn(p.workspaceId, p.target, p.path),
 
-  'feature.list': (p: { projectId?: string }) => registry.allFeatures(p?.projectId),
-  'feature.create': async (p: { projectId: string; name: string; ceremony: string; repos?: string[] }) => {
-    // C1 creates a branch, C2/C3 create worktrees. Both go through a plan (§3.7).
-    const project = registry.allProjects().find((x) => x.id === p.projectId)
-    if (!project) throw new Error('unknown project')
-    const mains = registry
-      .allWorkspaces(p.projectId)
-      .filter((w) => w.kind === 'main' && (!p.repos?.length || p.repos.includes(w.name)))
-    const target = mains[0]
-    if (!target) throw new Error('no repository in this project')
-    const op = p.ceremony === 'C1' ? 'branch' : 'worktree'
-    return { plan: await plans.plan(target.id, op, { name: p.name }) }
+  'feature.list': (p: { projectId?: string; includeArchived?: boolean }) =>
+    registry.allFeatures(p?.projectId, p?.includeArchived ?? false),
+  'feature.get': (p: { featureId: string }) => registry.getFeature(p.featureId),
+  /** §3.7 — one plan across every repository, applied through `git.apply`. */
+  'feature.open': (p: Parameters<typeof features.openPlan>[0]) => features.openPlan(p),
+  'feature.activate': async (p: { featureId: string; force?: boolean }) => {
+    const res = await features.activate(p.featureId, p.force ?? false)
+    pushWorkspaces()
+    pushFeatures()
+    return res
+  },
+  'feature.park': async (p: { featureId: string }) => {
+    const res = await features.park(p.featureId)
+    pushWorkspaces()
+    pushFeatures()
+    return res
+  },
+  'feature.rename': async (p: { featureId: string; name: string }) => {
+    features.rename(p.featureId, p.name)
+    const f = registry.getFeature(p.featureId)
+    await registry.reconcile(f?.projectId)
+    pushWorkspaces()
+    return registry.getFeature(p.featureId)
+  },
+  'feature.reopen': async (p: { featureId: string }) => {
+    const res = features.reopen(p.featureId)
+    const f = registry.getFeature(p.featureId)
+    await registry.reconcile(f?.projectId)
+    pushAll()
+    return res
+  },
+  'feature.delete': async (p: Parameters<typeof features.deletePlan>[0]) => {
+    const res = await features.deletePlan(p)
+    if (!res.plan) pushAll()
+    return res
+  },
+  'feature.close': async (p: { featureId: string; removeWorktrees: boolean }) => {
+    const res = await features.closePlan(p.featureId, p.removeWorktrees)
+    if (!res.plan) {
+      const f = registry.getFeature(p.featureId)
+      await registry.reconcile(f?.projectId)
+      pushWorkspaces()
+    }
+    return res
   },
 
   'fs.list': (p: { workspaceId: string; rel: string }) => files.list(p.workspaceId, p.rel),
@@ -175,7 +231,7 @@ const handlers: Record<string, Handler> = {
   'git.apply': async (p: { planId: string }) => {
     const res = await plans.apply(p.planId)
     await registry.reconcile()
-    pushWorkspaces()
+    pushAll()
     return res
   },
   'git.undo': async (p: { workspaceId: string }) => {
@@ -213,19 +269,44 @@ const handlers: Record<string, Handler> = {
   'ports.map': () => portMap(),
 
   'agent.engines': () => agents.engines(),
-  'agent.start': async (p: { engine: string; workspaceIds: string[]; prompt: string }) => {
+  'agent.start': async (p: {
+    engine: string
+    workspaceIds: string[]
+    prompt: string
+    featureId?: string
+  }) => {
     const wss = p.workspaceIds.map((id) => registry.requireWorkspace(id))
     const first = wss[0]
     if (!first) throw new Error('no workspace given')
     const protectedBranch = first.repo ? await defaultBranch(first.path) : null
+    // Explicit, or the one the scope already sits in — a session started from
+    // inside a feature should not have to be told which feature it is in.
+    const featureId = p.featureId ?? first.featureId ?? null
+    const paths = wss.map((w) => w.path)
     const res = agents.startAgent({
       engine: p.engine,
       workspaceIds: p.workspaceIds,
-      paths: wss.map((w) => w.path),
+      paths,
       prompt: p.prompt,
       protectedBranch,
       currentBranch: first.git?.branch ?? null,
+      featureId,
+      preamble: featureId ? features.promptPreamble(featureId, paths) : '',
     })
+    pushAgents()
+    pushWorkspaces()
+    return res
+  },
+  'agent.resume': (p: { sessionId: string; prompt: string }) => {
+    const prev = agents.get(p.sessionId)
+    if (!prev) throw new Error('unknown session: ' + p.sessionId)
+    const res = agents.resumeAgent(
+      p.sessionId,
+      p.prompt,
+      // The memory has moved on since; the conversation has not. Re-reading it
+      // is what keeps a resumed session from acting on a stale understanding.
+      prev.featureId ? features.promptPreamble(prev.featureId, prev.paths) : '',
+    )
     pushAgents()
     pushWorkspaces()
     return res
@@ -289,7 +370,9 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
     // §13 — version handshake, first message, before anything else.
     const hello: ServerPush = { t: 'hello', protocol: PROTOCOL_VERSION, core: status() }
     ws.send(JSON.stringify(hello))
+    ws.send(JSON.stringify({ t: 'projects', projects: registry.allProjects() } satisfies ServerPush))
     ws.send(JSON.stringify({ t: 'workspaces', workspaces: registry.allWorkspaces() } satisfies ServerPush))
+    ws.send(JSON.stringify({ t: 'features', features: registry.allFeatures() } satisfies ServerPush))
 
     ws.on('message', async (raw) => {
       let req: RpcRequest
@@ -306,7 +389,20 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
       }
 
       if (!handler) {
-        respond({ t: 'res', id: req.id, ok: false, error: { code: 'unknown_method', message: req.method } })
+        // The bare method name here read as a mystery error in the UI. It has
+        // exactly one cause worth naming: a core older than the window.
+        respond({
+          t: 'res',
+          id: req.id,
+          ok: false,
+          error: {
+            code: 'unknown_method',
+            message:
+              'this core does not implement "' +
+              req.method +
+              '" — it is an older build than this window. Restart the core (pnpm daemon).',
+          },
+        })
         return
       }
       try {

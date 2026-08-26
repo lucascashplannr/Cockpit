@@ -108,19 +108,58 @@ export function start(opts: StartOptions): SupervisedProcess {
 
 export function stop(id: string): boolean {
   const m = live.get(id)
-  if (!m) return false
-  killTree(m.child.pid)
-  return true
+  if (m) {
+    killTree(m.child.pid)
+    return true
+  }
+  return stopAdopted([id]) > 0
 }
 
 /** §16 — "Arrêt par groupe": every process attached to a workspace at once. */
 export function stopWorkspace(workspaceId: string): number {
   let n = 0
+  const own = new Set<string>()
   for (const m of [...live.values()]) {
     if (m.workspaceId === workspaceId) {
+      own.add(m.id)
       killTree(m.child.pid)
       n++
     }
+  }
+
+  // §13 — a process started by a PREVIOUS core is adopted at boot, so it is in
+  // the table but not in `live`. Stopping only what this core spawned left it
+  // running and unstoppable: the port stayed bound, health kept reporting up,
+  // and a parked feature went on holding a resource nobody could release.
+  const rows = getDb()
+    .prepare("SELECT id FROM processes WHERE workspace_id = ? AND status = 'running'")
+    .all(workspaceId) as { id: string }[]
+  n += stopAdopted(rows.map((r) => r.id).filter((id) => !own.has(id)))
+  return n
+}
+
+/** Kills by recorded pid and settles the row; the child emits no exit here. */
+function stopAdopted(ids: string[]): number {
+  if (!ids.length) return 0
+  const db = getDb()
+  let n = 0
+  for (const id of ids) {
+    const row = db.prepare('SELECT pid, workspace_id, label FROM processes WHERE id = ?').get(id) as
+      | { pid: number | null; workspace_id: string | null; label: string }
+      | undefined
+    if (!row) continue
+    if (isAlive(row.pid)) {
+      killTree(row.pid ?? undefined)
+      n++
+    }
+    db.prepare("UPDATE processes SET status = 'exited', exit_code = -1 WHERE id = ?").run(id)
+    append({
+      type: 'process.exited',
+      level: 'info',
+      actor: { kind: 'system' },
+      workspaceId: row.workspace_id,
+      payload: { id, label: row.label, code: null, adopted: true },
+    })
   }
   return n
 }

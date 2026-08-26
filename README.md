@@ -40,6 +40,19 @@ pnpm daemon
 pnpm dev
 ```
 
+The app starts a core itself if none is listening, so `pnpm dev` alone is enough —
+which also means the core you are talking to may be older than the code you just
+edited. **After changing anything under `packages/core`, restart it:**
+
+```bash
+cockpit restart      # stops it over its own socket, starts a fresh one detached
+cockpit stop         # just stops it; dev servers and their ports keep running
+```
+
+The window says so too: a core older than the renderer raises a banner with a
+**Restart the core** button, rather than failing one command at a time with
+`unknown_method`.
+
 Or use it with no app at all:
 
 ```bash
@@ -52,7 +65,46 @@ cockpit search "route" # full text across every repo at once
 cockpit plan rebase    # preview; nothing runs yet
 cockpit apply <planId>
 cockpit undo
+
+# features — the durable unit of work (§4)
+cockpit feature open "Two-factor auth"   # one plan, a worktree per repo
+cockpit feature ls                       # every feature, live or parked
+cockpit feature live two-factor-auth     # servers up; refuses if something exclusive blocks it
+cockpit feature park two-factor-auth     # servers down, worktrees kept
+cockpit feature close two-factor-auth --remove   # archive it; reversible
+cockpit feature reopen two-factor-auth          # bring a closed one back
+cockpit feature delete two-factor-auth          # drop the record for good
+cockpit feature ls --all                        # closed ones included
+
+# sessions are disposable; the conversation is not
+cockpit agent list                       # ↻ marks the resumable ones
+cockpit agent resume <id> "what next"
 ```
+
+## Features, sessions, and the difference
+
+A **feature** is the durable thing: a name, a branch of that name in every repository
+it spans, one folder holding them all, a memory, and a live/parked state. It survives
+the daemon, the window and the week — that is the whole reason it has a table.
+
+A **session** is the disposable thing: a list of paths, an engine, a lease. Clearing one
+costs nothing because the understanding lives in the feature's memory, not in the
+conversation (§6). Resuming one is the same idea from the other side: `agent resume`
+hands the engine back its own conversation *and* re-reads the memory first, so it
+continues from what is true now rather than from what was true on Tuesday.
+
+**Close and delete are different verbs on purpose.** Close archives: the record, the
+branches and the memory all survive, and `reopen` undoes it — so it is the safe default.
+Delete drops the record for good. It refuses over uncommitted or unpushed work, an open
+agent session or a live runtime; and `--branches` refuses again over commits not merged
+into the base, because that is the one thing nothing can bring back. The feature folder
+goes to the Trash, never `rm -rf` (§16).
+
+**Live vs parked** is what lets several features exist at once. Parked means the
+worktrees are on disk and agents may still run in them; live means the servers are up.
+Ports are global and deterministic (§11), so portable runtimes coexist for free —
+Compose and devcontainer are marked `exclusive`, and a second live feature wanting one
+is refused with the offer to park the other, rather than failing deep inside Docker.
 
 `cockpit help` lists the rest.
 
@@ -65,15 +117,20 @@ cockpit undo
 | 3.7 | Plan shown before every git operation, undo via restore point | done |
 | 3.9 | Absent capability ⇒ invisible, never greyed out | done |
 | 4 | Workspace as the primitive; feature as a decoration | done |
+| 4 | Feature as a durable object: multi-repo, multi-day, live / parked | done |
 | 5 | Capability model with detection fallback (no manifest required) | done |
 | 6 | Memory / sessions / journal kept separate; promotion in one gesture | done |
+| 6 | Sessions resumable across a daemon restart, memory re-read on the way in | done |
 | 7 | Agents scoped to paths, leased, never on the protected branch | done |
+| 7 | Cross-repo `CONTEXT.md` generated and fed to any multi-repo session | done |
 | 8 | Runtime contract (`provision`/`up`/`preview`/`health`/`down`), `portable` + `exclusive` | done |
+| 8 | Exclusive runtimes arbitrated: a second live feature is refused, not broken | done |
 | 11 | Global, deterministic port allocation across all projects | done |
 | 12 | Three-column shell, ⌘K palette, diff split by author | done |
 | 13 | Core as a standalone service, version handshake, orphan reaping, log rotation | done |
 | 13 | Schema versioning: a foreign/legacy database is moved aside, never deleted | done |
 | 16 | Path leases, per-repo git queue, mtime check before writes | done |
+| 21.4 | Worktree layout decided: grouped per feature (`worktrees/<feature>/<repo>`) | done |
 
 Runtimes shipped: `node`, `expo`, `compose`, `herd`, `devcontainer`.
 Agent engines shipped: `claude`, `codex` — normalised into one event stream (§7).
@@ -86,8 +143,9 @@ Agent engines shipped: `claude`, `codex` — normalised into one event stream (�
 - **CI badges** — the capability is detected, the status is not polled.
 - **Session comparison** (§6, "sessions comparables") — sessions are listed, not diffed.
 - **Documentation capability** (§9) — detected, not indexed or rendered.
-- **Feature creation at C3** creates the worktree; it does not yet provision the environment,
-  the database or the ticket in one gesture.
+- **Feature creation at C3** creates the worktrees, the memory and the cross-repo context, and
+  `feature live` provisions and starts the runtimes. It does not create the database or the
+  ticket — §10's "une base par workspace" is unbuilt, and tickets need the keychain first.
 - **Packaging** (electron-builder, launchd) — the core runs in the foreground for now.
 
 ## The mark
