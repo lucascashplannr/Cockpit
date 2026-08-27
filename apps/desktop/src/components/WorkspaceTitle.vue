@@ -10,13 +10,22 @@ import { activeProject, activeWorkspace } from '../core/store.js'
  * it for the rail: the verbs on the right of the band act on this workspace,
  * and without its name beside them they read as applying to nothing.
  *
- * The project name appears only when it differs from the workspace's — for a
- * main checkout the two are the same word and repeating it says nothing.
+ * The project always leads, so the crumb has the same shape on every row. It
+ * used to be dropped whenever the two names matched, which looked tidy on a
+ * mono-repo and reads as a bug now: a project's first repository is usually
+ * called after the folder that holds it, so one row in the list showed one
+ * segment while its siblings showed two, and nothing on screen said why.
+ *
+ * The one exception is the workspace that *is* the project — the root folder
+ * holding the others. There the names are not merely equal, they are the same
+ * thing, and a crumb from something to itself says nothing.
  */
 
 const w = computed(() => activeWorkspace.value)
 const project = computed(() => activeProject.value)
-const showProject = computed(() => !!project.value && project.value.name !== w.value?.name)
+const showProject = computed(
+  () => !!project.value && !!w.value && w.value.path !== project.value.root,
+)
 </script>
 
 <template>
@@ -42,17 +51,21 @@ const showProject = computed(() => !!project.value && project.value.name !== w.v
   /* Stays draggable: the window is moved by its title bar, and nothing here
      is a control. */
 }
+/* 15px rather than --fs-sm: at 13px against an 18px name the project read as
+   a caption on the workspace instead of the first half of one crumb. Still a
+   clear step below it, and the colour carries the rest of the hierarchy. */
 .proj {
   flex: none;
-  font-size: var(--fs-sm);
+  font-size: 15px;
   color: var(--text-dim);
 }
 .sep {
   flex: none;
+  font-size: 15px;
   color: var(--text-dim);
   opacity: 0.6;
 }
-/* 18px/650 rather than 16px/620: in a 58px band the name is what anchors the
+/* 18px/650 rather than 16px/620: in a 50px band the name is what anchors the
    left half against the verbs on the right, and at --fs-lg it was the same
    weight as body copy sitting in a lot of empty chrome. Between --fs-lg and
    --fs-xl on purpose — 20px starts competing with the app's own name. */

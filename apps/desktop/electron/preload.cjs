@@ -17,4 +17,15 @@ contextBridge.exposeInMainWorld('cockpitHost', {
   pickFolder: (opts) => ipcRenderer.invoke('dialog:pickFolder', opts),
   /** Spawns a core if none is listening. Resolves true once one answers. */
   restartCore: () => ipcRenderer.invoke('core:restart'),
+  /**
+   * The window's own three verbs. They exist because AppKit greys the standard
+   * buttons on any window that is not the key window, so the app draws its own
+   * and needs somewhere to send the clicks.
+   */
+  window: {
+    close: () => ipcRenderer.send('window:close'),
+    minimize: () => ipcRenderer.send('window:minimize'),
+    /** Fullscreen, or zoom-to-fit when the option key is down. */
+    zoom: (alt) => ipcRenderer.send('window:zoom', !!alt),
+  },
 })

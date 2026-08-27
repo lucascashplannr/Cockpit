@@ -55,6 +55,23 @@ async function ensureCore() {
 }
 
 /**
+ * The three verbs behind the drawn traffic lights. Fire-and-forget on purpose:
+ * a window button that awaited a round trip would feel like a button that did
+ * not take.
+ */
+const senderWindow = (e) => BrowserWindow.fromWebContents(e.sender)
+ipcMain.on('window:close', (e) => senderWindow(e)?.close())
+ipcMain.on('window:minimize', (e) => senderWindow(e)?.minimize())
+ipcMain.on('window:zoom', (e, alt) => {
+  const win = senderWindow(e)
+  if (!win) return
+  // Same split as the button it replaces: green is fullscreen, ⌥-green is the
+  // older zoom-to-fit.
+  if (alt) (win.isMaximized() ? win.unmaximize() : win.maximize())
+  else win.setFullScreen(!win.isFullScreen())
+})
+
+/**
  * The one thing the renderer genuinely cannot do for itself. §13 rule 1 keeps
  * the bridge tiny, but `window.prompt` does not exist in Electron at all, so
  * "add a project" needs a real dialog or it is a button that throws.
@@ -100,9 +117,10 @@ function createWindow() {
     show: false,
     // Raycast-style chrome: the traffic lights float over the rail.
     titleBarStyle: 'hiddenInset',
-    // 10px in from the left of the 72px rail (--rail-w), 23px down so the
-    // 12px buttons centre in the 58px title band (--titlebar-h).
-    trafficLightPosition: { x: 10, y: 23 },
+    // Where the native buttons would sit, kept in step with the CSS that draws
+    // them now (TrafficLights.vue): 10px in from the left of the 72px rail
+    // (--rail-w), 19px down so the 12px buttons centre in the 50px band.
+    trafficLightPosition: { x: 10, y: 19 },
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0b0d' : '#f7f7f8',
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
@@ -111,6 +129,12 @@ function createWindow() {
       sandbox: false,
     },
   })
+
+  // AppKit greys the standard window buttons whenever the window is not the
+  // key window, and exposes no way to ask it not to — the state belongs to the
+  // window, not to the buttons. Hiding them and drawing three of our own in the
+  // renderer is the only way they stay lit, and it costs the IPC below.
+  if (process.platform === 'darwin') win.setWindowButtonVisibility(false)
 
   win.once('ready-to-show', () => win.show())
 

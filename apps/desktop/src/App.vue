@@ -15,6 +15,7 @@ import ConnectionBanner from './components/ConnectionBanner.vue'
 import HomeView from './components/HomeView.vue'
 import WorkspaceActions from './components/WorkspaceActions.vue'
 import WorkspaceTitle from './components/WorkspaceTitle.vue'
+import TrafficLights from './components/TrafficLights.vue'
 import { activeWorkspace, canLeaveHome, client, state, guard, requestPlan } from './core/store.js'
 
 /**
@@ -121,6 +122,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
     <!-- Last, and over everything: the start page is the whole window. -->
     <HomeView v-if="state.homeOpen" />
+
+    <!-- Over even that: the native buttons floated above the start page, and
+         these stand in for them (see TrafficLights). -->
+    <TrafficLights />
   </div>
 </template>
 

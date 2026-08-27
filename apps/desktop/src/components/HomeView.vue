@@ -324,9 +324,9 @@ onMounted(() => void nextTick(() => input.value?.focus()))
   -webkit-app-region: drag;
 }
 .corner {
-  /* Centred in the drag strip: (58 - 28) / 2. */
+  /* Centred in the drag strip: (50 - 28) / 2. */
   position: absolute;
-  top: 15px;
+  top: 11px;
   right: 12px;
   z-index: 2;
   display: flex;

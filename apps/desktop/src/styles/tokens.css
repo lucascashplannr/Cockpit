@@ -96,11 +96,14 @@
   /* The title band spans the window and carries the workspace's name and its
      verbs. It is sized around the tallest thing in it — a 30px button — not
      around the 12px traffic lights: at 44px the buttons cleared the band's
-     edges by 8px and the strip read as squeezed. 58px is the height of the
-     status row directly beneath it (14 + 34 + 12 minus its hairline), so the
-     window's two full-width horizontal bands share one rhythm instead of the
-     top one looking clipped. Lights centre at y = 23. */
-  --titlebar-h: 58px;
+     edges by 8px and the strip read as squeezed. 50px leaves them 10px, which
+     is the least that still reads as a band rather than a lid.
+     It used to be 58px, matching the status row beneath it so the window's two
+     full-width bands shared one rhythm. That symmetry cost more height than it
+     was worth at the top, where the band is pure chrome and the row below it
+     is information. Lights centre at y = (50 - 12) / 2 = 19; anything else
+     positioned against the band's edge is derived the same way. */
+  --titlebar-h: 50px;
   /* Every column starts at the same distance below the band, so the search
      field and the workspace title sit on one line. */
   --col-top: 14px;

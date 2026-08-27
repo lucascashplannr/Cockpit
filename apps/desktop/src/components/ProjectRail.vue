@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { Plus, SlidersHorizontal, Sun, Moon, MonitorCog } from '@lucide/vue'
 import Mark from './brand/Mark.vue'
-import { cycleTheme, newProject, openHome, state } from '../core/store.js'
+import { cycleTheme, newProject, openHome, selectProject, state } from '../core/store.js'
 
 /**
  * The far-left rail: the mark, then one square per project, then add.
@@ -50,7 +50,7 @@ const themeLabel = computed(() =>
         class="tile"
         :class="{ active: p.id === state.activeProjectId }"
         :title="p.name + ' — ' + p.root + '\nRight-click for settings'"
-        @click="state.activeProjectId = p.id"
+        @click="selectProject(p.id)"
         @contextmenu.prevent="state.editingProjectId = p.id"
       >
         <span class="gram">{{ monogram(p.name) }}</span>

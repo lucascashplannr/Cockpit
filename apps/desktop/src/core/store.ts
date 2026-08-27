@@ -23,13 +23,24 @@ export interface PickFolderOptions {
 /** §13 rule 1 — the whole of what the renderer may ask of its host. */
 interface CockpitHost {
   corePort: number
+  /** `process.platform`, so the window can draw what only macOS needs. */
+  platform?: string
   /** Absolute path, or null when the user cancels. Absent outside Electron. */
   pickFolder?: (opts?: PickFolderOptions) => Promise<string | null>
   /** Brings a core back after one was stopped. Absent outside Electron. */
   restartCore?: () => Promise<boolean>
+  /** The window's own three verbs, drawn by TrafficLights. Absent in a browser. */
+  window?: { close: () => void; minimize: () => void; zoom: (alt: boolean) => void }
 }
 
 const host = (window as unknown as { cockpitHost?: CockpitHost }).cockpitHost
+
+/**
+ * The window chrome the app draws itself, and only where there is a window to
+ * draw it for: absent in the browser dev server, and absent off macOS, where
+ * the native frame is still there and still has its own buttons.
+ */
+export const hostWindow = host?.platform === 'darwin' ? (host.window ?? null) : null
 const PORT = host?.corePort ?? 7717
 const URL = 'ws://127.0.0.1:' + PORT
 
@@ -257,11 +268,32 @@ export function newProject(mode: NewProjectSource['kind'] = 'scratch'): void {
 }
 
 /** Selects what was just created; the rail itself arrives by broadcast. */
-async function selectProject(id: string): Promise<void> {
+async function selectCreatedProject(id: string): Promise<void> {
   await refreshProjects()
   state.activeProjectId = id
   state.activeWorkspaceId = null
   ensureSelection()
+}
+
+/**
+ * §12 — switching project switches what the window is about, and the selected
+ * workspace is half of that.
+ *
+ * Assigning the id on its own is the bug it exists to prevent: the previous
+ * project's workspace stays selected, so the title bar reads
+ * `<new project> / <old repository>` and the panel under it shows the old
+ * repository's files — until the next push from the core happens to run
+ * `ensureSelection` and snap the selection somewhere else, which makes it look
+ * intermittent rather than wrong.
+ *
+ * Where it lands: the last workspace touched in that project, so coming back
+ * to one resumes it rather than restarting it; failing that, its first.
+ */
+export function selectProject(id: string): void {
+  state.activeProjectId = id
+  const inProject = state.workspaces.filter((w) => w.projectId === id)
+  const last = recentIds.value.find((rid) => inProject.some((w) => w.id === rid))
+  state.activeWorkspaceId = last ?? inProject[0]?.id ?? null
 }
 
 export async function createProject(input: {
@@ -272,7 +304,7 @@ export async function createProject(input: {
   const created = await guard(() => client.call('project.create', input), 'project created')
   if (!created) return false
   state.newProjectOpen = false
-  await selectProject(created.id)
+  await selectCreatedProject(created.id)
   // The Dev folder is set the first time one is used, so the second project
   // never asks the question again.
   if (input.source.kind !== 'folder' && !state.settings?.devRoot) {
