@@ -286,3 +286,23 @@ export type NewProjectSource =
   | { kind: 'folder'; folder: string; wrap: boolean; repoName: string | null }
   /** Cloned into `<project>/<repo>`, never into the project root. */
   | { kind: 'clone'; url: string; repoName: string | null; branch: string | null }
+
+/**
+ * §7 — how a repository joins a project that already exists.
+ *
+ * The same three sources as a new project, minus the one that makes no sense
+ * here: there is no "register it where it is", because the whole point is that
+ * it ends up beside its siblings under the project root.
+ */
+export type AddRepoSource =
+  /** `git init` in `<project>/<repo>`, with one commit so it has a branch. */
+  | { kind: 'scratch'; repoName: string }
+  /**
+   * A folder already on this machine, moved in. It is initialised on arrival
+   * if it is not a repository yet — a backend written before anyone ran
+   * `git init` is still a repository waiting to happen.
+   */
+  | { kind: 'folder'; folder: string; repoName: string | null }
+  /** Cloned into `<project>/<repo>`. */
+  | { kind: 'clone'; url: string; repoName: string | null; branch: string | null }
+

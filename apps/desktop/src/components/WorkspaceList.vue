@@ -4,7 +4,7 @@ import { ArrowUp, FolderPlus, Layers, Pause, Play, Plus, RefreshCw, Search } fro
 import type { Feature } from '@cockpit/shared'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activateFeature, activeProject, client, guard, parkFeature, state, workspaceGroups,
+  activateFeature, activeProject, addRepoTo, client, guard, parkFeature, state, workspaceGroups,
 } from '../core/store.js'
 
 /**
@@ -106,6 +106,16 @@ async function toggle(f: Feature) {
         @click="state.featureDialogOpen = true"
       >
         <Plus class="sm" />
+      </button>
+      <!-- §7 - one folder per repository, inside the project folder. Beside
+           the feature button because it is the same kind of act: adding
+           something to the project rather than looking at what is in it. -->
+      <button
+        class="icon-btn small"
+        title="Add a repository - a new one, a clone, or a folder moved in"
+        @click="addRepoTo(activeProject.id)"
+      >
+        <FolderPlus class="sm" />
       </button>
       <button class="icon-btn small" title="Re-probe everything" @click="rescan">
         <RefreshCw class="sm" />

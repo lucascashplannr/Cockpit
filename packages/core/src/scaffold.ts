@@ -1,12 +1,14 @@
 import {
-  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
+  writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { isMap, isScalar, isSeq, parseDocument } from 'yaml'
 import { folderSafe, parseRemote, starterManifest } from '@cockpit/shared'
-import type { FolderInfo, NewProjectSource, Project } from '@cockpit/shared'
+import type { AddRepoSource, FolderInfo, NewProjectSource, Project } from '@cockpit/shared'
 import { childRepos, findManifest } from './detect.js'
 import { run } from './exec.js'
-import { isRepo } from './git.js'
+import { isRepo, listWorktrees } from './git.js'
 import { append } from './journal.js'
 import { addProject, allProjects, forgetProject, liveWorkUnder, renameProject } from './registry.js'
 
@@ -68,6 +70,46 @@ function cloneFailure(stderr: string, url: string): string {
     return 'no repository at ' + url + ' — check the URL.'
   }
   return 'clone failed: ' + (text.split('\n').slice(-3).join(' ') || 'git gave no reason')
+}
+
+/**
+ * A repository with one commit in it. An unborn HEAD is a trap: there is no
+ * branch to fork, and `git worktree add` refuses outright, so C2 and C3 would
+ * be unreachable from a brand new repository. One commit costs nothing and
+ * makes it a real one.
+ *
+ * Returns a note when only the commit failed — almost always a missing
+ * `user.name` / `user.email`. The repository exists and the file is there;
+ * refusing the whole thing over it would be out of proportion.
+ */
+async function initRepository(dir: string, title: string): Promise<string | null> {
+  const init = await run('git', ['init'], { cwd: dir, timeoutMs: 30_000 })
+  if (!init.ok) throw new Error('git init failed: ' + init.stderr.trim().slice(-300))
+  writeFileSync(join(dir, 'README.md'), '# ' + title + '\n', 'utf8')
+  await run('git', ['add', 'README.md'], { cwd: dir, timeoutMs: 30_000 })
+  const commit = await run('git', ['commit', '-m', 'Initial commit'], { cwd: dir, timeoutMs: 30_000 })
+  if (commit.ok) return null
+  return commit.stderr.trim().slice(-300) || 'git gave no reason'
+}
+
+async function cloneInto(url: string, dest: string, branch: string | null): Promise<void> {
+  const args = ['clone', ...(branch ? ['--branch', branch] : []), url, dest]
+  const r = await run('git', args, { timeoutMs: 20 * 60_000 })
+  if (!r.ok) throw new Error(cloneFailure(r.stderr || r.stdout, url))
+}
+
+/** `renameSync` across volumes is the one failure worth explaining. */
+function moveFolder(from: string, to: string): void {
+  try {
+    renameSync(from, to)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
+      throw new Error(
+        dirname(to) + ' is on another volume than ' + from + ' — move the folder yourself, then add it.',
+      )
+    }
+    throw e
+  }
 }
 
 export async function createProject(input: CreateProjectInput): Promise<Project> {
@@ -137,25 +179,12 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
         if (!dir) throw new Error('"' + src.repoName + '" leaves nothing usable as a folder name')
         repoPath = join(root, dir)
         mk(repoPath)
-        const init = await run('git', ['init'], { cwd: repoPath, timeoutMs: 30_000 })
-        if (!init.ok) throw new Error('git init failed: ' + init.stderr.trim().slice(-300))
-        // An unborn HEAD is a trap: no branch to fork, and `git worktree add`
-        // refuses outright, so C2 and C3 would be unreachable from a brand new
-        // repository. One commit costs nothing and makes it a real repository.
-        writeFileSync(join(repoPath, 'README.md'), '# ' + name + '\n', 'utf8')
-        await run('git', ['add', 'README.md'], { cwd: repoPath, timeoutMs: 30_000 })
-        const commit = await run('git', ['commit', '-m', 'Initial commit'], {
-          cwd: repoPath,
-          timeoutMs: 30_000,
-        })
-        if (!commit.ok) {
-          // Almost always a missing user.name/user.email. The repository exists
-          // and the file is there; refusing the whole project over it would be
-          // out of proportion.
+        const note = await initRepository(repoPath, name)
+        if (note) {
           append({
             type: 'project.created',
             level: 'warn',
-            payload: { root, note: 'initial commit failed', detail: commit.stderr.trim().slice(-300) },
+            payload: { root, note: 'initial commit failed', detail: note },
           })
         }
       }
@@ -168,9 +197,7 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
       // Listed before it exists so a clone that dies half-written is still
       // cleaned up: `git clone` creates the folder itself.
       created.push(repoPath)
-      const args = ['clone', ...(src.branch ? ['--branch', src.branch] : []), remote.url, repoPath]
-      const r = await run('git', args, { timeoutMs: 20 * 60_000 })
-      if (!r.ok) throw new Error(cloneFailure(r.stderr || r.stdout, remote.url))
+      await cloneInto(remote.url, repoPath, src.branch)
     } else {
       // wrap: the folder picked is itself a repository, which is the one shape
       // the layout rules out. It moves down one level rather than being
@@ -201,17 +228,7 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
       }
 
       mk(root)
-      try {
-        renameSync(folder, repoPath)
-      } catch (e) {
-        const code = (e as NodeJS.ErrnoException).code
-        if (code === 'EXDEV') {
-          throw new Error(
-            root + ' is on another volume than ' + folder + ' — move the folder yourself, then add it.',
-          )
-        }
-        throw e
-      }
+      moveFolder(folder, repoPath)
       moved = { from: folder, to: repoPath }
     }
 
@@ -236,6 +253,256 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
     payload: { root, source: src.kind, repo: repoPath },
   })
   return project.name === name ? project : renameProject(project.id, name)
+}
+
+/* ── adding a repository to a project that already exists ────────────────
+ * §7 — `project.create` lays down the layout once; this is the half that keeps
+ * it true afterwards. A backend joining a project a month later is the same
+ * three sources as the first repository, landing one level below the root:
+ *
+ *     <dev>/<Project>/web/     ← already there
+ *     <dev>/<Project>/api/     ← this
+ */
+
+export interface AddRepoInput {
+  projectId: string
+  source: AddRepoSource
+  /**
+   * The folder the project's own repository moves into first, when the project
+   * root is itself a repository. Required in that case — nothing that moves
+   * somebody's checkout happens because a default said so — and ignored in
+   * every other.
+   */
+  wrapRootAs?: string | null
+}
+
+export interface AddRepoResult {
+  repoPath: string
+  wrapped: string | null
+  manifestUpdated: boolean
+  /** `git init` worked, the first commit did not. The repository is still real. */
+  note: string | null
+}
+
+/**
+ * A project whose root is itself a repository is the one shape the layout
+ * rules out (§7), and the one that cannot grow: a second repository has
+ * nowhere to go. It moves down a level, which frees the root and leaves the
+ * project's path — and therefore its id — untouched.
+ *
+ * Through a sibling folder rather than entry by entry: a folder cannot be
+ * renamed into its own child, and a loop over its contents leaves a half-moved
+ * tree behind the moment one entry fails.
+ */
+async function wrapRoot(root: string, folder: string): Promise<() => void> {
+  if (statSync(join(root, '.git')).isFile()) {
+    throw new Error(
+      basename(root) +
+        ' is a git worktree; it belongs to the repository that created it and cannot be moved on its own.',
+    )
+  }
+  const live = liveWorkUnder(root)
+  if (live.length) throw new Error('stop these first — ' + live.join('; '))
+
+  const staging = join(dirname(root), '.' + basename(root) + '.cockpit-wrap')
+  if (existsSync(staging)) {
+    throw new Error(staging + ' is in the way — remove it and try again.')
+  }
+  const dest = join(root, folder)
+
+  moveFolder(root, staging)
+  try {
+    mkdirSync(root)
+    renameSync(staging, dest)
+  } catch (e) {
+    // Back to exactly where it was: an interrupted wrap must not cost anyone
+    // their checkout.
+    try {
+      if (existsSync(root) && isEmptyDir(root)) rmSync(root, { recursive: true, force: true })
+    } catch {
+      // The rename below is what matters; if it also fails, that error wins.
+    }
+    renameSync(staging, root)
+    throw e
+  }
+
+  // Linked worktrees hold an absolute path back to the repository they came
+  // from, and it just changed. Best effort: a worktree that cannot be repaired
+  // is still visible on disk, and `git worktree repair` says so itself.
+  const linked = (await listWorktrees(dest)).map((w) => w.path).filter((p) => resolve(p) !== dest)
+  if (linked.length) await run('git', ['worktree', 'repair', ...linked], { cwd: dest, timeoutMs: 60_000 })
+
+  return () => {
+    renameSync(dest, staging)
+    rmSync(root, { recursive: true, force: true })
+    renameSync(staging, root)
+  }
+}
+
+/**
+ * §5 — the manifest is touched only when it already declares `repos:`. A
+ * declared list is pinned on purpose, and `buildProject` reads nothing else, so
+ * a repository missing from it would be invisible. When the key is absent,
+ * detection finds the folder on its own and writing it would freeze a list
+ * nobody asked to freeze.
+ *
+ * Through the document API rather than parse-and-restringify: the file is
+ * hand-written (§11) and its comments are half of what is in it.
+ */
+function declareRepo(manifestPath: string, folder: string, wrapped: string | null): boolean {
+  let doc
+  try {
+    doc = parseDocument(readFileSync(manifestPath, 'utf8'))
+  } catch {
+    return false
+  }
+  const repos = doc.get('repos')
+  if (!isSeq(repos)) return false
+
+  // The repository that was at the root has moved; the entry that pointed at
+  // the root has to follow it, or the project loses the repo it started with.
+  if (wrapped) {
+    for (const item of repos.items) {
+      if (isScalar(item) && (item.value === '.' || item.value === './')) {
+        item.value = './' + wrapped
+      } else if (isMap(item)) {
+        const at = item.get('path')
+        if (at === '.' || at === './') item.set('path', './' + wrapped)
+      }
+    }
+  }
+
+  // Written in the shape the file already uses: a list of strings stays a list
+  // of strings, a list of mappings stays a list of mappings.
+  const bare = repos.items.length > 0 && repos.items.every((i) => isScalar(i))
+  repos.add(doc.createNode(bare ? './' + folder : { path: './' + folder }))
+  writeFileSync(manifestPath, doc.toString(), 'utf8')
+  return true
+}
+
+export async function addRepo(input: AddRepoInput): Promise<AddRepoResult> {
+  const project = allProjects().find((p) => p.id === input.projectId)
+  if (!project) throw new Error('no such project: ' + input.projectId)
+  const root = requireDir(project.root, 'the project folder')
+  const src = input.source
+
+  const asked =
+    src.kind === 'clone'
+      ? (src.repoName ?? parseRemote(src.url)?.repo ?? '')
+      : src.kind === 'folder'
+        ? (src.repoName ?? basename(resolve(src.folder)))
+        : src.repoName
+  const dir = folderSafe(asked ?? '')
+  if (!dir) throw new Error('"' + String(asked ?? '') + '" leaves nothing usable as a folder name')
+  const repoPath = join(root, dir)
+
+  const rootIsRepo = isRepo(root)
+  const wrapAs = rootIsRepo ? folderSafe(input.wrapRootAs ?? '') : ''
+  if (rootIsRepo) {
+    if (!input.wrapRootAs?.trim()) {
+      throw new Error(
+        basename(root) +
+          ' is itself a repository, so there is nowhere beside it for a second one. It has to move into a folder of its own first — say which one.',
+      )
+    }
+    if (!wrapAs) throw new Error('"' + input.wrapRootAs + '" leaves nothing usable as a folder name')
+    if (wrapAs === dir) {
+      throw new Error('both repositories would be called ' + dir + ' — pick another name for one of them.')
+    }
+  } else if (existsSync(repoPath) && !isEmptyDir(repoPath)) {
+    throw new Error(repoPath + ' already exists and is not empty — pick another folder name.')
+  }
+
+  /** Only what this call made or moved, so undoing it can never reach further. */
+  const undos: (() => void)[] = []
+  const mk = (path: string): void => {
+    if (existsSync(path)) return
+    mkdirSync(path, { recursive: true })
+    undos.push(() => rmSync(path, { recursive: true, force: true }))
+  }
+  const undo = (): void => {
+    for (const step of [...undos].reverse()) {
+      try {
+        step()
+      } catch {
+        // Best effort: the caller is already handling a failure.
+      }
+    }
+  }
+
+  let wrapped: string | null = null
+  let manifestUpdated = false
+  let note: string | null = null
+
+  try {
+    if (rootIsRepo) {
+      undos.push(await wrapRoot(root, wrapAs))
+      wrapped = wrapAs
+      // The manifest describes the project and has just been carried inside one
+      // of its repositories, where nothing reads it. A copy comes back up; the
+      // original stays where git tracks it, so no repository gains a deletion
+      // nobody asked for.
+      const carried = project.manifestPath ? join(root, wrapAs, basename(project.manifestPath)) : null
+      if (carried && existsSync(carried) && !findManifest(root)) {
+        copyFileSync(carried, join(root, basename(carried)))
+      }
+      // Checked again: the root held the old repository's contents a moment ago,
+      // so a name that looked taken may be free now, and the reverse.
+      if (existsSync(repoPath) && !isEmptyDir(repoPath)) {
+        throw new Error(repoPath + ' already exists and is not empty — pick another folder name.')
+      }
+    }
+
+    if (src.kind === 'scratch') {
+      mk(repoPath)
+      note = await initRepository(repoPath, dir)
+    } else if (src.kind === 'clone') {
+      const remote = parseRemote(src.url)
+      if (!remote) throw new Error('not a repository URL: ' + src.url)
+      // Listed before it exists so a clone that dies half-written is still
+      // cleaned up: `git clone` creates the folder itself.
+      undos.push(() => rmSync(repoPath, { recursive: true, force: true }))
+      await cloneInto(remote.url, repoPath, src.branch)
+    } else {
+      const folder = requireDir(src.folder, 'that folder')
+      if (folder === root || root.startsWith(folder + '/')) {
+        throw new Error('cannot move ' + folder + ' inside itself')
+      }
+      if (isRepo(folder) && statSync(join(folder, '.git')).isFile()) {
+        throw new Error(
+          basename(folder) +
+            ' is a git worktree; it belongs to the repository that created it and cannot be moved out on its own.',
+        )
+      }
+      const live = liveWorkUnder(folder)
+      if (live.length) throw new Error('stop these first — ' + live.join('; '))
+
+      // It may already be registered as a project of its own; a config entry
+      // pointing at a folder that no longer exists is invisible state.
+      for (const p of allProjects()) {
+        if (resolve(p.root) === folder) forgetProject(p.id)
+      }
+
+      moveFolder(folder, repoPath)
+      undos.push(() => renameSync(repoPath, folder))
+      // A backend written before anyone ran `git init` is still a repository
+      // waiting to happen, and every level above C0 needs it to be one.
+      if (!isRepo(repoPath)) note = await initRepository(repoPath, dir)
+    }
+
+    const manifestPath = findManifest(root)
+    if (manifestPath) manifestUpdated = declareRepo(manifestPath, dir, wrapped)
+  } catch (e) {
+    undo()
+    throw e
+  }
+
+  append({
+    type: 'project.repo_added',
+    projectId: project.id,
+    payload: { root, repo: repoPath, source: src.kind, wrapped, manifestUpdated },
+  })
+  return { repoPath, wrapped, manifestUpdated, note }
 }
 
 /**

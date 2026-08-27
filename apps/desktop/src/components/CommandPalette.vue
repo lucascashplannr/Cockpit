@@ -4,16 +4,16 @@ import type { Component } from 'vue'
 import {
   AppWindow, ArrowRight, ArrowUpFromLine, BookMarked, CloudDownload, CornerDownLeft, FileCode,
   FolderOpen,
-  FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
+  FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, TextSearch,
   Trash2, Undo2,
   RotateCcw, Archive, Zap,
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  activateFeature, activeProject, activeWorkspace, archivedFeatures, client, closeFeature,
-  deleteFeature, guard, newProject, parkFeature, projectFeatures, reopenFeature, requestPlan,
-  restartCore, selectWorkspace, state, toast,
+  activateFeature, activeProject, activeWorkspace, addRepoTo, archivedFeatures, client,
+  closeFeature, deleteFeature, guard, newProject, parkFeature, projectFeatures, reopenFeature,
+  requestPlan, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { TabId } from '../core/store.js'
 
@@ -106,6 +106,19 @@ const commands = computed<Item[]>(() => {
       run: act(() => {
         state.featureDialogOpen = true
       }),
+    })
+  }
+
+  // §7 — the layout does not stop at creation: a backend joining a project a
+  // month later lands beside the repositories already in it, not elsewhere.
+  if (activeProject.value) {
+    out.push({
+      id: 'project:addRepo',
+      label: 'Add a repository',
+      hint: 'a new one, a clone, or a folder moved into ' + activeProject.value.name,
+      group: 'Project',
+      icon: FolderGit2,
+      run: act(() => addRepoTo(activeProject.value!.id)),
     })
   }
   for (const f of projectFeatures.value) {

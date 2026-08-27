@@ -5,7 +5,7 @@ import { createConnection } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { MANIFEST_TEMPLATE, parseRemote } from '@cockpit/shared'
-import type { NewProjectSource, Workspace } from '@cockpit/shared'
+import type { AddRepoSource, NewProjectSource, Workspace } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 
 /**
@@ -310,6 +310,104 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       out('  ' + C.dim(w.kind === 'external' ? 'dir ' : 'repo') + ' ' + w.path.slice(p.root.length + 1))
     }
     out(C.dim('  a second repository is a `git clone` inside ' + p.root))
+    c.close()
+  },
+
+  /**
+   * §7 — a repository joining a project that already exists. `new` lays the
+   * layout down once; this is what keeps it true afterwards, and it is the
+   * only way a second repository ever lands beside the first rather than
+   * somewhere the project cannot see it.
+   */
+  async repo(args) {
+    const [sub, ...rest] = args
+    if (sub !== 'add') {
+      out('usage: cockpit repo add <name> [--from <url> | --adopt <path>]')
+      out(C.dim('             [--project <name>] [--as <folder>] [--branch <b>] [--wrap-root <folder>]'))
+      process.exit(1)
+    }
+
+    const flags = parseFlags(rest)
+    const words = bareWords(rest)
+    const c = await connect()
+
+    // Which project: the one named, the one this folder is in, or the only one.
+    const projects = await c.call('project.list', undefined)
+    if (!projects.length) {
+      out(C.red('no project registered. Add one with:  cockpit add <path>'))
+      process.exit(1)
+    }
+    const wanted = flags.project
+    const cwd = resolve(process.cwd())
+    const project = wanted
+      ? projects.find((p) => p.name === wanted || p.root === resolve(wanted))
+      : (projects
+          .filter((p) => cwd === p.root || cwd.startsWith(p.root + '/'))
+          .sort((a, b) => b.root.length - a.root.length)[0] ??
+        (projects.length === 1 ? projects[0] : undefined))
+    if (!project) {
+      out(C.red(wanted ? 'no such project: ' + wanted : 'which project? none contains this folder'))
+      out(C.dim('  cockpit repo add <name> --project <' + projects.map((p) => p.name).join('|') + '>'))
+      process.exit(1)
+    }
+
+    const from = flags.from
+    const adopt = flags.adopt
+    const name = words[0] ?? ''
+
+    let source: AddRepoSource
+    if (from) {
+      const remote = parseRemote(from)
+      if (!remote) {
+        out(C.red('not a repository URL: ' + from))
+        process.exit(1)
+      }
+      source = { kind: 'clone', url: from, repoName: flags.as ?? name ?? null, branch: flags.branch ?? null }
+      out(C.dim('cloning ' + remote.url + ' …'))
+    } else if (adopt) {
+      source = { kind: 'folder', folder: resolve(adopt), repoName: flags.as ?? name ?? null }
+    } else {
+      if (!name) {
+        out(C.red('a repository needs a folder name'))
+        out(C.dim('  cockpit repo add api            git init in ' + project.root + '/api'))
+        out(C.dim('  cockpit repo add --from owner/api'))
+        process.exit(1)
+      }
+      source = { kind: 'scratch', repoName: flags.as ?? name }
+    }
+
+    // §7 — a project whose root is itself a repository has nowhere to put a
+    // sibling. Nothing moves somebody's checkout because a default said so, so
+    // the name that frees the root is asked for rather than guessed.
+    const info = await c.call('project.inspect', { path: project.root })
+    if (info.isRepo && !flags['wrap-root']) {
+      out(C.red(project.name + ' is itself a repository, so there is nowhere beside it for a second one.'))
+      out(C.dim('  It has to move down a level first, which frees the root:'))
+      out(C.dim('    ' + project.root + '/' + basename(project.root) + '/   ← the repository that is there now'))
+      out(C.dim('    ' + project.root + '/' + (flags.as || name || 'api') + '/   ← the one joining it'))
+      out('')
+      out('  cockpit repo add ' + (name || '<name>') + ' --wrap-root ' + basename(project.root))
+      process.exit(1)
+    }
+
+    const r = await c.call('project.addRepo', {
+      projectId: project.id,
+      source,
+      wrapRootAs: flags['wrap-root'] ?? null,
+    })
+    if (r.wrapped) {
+      out(C.yellow('moved ') + project.name + C.dim(' down a level → ') + r.wrapped + '/')
+    }
+    out(C.green('added ') + C.bold(r.repoPath.slice(project.root.length + 1)) + '  ' + C.dim(r.repoPath))
+    if (r.note) out(C.yellow('  the first commit failed: ') + C.dim(r.note))
+    if (r.manifestUpdated) out(C.dim('  declared in ' + (r.project.manifestPath ?? 'the manifest')))
+    // The repositories, which is what this command is about — not the
+    // worktrees hanging off them, and not the project root itself.
+    for (const w of await c.call('workspace.list', { projectId: r.project.id })) {
+      if (w.kind === 'main' && w.path.startsWith(r.project.root + '/')) {
+        out('  ' + C.dim('repo') + ' ' + w.path.slice(r.project.root.length + 1))
+      }
+    }
     c.close()
   },
 
@@ -836,6 +934,10 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     out('        --adopt <path>          move an existing repo into a project of its own')
     out('        --adopt <path> --as-is  or register that folder where it stands')
     out('        --in <path>             somewhere other than the Dev folder')
+    out('    repo add <name>             a repository beside the ones already there')
+    out('        --from owner/repo       clone it in instead  [--branch b]')
+    out('        --adopt <path>          move a folder already on this machine in')
+    out('        --wrap-root <folder>    when the project root is itself a repo: move it down first')
     out('    config [dev <path>]         the Dev folder every project lands in')
     out('    init [path]                 write a starter cockpit.yaml')
     out('    add <path>                  register a project as it is')

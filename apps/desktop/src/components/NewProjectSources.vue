@@ -9,34 +9,60 @@ import type { NewProjectSource } from '@cockpit/shared'
  * segmented control at its top, so the card you click is the card that stays
  * lit. Two copies of this list would drift, and the wording is the only place
  * the difference between the three is explained.
+ *
+ * A repository joining a project that already exists arrives the same three
+ * ways, which is why they are listed here too rather than in a second copy
+ * that says the same thing about a smaller thing. Only the wording differs:
+ * what lands is a repository rather than a project around one.
  */
 
 type Kind = NewProjectSource['kind']
 
-defineProps<{
-  /** The lit card. Null on the start page: nothing has been chosen yet. */
-  selected?: Kind | null
-}>()
+withDefaults(
+  defineProps<{
+    /** The lit card. Null on the start page: nothing has been chosen yet. */
+    selected?: Kind | null
+    /** What is being created. The three sources are the same; what each means is not. */
+    of?: 'project' | 'repo'
+  }>(),
+  { selected: null, of: 'project' },
+)
 const emit = defineEmits<{ (e: 'pick', kind: Kind): void }>()
 
-const SOURCES: { kind: Kind; icon: typeof FolderPlus; title: string; blurb: string }[] = [
+interface Source {
+  kind: Kind
+  icon: typeof FolderPlus
+  title: string
+  blurb: Record<'project' | 'repo', string>
+}
+
+const SOURCES: Source[] = [
   {
     kind: 'scratch',
     icon: FolderPlus,
     title: 'From scratch',
-    blurb: 'an empty project, ready for its first repository',
+    blurb: {
+      project: 'an empty project, ready for its first repository',
+      repo: 'a new folder, git init, one commit',
+    },
   },
   {
     kind: 'folder',
     icon: FolderOpen,
     title: 'A folder',
-    blurb: 'something already on this machine',
+    blurb: {
+      project: 'something already on this machine',
+      repo: 'move one already on this machine in',
+    },
   },
   {
     kind: 'clone',
     icon: CloudDownload,
     title: 'From a repository',
-    blurb: 'clone from GitHub or any git remote',
+    blurb: {
+      project: 'clone from GitHub or any git remote',
+      repo: 'clone it in beside the others',
+    },
   },
 ]
 </script>
@@ -52,7 +78,7 @@ const SOURCES: { kind: Kind; icon: typeof FolderPlus; title: string; blurb: stri
     >
       <component :is="s.icon" class="sm" />
       <strong>{{ s.title }}</strong>
-      <span>{{ s.blurb }}</span>
+      <span>{{ s.blurb[of] }}</span>
     </button>
   </div>
 </template>

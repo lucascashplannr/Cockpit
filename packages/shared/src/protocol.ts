@@ -6,8 +6,8 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AgentSession, AgentSessionFile, CockpitSettings, CoreStatus, DiffFile, Feature, FileDiff,
-  MemoryDoc, NewProjectSource, Project, SearchHit, Workspace,
+  AddRepoSource, AgentSession, AgentSessionFile, CockpitSettings, CoreStatus, DiffFile, Feature,
+  FileDiff, MemoryDoc, NewProjectSource, Project, SearchHit, Workspace,
 } from './model.js'
 
 /** What a folder turns out to be, for a window that cannot look for itself. */
@@ -107,6 +107,31 @@ export interface Rpc {
   'project.create': {
     params: { name: string; parent: string; source: NewProjectSource }
     result: Project
+  }
+
+  /**
+   * §7 — the second repository, and every one after it. It lands in
+   * `<project>/<repo>`, beside the ones already there.
+   *
+   * The one project this cannot be done to as it stands is the one whose root
+   * is itself a repository: there is nowhere to put a sibling. `wrapRootAs`
+   * names the folder that repository moves into first, which frees the root —
+   * it is required in that case and ignored in every other, so the caller has
+   * to have said it out loud before anything moves.
+   */
+  'project.addRepo': {
+    params: { projectId: string; source: AddRepoSource; wrapRootAs?: string | null }
+    result: {
+      project: Project
+      /** Absolute path of the repository that just joined. */
+      repoPath: string
+      /** The folder the root repository was moved into, when it had to move. */
+      wrapped: string | null
+      /** Whether `repos:` in the manifest was updated to match (§5). */
+      manifestUpdated: boolean
+      /** `git init` worked, the first commit did not — usually no user.email. */
+      note: string | null
+    }
   }
 
   /**

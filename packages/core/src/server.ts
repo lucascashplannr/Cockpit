@@ -176,6 +176,19 @@ const handlers: Record<string, Handler> = {
     return registry.allProjects().find((x) => x.id === project.id) ?? project
   },
 
+  /**
+   * §7 — the second repository, and every one after it. The layout is kept
+   * true after creation, not only at it.
+   */
+  'project.addRepo': async (p: scaffold.AddRepoInput) => {
+    const added = await scaffold.addRepo(p)
+    await registry.reconcile(p.projectId)
+    pushAll()
+    const project = registry.allProjects().find((x) => x.id === p.projectId)
+    if (!project) throw new Error('the project went missing while its repository was added')
+    return { ...added, project }
+  },
+
   'project.inspect': (p: { path: string }) => scaffold.inspectFolder(p.path),
 
   'config.get': () => configView(),

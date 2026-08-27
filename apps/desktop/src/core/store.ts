@@ -1,7 +1,7 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
-  AgentSession, CockpitEvent, CockpitSettings, CoreStatus, Feature, NewProjectSource, PlanPreview,
-  Project, Workspace,
+  AddRepoSource, AgentSession, CockpitEvent, CockpitSettings, CoreStatus, Feature,
+  NewProjectSource, PlanPreview, Project, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
@@ -60,6 +60,8 @@ export const state = reactive({
   newProjectOpen: false,
   /** Which of the three sources it opens on — chosen on the start page (§12). */
   newProjectMode: 'scratch' as NewProjectSource['kind'],
+  /** §7 — the sheet that adds a repository to a project that already exists. */
+  addRepoProjectId: null as string | null,
   /** §15 — machine-local settings: the Dev folder, the editor. */
   settingsOpen: false,
   settings: null as CockpitSettings | null,
@@ -276,6 +278,38 @@ export async function createProject(input: {
   if (input.source.kind !== 'folder' && !state.settings?.devRoot) {
     await saveSettings({ devRoot: input.parent })
   }
+  return true
+}
+
+/**
+ * §7 — a repository joining a project that already exists, which is the half
+ * of the layout that keeps being true after the project is created. Addressed
+ * by project id rather than a boolean: the list, the palette and the project
+ * sheet all open it, and each of them already knows which project it means.
+ */
+export function addRepoTo(projectId: string | null = state.activeProjectId): void {
+  if (projectId) state.addRepoProjectId = projectId
+}
+
+export const addingRepoTo = computed(
+  () => state.projects.find((p) => p.id === state.addRepoProjectId) ?? null,
+)
+
+export async function addRepo(input: {
+  projectId: string
+  source: AddRepoSource
+  wrapRootAs?: string | null
+}): Promise<boolean> {
+  const r = await guard(() => client.call('project.addRepo', input))
+  if (!r) return false
+  state.addRepoProjectId = null
+  toast('ok', r.wrapped ? 'repository added; the first one moved into ' + r.wrapped + '/' : 'repository added')
+  // The commit is the one failure worth surviving: the repository is real
+  // either way, and a missing user.email is not this sheet's problem to solve.
+  if (r.note) toast('info', 'the first commit failed — ' + r.note)
+  await refreshProjects()
+  const added = state.workspaces.find((w) => w.path === r.repoPath)
+  if (added) selectWorkspace(added.id)
   return true
 }
 

@@ -43,6 +43,7 @@ export type EventType =
   | 'workspace.forgotten'
   | 'workspace.probed'
   | 'project.created'
+  | 'project.repo_added'
   | 'project.renamed'
   | 'project.moved'
   | 'project.trashed'

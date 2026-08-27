@@ -3,7 +3,7 @@
  * MAJOR must match exactly: a mismatch means the UI refuses to talk to the
  * core rather than mis-decoding it. MINOR may differ (additive changes only).
  */
-export const PROTOCOL_VERSION = { major: 1, minor: 2 } as const
+export const PROTOCOL_VERSION = { major: 1, minor: 3 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

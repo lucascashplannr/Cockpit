@@ -7,6 +7,7 @@ import CommandPalette from './components/CommandPalette.vue'
 import PlanDialog from './components/PlanDialog.vue'
 import ProjectDialog from './components/ProjectDialog.vue'
 import NewProjectDialog from './components/NewProjectDialog.vue'
+import AddRepoDialog from './components/AddRepoDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import FeatureDialog from './components/FeatureDialog.vue'
 import Toast from './components/Toast.vue'
@@ -36,6 +37,7 @@ function onKey(e: KeyboardEvent) {
   }
   if (e.key === 'Escape') {
     if (state.newProjectOpen) state.newProjectOpen = false
+    else if (state.addRepoProjectId) state.addRepoProjectId = null
     else if (state.settingsOpen) state.settingsOpen = false
     else if (state.editingProjectId) state.editingProjectId = null
     else if (state.pendingPlan) state.pendingPlan = null
@@ -111,6 +113,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <PlanDialog v-if="state.pendingPlan" />
     <ProjectDialog />
     <NewProjectDialog />
+    <AddRepoDialog />
     <SettingsDialog />
     <FeatureDialog />
     <ConnectionBanner />
