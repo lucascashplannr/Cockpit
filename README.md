@@ -66,9 +66,22 @@ cockpit plan rebase    # preview; nothing runs yet
 cockpit apply <planId>
 cockpit undo
 
+# a rebase that stops is a state to work in, not an error (§3.7)
+cockpit conflict show  # what it left behind, and which files still block
+cockpit conflict continue   # stages what you resolved, then carries on
+cockpit conflict abort      # back to the start; the autostash comes with it
+
 # features — the durable unit of work (§4)
 cockpit feature open "Two-factor auth"   # one plan, a worktree per repo
+cockpit feature open "2FA" --clone-db     # ...and its own database (§10)
+cockpit commit "Add the QR step"         # stage + commit, every repo at once
+cockpit feature rebase two-factor-auth   # every repo onto its base, one plan
+cockpit feature land two-factor-auth --push   # merge it ONTO the base, then push
 cockpit feature ls                       # every feature, live or parked
+
+# what a worktree would be missing, before it exists
+cockpit seed two-factor-auth             # the gitignored config it needs
+cockpit db two-factor-auth               # the database it would get
 cockpit feature live two-factor-auth     # servers up; refuses if something exclusive blocks it
 cockpit feature park two-factor-auth     # servers down, worktrees kept
 cockpit feature close two-factor-auth --remove   # archive it; reversible
@@ -100,6 +113,118 @@ agent session or a live runtime; and `--branches` refuses again over commits not
 into the base, because that is the one thing nothing can bring back. The feature folder
 goes to the Trash, never `rm -rf` (§16).
 
+## The whole life of a feature
+
+```
+open  →  work  →  commit  →  rebase  →  land  →  close
+```
+
+**Commit** lives in the Diff tab, against the review it is a review of (§16). One message,
+one commit per repository — git has no cross-repo commit and this is as close as it gets.
+A repo with nothing staged is skipped rather than made to carry an empty commit, and a repo
+sitting on its protected branch is skipped too: the rule that stops agents committing to
+`main` is not waived because a human clicked the button.
+
+**Land** is the step that used to be missing, and its absence was the hole in the middle of
+the product: a feature could be opened, worked in, rebased and closed, and nothing ever put
+it back on `main`. `merge` goes the other way — it brings the base *into* the branch to catch
+it up. Landing runs in each repository's **main checkout**, never in the worktree: git will
+not hold one branch in two checkouts, and the main checkout is already sitting on the base,
+which is exactly what the layout buys you.
+
+It fetches, fast-forwards the base, merges the feature branch `--no-ff` so the feature stays
+one identifiable merge in the history, and pushes if you ask. It **halts on the first
+conflict and keeps what already merged** — those repositories are genuinely landed — and the
+conflict lands in the same panel a rebase conflict does. Resolve, then run it again.
+
+**Close** then refuses over uncommitted changes, unpushed commits, an open agent session or a
+running runtime, archives the record, and removes the checkouts while keeping the branches.
+`CONTEXT.md` and the memory stay behind on purpose: promote what is worth keeping first (§9).
+
+## What makes a worktree usable
+
+`git worktree add` checks out *tracked* files. Everything git ignores is simply absent, so a
+worktree of a Laravel or Vite app has no `.env`, no `auth.json`, and does not boot. Copying
+them across verbatim is no better: three worktrees whose `.env` all say
+`APP_URL=https://cp.test` and `DB_DATABASE=app` are three checkouts fighting over one hostname
+and one database.
+
+So opening a feature carries that config over and **rescopes the values that cannot be
+shared** — the hostname, the database name, any port the app listens on. Cockpit reads what to
+change out of the file rather than guessing from key names: a value pointing at the hostname
+the main checkout serves on is the strongest signal there is. `DB_PORT` and `REDIS_PORT` are
+left alone, because those are ports of servers the app dials *out* to.
+
+It proposes, you approve once, and the answer is written into `cockpit.yaml`:
+
+```yaml
+worktrees:
+  seed:
+    - repo: cp
+      copy: [.env, auth.json]
+      set:
+        .env:
+          APP_URL: https://{{host}}
+          DB_DATABASE: "{{db}}"
+          VITE_PORT: "{{port:vite}}"
+```
+
+Every feature after that carries it without asking. `cockpit seed <slug>` shows what would
+happen without creating anything.
+
+**The database is the third global thing**, after the port and the hostname, and folder
+isolation cannot help with it — the collision is on the server. `--clone-db` copies the main
+checkout's database once per worktree, so an agent running a migration in one cannot break the
+others. It is off by default because a full copy is slow and costs the disk again, and
+dropping one is its own flag on delete: a merged branch can be recreated from the remote, a
+dropped database cannot be recreated from anything.
+
+## What an agent may do
+
+`claude -p` asks for approval before it writes, and in non-interactive mode there is nowhere for
+that approval to come from — so a session would explain that it needed permission and end having
+changed nothing. Cockpit now launches it with an explicit allow-list instead, which is what §16
+asked for all along:
+
+```
+Read Edit Write Glob Grep NotebookEdit TodoWrite
+Bash(git status:*) Bash(git diff:*) Bash(git log:*) Bash(git show:*)
+```
+
+Edits and searches, yes — that is the job. Of the shell, only the git commands that *read*. Not
+`commit`, because §16 wants a human to see the diff first; not `push`, because §16 forbids it;
+not a package manager, because an install changes the machine rather than the branch. A project
+widens this in `cockpit.yaml`:
+
+```yaml
+agents:
+  allow: [Read, Edit, Write, "Bash(npm test:*)"]
+```
+
+Every path in the session's scope is passed with `--add-dir`, so a two-repo session can actually
+reach both repositories rather than only the first.
+
+`codex` is left alone: its approval flags were never verified against a real binary, and guessing
+one is how an agent ends up either blocked or unsandboxed.
+
+## When a rebase stops
+
+A conflicted rebase is not a failed command, it is a state you work in. Cockpit rebases with
+`git rebase --autostash`, so uncommitted work is held by git itself and comes back when the
+rebase ends — abort included. There is no window in which it is sitting in a stash nothing
+mentions.
+
+The conflict panel then has the only three verbs that end it. **Continue** is gated on
+conflict markers, not on the index, so resolving a file in your editor is enough — nobody has
+to remember `git add`. The panel updates itself as you edit, because the core re-probes on
+every file change; a rebase advanced by hand in the terminal tab looks exactly like one
+advanced by the button.
+
+`cockpit feature rebase` does this across every repository a feature spans. It stops at the
+first conflict and **keeps** what already replayed rather than rolling it back — those
+repositories are genuinely done. Run it again once you have resolved: a branch already rebased
+answers "up to date" and costs a fetch.
+
 **Live vs parked** is what lets several features exist at once. Parked means the
 worktrees are on disk and agents may still run in them; live means the servers are up.
 Ports are global and deterministic (§11), so portable runtimes coexist for free —
@@ -115,13 +240,22 @@ is refused with the offer to park the other, rather than failing deep inside Doc
 | 3.3 | Single append-only journal, everything derives from it | done |
 | 3.4 | Probe, never remember — SQLite holds journal + cache only | done |
 | 3.7 | Plan shown before every git operation, undo via restore point | done |
+| 16 | Commit from the review surface, one message across every repo of a feature | done |
+| 4 | Landing: the feature branch onto the base, one `--no-ff` merge per repo | done |
+| 3.7 | A conflicted rebase is a state, not a failure: continue / skip / abort | done |
+| 3.7 | Multi-repo plans choose: all-or-nothing, or halt and keep what worked | done |
 | 3.9 | Absent capability ⇒ invisible, never greyed out | done |
 | 4 | Workspace as the primitive; feature as a decoration | done |
 | 4 | Feature as a durable object: multi-repo, multi-day, live / parked | done |
+| 4 | One rebase across every repository a feature spans | done |
+| 7 | Gitignored local config carried into a new worktree, values rescoped | done |
+| 10 | One database per worktree: cloned on open, dropped on delete | done |
 | 5 | Capability model with detection fallback (no manifest required) | done |
 | 6 | Memory / sessions / journal kept separate; promotion in one gesture | done |
 | 6 | Sessions resumable across a daemon restart, memory re-read on the way in | done |
 | 7 | Agents scoped to paths, leased, never on the protected branch | done |
+| 7 | A multi-repo session actually reaches every repo in its scope (`--add-dir`) | done |
+| 16 | Agent command allow-list: edits and read-only git, never a commit or push | done |
 | 7 | Cross-repo `CONTEXT.md` generated and fed to any multi-repo session | done |
 | 8 | Runtime contract (`provision`/`up`/`preview`/`health`/`down`), `portable` + `exclusive` | done |
 | 8 | Exclusive runtimes arbitrated: a second live feature is refused, not broken | done |
@@ -143,9 +277,13 @@ Agent engines shipped: `claude`, `codex` — normalised into one event stream (�
 - **CI badges** — the capability is detected, the status is not polled.
 - **Session comparison** (§6, "sessions comparables") — sessions are listed, not diffed.
 - **Documentation capability** (§9) — detected, not indexed or rendered.
-- **Feature creation at C3** creates the worktrees, the memory and the cross-repo context, and
-  `feature live` provisions and starts the runtimes. It does not create the database or the
-  ticket — §10's "une base par workspace" is unbuilt, and tickets need the keychain first.
+- **Feature creation at C3** creates the worktrees, the memory, the cross-repo context and the
+  local config each worktree needs (§7); `--clone-db` also gives each one its own database
+  (§10). It does not create the ticket — that needs the keychain first.
+- **Database engines** — MySQL/MariaDB and Postgres are implemented; sqlite needs nothing,
+  since its database is a file the worktree seed already carries. The clone and drop paths have
+  not been exercised against a live server on this machine (no client installed), only their
+  plans; a missing client is detected and reported before anything runs.
 - **Packaging** (electron-builder, launchd) — the core runs in the foreground for now.
 
 ## The mark

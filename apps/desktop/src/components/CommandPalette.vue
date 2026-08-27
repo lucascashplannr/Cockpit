@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
-  AppWindow, ArrowRight, ArrowUpFromLine, BookMarked, CloudDownload, CornerDownLeft, FileCode,
+  AppWindow, ArrowRight, ArrowUpFromLine, BookMarked, Check, CloudDownload, CornerDownLeft, FileCode,
   FolderOpen,
   FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, TextSearch,
@@ -12,7 +12,8 @@ import {
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
   activateFeature, activeProject, activeWorkspace, addRepoTo, archivedFeatures, client,
-  closeFeature, deleteFeature, guard, newProject, parkFeature, projectFeatures, reopenFeature,
+  closeFeature, deleteFeature, guard, landFeature, markResolved, newProject, parkFeature,
+  projectFeatures, rebaseFeature, reopenFeature, resolveConflict,
   requestPlan, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { TabId } from '../core/store.js'
@@ -124,6 +125,30 @@ const commands = computed<Item[]>(() => {
   for (const f of projectFeatures.value) {
     if (f.derived) continue
     const isLive = f.state === 'live'
+    out.push({
+      id: 'feature:land:' + f.id,
+      label: 'Land ' + f.name,
+      hint: 'merge it onto the base branch in every repository — the plan is shown first',
+      group: 'Feature',
+      icon: GitMerge,
+      run: act(() => landFeature(f.id, false)),
+    })
+    out.push({
+      id: 'feature:landpush:' + f.id,
+      label: 'Land and push ' + f.name,
+      hint: 'the same, then pushes the base branch',
+      group: 'Feature',
+      icon: GitMerge,
+      run: act(() => landFeature(f.id, true)),
+    })
+    out.push({
+      id: 'feature:rebase:' + f.id,
+      label: 'Rebase ' + f.name,
+      hint: 'every repository it spans, one plan — stops at the first conflict',
+      group: 'Feature',
+      icon: GitCompareArrows,
+      run: act(() => rebaseFeature(f.id)),
+    })
     out.push({
       id: 'feature:toggle:' + f.id,
       label: (isLive ? 'Park ' : 'Make live ') + f.name,
@@ -237,7 +262,50 @@ const commands = computed<Item[]>(() => {
       }
     }
 
-    if (w.git) {
+    // §3.7 — a stopped rebase replaces the git verbs rather than sitting beside
+    // them: git refuses every one of them until this ends, and offering a
+    // rebase mid-rebase is offering a guaranteed error.
+    if (w.git?.operation) {
+      const o = w.git.operation
+      out.push({
+        id: 'git:continue',
+        label: 'Continue the ' + o.kind,
+        hint: o.unresolvedPaths.length
+          ? o.unresolvedPaths.length + ' file(s) still carry conflict markers'
+          : 'stages the resolved files and carries on',
+        group: 'Conflict',
+        icon: Check,
+        run: act(() => resolveConflict('continue')),
+      })
+      if (o.kind !== 'merge') {
+        out.push({
+          id: 'git:skip',
+          label: 'Skip this commit',
+          hint: 'drop it and move to the next',
+          group: 'Conflict',
+          icon: GitCompareArrows,
+          run: act(() => resolveConflict('skip')),
+        })
+      }
+      out.push({
+        id: 'git:abort',
+        label: 'Abort the ' + o.kind,
+        hint: 'the branch goes back exactly where it started; the autostash comes with it',
+        group: 'Conflict',
+        icon: Undo2,
+        run: act(() => resolveConflict('abort')),
+      })
+      if (o.unresolvedPaths.length) {
+        out.push({
+          id: 'git:markall',
+          label: 'Mark every conflicted file resolved',
+          hint: 'only when the markers belong in those files',
+          group: 'Conflict',
+          icon: Check,
+          run: act(() => markResolved(o.conflictedPaths)),
+        })
+      }
+    } else if (w.git) {
       const gitIcon: Record<string, Component> = {
         rebase: GitCompareArrows,
         merge: GitMerge,

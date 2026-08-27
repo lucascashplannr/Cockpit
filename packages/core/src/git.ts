@@ -1,6 +1,6 @@
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import type { GitState } from '@cockpit/shared'
+import type { GitOperation, GitState } from '@cockpit/shared'
 import { run, serialize } from './exec.js'
 
 /** §3.4 — we probe, we do not remember. Nothing here is cached to disk. */
@@ -51,6 +51,7 @@ export async function probeGit(cwd: string): Promise<GitState | null> {
     conflicted: 0,
     lastCommit: null,
     hasUnpushedWork: unpushed.ok && unpushed.stdout.trim().length > 0,
+    operation: null,
   }
 
   for (const line of status.stdout.split('\n')) {
@@ -88,18 +89,123 @@ export async function probeGit(cwd: string): Promise<GitState | null> {
     }
   }
 
-  // In-progress operations, so the UI never offers a rebase mid-rebase.
-  const gitDir = (await git(cwd, ['rev-parse', '--git-dir'])).stdout.trim()
-  const abs = gitDir.startsWith('/') ? gitDir : join(cwd, gitDir)
+  // In-progress operations, so the UI never offers a rebase mid-rebase — and,
+  // when there is one, can offer the only three verbs that end it instead.
+  const abs = await gitDir(cwd)
   if (existsSync(join(abs, 'rebase-merge')) || existsSync(join(abs, 'rebase-apply'))) {
     state.headState = 'rebasing'
   } else if (existsSync(join(abs, 'MERGE_HEAD'))) {
+    state.headState = 'merging'
+  } else if (existsSync(join(abs, 'CHERRY_PICK_HEAD'))) {
     state.headState = 'merging'
   } else if (existsSync(join(abs, 'BISECT_LOG'))) {
     state.headState = 'bisecting'
   }
 
+  if (state.headState === 'rebasing' || state.headState === 'merging') {
+    state.operation = await probeOperation(cwd, abs)
+    // Mid-rebase HEAD is detached, so `status` reported no branch. The rebase
+    // state knows which branch is being replayed; without this the window says
+    // "(detached)" for the whole conflict, which is true and useless.
+    state.branch ??= state.operation?.branch ?? null
+  }
+
   return state
+}
+
+export async function gitDir(cwd: string): Promise<string> {
+  const d = (await git(cwd, ['rev-parse', '--git-dir'])).stdout.trim()
+  return d.startsWith('/') ? d : join(cwd, d)
+}
+
+function readTrimmed(path: string): string | null {
+  try {
+    return existsSync(path) ? readFileSync(path, 'utf8').trim() || null : null
+  } catch {
+    return null
+  }
+}
+
+/** The three markers, anchored: a line that merely mentions one does not count. */
+const MARKER = /^(<{7}|={7}|>{7})(\s|$)/m
+
+/**
+ * §3.7 — what the user has to act on, split from what git merely reports.
+ *
+ * `conflictedPaths` is every unmerged path; `unresolvedPaths` is the subset
+ * that still carries markers. Continue is gated on the second, which is what
+ * lets a conflict resolved in an editor be continued from the window without
+ * anyone having to remember to `git add`.
+ */
+export async function probeOperation(cwd: string, abs?: string): Promise<GitOperation | null> {
+  const dir = abs ?? (await gitDir(cwd))
+
+  const rebaseDir = existsSync(join(dir, 'rebase-merge'))
+    ? join(dir, 'rebase-merge')
+    : existsSync(join(dir, 'rebase-apply'))
+      ? join(dir, 'rebase-apply')
+      : null
+
+  let kind: GitOperation['kind']
+  let branch: string | null = null
+  let onto: string | null = null
+  let step: number | null = null
+  let total: number | null = null
+
+  if (rebaseDir) {
+    kind = 'rebase'
+    branch = readTrimmed(join(rebaseDir, 'head-name'))?.replace(/^refs\/heads\//, '') ?? null
+    // `onto_name` is the ref as the user typed it, and far more useful than the
+    // sha — but git only writes it for some backends. When it is missing, ask
+    // git what that commit is called before falling back to eight hex digits:
+    // "onto origin/main" is the sentence, "onto 2af4ab51" is a lookup.
+    const ontoSha = readTrimmed(join(rebaseDir, 'onto'))
+    onto = readTrimmed(join(rebaseDir, 'onto_name')) ?? (ontoSha ? await nameOf(cwd, ontoSha) : null)
+    const num = readTrimmed(join(rebaseDir, 'msgnum')) ?? readTrimmed(join(rebaseDir, 'next'))
+    const end = readTrimmed(join(rebaseDir, 'end')) ?? readTrimmed(join(rebaseDir, 'last'))
+    step = num ? Number(num) : null
+    total = end ? Number(end) : null
+  } else if (existsSync(join(dir, 'CHERRY_PICK_HEAD'))) {
+    kind = 'cherry-pick'
+  } else if (existsSync(join(dir, 'REVERT_HEAD'))) {
+    kind = 'revert'
+  } else if (existsSync(join(dir, 'MERGE_HEAD'))) {
+    kind = 'merge'
+    onto = readTrimmed(join(dir, 'MERGE_HEAD'))?.slice(0, 8) ?? null
+  } else {
+    return null
+  }
+
+  const conflictedPaths = await unmergedPaths(cwd)
+  const unresolvedPaths: string[] = []
+  for (const rel of conflictedPaths) {
+    try {
+      if (MARKER.test(readFileSync(join(cwd, rel), 'utf8'))) unresolvedPaths.push(rel)
+    } catch {
+      // Unreadable or deleted-by-them: not a marker problem, so not listed here.
+      // `git add`/`git rm` still has to happen and `continue` will say so.
+    }
+  }
+
+  return { kind, branch, onto, step, total, conflictedPaths, unresolvedPaths }
+}
+
+/** What a commit is called, preferring a remote branch; the sha if nothing. */
+async function nameOf(cwd: string, sha: string): Promise<string> {
+  const r = await git(cwd, ['name-rev', '--name-only', '--refs=refs/remotes/*', sha], 10_000)
+  const name = r.stdout.trim()
+  // name-rev answers "undefined" rather than failing when nothing matches, and
+  // it appends "~2" for a commit reached by walking back from a ref — neither
+  // is a name worth showing.
+  if (!r.ok || !name || name === 'undefined' || /[~^]/.test(name)) return sha.slice(0, 8)
+  return name.replace(/^remotes\//, '')
+}
+
+/** Paths git itself calls unmerged — the only authority on what is blocking. */
+export async function unmergedPaths(cwd: string): Promise<string[]> {
+  const r = await git(cwd, ['diff', '--name-only', '--diff-filter=U', '-z'])
+  if (!r.ok) return []
+  return r.stdout.split('\0').filter(Boolean)
 }
 
 export interface WorktreeEntry {

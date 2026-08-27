@@ -16,11 +16,16 @@ import * as memory from './memory.js'
 import * as leases from './leases.js'
 import * as agents from './agents.js'
 import * as features from './features/index.js'
+import * as conflict from './conflict.js'
+import * as seed from './seed.js'
+import * as database from './database.js'
+import * as commit from './commit.js'
 import * as terminals from './terminals.js'
 import * as runtime from './runtime/index.js'
 import * as supervisor from './supervisor.js'
 import { portMap } from './ports.js'
 import { defaultBranch } from './git.js'
+import { readManifest } from './detect.js'
 import { run } from './exec.js'
 import { termBus } from './terminals.js'
 
@@ -115,6 +120,16 @@ async function openIn(workspaceId: string, target: string, path?: string) {
     return { ok: fallback.ok, detail: fallback.ok ? '' : 'editor "' + cfg.ide + '" not found on PATH' }
   }
   return { ok: true, detail: '' }
+}
+
+/** §5 — `agents.allow` in the manifest, or the built-in list when it is absent. */
+function allowFor(projectId?: string): string[] | undefined {
+  if (!projectId) return undefined
+  const project = registry.allProjects().find((x) => x.id === projectId)
+  if (!project?.manifestPath) return undefined
+  const { manifest } = readManifest(project.manifestPath)
+  const allow = manifest?.agents?.allow
+  return allow?.length ? allow : undefined
 }
 
 type Handler = (params: never) => unknown | Promise<unknown>
@@ -246,6 +261,66 @@ const handlers: Record<string, Handler> = {
     if (!res.plan) pushAll()
     return res
   },
+  /**
+   * §7 — what `git worktree add` will not carry, shown before it is carried.
+   * Cheap enough to call on every keystroke of the feature name: it stats a
+   * handful of root-level files and asks git which of them it tracks.
+   */
+  'worktree.seedPreview': async (p: {
+    projectId: string
+    repoWorkspaceIds?: string[]
+    slug: string
+  }) => {
+    const only = p.repoWorkspaceIds?.length ? new Set(p.repoWorkspaceIds) : null
+    const repos = registry
+      .allWorkspaces(p.projectId)
+      .filter((w) => w.kind === 'main' && w.repo && (!only || only.has(w.id)))
+    return Promise.all(
+      repos.map((w) => seed.propose({ projectId: p.projectId, repoPath: w.path, slug: p.slug })),
+    )
+  },
+
+  /**
+   * §10 — "une base par workspace". Read out of each repository's own `.env`,
+   * because that is where the connection already is (§3.5).
+   */
+  'database.preview': async (p: {
+    projectId: string
+    repoWorkspaceIds?: string[]
+    slug: string
+  }) => {
+    const only = p.repoWorkspaceIds?.length ? new Set(p.repoWorkspaceIds) : null
+    const repos = registry
+      .allWorkspaces(p.projectId)
+      .filter((w) => w.kind === 'main' && w.repo && (!only || only.has(w.id)))
+    const out = []
+    for (const w of repos) {
+      // Not gated on a full connection: a checkout that names a database
+      // without declaring an engine still has one, and `preview` reports it as
+      // `unknown` rather than saying nothing at all.
+      const baseDb = database.connectionOf(w.path)?.database ?? database.namedDatabase(w.path)
+      if (!baseDb) continue
+      const target = (
+        await seed.contextFor({
+          projectId: p.projectId,
+          repoPath: w.path,
+          slug: p.slug,
+          tld: 'test',
+          baseDb,
+        })
+      ).db
+      const view = await database.preview(w.path, target)
+      if (view) out.push(view)
+    }
+    return out
+  },
+
+  /** §4 — the feature is the unit of work, so catching up is one act. */
+  'feature.rebase': (p: { featureId: string; base?: string }) =>
+    features.rebasePlan(p.featureId, p.base),
+  /** §4 — and landing it is the act that makes the work count. */
+  'feature.land': (p: { featureId: string; push?: boolean; base?: string }) =>
+    features.landPlan(p.featureId, { push: p.push, base: p.base }),
   'feature.close': async (p: { featureId: string; removeWorktrees: boolean }) => {
     const res = await features.closePlan(p.featureId, p.removeWorktrees)
     if (!res.plan) {
@@ -268,12 +343,30 @@ const handlers: Record<string, Handler> = {
   'diff.file': (p: { workspaceId: string; path: string; base?: string }) =>
     diff.file(p.workspaceId, p.path, p.base),
 
+  'git.commitPreview': (p: commit.CommitInput) => commit.preview(p),
+  'git.commit': (p: commit.CommitInput) => commit.plan(p),
+
   'git.plan': (p: { workspaceId: string; operation: plans.Operation; args?: Record<string, string> }) =>
     plans.plan(p.workspaceId, p.operation, p.args ?? {}),
   'git.apply': async (p: { planId: string }) => {
     const res = await plans.apply(p.planId)
     await registry.reconcile()
     pushAll()
+    return res
+  },
+  /** §3.7 — re-probed on every call, so a rebase advanced in the terminal tab
+   *  and one advanced by the button are the same thing to the window. */
+  'git.state': (p: { workspaceId: string }) => conflict.state(p.workspaceId),
+  'git.resolve': async (p: { workspaceId: string; action: conflict.ResolveAction }) => {
+    const res = await conflict.resolve(p.workspaceId, p.action)
+    await registry.probeWorkspace(p.workspaceId)
+    pushWorkspaces()
+    return res
+  },
+  'git.stage': async (p: { workspaceId: string; paths: string[] }) => {
+    const res = await conflict.stage(p.workspaceId, p.paths)
+    await registry.probeWorkspace(p.workspaceId)
+    pushWorkspaces()
     return res
   },
   'git.undo': async (p: { workspaceId: string }) => {
@@ -334,6 +427,9 @@ const handlers: Record<string, Handler> = {
       currentBranch: first.git?.branch ?? null,
       featureId,
       preamble: featureId ? features.promptPreamble(featureId, paths) : '',
+      // §5 + §16 — the manifest already has a place to widen the allow-list;
+      // absent, the built-in one applies.
+      allow: allowFor(first.projectId),
     })
     pushAgents()
     pushWorkspaces()
@@ -348,6 +444,7 @@ const handlers: Record<string, Handler> = {
       // The memory has moved on since; the conversation has not. Re-reading it
       // is what keeps a resumed session from acting on a stale understanding.
       prev.featureId ? features.promptPreamble(prev.featureId, prev.paths) : '',
+      allowFor(registry.getWorkspace(prev.workspaceIds[0] ?? '')?.projectId),
     )
     pushAgents()
     pushWorkspaces()
@@ -359,10 +456,7 @@ const handlers: Record<string, Handler> = {
     pushAgents()
     return { ok: true }
   },
-  'agent.send': (p: { sessionId: string; text: string }) => {
-    agents.send(p.sessionId, p.text)
-    return { ok: true }
-  },
+  'agent.send': (p: { sessionId: string }) => agents.send(p.sessionId),
 
   'memory.read': (p: { workspaceId: string }) => memory.read(p.workspaceId),
   'memory.write': (p: { workspaceId: string; content: string }) => {
@@ -467,6 +561,9 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
   // Every journal entry reaches every connected client. The UI is a view over
   // the log, never a separate source of truth (§3.3).
   bus.on('event', (event: CockpitEvent) => broadcast({ t: 'event', event }))
+  // §3.3 — a session that ends on its own has to reach the window; nothing
+  // else was going to call this until the user happened to click something.
+  agents.agentBus.on('changed', () => pushAgents())
   termBus.on('data', ({ termId, data }) => broadcast({ t: 'term', termId, data }))
   termBus.on('exit', ({ termId, code }) => broadcast({ t: 'term-exit', termId, code }))
 

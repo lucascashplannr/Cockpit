@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { DiffFile, FileDiff, Workspace } from '@cockpit/shared'
+import type { CommitPreview, DiffFile, FileDiff, Workspace } from '@cockpit/shared'
 import type { Component } from 'vue'
-import { Bot, CircleDashed, FileCode, Sparkles, SquareArrowOutUpRight, User, UsersRound } from '@lucide/vue'
-import { client, guard, state } from '../../core/store.js'
+import {
+  Bot, CircleDashed, FileCode, GitCommitHorizontal, Sparkles, SquareArrowOutUpRight, TriangleAlert,
+  User, UsersRound,
+} from '@lucide/vue'
+import {
+  commit, commitPreview, guard, client, state,
+} from '../../core/store.js'
 
 /**
  * §12 — the review surface. "La distinction humain / agent est le garde-fou
@@ -58,6 +63,49 @@ async function select(path: string) {
   const r = await guard(() => client.call('diff.file', { workspaceId: props.workspace.id, path }))
   current.value = r
 }
+
+/* ── §16 — "revue humaine du diff avant tout commit" ──────────────────────
+ *
+ * The review was here and the commit was not, so the only way out of a dirty
+ * worktree was a terminal — and `feature.close` refuses over uncommitted
+ * changes, which meant Cockpit blocked you on a state it could not clear.
+ * It belongs next to the diff it is a review of, not in a menu.
+ */
+
+const message = ref('')
+const stageAll = ref(true)
+const committing = ref(false)
+const rows = ref<CommitPreview[]>([])
+
+/** A feature commits across every repository it spans; a bare workspace does not. */
+const featureId = computed(() => props.workspace.featureId)
+
+async function refreshCommit() {
+  rows.value = await commitPreview(featureId.value, props.workspace.id, stageAll.value)
+}
+
+const willCommit = computed(() => rows.value.filter((r) => r.willCommit))
+const fileCount = computed(() =>
+  willCommit.value.reduce((n, r) => n + (stageAll.value ? r.staged + r.unstaged : r.staged), 0),
+)
+const blocked = computed(() => rows.value.filter((r) => r.conflicted > 0))
+const canCommit = computed(
+  () => !!message.value.trim() && fileCount.value > 0 && !blocked.value.length && !committing.value,
+)
+
+async function doCommit() {
+  if (!canCommit.value) return
+  committing.value = true
+  const ok = await commit(featureId.value, props.workspace.id, message.value.trim(), stageAll.value)
+  committing.value = false
+  // The plan dialog takes it from here; clearing on success keeps the field
+  // from re-offering a message that has already been used.
+  if (ok) message.value = ''
+}
+
+watch([() => props.workspace.id, stageAll], () => void refreshCommit(), { immediate: true })
+// The counts come from the core's own probe, so they follow every push.
+watch(() => props.workspace.git, () => void refreshCommit())
 
 async function openInIde() {
   if (!selected.value) return
@@ -150,6 +198,37 @@ const mark: Record<string, Component> = {
           <span class="num">{{ counts.unknown }}</span>
         </button>
       </div>
+
+      <!-- §16 — the commit lives against the review, and commits every
+           repository of the feature at once because that is the unit the work
+           was done in. -->
+      <div class="commitbar">
+        <div v-if="blocked.length" class="cblock">
+          <TriangleAlert class="sm" />
+          <span>{{ blocked.map((r) => r.repo).join(', ') }}: resolve the conflict first.</span>
+        </div>
+        <template v-else>
+          <input
+            v-model="message"
+            class="input cmsg"
+            placeholder="Commit message"
+            :disabled="!fileCount"
+            @keydown.meta.enter="doCommit"
+          />
+          <label class="call">
+            <input v-model="stageAll" type="checkbox" />
+            <span>stage everything</span>
+          </label>
+          <button class="btn primary full" :disabled="!canCommit" @click="doCommit">
+            <GitCommitHorizontal />
+            {{ committing ? 'Planning…' : 'Commit ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') }}
+          </button>
+          <p v-if="willCommit.length > 1" class="cnote">
+            {{ willCommit.map((r) => r.repo).join(' · ') }} — one message, one commit each.
+          </p>
+          <p v-else-if="!fileCount" class="cnote dim">Nothing to commit.</p>
+        </template>
+      </div>
     </aside>
 
     <div class="view">
@@ -178,6 +257,43 @@ const mark: Record<string, Component> = {
 </template>
 
 <style scoped>
+/* §16 — the commit bar. Pinned to the foot of the file list: it acts on what
+   is listed above it, and a commit button that scrolls away is one nobody
+   trusts they have seen the whole of. */
+.commitbar {
+  flex: none;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-sunken);
+}
+.cmsg { width: 100%; height: 30px; }
+.call {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.call input { accent-color: var(--accent); }
+.commitbar .btn.full { width: 100%; }
+.cnote {
+  margin: 7px 0 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+.cnote.dim { color: var(--text-dim); }
+.cblock {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  line-height: 1.5;
+}
+.cblock .lucide { margin-top: 1px; flex: none; }
+
 .diff { display: grid; grid-template-columns: 320px minmax(0, 1fr); height: 100%; }
 
 .files {

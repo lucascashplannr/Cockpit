@@ -57,8 +57,57 @@ async function confirmResume(id: string) {
   }
 }
 
-const siblings = computed(() =>
-  state.workspaces.filter((w) => w.projectId === props.workspace.projectId && w.kind !== 'group'),
+/**
+ * §7 — the scope is the set of paths, so the picker has to make each one
+ * identifiable. It listed every workspace in the project by bare name, which
+ * for a feature meant four checkboxes reading `Init`, `Init-Backend`, `Init`,
+ * `Init-Backend`: a main checkout and its worktree share a name, and nothing
+ * said which was which. Picking a main one then failed on the protected-branch
+ * refusal *after* the prompt had been typed.
+ *
+ * Split in two, feature first, each row carrying its branch — and the ones an
+ * agent may not run in are shown as refusable rather than silently offered.
+ */
+interface ScopeRow {
+  id: string
+  name: string
+  kind: string
+  branch: string
+  leased: boolean
+  /** §7 — on its repository's protected branch, so a session here is refused. */
+  blocked: boolean
+}
+
+function toRow(w: Workspace): ScopeRow {
+  const branch = w.git?.branch ?? '—'
+  return {
+    id: w.id,
+    name: w.name,
+    kind: w.kind === 'worktree' ? 'worktree' : w.kind === 'main' ? 'checkout' : w.kind,
+    branch,
+    leased: !!w.lease,
+    // The core knows the real default branch; the window only has what it was
+    // pushed, so this is the honest approximation and the core still decides.
+    blocked: w.kind === 'main' && ['main', 'master', 'develop'].includes(branch),
+  }
+}
+
+const inFeature = computed<ScopeRow[]>(() => {
+  const fid = props.workspace.featureId
+  if (!fid) return []
+  return state.workspaces.filter((w) => w.featureId === fid && w.kind !== 'group').map(toRow)
+})
+
+const elsewhere = computed<ScopeRow[]>(() => {
+  const fid = props.workspace.featureId
+  return state.workspaces
+    .filter((w) => w.projectId === props.workspace.projectId && w.kind !== 'group')
+    .filter((w) => !fid || w.featureId !== fid)
+    .map(toRow)
+})
+
+const blockedPicked = computed(() =>
+  [...inFeature.value, ...elsewhere.value].filter((r) => r.blocked && scope.value.includes(r.id)),
 )
 
 onMounted(async () => {
@@ -66,7 +115,11 @@ onMounted(async () => {
   engines.value = r ?? []
   const firstAvailable = engines.value.find((e) => e.available)
   if (firstAvailable) engine.value = firstAvailable.id
-  scope.value = [props.workspace.id]
+  // A session opened from inside a feature means the feature, not one repo of
+  // it: that is the whole reason the worktrees were created together.
+  scope.value = inFeature.value.length
+    ? inFeature.value.filter((r) => !r.blocked).map((r) => r.id)
+    : [props.workspace.id]
 })
 
 async function start() {
@@ -148,14 +201,41 @@ function payloadText(p: unknown): string {
           </div>
         </div>
 
-        <!-- §7 — the lease is taken on these paths; overlapping runs are refused. -->
+        <!-- §7 — the lease is taken on these paths; overlapping runs are refused.
+             Each row says which checkout it is and what branch it is on: a
+             worktree and its main share a name, and picking the wrong one used
+             to fail only after the prompt was written. -->
         <div class="field">
           <label>scope <span class="sub">paths this run may touch</span></label>
-          <label v-for="s in siblings" :key="s.id" class="check">
-            <input type="checkbox" :value="s.id" v-model="scope" />
-            <span>{{ s.name }}</span>
-            <span v-if="s.lease" class="chip warn">leased</span>
-          </label>
+
+          <template v-if="inFeature.length">
+            <span class="scopehead">this feature</span>
+            <label v-for="r in inFeature" :key="r.id" class="check srow2" :class="{ blocked: r.blocked }">
+              <input type="checkbox" :value="r.id" v-model="scope" />
+              <span class="wname">{{ r.name }}</span>
+              <span class="wkind">{{ r.kind }}</span>
+              <span class="wbranch mono">{{ r.branch }}</span>
+              <span v-if="r.leased" class="chip warn">leased</span>
+            </label>
+          </template>
+
+          <template v-if="elsewhere.length">
+            <span class="scopehead">{{ inFeature.length ? 'elsewhere in the project' : 'workspaces' }}</span>
+            <label v-for="r in elsewhere" :key="r.id" class="check srow2" :class="{ blocked: r.blocked }">
+              <input type="checkbox" :value="r.id" v-model="scope" />
+              <span class="wname">{{ r.name }}</span>
+              <span class="wkind">{{ r.kind }}</span>
+              <span class="wbranch mono">{{ r.branch }}</span>
+              <span v-if="r.leased" class="chip warn">leased</span>
+            </label>
+          </template>
+
+          <!-- §7 — say it now, not after the prompt is written and refused. -->
+          <p v-if="blockedPicked.length" class="scopewarn">
+            {{ blockedPicked.map((r) => r.name).join(', ') }}
+            {{ blockedPicked.length > 1 ? 'are' : 'is' }} on a protected branch — an agent never
+            runs there. Open a feature, or pick its worktree instead.
+          </p>
         </div>
 
         <textarea
@@ -226,6 +306,51 @@ function payloadText(p: unknown): string {
 </template>
 
 <style scoped>
+/* §7 — the scope rows. A worktree and its main checkout share a name, so the
+   kind and the branch are what tell them apart; both are part of the label,
+   not a tooltip. */
+.scopehead {
+  display: block;
+  margin: 8px 0 2px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.srow2 { gap: 7px; }
+.srow2 .wname { flex: none; color: var(--text); }
+.srow2 .wkind {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.srow2 .wbranch {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+.srow2.blocked .wname,
+.srow2.blocked .wbranch { color: var(--text-dim); }
+.srow2.blocked .wkind { border-color: var(--warn); color: var(--warn); }
+
+.scopewarn {
+  margin: 6px 0 0;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .agent { display: grid; grid-template-columns: minmax(0, 1fr) 320px; height: 100%; }
 
 .stream { min-width: 0; min-height: 0; overflow-y: auto; padding: 18px 22px 34px; }

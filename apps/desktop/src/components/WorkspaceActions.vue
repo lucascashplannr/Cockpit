@@ -19,6 +19,13 @@ import { activeWorkspace, client, guard, requestPlan } from '../core/store.js'
 const w = computed(() => activeWorkspace.value)
 const preview = computed(() => w.value?.runtime?.preview ?? null)
 
+/**
+ * §3.9 — while a rebase is stopped, Rebase and Push are not verbs this
+ * workspace has: git refuses both, and the three that do apply are in the
+ * conflict panel. Absent, not greyed out.
+ */
+const midOperation = computed(() => !!w.value?.git?.operation)
+
 async function toggleRuntime() {
   const ws = w.value
   if (!ws?.runtime) return
@@ -56,14 +63,14 @@ async function undo() {
     </button>
     <button class="btn ghost" @click="openIde"><FileCode />IDE</button>
     <span v-if="w.git" class="vrule" />
-    <button v-if="w.git" class="btn ghost" @click="requestPlan(w.id, 'rebase')">
+    <button v-if="w.git && !midOperation" class="btn ghost" @click="requestPlan(w.id, 'rebase')">
       <GitCompareArrows />Rebase
     </button>
-    <button v-if="w.git" class="btn ghost" @click="requestPlan(w.id, 'push')">
+    <button v-if="w.git && !midOperation" class="btn ghost" @click="requestPlan(w.id, 'push')">
       <ArrowUpFromLine />Push
     </button>
     <button
-      v-if="w.git"
+      v-if="w.git && !midOperation"
       class="icon-btn"
       title="Roll back to the last restore point"
       @click="undo"

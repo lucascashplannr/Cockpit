@@ -43,7 +43,7 @@ export function start(onChange: (workspaceIds: string[]) => void): void {
   })
 
   const onEvent = (file: string) => {
-    const ws = allWorkspaces().find((w) => file.startsWith(w.path + '/'))
+    const ws = owner(file)
     if (!ws) return
     dirty.add(ws.id)
 
@@ -70,6 +70,27 @@ export function start(onChange: (workspaceIds: string[]) => void): void {
   watcher.on('add', onEvent)
   watcher.on('change', onEvent)
   watcher.on('unlink', onEvent)
+}
+
+/**
+ * The workspace a changed file belongs to: the *deepest* one containing it,
+ * never merely the first that matches.
+ *
+ * Workspaces nest. A project's group workspace sits at the project root, and
+ * every repository and every worktree lives under it — so a plain `find` on
+ * "does the path start with this one" answered `Ledger` for a file in
+ * `Ledger/worktrees/2fa/api`. The group has no repository, so `refreshGit`
+ * did nothing and the worktree's state only ever caught up on the 60-second
+ * reconcile. The same mistake attributed the edit to the wrong workspace,
+ * which is what fills the diff's human/agent split (§12).
+ */
+function owner(file: string) {
+  let best: ReturnType<typeof allWorkspaces>[number] | null = null
+  for (const w of allWorkspaces()) {
+    if (!file.startsWith(w.path + '/')) continue
+    if (!best || w.path.length > best.path.length) best = w
+  }
+  return best
 }
 
 export function stop(): void {

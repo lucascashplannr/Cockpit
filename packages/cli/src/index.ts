@@ -4,8 +4,8 @@ import { spawn } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
-import { MANIFEST_TEMPLATE, parseRemote } from '@cockpit/shared'
-import type { AddRepoSource, NewProjectSource, Workspace } from '@cockpit/shared'
+import { MANIFEST_TEMPLATE, parseRemote, slugify } from '@cockpit/shared'
+import type { AddRepoSource, NewProjectSource, SeedProposal, Workspace } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 
 /**
@@ -25,6 +25,7 @@ const C = {
   red: (s: string) => '\x1b[31m' + s + '\x1b[0m',
   blue: (s: string) => '\x1b[34m' + s + '\x1b[0m',
   mag: (s: string) => '\x1b[35m' + s + '\x1b[0m',
+  cyan: (s: string) => '\x1b[36m' + s + '\x1b[0m',
 }
 
 function out(s = ''): void {
@@ -544,7 +545,13 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     }
     const r = await c.call('git.apply', { planId })
     out(r.output)
-    out(r.ok ? C.green('applied') : C.red('failed'))
+    if (r.conflict) {
+      // Not a failure: the plan reached something only a person can decide.
+      out(C.yellow(r.conflict.repo + ': ' + r.conflict.kind + ' stopped on a conflict'))
+      out(C.dim('  cockpit conflict show ' + r.conflict.repo))
+    } else {
+      out(r.ok ? C.green('applied') : C.red('failed'))
+    }
     if (r.restorePoint) out(C.dim('  restore point ' + r.restorePoint.slice(0, 8) + ' · undo with: cockpit undo'))
     c.close()
     process.exit(r.ok ? 0 : 1)
@@ -556,6 +563,126 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     const r = await c.call('git.undo', { workspaceId: w.id })
     out(r.ok ? C.green(r.detail) : C.red(r.detail))
     c.close()
+  },
+
+  /**
+   * §16 — "revue humaine du diff avant tout commit". `cockpit diff` is the
+   * review; this is the commit it was a review of, across every repository of
+   * the feature at once.
+   */
+  async commit(args) {
+    const c = await connect()
+    const flags = parseFlags(args)
+    const message = args.filter((a) => !a.startsWith('--'))[0]
+    if (!message) {
+      out('usage: cockpit commit "<message>" [--staged] [--at <feature|workspace>] [--yes]')
+      out(C.dim('  --staged commits only what is already staged; the default stages everything'))
+      process.exit(1)
+    }
+    const all = flags.staged === undefined
+
+    // A feature by slug, or the workspace the shell is standing in.
+    const features = await c.call('feature.list', {})
+    const f = flags.at ? features.find((x) => x.slug === flags.at || x.name === flags.at) : null
+    const target = f
+      ? { featureId: f.id }
+      : { workspaceIds: [(await pickWorkspace(c, flags.at)).id] }
+
+    const res = await c.call('git.commit', { ...target, message, all })
+    for (const r of res.preview) {
+      const n = all ? r.staged + r.unstaged : r.staged
+      out(
+        '  ' + (r.willCommit ? C.green('+') : C.dim('·')) + ' ' + r.repo.padEnd(16) +
+          C.dim((r.branch ?? '—') + '  ' + n + ' file(s)') +
+          (r.conflicted ? C.red('  ' + r.conflicted + ' conflicted') : ''),
+      )
+    }
+    if (!res.ok || !res.plan) {
+      out(C.red(res.detail))
+      c.close()
+      process.exit(1)
+    }
+    printPlan(res.plan)
+    if (flags.yes === undefined) {
+      out(C.dim('  nothing has run. Apply it with:  cockpit apply ' + res.plan.planId))
+      c.close()
+      return
+    }
+    const applied = await c.call('git.apply', { planId: res.plan.planId })
+    out(applied.output)
+    out(applied.ok ? C.green('committed') : C.red('stopped'))
+    c.close()
+    process.exit(applied.ok ? 0 : 1)
+  },
+
+  /**
+   * §3.7 — the three verbs that end a stopped rebase. Without these the CLI
+   * could start one and not finish it, which §15 does not allow: everything
+   * the window can do is doable here.
+   */
+  async conflict(args) {
+    const c = await connect()
+    const sub = args[0] ?? 'show'
+
+    if (sub === 'ls' || sub === 'list') {
+      const all = await c.call('workspace.list', {})
+      const stuck = all.filter((w) => w.git?.operation)
+      if (!stuck.length) out(C.dim('  nothing in progress'))
+      for (const w of stuck) {
+        const o = w.git!.operation!
+        out('')
+        out('  ' + C.yellow('◆') + ' ' + C.bold(w.name) + '  ' + C.dim(o.kind + (o.onto ? ' onto ' + o.onto : '')))
+        printOperation(o)
+      }
+      c.close()
+      return
+    }
+
+    // A worktree and its main checkout share a name, so `conflict continue
+    // bravo` is ambiguous — except that only one of them can be mid-rebase.
+    // Preferring that one is not a guess, it is the only workable answer.
+    const w = await pickConflicted(c, args[1])
+    if (sub === 'show') {
+      const o = await c.call('git.state', { workspaceId: w.id })
+      if (!o) {
+        out(C.dim('  nothing in progress in ' + w.name))
+        c.close()
+        return
+      }
+      out('')
+      out('  ' + C.bold(o.kind) + (o.branch ? ' ' + o.branch : '') + (o.onto ? C.dim(' onto ' + o.onto) : ''))
+      printOperation(o)
+      out('')
+      out(C.dim('  cockpit conflict continue | skip | abort'))
+      c.close()
+      return
+    }
+
+    if (sub === 'mark') {
+      const o = await c.call('git.state', { workspaceId: w.id })
+      const r = await c.call('git.stage', { workspaceId: w.id, paths: o?.conflictedPaths ?? [] })
+      out(r.ok ? C.green(r.detail) : C.red(r.detail))
+      c.close()
+      return
+    }
+
+    if (sub !== 'continue' && sub !== 'abort' && sub !== 'skip') {
+      out('usage: cockpit conflict [show|ls|continue|skip|abort|mark] [workspace]')
+      process.exit(1)
+    }
+
+    const r = await c.call('git.resolve', { workspaceId: w.id, action: sub })
+    if (!r.ok && r.unresolved.length) {
+      out(C.red(r.detail))
+      for (const p of r.unresolved) out('    ' + C.red('<<<') + ' ' + p)
+      out(C.dim('    resolve them, or:  cockpit conflict mark'))
+      c.close()
+      process.exit(1)
+    }
+    out(r.ok ? C.green(r.detail) : C.red(r.detail))
+    if (r.operation) printOperation(r.operation)
+    c.close()
+    process.exit(r.ok ? 0 : 1)
   },
 
   async up(args) {
@@ -571,6 +698,68 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     const w = await pickWorkspace(c, args[0])
     const r = await c.call('runtime.down', { workspaceId: w.id })
     out(r.ok ? C.green(r.detail) : C.red(r.detail))
+    c.close()
+  },
+
+  /**
+   * §10 — the database each worktree of a feature would get, and whether the
+   * client needed to make it is even installed.
+   */
+  async db(args) {
+    const c = await connect()
+    const flags = parseFlags(args)
+    const slug = slugify(flags.slug ?? args[0] ?? 'preview')
+    const projects = await c.call('project.list', undefined)
+    const here = await pickWorkspace(c, undefined)
+    const project = projects.find((x) => x.id === here.projectId) ?? projects[0]
+    if (!project) {
+      out(C.red('no project registered'))
+      process.exit(1)
+    }
+    const res = await c.call('database.preview', { projectId: project.id, slug })
+    if (!res.length) {
+      out(C.dim('  no repository here declares a database'))
+      c.close()
+      return
+    }
+    out('')
+    for (const d of res) {
+      out('  ' + C.bold(d.repo) + '  ' + C.dim(d.engine))
+      if (d.to) out('    ' + C.dim(d.from) + ' ' + C.dim('→') + ' ' + C.cyan(d.to))
+      out('    ' + C.dim(d.detail))
+      if (d.missingTools.length) {
+        out('    ' + C.yellow('! ' + d.missingTools.join(', ') + ' not on PATH'))
+      }
+    }
+    out('')
+    c.close()
+  },
+
+  /**
+   * §7 — what a worktree for this feature name would be missing, and what in
+   * it must differ from the main checkout. Creates nothing; it is the answer
+   * to "why did my worktree not boot" before the worktree exists.
+   */
+  async seed(args) {
+    const c = await connect()
+    const flags = parseFlags(args)
+    const slug = slugify(flags.slug ?? args[0] ?? 'preview')
+    const here = await pickWorkspace(c, undefined)
+    const projects = await c.call('project.list', undefined)
+    const project = projects.find((x) => x.id === here.projectId) ?? projects[0]
+    if (!project) {
+      out(C.red('no project registered'))
+      process.exit(1)
+    }
+    const res = await c.call('worktree.seedPreview', { projectId: project.id, slug })
+    const carrying = res.filter((x) => x.files.length)
+    if (!carrying.length) {
+      out(C.dim('  nothing to carry — every repository checks out all it needs'))
+      for (const p of res) for (const sk of p.skipped) out(C.dim('  ' + p.repo + '/' + sk.path + ' — ' + sk.reason))
+      c.close()
+      return
+    }
+    printSeed(carrying, false)
     c.close()
   },
 
@@ -650,6 +839,10 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
         featureId: f.id,
         removeWorktrees: !keep,
         deleteBranches: branches,
+        // §10 — its own flag, and never implied by --branches: a branch that
+        // is merged can be recreated from the remote, a dropped database
+        // cannot be recreated from anything.
+        dropDatabases: args.includes('--databases'),
         force: args.includes('--force'),
       })
       if (!res.ok) {
@@ -688,22 +881,129 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
         ? workspaces.filter((w) => w.kind === 'main' && wanted.includes(w.name)).map((w) => w.id)
         : undefined
 
+      const ceremony = (flags.ceremony as 'C1' | 'C2' | 'C3') ?? 'C3'
+
+      // §7 — what git will not check out. Shown with the plan so the whole of
+      // what is about to happen is on one screen, and passed only when the
+      // user said yes: a detected proposal nobody saw never writes to a .env.
+      const slug = slugify(name)
+      const seed =
+        ceremony === 'C1' || flags['no-seed'] !== undefined
+          ? []
+          : await c
+              .call('worktree.seedPreview', { projectId: project.id, repoWorkspaceIds, slug })
+              .catch(() => [])
+      const carrying = seed.filter((x) => x.files.length)
+
+      const cloneDatabase = ceremony !== 'C1' && flags['clone-db'] !== undefined
       const { plan } = await c.call('feature.open', {
         projectId: project.id,
         name,
-        ceremony: (flags.ceremony as 'C1' | 'C2' | 'C3') ?? 'C3',
+        ceremony,
         repoWorkspaceIds,
         base: flags.base,
+        ...(carrying.length
+          ? { seed: carrying, rememberSeed: flags['no-remember'] === undefined }
+          : {}),
+        ...(cloneDatabase ? { cloneDatabase: true } : {}),
       })
       printPlan(plan)
+      if (carrying.length) printSeed(carrying, flags['no-remember'] === undefined)
+
+      // §10 — offered rather than assumed. Copying a database is slow and
+      // costs the disk again, so it is the user's call, but a worktree
+      // silently sharing one is the collision no folder isolation prevents.
+      if (!cloneDatabase && ceremony !== 'C1') {
+        const dbs = await c
+          .call('database.preview', { projectId: project.id, repoWorkspaceIds, slug })
+          .catch(() => [])
+        const shared = dbs.filter((d) => d.engine !== 'sqlite' && d.to)
+        if (shared.length) {
+          out(
+            C.yellow('  ! ') +
+              shared.map((d) => d.repo + ' will share ' + d.from).join(', ') +
+              C.dim(' — a migration in this worktree reaches the others'),
+          )
+          out(C.dim('    --clone-db to give each worktree its own copy'))
+        }
+      }
       if (flags.yes === undefined) {
         out(C.dim('  nothing has run. Apply it with:  cockpit apply ' + plan.planId))
+        if (carrying.length) {
+          // The seed rides on `feature.open`, not on the plan id, so applying
+          // the plan by hand later would create worktrees and carry nothing.
+          out(C.yellow('  ! the local config above is carried only by `feature open --yes`'))
+        }
         c.close()
         return
       }
       const res = await c.call('git.apply', { planId: plan.planId })
       out(res.output)
       out(res.ok ? C.green('feature open') : C.red('failed — nothing was left behind'))
+      c.close()
+      return
+    }
+
+    if (sub === 'land') {
+      const f = await pickFeature(args[1])
+      const res = await c.call('feature.land', {
+        featureId: f.id,
+        push: args.includes('--push'),
+        ...(args.indexOf('--base') >= 0 ? { base: args[args.indexOf('--base') + 1] ?? '' } : {}),
+      })
+      if (!res.ok || !res.plan) {
+        out(C.red(res.detail))
+        c.close()
+        process.exit(1)
+      }
+      printPlan(res.plan)
+      if (!args.includes('--yes')) {
+        out(C.dim('  nothing has run. Apply it with:  cockpit apply ' + res.plan.planId))
+        c.close()
+        return
+      }
+      const applied = await c.call('git.apply', { planId: res.plan.planId })
+      out(applied.output)
+      if (applied.conflict) {
+        out(C.yellow(applied.conflict.repo + ': the merge stopped on a conflict'))
+        out(C.dim('  cockpit conflict show ' + applied.conflict.repo + '   then:  cockpit conflict continue'))
+        out(C.dim('  what already merged was kept; run land again when it is resolved'))
+      } else {
+        out(applied.ok ? C.green('landed') : C.red('stopped'))
+        if (applied.ok && !args.includes('--push')) {
+          out(C.dim('  local only — push the base branch, or use --push next time'))
+        }
+      }
+      c.close()
+      process.exit(applied.ok || applied.conflict ? 0 : 1)
+    }
+
+    if (sub === 'rebase') {
+      const f = await pickFeature(args[1])
+      const baseIdx = args.indexOf('--base')
+      const res = await c.call('feature.rebase', {
+        featureId: f.id,
+        ...(baseIdx >= 0 ? { base: args[baseIdx + 1] ?? '' } : {}),
+      })
+      if (!res.ok || !res.plan) {
+        out(C.red(res.detail))
+        c.close()
+        process.exit(1)
+      }
+      printPlan(res.plan)
+      if (!args.includes('--yes')) {
+        out(C.dim('  nothing has run. Apply it with:  cockpit apply ' + res.plan.planId))
+        c.close()
+        return
+      }
+      const applied = await c.call('git.apply', { planId: res.plan.planId })
+      out(applied.output)
+      if (applied.conflict) {
+        out(C.yellow(applied.conflict.repo + ': ' + applied.conflict.kind + ' stopped on a conflict'))
+        out(C.dim('  cockpit conflict show ' + applied.conflict.repo))
+      } else {
+        out(applied.ok ? C.green('rebased') : C.red('stopped'))
+      }
       c.close()
       return
     }
@@ -946,19 +1246,28 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     out(C.bold('  work'))
     out('    diff [workspace]            changed files, split human / agent')
     out('    search <query>              full-text across every repo at once')
+    out('    commit "<msg>"              stage and commit, every repo of the feature at once')
     out('    plan <op> [ws] [--name X]   preview a git operation')
     out('    apply <planId>              run a previewed plan')
     out('    undo [workspace]            roll back to the last restore point')
+    out('    seed [slug]                 the local config a worktree would be missing')
+    out('    db [slug]                   the database each worktree would get')
+    out('    conflict [show|ls]          what a stopped rebase left behind')
+    out('    conflict continue|skip|abort   end it  [mark = the markers belong there]')
     out('    up | down [workspace]       start / stop the runtime')
     out('')
     out(C.bold('  features') + C.dim('   — the durable unit of work: multi-repo, multi-day'))
     out('    feature ls                  every feature, live or parked')
     out('    feature open "<name>"        one plan, a worktree per repo  [--repos a,b --base main]')
+    out('        --no-seed / --no-remember   skip the local config, or do not record the answer')
+    out('        --clone-db                  give each worktree its own copy of the database')
+    out('    feature rebase [name]       every repo onto its base, one plan  [--base X --yes]')
+    out('    feature land [name]         merge it ONTO the base, in every repo  [--push --yes]')
     out('    feature live [name]         bring its runtimes up  [--force to park whatever blocks it]')
     out('    feature park [name]         servers down, worktrees kept')
     out('    feature close [name]        archive it  [--remove to drop the worktrees too]')
     out('    feature reopen [name]       bring a closed one back')
-    out('    feature delete [name]       drop the record for good  [--branches --force]')
+    out('    feature delete [name]       drop the record for good  [--branches --databases --force]')
     out('')
     out(C.bold('  agents & memory'))
     out('    agent engines               which engines are installed')
@@ -977,6 +1286,50 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
   },
 }
 
+/** §7 — the local config a worktree cannot check out, and what changes in it. */
+function printSeed(proposals: SeedProposal[], remembering: boolean): void {
+  out('')
+  out(C.bold('local config') + C.dim('  — what git will not check out into a worktree'))
+  for (const p of proposals) {
+    out('')
+    out('  ' + C.bold(p.repo) + '  ' + C.dim(p.source === 'manifest' ? 'declared in cockpit.yaml' : 'detected'))
+    for (const f of p.files) {
+      out('    ' + C.green('+') + ' ' + f.path + C.dim('  ' + f.bytes + ' B'))
+      for (const ch of f.changes) {
+        out(
+          '        ' + ch.key + ' ' +
+            (ch.from ? C.dim(ch.from) + ' ' : '') +
+            C.dim('→') + ' ' + C.cyan(ch.to),
+        )
+        out('          ' + C.dim(ch.reason))
+      }
+    }
+    for (const sk of p.skipped) out('    ' + C.dim('· ' + sk.path + ' — ' + sk.reason))
+  }
+  if (remembering && proposals.some((p) => p.source !== 'manifest' && p.manifestPath)) {
+    out('')
+    out(C.dim('  this will be written into cockpit.yaml — the next feature carries it without asking'))
+    out(C.dim('  (--no-remember to decide again next time, --no-seed to carry nothing)'))
+  }
+  out('')
+}
+
+function printOperation(o: {
+  step: number | null
+  total: number | null
+  conflictedPaths: string[]
+  unresolvedPaths: string[]
+}): void {
+  if (o.step && o.total) out('    ' + C.dim('commit ' + o.step + ' of ' + o.total))
+  for (const p of o.conflictedPaths) {
+    const stillOpen = o.unresolvedPaths.includes(p)
+    out('    ' + (stillOpen ? C.red('<<<') : C.green(' ✓ ')) + ' ' + p)
+  }
+  if (o.conflictedPaths.length && !o.unresolvedPaths.length) {
+    out('    ' + C.dim('no markers left — continue will stage these for you'))
+  }
+}
+
 function printPlan(p: { operation: string; steps: { title: string; command: string; destructive: boolean }[]; warnings: string[]; capturesRestorePoint: boolean }): void {
   out('')
   out(C.bold('plan · ' + p.operation))
@@ -988,6 +1341,29 @@ function printPlan(p: { operation: string; steps: { title: string; command: stri
   for (const w of p.warnings) out('  ' + C.yellow('! ' + w))
   if (p.capturesRestorePoint) out('  ' + C.dim('a restore point will be captured first'))
   out('')
+}
+
+/**
+ * §3.5 again, for the conflict verbs: among the workspaces a hint matches,
+ * the one holding a stopped operation is the one meant. Falls through to the
+ * ordinary rule when nothing is stuck, so `conflict show` on a clean repo
+ * still says so about the right repo.
+ */
+async function pickConflicted(c: CoreClient, hint?: string): Promise<Workspace> {
+  const all = await c.call('workspace.list', {})
+  const stuck = all.filter((w) => w.git?.operation)
+  const matches = (w: Workspace) =>
+    !hint || w.name === hint || w.id === hint || w.path.endsWith('/' + hint)
+
+  const hit = stuck.filter(matches)
+  if (hit.length === 1) return hit[0]!
+  if (hit.length > 1) {
+    out(C.red('several workspaces are mid-operation:'))
+    for (const w of hit) out('    ' + w.name + '  ' + C.dim(w.path))
+    out(C.dim('  name one by its path'))
+    process.exit(1)
+  }
+  return pickWorkspace(c, hint)
 }
 
 /** Defaults to the workspace containing the current directory — the cockpit

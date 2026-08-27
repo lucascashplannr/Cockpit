@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { scopedName as scopedNameFor } from '@cockpit/shared'
 import type { RuntimeState, Workspace } from '@cockpit/shared'
 import { run } from '../exec.js'
 import { allocate, portKey } from '../ports.js'
@@ -41,9 +42,10 @@ function scopedName(ws: Workspace): string {
   const base = basename(ws.path)
   if (!ws.featureId) return base
   const slug = featureStore.get(ws.featureId)?.slug ?? ws.git?.branch ?? null
-  if (!slug) return base
-  const clean = featureStore.slugify(slug)
-  return base === clean ? base : base + '-' + clean
+  // The same function the seed uses to write this hostname into `.env`. Two
+  // implementations of it would be one bug: Herd serving `api-2fa.test` while
+  // the app inside it believes it is `api-two-fa.test`.
+  return scopedNameFor(base, slug)
 }
 
 async function httpOk(url: string): Promise<boolean> {

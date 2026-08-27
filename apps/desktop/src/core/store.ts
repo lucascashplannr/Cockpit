@@ -1,7 +1,8 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
-  AddRepoSource, AgentSession, CockpitEvent, CockpitSettings, CoreStatus, Feature,
-  NewProjectSource, PlanPreview, Project, Workspace,
+  AddRepoSource, AgentSession, CockpitEvent, CockpitSettings, CommitPreview, CoreStatus,
+  DatabasePlan, Feature,
+  NewProjectSource, PlanPreview, Project, SeedProposal, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
@@ -522,10 +523,144 @@ export async function applyPendingPlan(): Promise<void> {
   // The feature row is written by the plan's own apply hook, so the list is
   // only true again once that has run.
   await refreshFeatures()
-  toast(
-    res.ok ? 'ok' : 'error',
-    res.ok ? plan.operation + ' applied' : 'stopped — nothing was left behind; see the journal',
+
+  // §3.7 — a conflict is where the plan stopped, not how it failed. Selecting
+  // the repository that stopped is the whole handover: the conflict panel is
+  // attached to the workspace, so the next thing on screen is what to do.
+  if (res.conflict) {
+    if (res.conflict.workspaceId) state.activeWorkspaceId = res.conflict.workspaceId
+    toast('info', res.conflict.repo + ': ' + res.conflict.kind + ' stopped on a conflict — resolve it below')
+    return
+  }
+  if (!res.ok) {
+    toast(
+      'error',
+      plan.onFailure === 'halt'
+        ? 'stopped — what already succeeded was kept; see the journal'
+        : 'stopped — nothing was left behind; see the journal',
+    )
+    return
+  }
+  toast('ok', plan.operation + ' applied')
+}
+
+/* ── commit and land ─────────────────────────────────────────────────────
+ * §16 — "revue humaine du diff avant tout commit". The review is the Diff
+ * tab, so the commit lives there too; and §4 — landing is one act across
+ * every repository the feature spans, like opening and rebasing it.
+ */
+
+export async function commitPreview(
+  featureId: string | null,
+  workspaceId: string,
+  all: boolean,
+): Promise<CommitPreview[]> {
+  try {
+    return await client.call('git.commitPreview', {
+      ...(featureId ? { featureId } : { workspaceIds: [workspaceId] }),
+      all,
+    })
+  } catch {
+    // A core older than this window has no such method; the Diff tab still
+    // shows the diff, which is the part that matters.
+    return []
+  }
+}
+
+export async function commit(
+  featureId: string | null,
+  workspaceId: string,
+  message: string,
+  all: boolean,
+): Promise<boolean> {
+  const res = await guard(() =>
+    client.call('git.commit', {
+      ...(featureId ? { featureId } : { workspaceIds: [workspaceId] }),
+      message,
+      all,
+    }),
   )
+  if (!res) return false
+  if (!res.ok || !res.plan) {
+    toast('error', res.detail)
+    return false
+  }
+  state.pendingPlan = res.plan
+  return true
+}
+
+/**
+ * §4 — the step the lifecycle was missing. The feature branch goes onto the
+ * base in each repository's main checkout, as one `--no-ff` merge.
+ */
+export async function landFeature(featureId: string, push: boolean): Promise<void> {
+  const res = await guard(() => client.call('feature.land', { featureId, push }))
+  if (!res) return
+  if (!res.ok || !res.plan) {
+    toast('error', res.detail)
+    return
+  }
+  state.pendingPlan = res.plan
+}
+
+/* ── conflicts ───────────────────────────────────────────────────────────
+ * §3.7 — the state a stopped rebase leaves behind, and the three verbs that
+ * end it. Nothing is cached here: `git.operation` rides along on every
+ * workspace push, and the core re-probes on every file change — so a conflict
+ * resolved in the IDE updates this panel without anyone asking it to.
+ */
+
+export const activeConflict = computed(() => activeWorkspace.value?.git?.operation ?? null)
+
+/** Every workspace mid-operation, so a feature-wide rebase can be picked up
+ *  from whichever repository the user is looking at. */
+export const conflictedWorkspaces = computed(() =>
+  state.workspaces.filter((w) => w.projectId === state.activeProjectId && w.git?.operation),
+)
+
+export const conflictBusy = ref(false)
+
+export async function resolveConflict(action: 'continue' | 'abort' | 'skip'): Promise<void> {
+  const w = activeWorkspace.value
+  if (!w || conflictBusy.value) return
+  conflictBusy.value = true
+  const res = await guard(() => client.call('git.resolve', { workspaceId: w.id, action }))
+  conflictBusy.value = false
+  if (!res) return
+  toast(res.ok ? 'ok' : 'error', res.detail)
+}
+
+/** The escape hatch for a file whose content is *meant* to contain markers. */
+export async function markResolved(paths: string[]): Promise<void> {
+  const w = activeWorkspace.value
+  if (!w || !paths.length || conflictBusy.value) return
+  conflictBusy.value = true
+  const res = await guard(() => client.call('git.stage', { workspaceId: w.id, paths }))
+  conflictBusy.value = false
+  if (res && !res.ok) toast('error', res.detail)
+}
+
+/** Opens one conflicted file where it can actually be fixed (§2). */
+export async function openConflictFile(path: string): Promise<void> {
+  const w = activeWorkspace.value
+  if (!w) return
+  await guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'ide', path }))
+}
+
+/**
+ * §4 — catching a feature up is one act across every repository it spans.
+ * It stops at the first conflict and keeps what already replayed; running it
+ * again after resolving picks up the rest, because a branch already rebased
+ * costs only a fetch.
+ */
+export async function rebaseFeature(featureId: string): Promise<void> {
+  const res = await guard(() => client.call('feature.rebase', { featureId }))
+  if (!res) return
+  if (!res.ok || !res.plan) {
+    toast('error', res.detail)
+    return
+  }
+  state.pendingPlan = res.plan
 }
 
 /* ── features ────────────────────────────────────────────────────────────
@@ -611,12 +746,55 @@ export async function deleteFeature(
   toast('ok', res.detail)
 }
 
+/**
+ * §7 — what a new worktree will be missing, before it is created.
+ *
+ * Tolerated on its own: a core older than this window answers `unknown_method`,
+ * and losing the whole feature sheet over the seed section would be worse than
+ * showing it without one.
+ */
+export async function previewSeed(
+  slug: string,
+  repoWorkspaceIds: string[],
+): Promise<SeedProposal[]> {
+  if (!state.activeProjectId || !slug) return []
+  try {
+    return await client.call('worktree.seedPreview', {
+      projectId: state.activeProjectId,
+      repoWorkspaceIds,
+      slug,
+    })
+  } catch {
+    return []
+  }
+}
+
+/** §10 — what giving each worktree its own database would involve. */
+export async function previewDatabase(
+  slug: string,
+  repoWorkspaceIds: string[],
+): Promise<DatabasePlan[]> {
+  if (!state.activeProjectId || !slug) return []
+  try {
+    return await client.call('database.preview', {
+      projectId: state.activeProjectId,
+      repoWorkspaceIds,
+      slug,
+    })
+  } catch {
+    return []
+  }
+}
+
 /** §3.7 — opening a feature is a plan like any other: previewed, then applied. */
 export async function openFeature(input: {
   name: string
   ceremony: 'C1' | 'C2' | 'C3'
   repoWorkspaceIds?: string[]
   base?: string
+  seed?: SeedProposal[]
+  rememberSeed?: boolean
+  cloneDatabase?: boolean
 }): Promise<void> {
   if (!state.activeProjectId) return
   const res = await guard(() =>

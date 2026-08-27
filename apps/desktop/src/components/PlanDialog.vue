@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ShieldCheck, ShieldOff, TriangleAlert, X } from '@lucide/vue'
+import { Flag, Layers, ShieldCheck, ShieldOff, TriangleAlert, X } from '@lucide/vue'
 import { applyPendingPlan, state } from '../core/store.js'
 
 /**
@@ -13,6 +13,12 @@ import { applyPendingPlan, state } from '../core/store.js'
 
 const plan = computed(() => state.pendingPlan)
 const destructive = computed(() => plan.value?.steps.some((s) => s.destructive) ?? false)
+
+/**
+ * §3.7 — a plan is all-or-nothing unless it says otherwise, and the difference
+ * matters enough to be on screen before Apply rather than discovered after it.
+ */
+const halts = computed(() => plan.value?.onFailure === 'halt')
 
 function cancel() {
   state.pendingPlan = null
@@ -47,6 +53,17 @@ function cancel() {
           <TriangleAlert class="sm" />
           <span>{{ w }}</span>
         </div>
+      </div>
+
+      <div class="mode" :class="{ halt: halts }">
+        <component :is="halts ? Flag : Layers" class="sm" />
+        <span v-if="halts">
+          Stops at the first repository that conflicts. What already ran is kept, not rolled
+          back — resolve it, then run this again.
+        </span>
+        <span v-else>
+          All or nothing: if a step fails, the ones before it are undone in reverse.
+        </span>
       </div>
 
       <footer class="foot">
@@ -164,6 +181,19 @@ function cancel() {
 }
 .warn .lucide { margin-top: 1px; }
 .warn + .warn { margin-top: 6px; }
+
+.mode {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 20px 12px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+.mode .lucide { margin-top: 1px; flex: none; }
+.mode.halt { color: var(--text-muted); }
 
 .foot {
   flex: none;

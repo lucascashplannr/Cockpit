@@ -134,15 +134,4 @@ export function costFor(id: string): number {
  * slug, so re-opening a feature after a crash lands on the same worktrees.
  * Git refuses names with `..`, a trailing `.lock`, and a leading `-`.
  */
-export function slugify(name: string): string {
-  const s = name
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/-{2,}/g, '-')
-    .slice(0, 60)
-    .replace(/-+$/, '')
-  return s || 'feature'
-}
+export { slugify } from '@cockpit/shared'

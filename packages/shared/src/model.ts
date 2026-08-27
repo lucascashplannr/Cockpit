@@ -27,6 +27,30 @@ export interface Capability {
 /** §4 — ceremony levels. */
 export type Ceremony = 'C0' | 'C1' | 'C2' | 'C3'
 
+/**
+ * §3.7 — a conflicted rebase is a state to work in, not an error to report.
+ * Everything here is read off `.git` on every probe rather than remembered
+ * (§3.4): a rebase the user advances in a terminal must show up in the window
+ * exactly as one advanced by the button does.
+ */
+export interface GitOperation {
+  kind: 'rebase' | 'merge' | 'cherry-pick' | 'revert'
+  /** The branch being replayed. HEAD is detached mid-rebase, so status cannot say. */
+  branch: string | null
+  /** What it is being replayed onto, named if git kept the name, else a short sha. */
+  onto: string | null
+  /** Position in the sequence; null for a merge, which has no steps. */
+  step: number | null
+  total: number | null
+  /** Paths git reports as unmerged — the ones actually blocking. */
+  conflictedPaths: string[]
+  /**
+   * Of those, the ones that still carry conflict markers. Continue refuses
+   * over these; a path here and not in `conflictedPaths` cannot happen.
+   */
+  unresolvedPaths: string[]
+}
+
 export interface GitState {
   branch: string | null
   /** Detached HEAD, mid-rebase, mid-merge… */
@@ -41,6 +65,109 @@ export interface GitState {
   lastCommit: { hash: string; subject: string; author: string; ts: number } | null
   /** §16 — refuse to tear down a workspace holding unpushed commits. */
   hasUnpushedWork: boolean
+  /** Null whenever `headState` is `attached` or `detached`. */
+  operation: GitOperation | null
+}
+
+/* ── worktree seeding (§7) ─────────────────────────────────────────────── */
+
+/** The values that make one worktree's config its own rather than a copy. */
+export interface SeedContext {
+  slug: string
+  /** The repository's folder name. */
+  repo: string
+  /** `repo-slug` — unique across features, which is what Herd and Compose key on. */
+  scoped: string
+  /** `scoped.test`, the hostname this worktree answers on. */
+  host: string
+  /**
+   * Ports §11 allocated for this worktree, before it exists, keyed by service.
+   * `web` is always present when one was free. A second listener — a Vite dev
+   * server beside the app — gets its own entry and its own number, because two
+   * servers on one port is the collision the global allocator exists to stop.
+   */
+  ports: Record<string, number>
+  /** The per-worktree database name. */
+  db: string
+  /** Absolute path the worktree will land at. */
+  path: string
+}
+
+/** One key inside one copied file that must not be shared between worktrees. */
+export interface SeedKeyChange {
+  key: string
+  /** What the main checkout has, or null when the key is absent there. */
+  from: string | null
+  /** The rule, kept because it is what goes in the manifest: `https://{{host}}`. */
+  template: string
+  /** That rule resolved for this worktree — what will actually be written. */
+  to: string
+  /** Why Cockpit believes this value is per-worktree. Shown, not hidden. */
+  reason: string
+}
+
+export interface SeedFileProposal {
+  /** Relative to the repository root. */
+  path: string
+  bytes: number
+  reason: string
+  changes: SeedKeyChange[]
+}
+
+/**
+ * §5 — what Cockpit proposes to carry into one repository's worktree.
+ * `source` is the honest half: `detected` wants approval, `manifest` is settled.
+ */
+export interface SeedProposal {
+  repo: string
+  repoPath: string
+  /** Where the worktree will land. */
+  target: string
+  source: 'manifest' | 'detected'
+  /** Where an approval would be written, or null when there is no manifest. */
+  manifestPath: string | null
+  context: SeedContext
+  files: SeedFileProposal[]
+  /** Found and deliberately not carried, each with the reason. */
+  skipped: { path: string; reason: string }[]
+}
+
+/**
+ * §10 — "une base par workspace". What cloning the data for one worktree
+ * involves, shown before it happens.
+ */
+export interface DatabasePlan {
+  repo: string
+  /**
+   * `unknown` means the checkout names a database but never says which engine
+   * serves it. Cockpit will not guess one — but staying silent about a
+   * database it can see would be worse, so it is reported and not cloned.
+   */
+  engine: 'mysql' | 'pgsql' | 'sqlite' | 'unknown'
+  /** The database the main checkout uses. */
+  from: string
+  /** The one this worktree will get. Null for sqlite, which needs no server. */
+  to: string | null
+  detail: string
+  /** Client binaries this needs and could not find on PATH. */
+  missingTools: string[]
+}
+
+/**
+ * §16 — what one repository would contribute to a commit, before it is made.
+ * The review the rule asks for needs numbers to review.
+ */
+export interface CommitPreview {
+  workspaceId: string
+  repo: string
+  branch: string | null
+  staged: number
+  /** Unstaged plus untracked — what `all` would sweep in. */
+  unstaged: number
+  /** False for a repo with nothing to contribute; it is skipped, not emptied. */
+  willCommit: boolean
+  /** Unresolved conflicts block a commit outright. */
+  conflicted: number
 }
 
 export interface RuntimeState {

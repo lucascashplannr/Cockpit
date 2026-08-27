@@ -11,6 +11,7 @@ import AgentTab from './tabs/AgentTab.vue'
 import MemoryTab from './tabs/MemoryTab.vue'
 import JournalTab from './tabs/JournalTab.vue'
 import TerminalTab from './tabs/TerminalTab.vue'
+import ConflictPanel from './ConflictPanel.vue'
 import Wordmark from './brand/Wordmark.vue'
 import { activeWorkspace, has, state } from '../core/store.js'
 import type { TabId } from '../core/store.js'
@@ -114,6 +115,10 @@ const changed = computed(() => {
           <span class="path mono" :title="w.path">{{ w.path }}</span>
         </div>
       </header>
+
+      <!-- §3.7 — above the tabs on purpose: while a rebase is stopped, nothing
+           in those tabs is the next thing to do. Absent otherwise (§3.9). -->
+      <ConflictPanel />
 
       <nav class="tabs">
         <button

@@ -6,9 +6,23 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentSession, AgentSessionFile, CockpitSettings, CoreStatus, DiffFile, Feature,
-  FileDiff, MemoryDoc, NewProjectSource, Project, SearchHit, Workspace,
+  AddRepoSource, AgentSession, AgentSessionFile, CockpitSettings, CommitPreview, CoreStatus,
+  DatabasePlan,
+  DiffFile, Feature,
+  FileDiff, GitOperation, MemoryDoc, NewProjectSource, Project, SearchHit, SeedProposal,
+  Workspace,
 } from './model.js'
+
+/** The outcome of acting on a conflict — always carrying the state after. */
+export interface GitResolveResult {
+  ok: boolean
+  detail: string
+  /** Null once the operation is over; otherwise where it now stands. */
+  operation: GitOperation | null
+  /** Paths still carrying markers, when that is why it refused. */
+  unresolved: string[]
+  output: string
+}
 
 /** What a folder turns out to be, for a window that cannot look for itself. */
 export interface FolderInfo {
@@ -57,11 +71,27 @@ export interface PlanStep {
   /** Destructive steps are rendered in red and require confirmation (§3.7). */
   destructive: boolean
   /**
+   * The binary this step runs, when it is not git.
+   *
+   * A plan could only ever run git until a database had to be cloned per
+   * worktree (§10, "une base par workspace"), and `mysqldump` is not git. It
+   * is opt-in rather than inferred from the command string so that the narrow
+   * property stays the default: a step with no `run` cannot execute anything
+   * but git, whatever its text says.
+   *
+   * Secrets never appear here. A password reaches the process through the
+   * environment, which §16 keeps out of the journal — so what is previewed is
+   * exactly what the user should see, and nothing more.
+   */
+  run?: string
+  /**
    * How to take this step back. A plan spanning several repos must not be left
    * half-applied: if step 3 fails, the undos of steps 1-2 run in reverse (§3.7).
    * A list, because undoing `git worktree add -b` is two commands, not one.
+   * Each carries its own `run` for the same reason the step does: the undo of
+   * `createdb` is `dropdb`, a different binary entirely.
    */
-  undo?: { title: string; command: string; cwd: string }[]
+  undo?: { title: string; command: string; cwd: string; run?: string }[]
 }
 
 export interface PlanPreview {
@@ -73,6 +103,33 @@ export interface PlanPreview {
   capturesRestorePoint: boolean
   /** Every repository the plan touches, so the UI can say how wide it reaches. */
   repos?: string[]
+  /**
+   * §3.7 — what a failed step means for the steps that already ran.
+   *
+   * `rollback` is all-or-nothing and the default: three worktrees of which one
+   * failed is worse than none. `halt` stops and keeps what succeeded, which is
+   * the only honest answer for a rebase — the conflict is a state to work in,
+   * and undoing the two repositories that rebased cleanly to "recover" from it
+   * would throw away the work the user is about to finish.
+   */
+  onFailure?: 'rollback' | 'halt'
+}
+
+/**
+ * What `git.apply` reports. A halted plan is not a failure: it is the plan
+ * having reached something only a person can decide.
+ */
+export interface ApplyResult {
+  ok: boolean
+  output: string
+  restorePoint: string | null
+  /**
+   * Set when a step stopped on a conflict rather than an error. The workspace
+   * named is the one to open; `git.state` there has the detail.
+   */
+  conflict?: { workspaceId: string; repo: string; kind: string }
+  /** Steps that never ran because an earlier one halted. */
+  remaining?: number
 }
 
 /** Every method: params in, result out. */
@@ -170,8 +227,40 @@ export interface Rpc {
       /** Branch to fork from; defaults to each repo's own default branch. */
       base?: string
       ticketUrl?: string
+      /**
+       * §7 — the local config to carry into each worktree, as approved by the
+       * caller. Omit and only what `cockpit.yaml` declares is applied: a
+       * detected proposal nobody has seen never writes to anyone's `.env`.
+       */
+      seed?: SeedProposal[]
+      /** §5 — write that answer into cockpit.yaml, so the next one is free. */
+      rememberSeed?: boolean
+      /**
+       * §10 — give each worktree its own copy of the data, so a migration run
+       * in one cannot break the others. Off unless asked: it copies a whole
+       * database, which is slow and costs the disk again.
+       */
+      cloneDatabase?: boolean
     }
     result: { plan: PlanPreview; featureId: string }
+  }
+  /**
+   * §7 — what a new worktree would be missing, per repository, and the values
+   * that must differ from the main checkout's. Detected from disk unless
+   * `cockpit.yaml` already declares it, which the `source` field says.
+   */
+  'worktree.seedPreview': {
+    params: { projectId: string; repoWorkspaceIds?: string[]; slug: string }
+    result: SeedProposal[]
+  }
+  /**
+   * §10 — what giving each worktree its own database would involve, read out
+   * of each repository's own `.env`. Null entries are repositories that use
+   * no database at all, which is most of them.
+   */
+  'database.preview': {
+    params: { projectId: string; repoWorkspaceIds?: string[]; slug: string }
+    result: DatabasePlan[]
   }
   /** Bring its runtimes up. Refuses when an exclusive runtime is held elsewhere. */
   'feature.activate': {
@@ -189,6 +278,24 @@ export interface Rpc {
     params: { featureId: string; removeWorktrees: boolean }
     result: { ok: boolean; detail: string; plan: PlanPreview | null }
   }
+  /**
+   * §4 — one plan that replays every repository the feature spans onto its
+   * base. It stops at the first conflict and keeps what already replayed;
+   * running it again after resolving picks up the rest.
+   */
+  'feature.rebase': {
+    params: { featureId: string; base?: string }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null }
+  }
+  /**
+   * §4 — the step the lifecycle was missing: the feature branch goes onto the
+   * base, in each repository's MAIN checkout, as one identifiable `--no-ff`
+   * merge. Halts on the first conflict and keeps what already merged.
+   */
+  'feature.land': {
+    params: { featureId: string; push?: boolean; base?: string }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null }
+  }
   /** Archiving is not a one-way door; this is how a closed feature comes back. */
   'feature.reopen': { params: { featureId: string }; result: { ok: boolean; detail: string } }
   /**
@@ -201,6 +308,8 @@ export interface Rpc {
       featureId: string
       removeWorktrees: boolean
       deleteBranches: boolean
+      /** §10 — drop the per-worktree databases. There is no Trash for those. */
+      dropDatabases?: boolean
       force?: boolean
     }
     result: { ok: boolean; detail: string; warnings: string[]; plan: PlanPreview | null }
@@ -225,12 +334,43 @@ export interface Rpc {
   'diff.files': { params: { workspaceId: string; base?: string }; result: DiffFile[] }
   'diff.file': { params: { workspaceId: string; path: string; base?: string }; result: FileDiff }
 
+  /**
+   * §16 — "revue humaine du diff avant tout commit". The review existed and
+   * the commit did not, which left `feature.close` refusing over a state
+   * nothing in the app could clear. One message, one commit per repository.
+   */
+  'git.commitPreview': {
+    params: { featureId?: string; workspaceIds?: string[]; all: boolean }
+    result: CommitPreview[]
+  }
+  'git.commit': {
+    params: { featureId?: string; workspaceIds?: string[]; message: string; all: boolean }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null; preview: CommitPreview[] }
+  }
+
   'git.plan': {
     params: { workspaceId: string; operation: 'rebase' | 'merge' | 'branch' | 'worktree' | 'push' | 'sync'; args?: Record<string, string> }
     result: PlanPreview
   }
-  'git.apply': { params: { planId: string }; result: { ok: boolean; output: string; restorePoint: string | null } }
+  'git.apply': { params: { planId: string }; result: ApplyResult }
   'git.undo': { params: { workspaceId: string }; result: { ok: boolean; detail: string } }
+  /**
+   * §3.7 — the state a stopped operation left behind, re-probed on every call.
+   * Null means nothing is in progress, which is the answer most of the time.
+   */
+  'git.state': { params: { workspaceId: string }; result: GitOperation | null }
+  /**
+   * The three verbs that end a conflict. `continue` refuses over files still
+   * carrying markers and stages the rest itself, so resolving in an editor is
+   * enough — nobody has to remember `git add`.
+   */
+  'git.resolve': {
+    params: { workspaceId: string; action: 'continue' | 'abort' | 'skip' }
+    result: GitResolveResult
+  }
+  /** Marks paths resolved by hand — the escape hatch for a file meant to
+   *  contain conflict markers, which `continue` refuses over on purpose. */
+  'git.stage': { params: { workspaceId: string; paths: string[] }; result: GitResolveResult }
   'git.log': {
     params: { workspaceId: string; limit?: number }
     result: { hash: string; subject: string; author: string; ts: number; refs: string }[]
@@ -266,7 +406,12 @@ export interface Rpc {
   }
   'agent.list': { params: void; result: AgentSession[] }
   'agent.stop': { params: { sessionId: string }; result: { ok: true } }
-  'agent.send': { params: { sessionId: string; text: string }; result: { ok: true } }
+  /**
+   * Both engines run one-shot with the prompt as an argument and their stdin
+   * closed, so there is no live conversation to write into. This always
+   * refuses, and says which way round it is: finish, then `agent.resume`.
+   */
+  'agent.send': { params: { sessionId: string }; result: { ok: false; reason: string } }
 
   'memory.read': { params: { workspaceId: string }; result: MemoryDoc | null }
   'memory.write': { params: { workspaceId: string; content: string }; result: { ok: true } }

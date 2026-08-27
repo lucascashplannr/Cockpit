@@ -70,13 +70,18 @@ function onKey(e: KeyboardEvent) {
   const w = activeWorkspace.value
   if (!w) return
 
+  // §3.7 — the same rule the verbs follow: mid-rebase, git refuses both of
+  // these, so the keystroke must not fire a plan guaranteed to fail. The
+  // conflict panel has the three that do apply.
+  const midOperation = !!w.git?.operation
+
   // Single-key verbs, no modifier: the budget in §12 is one click, and a
   // keystroke is cheaper than a click.
   if (!meta && !e.altKey) {
-    if (e.key === 'r') {
+    if (e.key === 'r' && !midOperation) {
       e.preventDefault()
       void requestPlan(w.id, 'rebase')
-    } else if (e.key === 'p') {
+    } else if (e.key === 'p' && !midOperation) {
       e.preventDefault()
       void requestPlan(w.id, 'push')
     } else if (e.key === 'o') {

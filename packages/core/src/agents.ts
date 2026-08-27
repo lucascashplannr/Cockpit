@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
 import { newId } from '@cockpit/shared'
@@ -16,19 +17,61 @@ import * as leases from './leases.js'
  * branch, human diff review before any commit, cost displayed.
  */
 
+/**
+ * §16 — "périmètre confiné, liste blanche de commandes, jamais de push".
+ *
+ * Passed to every launch. Without it the engine runs in its default
+ * non-interactive posture, which for `claude -p` means every file write waits
+ * for an approval that has nowhere to arrive from — so the agent reports that
+ * it needs permission and the session ends having changed nothing.
+ */
+export interface LaunchContext {
+  /**
+   * §7 — the other repositories in scope. The engine runs in `paths[0]`; every
+   * other path has to be handed to it explicitly or a multi-repo session can
+   * see exactly one of its repositories.
+   */
+  extraDirs: string[]
+  /** The command allow-list. Anything outside it is refused, never silently run. */
+  allow: string[]
+}
+
 export interface EngineSpec {
   id: string
   bin: string
   /** Non-interactive mode with structured output (§7, multi-moteurs). */
-  buildArgs(prompt: string): string[]
+  buildArgs(prompt: string, ctx: LaunchContext): string[]
   /**
    * §6 — the same conversation, picked back up. Without this a session cannot
    * outlive the daemon, and "work on it over several days" is a fiction: every
    * morning would start from an empty context against a stale memory.
    */
-  buildResumeArgs(prompt: string, engineSessionId: string): string[]
+  buildResumeArgs(prompt: string, engineSessionId: string, ctx: LaunchContext): string[]
   parse(line: string): NormalizedEvent | null
 }
+
+/**
+ * What an agent may do without being asked, when the project does not say.
+ *
+ * Edits and searches, yes — that is the job. Shell, only the git commands that
+ * read: `status`, `diff`, `log`, `show`. Not `commit`, because §16 wants the
+ * diff seen by a human first; not `push`, because §16 forbids it outright; not
+ * a package manager, because an install is a change to the machine and not to
+ * the branch. A project widens this in `cockpit.yaml` under `agents.allow`.
+ */
+export const DEFAULT_ALLOW = [
+  'Read',
+  'Edit',
+  'Write',
+  'Glob',
+  'Grep',
+  'NotebookEdit',
+  'TodoWrite',
+  'Bash(git status:*)',
+  'Bash(git diff:*)',
+  'Bash(git log:*)',
+  'Bash(git show:*)',
+]
 
 export interface NormalizedEvent {
   kind: 'text' | 'tool' | 'cost' | 'end' | 'error'
@@ -62,13 +105,27 @@ function safeJson(line: string): Record<string, unknown> | null {
   }
 }
 
+/** Shared by start and resume, so the two cannot drift apart on permissions. */
+function claudeCommon(ctx: LaunchContext): string[] {
+  return [
+    '--output-format', 'stream-json',
+    '--verbose',
+    // Without this every Edit waits for an approval that cannot arrive: `-p`
+    // has no prompt to answer on, so the write is declined and the session
+    // ends having done nothing but explain that it could not.
+    '--permission-mode', 'acceptEdits',
+    // Comma-joined into one argument on purpose. The flag is variadic, so
+    // space-separated values would swallow the flag that follows them.
+    '--allowedTools', ctx.allow.join(','),
+    ...ctx.extraDirs.flatMap((d) => ['--add-dir', d]),
+  ]
+}
+
 const claudeEngine: EngineSpec = {
   id: 'claude',
   bin: 'claude',
-  buildArgs: (prompt) => ['-p', prompt, '--output-format', 'stream-json', '--verbose'],
-  buildResumeArgs: (prompt, id) => [
-    '-p', prompt, '--output-format', 'stream-json', '--verbose', '--resume', id,
-  ],
+  buildArgs: (prompt, ctx) => ['-p', prompt, ...claudeCommon(ctx)],
+  buildResumeArgs: (prompt, id, ctx) => ['-p', prompt, ...claudeCommon(ctx), '--resume', id],
   parse(line) {
     const o = safeJson(line)
     if (!o) return null
@@ -95,6 +152,13 @@ const claudeEngine: EngineSpec = {
   },
 }
 
+/**
+ * Codex takes no allow-list here. Its approval flags were not verified against
+ * a real binary — it is not installed on the machine this was written on — and
+ * guessing a permission flag is how an agent ends up either blocked or
+ * unsandboxed. `extraDirs` is likewise unhandled: `codex exec` is given one
+ * directory. Both are marked rather than faked.
+ */
 const codexEngine: EngineSpec = {
   id: 'codex',
   bin: 'codex',
@@ -136,6 +200,17 @@ interface Live {
 }
 
 const live = new Map<string, Live>()
+
+/**
+ * §3.3 — the window is a view over what the core pushes, so a session that
+ * ends has to say so. It used to persist the new status and stop there, and
+ * `pushAgents` was only ever called from the RPC handlers — so a session that
+ * finished on its own left the panel reading "thinking" until something else
+ * happened to refresh it. An emitter rather than a direct call because
+ * `server.ts` already imports this module.
+ */
+export const agentBus = new EventEmitter<{ changed: [] }>()
+agentBus.setMaxListeners(50)
 
 function persist(s: AgentSession): void {
   getDb()
@@ -235,6 +310,8 @@ export interface StartAgentInput {
    * Kept out of `prompt` so the list shows what the user actually asked.
    */
   preamble?: string
+  /** §16 — the project's own allow-list, from `agents.allow`. Defaults apply. */
+  allow?: string[]
 }
 
 export type StartAgentResult = { sessionId: string } | { denied: true; reason: string }
@@ -276,7 +353,7 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
     prompt: input.prompt,
   }
 
-  return launch(session, spec, (input.preamble ?? '') + input.prompt, false)
+  return launch(session, spec, (input.preamble ?? '') + input.prompt, false, input.allow)
 }
 
 /**
@@ -284,7 +361,12 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
  * Resuming is the other half: the conversation is still there, and the memory
  * has moved on since. Both are one call away, which is the whole point.
  */
-export function resumeAgent(sessionId: string, prompt: string, preamble = ''): StartAgentResult {
+export function resumeAgent(
+  sessionId: string,
+  prompt: string,
+  preamble = '',
+  allow?: string[],
+): StartAgentResult {
   const prev = get(sessionId)
   if (!prev) return { denied: true, reason: 'unknown session: ' + sessionId }
   if (!prev.engineSessionId) {
@@ -307,7 +389,7 @@ export function resumeAgent(sessionId: string, prompt: string, preamble = ''): S
     lastMessage: null,
     prompt,
   }
-  return launch(session, spec, preamble + prompt, true)
+  return launch(session, spec, preamble + prompt, true, allow)
 }
 
 function launch(
@@ -315,6 +397,7 @@ function launch(
   spec: EngineSpec,
   fullPrompt: string,
   resuming: boolean,
+  allow?: string[],
 ): StartAgentResult {
   // §7 — the lease is what makes two overlapping agents impossible. It is taken
   // on paths, so a feature-wide session and a repo session inside it collide
@@ -339,14 +422,24 @@ function launch(
   persist(session)
 
   const cwd = session.paths[0]!
+  // §7 — the engine runs in the first path; the rest have to be handed over
+  // explicitly, or a two-repo scope reaches exactly one repository.
+  const ctx: LaunchContext = {
+    extraDirs: session.paths.slice(1),
+    allow: allow?.length ? allow : DEFAULT_ALLOW,
+  }
   const args = resuming
-    ? spec.buildResumeArgs(fullPrompt, session.engineSessionId!)
-    : spec.buildArgs(fullPrompt)
+    ? spec.buildResumeArgs(fullPrompt, session.engineSessionId!, ctx)
+    : spec.buildArgs(fullPrompt, ctx)
   const child = spawn(spec.bin, args, {
     cwd,
     env: { ...process.env },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
+  // Both engines are one-shot: the prompt is an argument, and neither reads
+  // stdin. Leaving it open costs `claude -p` a three-second wait and a warning
+  // on every single launch while it hopes for piped input that never comes.
+  child.stdin?.end()
 
   const actor = { kind: 'agent' as const, engine: session.engine, sessionId: session.id }
   const workspaceId = session.workspaceIds[0] ?? null
@@ -402,6 +495,7 @@ function launch(
       append({ type: 'agent.cost', actor, payload: { costUsd: session.costUsd, turns: session.turns } })
     }
     persist(session)
+    agentBus.emit('changed')
   }
 
   const onData = (chunk: Buffer) => {
@@ -433,6 +527,7 @@ function launch(
         resumable: !!session.engineSessionId,
       },
     })
+    agentBus.emit('changed')
   })
 
   return { sessionId: session.id }
@@ -455,9 +550,19 @@ export function stop(sessionId: string): void {
   if (s?.leaseId) leases.release(s.leaseId)
 }
 
-export function send(sessionId: string, text: string): void {
-  const l = live.get(sessionId)
-  l?.child.stdin?.write(text.endsWith('\n') ? text : text + '\n')
+/**
+ * Both engines are invoked one-shot, with the prompt as an argument, and their
+ * stdin is closed at launch. There is no running conversation to write into —
+ * the way to say something more is `resumeAgent`, which is what §6 means by
+ * the session being disposable and the conversation not.
+ */
+export function send(sessionId: string): { ok: false; reason: string } {
+  return {
+    ok: false,
+    reason: live.has(sessionId)
+      ? 'this engine is running one-shot and does not read stdin; wait for it to finish and resume the session'
+      : 'no such live session',
+  }
 }
 
 /**

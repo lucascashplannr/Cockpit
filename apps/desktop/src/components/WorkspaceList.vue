@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowUp, FolderPlus, Layers, Pause, Play, Plus, RefreshCw, Search } from '@lucide/vue'
+import {
+  ArrowUp, FolderPlus, GitCompareArrows, GitMerge, Layers, Pause, Play, Plus, RefreshCw, Search,
+} from '@lucide/vue'
 import type { Feature } from '@cockpit/shared'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activateFeature, activeProject, addRepoTo, client, guard, parkFeature, state, workspaceGroups,
+  activateFeature, activeProject, addRepoTo, client, guard, landFeature, parkFeature, rebaseFeature,
+  state, workspaceGroups,
 } from '../core/store.js'
 
 /**
@@ -40,6 +43,23 @@ function togglable(f: Feature | null): boolean {
 async function toggle(f: Feature) {
   if (f.state === 'live') await parkFeature(f.id)
   else await activateFeature(f.id)
+}
+
+/**
+ * §4 — the feature is the unit of work, so catching it up is one act. Rebasing
+ * three worktrees used to mean selecting each one and approving three plans.
+ */
+function behind(ws: { git: { behind: number } | null }[]): number {
+  return ws.reduce((n, w) => n + (w.git?.behind ?? 0), 0)
+}
+
+function ahead(ws: { git: { ahead: number } | null }[]): number {
+  return ws.reduce((n, w) => n + (w.git?.ahead ?? 0), 0)
+}
+
+/** Uncommitted work: landing refuses over it, so the button says so up front. */
+function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): number {
+  return ws.reduce((n, w) => n + (w.git?.staged ?? 0) + (w.git?.unstaged ?? 0), 0)
 }
 </script>
 
@@ -78,6 +98,33 @@ async function toggle(f: Feature) {
               </span>
               <span class="dim">{{ featureSummary(g.workspaces).total }}</span>
             </span>
+            <!-- §4 — the step the lifecycle was missing: the branch goes onto
+                 the base, in each repository's main checkout. Before this the
+                 last move was always "go to a terminal". -->
+            <button
+              v-if="togglable(g.feature)"
+              class="icon-btn small"
+              :class="{ ready: ahead(g.workspaces) && !dirty(g.workspaces) }"
+              :title="dirty(g.workspaces)
+                ? 'Commit first — landing refuses over uncommitted changes'
+                : 'Land on the base branch — one --no-ff merge per repository'"
+              @click="landFeature(g.feature!.id, false)"
+            >
+              <GitMerge class="sm" />
+            </button>
+            <!-- One plan across every repository it spans, stopping at the
+                 first conflict and keeping what already replayed. -->
+            <button
+              v-if="togglable(g.feature)"
+              class="icon-btn small"
+              :class="{ nudge: behind(g.workspaces) }"
+              :title="behind(g.workspaces)
+                ? 'Rebase every repository onto its base — ' + behind(g.workspaces) + ' commit(s) behind'
+                : 'Rebase every repository in this feature onto its base'"
+              @click="rebaseFeature(g.feature!.id)"
+            >
+              <GitCompareArrows class="sm" />
+            </button>
             <!-- §3.9 - an inferred feature has no state to toggle, so no button. -->
             <button
               v-if="togglable(g.feature)"
@@ -125,6 +172,11 @@ async function toggle(f: Feature) {
 </template>
 
 <style scoped>
+/* Behind its base is the one state where this verb is the next thing to do. */
+.nudge { color: var(--warn); }
+/* Committed and ahead: landing is the next thing, so it says so. */
+.ready { color: var(--ok); }
+
 .list {
   display: flex;
   flex-direction: column;

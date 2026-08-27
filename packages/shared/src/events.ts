@@ -60,6 +60,12 @@ export type EventType =
   | 'git.failed'
   | 'git.restore_point'
   | 'git.undone'
+  /** A plan stopped on a conflict rather than an error — a state, not a failure. */
+  | 'git.conflict'
+  | 'git.conflict.resolved'
+  | 'git.conflict.aborted'
+  // §7 — the gitignored local config carried into a new worktree
+  | 'worktree.seeded'
   // runtime
   | 'runtime.provision'
   | 'runtime.up'

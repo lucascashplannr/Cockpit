@@ -13,6 +13,39 @@ export interface RepoDecl {
   mainBranch?: string
 }
 
+/**
+ * §7 — what `git worktree add` cannot give you.
+ *
+ * A worktree is a checkout of *tracked* files. Everything gitignored — `.env`,
+ * `auth.json`, a local sqlite file — is simply absent, so a Laravel or Vite
+ * worktree created by Cockpit boots into "no APP_KEY" and the feature is dead
+ * before anyone types anything. Carrying those files across is the missing
+ * half of creating a worktree.
+ *
+ * Copying them verbatim is not enough either: three worktrees whose `.env` all
+ * say `APP_URL=https://cp.test` and `DB_DATABASE=app` are three checkouts
+ * fighting over one hostname and one database. `set` is what makes each one
+ * its own.
+ */
+export interface WorktreeSeed {
+  /** Repo folder name this applies to. Omit for every repository. */
+  repo?: string
+  /** Paths relative to the repo root, copied from the main checkout. */
+  copy?: string[]
+  /**
+   * Per-file key rewrites, applied after the copy. Keyed by the copied path,
+   * then by the key inside it. Values may use the placeholders below.
+   *
+   * `{{slug}}`   the feature slug            `{{repo}}`  the repo folder name
+   * `{{scoped}}` repo-slug, unique per feature — what Herd and Compose key on
+   * `{{host}}`   `{{scoped}}.test`, the per-worktree hostname
+   * `{{port}}`   the port §11 allocated for this workspace
+   * `{{db}}`     the per-worktree database name
+   * `{{path}}`   the absolute worktree path
+   */
+  set?: Record<string, Record<string, string>>
+}
+
 export interface ManifestV1 {
   version: 1
   name: string
@@ -23,6 +56,8 @@ export interface ManifestV1 {
     /** §21.4 — resolved here per project rather than globally. */
     strategy?: 'grouped' | 'flat'
     root?: string
+    /** §7 — the gitignored local config a new worktree cannot check out. */
+    seed?: WorktreeSeed[]
   }
   runtime?: string
   tickets?: { provider: string; repo?: string; project?: string; baseUrl?: string }
@@ -93,6 +128,28 @@ export function validateManifest(raw: unknown): ParsedManifest {
       })
     }
   }
+  const wt = o.worktrees as { seed?: unknown } | undefined
+  if (wt?.seed !== undefined) {
+    if (!Array.isArray(wt.seed)) {
+      issues.push({ path: 'worktrees.seed', message: 'must be a list', severity: 'warning' })
+      delete wt.seed
+    } else {
+      // Lenient like the rest: one malformed entry is dropped, the others
+      // still seed. A worktree missing one file beats a manifest that bricks.
+      wt.seed = (wt.seed as unknown[]).filter((e, i) => {
+        const ok = !!e && typeof e === 'object' && !Array.isArray(e)
+        if (!ok) {
+          issues.push({
+            path: 'worktrees.seed[' + i + ']',
+            message: 'each entry must be a mapping with copy / set',
+            severity: 'warning',
+          })
+        }
+        return ok
+      })
+    }
+  }
+
   if (o.ports !== undefined && (typeof o.ports !== 'object' || o.ports === null)) {
     issues.push({
       path: 'ports',
@@ -124,6 +181,15 @@ export const MANIFEST_TEMPLATE = [
   '# runtime: compose',
   '# compose:',
   '#   file: compose.yaml',
+  '',
+  '# What a new worktree cannot check out, because git ignores it (§7)',
+  '# worktrees:',
+  '#   seed:',
+  '#     - copy: [.env, auth.json]',
+  '#       set:',
+  '#         .env:',
+  '#           APP_URL: https://{{host}}',
+  '#           DB_DATABASE: "{{db}}"',
   '',
   '# tickets: { provider: github, repo: owner/name }',
   '# docs: docs/',

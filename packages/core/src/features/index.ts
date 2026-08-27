@@ -1,13 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { newId, stableId } from '@cockpit/shared'
-import type { Ceremony, Feature, PlanPreview, PlanStep, Workspace } from '@cockpit/shared'
+import type {
+  Ceremony, DatabasePlan, Feature, PlanPreview, PlanStep, SeedProposal, Workspace,
+} from '@cockpit/shared'
 import { append } from '../journal.js'
 import { defaultBranch, git } from '../git.js'
 import * as plans from '../plans.js'
 import * as registry from '../registry.js'
 import { moveToTrash } from '../files.js'
 import * as runtime from '../runtime/index.js'
+import * as database from '../database.js'
+import * as seed from '../seed.js'
 import * as store from './store.js'
 
 export * from './store.js'
@@ -29,6 +33,19 @@ export interface OpenFeatureInput {
   repoWorkspaceIds?: string[]
   base?: string
   ticketUrl?: string
+  /**
+   * §7 — the gitignored local config to carry into each worktree, as approved.
+   * Absent means "whatever the manifest declares, or nothing" — never the
+   * detected proposal, because a detected proposal has not been seen yet.
+   */
+  seed?: SeedProposal[]
+  /** §5 — write the approved answer into cockpit.yaml so the next one is free. */
+  rememberSeed?: boolean
+  /**
+   * §10 — give each worktree its own copy of the data. Off unless asked: it
+   * copies a whole database, which is slow and takes real disk.
+   */
+  cloneDatabase?: boolean
 }
 
 function mains(projectId: string, only?: string[]): Workspace[] {
@@ -125,6 +142,40 @@ export async function openPlan(
     })
   }
 
+  // §10 — the third global thing. Ports and hostnames are already scoped per
+  // feature; without this the worktrees still share one database, so a
+  // migration run by an agent in one breaks the other two.
+  const dbEnv: Record<string, string> = {}
+  if (input.cloneDatabase && input.ceremony !== 'C1') {
+    for (const repo of repos) {
+      const conn = database.connectionOf(repo.path)
+      if (!conn || conn.engine === 'sqlite') continue
+      const target = (await seed.contextFor({
+        projectId: project.id,
+        repoPath: repo.path,
+        slug,
+        tld: 'test',
+        baseDb: conn.database,
+      })).db
+      const cloneSteps = database.clonePlan(conn, target, repo.path)
+      if (!cloneSteps.length) continue
+      steps.push(...cloneSteps)
+      Object.assign(dbEnv, database.envFor(conn))
+      const missing = (await database.tooling(conn.engine)).filter((t) => !t.found)
+      if (missing.length) {
+        warnings.push(
+          repo.name + ': ' + missing.map((t) => t.bin).join(', ') +
+            ' not on PATH — the clone will fail and the plan will stop there.',
+        )
+      } else {
+        warnings.push(
+          repo.name + ': ' + conn.database + ' is copied into ' + target +
+            '. A large database makes this slow and costs the same disk again.',
+        )
+      }
+    }
+  }
+
   if (input.ceremony !== 'C1') {
     warnings.push(
       repos.length +
@@ -151,6 +202,9 @@ export async function openPlan(
 
   plans.register(preview, {
     workspaceIds: repos.map((r) => r.id),
+    // §16 — the database password reaches the client through here and nowhere
+    // else: not in the previewed command, not in the journal, not in `ps`.
+    ...(Object.keys(dbEnv).length ? { env: dbEnv } : {}),
     async onApplied() {
       store.save({
         id: featureId,
@@ -168,6 +222,12 @@ export async function openPlan(
         updatedAt: Date.now(),
       })
       if (rootPath) scaffold(rootPath, name, slug, repos)
+
+      // §7 — only now do the worktrees exist to be seeded. Before this point
+      // there is nowhere to put a `.env`; after it, the feature is bootable
+      // rather than a checkout missing every file git refuses to track.
+      if (input.ceremony !== 'C1') await runSeed(input, repos, slug, project.id)
+
       append({
         type: 'feature.opened',
         projectId: project.id,
@@ -178,6 +238,56 @@ export async function openPlan(
   })
 
   return { plan: preview, featureId }
+}
+
+/**
+ * §5 — the approved proposal if the caller supplied one, otherwise whatever
+ * the manifest already declares. Never the detected proposal on its own: a
+ * detection nobody has seen must not write into someone's `.env`.
+ */
+async function runSeed(
+  input: OpenFeatureInput,
+  repos: Workspace[],
+  slug: string,
+  projectId: string,
+): Promise<void> {
+  const approved = new Map((input.seed ?? []).map((p) => [p.repo, p]))
+
+  for (const repo of repos) {
+    const name = basename(repo.path)
+    let proposal = approved.get(name) ?? null
+
+    if (!proposal) {
+      const detected = await seed.propose({ projectId, repoPath: repo.path, slug })
+      // Declared in the manifest is an answer already given; detected is a
+      // question nobody was asked, and acting on it unasked is exactly the
+      // guessing §5 warns about.
+      if (detected.source !== 'manifest') continue
+      proposal = detected
+    }
+    if (!proposal.files.length) continue
+
+    const res = seed.applySeed(proposal)
+    if (res.errors.length) {
+      // Not fatal: a feature with three of four files carried is workable and
+      // fixable, while unwinding three worktrees over one unreadable `.env`
+      // is not. The journal has the detail either way.
+      append({
+        type: 'worktree.seeded',
+        level: 'warn',
+        payload: { repo: name, errors: res.errors },
+      })
+    }
+  }
+
+  // §5 — approve once. Written after the copies so a manifest is only updated
+  // by something that actually worked.
+  if (input.rememberSeed) {
+    for (const proposal of input.seed ?? []) {
+      if (!proposal.manifestPath || !proposal.files.length) continue
+      seed.saveToManifest(proposal.manifestPath, [seed.toManifestEntry(proposal)])
+    }
+  }
 }
 
 async function hasBranch(repoPath: string, branch: string): Promise<boolean> {
@@ -379,6 +489,221 @@ export async function park(featureId: string): Promise<{ ok: boolean; detail: st
   return { ok: true, detail: details.join('\n') || 'nothing was running' }
 }
 
+/**
+ * §4 + §3.7 — the feature is the unit of work, so bringing it up to date is
+ * one act, not one per repository.
+ *
+ * `onFailure: 'halt'` is the whole difference from every other multi-repo plan
+ * here. Opening a feature is all-or-nothing because a half-created feature is
+ * unusable; a half-rebased one is not — the repositories that replayed cleanly
+ * are genuinely done, and rolling them back to "recover" from a conflict in
+ * the third would be throwing away good work to tidy up.
+ *
+ * Re-running it is the way forward after a conflict is resolved: a branch
+ * already replayed answers "up to date" and costs a fetch.
+ */
+export async function rebasePlan(
+  featureId: string,
+  base?: string,
+): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
+  const f = store.get(featureId)
+  if (!f) throw new Error('unknown feature: ' + featureId)
+  if (f.state === 'archived') return { ok: false, detail: 'this feature is closed; re-open it first', plan: null }
+
+  const repos = workspacesOf(featureId).filter((w) => w.repo)
+  if (!repos.length) return { ok: false, detail: 'no repository in this feature', plan: null }
+
+  // A repository mid-conflict cannot take another rebase, and saying so up
+  // front beats a plan whose second step is guaranteed to fail.
+  const blocked = repos.filter((w) => w.git?.headState === 'rebasing' || w.git?.headState === 'merging')
+  if (blocked.length) {
+    return {
+      ok: false,
+      plan: null,
+      detail:
+        blocked.map((w) => w.name + ' is mid-' + w.git!.headState).join(', ') +
+        '. Finish or abort that first — the conflict panel has both.',
+    }
+  }
+
+  const steps: PlanStep[] = []
+  const warnings: string[] = []
+  const names: string[] = []
+
+  for (const w of repos) {
+    const onto = base ?? (await defaultBranch(w.path))
+    const branch = w.git?.branch ?? f.slug
+    names.push(w.name)
+    steps.push({
+      title: w.name + ': fetch ' + onto,
+      command: 'git fetch origin ' + onto,
+      cwd: w.path,
+      destructive: false,
+    })
+    steps.push(...plans.rebaseStep(w.path, branch, onto))
+    if ((w.git?.ahead ?? 0) > 0 && w.git?.upstream) {
+      warnings.push(
+        w.name + ' is ' + w.git.ahead + ' commit(s) ahead of ' + w.git.upstream +
+          '; the rebase rewrites them and pushing will need --force-with-lease.',
+      )
+    }
+  }
+
+  if (repos.some((w) => (w.git?.staged ?? 0) + (w.git?.unstaged ?? 0) > 0)) {
+    warnings.push(
+      'Uncommitted changes are set aside by --autostash and put back when each rebase ends, abort included. Git holds that stash, so a conflict cannot strand it.',
+    )
+  }
+  warnings.push(
+    'Repositories are rebased in order and it stops at the first conflict — what already replayed is kept, not rolled back. Resolve, then run this again: a branch already up to date costs only a fetch.',
+  )
+
+  const preview: PlanPreview = {
+    planId: newId('plan_'),
+    operation: 'feature.rebase',
+    steps,
+    warnings,
+    capturesRestorePoint: true,
+    repos: names,
+    onFailure: 'halt',
+  }
+
+  plans.register(preview, { workspaceIds: repos.map((w) => w.id) })
+  return { ok: true, detail: 'plan ready', plan: preview }
+}
+
+/**
+ * §4 — the verb the lifecycle was missing.
+ *
+ * A feature could be opened, worked in, rebased and closed, and nothing in
+ * Cockpit ever put it back on the main branch. `merge` goes the other way —
+ * it brings the base *into* the branch to catch it up — so the last step,
+ * the one that makes the work count, was "go to a terminal". This is that
+ * step: for every repository the feature spans, take its main checkout to the
+ * base branch, fast-forward it, and merge the feature branch into it.
+ *
+ * It runs in the MAIN checkout, never in the worktree. Git will not have one
+ * branch checked out twice, and the main checkout is already sitting on the
+ * base — which is precisely what the worktree layout buys.
+ */
+export async function landPlan(
+  featureId: string,
+  opts: { push?: boolean; base?: string } = {},
+): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
+  const f = store.get(featureId)
+  if (!f) throw new Error('unknown feature: ' + featureId)
+  if (f.state === 'archived') return { ok: false, detail: 'this feature is closed; re-open it first', plan: null }
+
+  const trees = workspacesOf(featureId).filter((w) => w.repo && w.kind !== 'group')
+  if (!trees.length) return { ok: false, detail: 'no repository in this feature', plan: null }
+
+  const mains = registry.allWorkspaces(f.projectId).filter((w) => w.kind === 'main' && w.repo)
+  const steps: PlanStep[] = []
+  const warnings: string[] = []
+  const names: string[] = []
+  const blockers: string[] = []
+
+  for (const tree of trees) {
+    // A worktree's own main checkout is the one with the same folder name; for
+    // a C1 feature the "tree" IS the main checkout and the two coincide.
+    const main = mains.find((m) => basename(m.path) === basename(tree.path)) ?? null
+    if (!main) {
+      blockers.push(tree.name + ': cannot find its main checkout')
+      continue
+    }
+
+    // Everything that would make the merge lie about what it merged.
+    if ((tree.git?.staged ?? 0) + (tree.git?.unstaged ?? 0) > 0) {
+      blockers.push(tree.name + ': uncommitted changes — commit them first')
+    }
+    if (tree.git?.headState === 'rebasing' || tree.git?.headState === 'merging') {
+      blockers.push(tree.name + ': mid-' + tree.git.headState + ', finish or abort it first')
+    }
+    if (main !== tree && (main.git?.staged ?? 0) + (main.git?.unstaged ?? 0) > 0) {
+      // The merge happens in the main checkout; uncommitted work there would
+      // be caught up in it, or block the switch.
+      blockers.push(main.name + ' (main checkout): uncommitted changes')
+    }
+
+    const base = opts.base ?? (await defaultBranch(main.path))
+    const branch = tree.git?.branch ?? f.slug
+    if (branch === base) {
+      warnings.push(tree.name + ' is already on ' + base + ' — nothing to land.')
+      continue
+    }
+    names.push(main.name)
+
+    steps.push({
+      title: main.name + ': fetch ' + base,
+      command: 'git fetch origin ' + base,
+      cwd: main.path,
+      destructive: false,
+    })
+    // Only when it is not already there: switching a checkout that is already
+    // on the base is a no-op that still shows up as a step, and a plan whose
+    // steps do nothing is a plan nobody reads.
+    if (main.git?.branch !== base) {
+      steps.push({
+        title: main.name + ': switch to ' + base,
+        command: 'git switch ' + base,
+        cwd: main.path,
+        destructive: false,
+        undo: [{ title: main.name + ': switch back', command: 'git switch -', cwd: main.path }],
+      })
+    }
+    steps.push({
+      title: main.name + ': fast-forward ' + base,
+      command: 'git merge --ff-only origin/' + base,
+      cwd: main.path,
+      destructive: false,
+    })
+    steps.push({
+      title: main.name + ': merge ' + branch + ' into ' + base,
+      command: 'git merge --no-ff ' + branch + ' -m "Merge ' + f.name.replace(/"/g, '') + '"',
+      cwd: main.path,
+      destructive: true,
+    })
+    if (opts.push) {
+      steps.push({
+        title: main.name + ': push ' + base,
+        command: 'git push origin ' + base,
+        cwd: main.path,
+        destructive: true,
+      })
+    }
+  }
+
+  if (blockers.length) return { ok: false, detail: blockers.join('; '), plan: null }
+  if (!steps.length) {
+    return { ok: false, detail: warnings.join(' ') || 'nothing to land', plan: null }
+  }
+
+  warnings.push(
+    '--no-ff, so the feature stays one identifiable merge in the history of ' +
+      (opts.base ?? 'the base branch') + ' rather than a scatter of commits.',
+  )
+  warnings.push(
+    'Repositories land in order and it stops at the first conflict, keeping what already merged. Resolve it in the conflict panel, then run this again.',
+  )
+  if (!opts.push) {
+    warnings.push('Nothing is pushed. The merge is local until you push it yourself.')
+  }
+
+  const preview: PlanPreview = {
+    planId: newId('plan_'),
+    operation: 'feature.land',
+    steps,
+    warnings,
+    capturesRestorePoint: true,
+    repos: names,
+    // A half-landed feature is two repositories genuinely merged and one
+    // conflicted, which is a state to finish — not one to undo.
+    onFailure: 'halt',
+  }
+  plans.register(preview, { workspaceIds: mains.map((m) => m.id) })
+  return { ok: true, detail: 'plan ready', plan: preview }
+}
+
 export function rename(featureId: string, name: string): void {
   const trimmed = name.trim()
   if (!trimmed) throw new Error('a feature needs a name')
@@ -558,6 +883,11 @@ export interface DeleteFeatureInput {
   removeWorktrees: boolean
   /** Delete the branch in every repository. This is the irreversible half. */
   deleteBranches: boolean
+  /**
+   * §10 — drop the per-worktree databases. Off by default and destructive:
+   * a database has no Trash to go to, so unlike the folder this one is gone.
+   */
+  dropDatabases?: boolean
   /** Proceed over unmerged branches. Nothing else can be forced. */
   force?: boolean
 }
@@ -635,6 +965,33 @@ export async function deletePlan(
     }
   }
 
+  // §10 — a database left behind after the feature is gone is the silent
+  // accumulation §16 warns about: nothing lists it and nobody remembers it.
+  const dbEnv: Record<string, string> = {}
+  if (input.dropDatabases) {
+    for (const w of wss.filter((x) => x.kind === 'worktree')) {
+      const conn = database.connectionOf(w.path)
+      if (!conn || conn.engine === 'sqlite' || !conn.database) continue
+      // The worktree's own `.env` names the database it actually uses, which
+      // is the only trustworthy answer: recomputing the name from the slug
+      // would drop the wrong one if anybody edited it.
+      const owner = repos.find((m) => basename(m.path) === basename(w.path))
+      const main = owner ? database.connectionOf(owner.path) : null
+      if (main && main.database === conn.database) {
+        warnings.push(
+          w.name + ': its .env still points at ' + conn.database +
+            ', which is the main checkout\'s own database. It will NOT be dropped.',
+        )
+        continue
+      }
+      steps.push(...database.dropPlan(conn, conn.database, w.path))
+      Object.assign(dbEnv, database.envFor(conn))
+      warnings.push(
+        w.name + ': the database ' + conn.database + ' is dropped for good. There is no Trash for it.',
+      )
+    }
+  }
+
   if (input.removeWorktrees && f.rootPath) {
     warnings.push(
       'The feature folder goes to the Trash, including its memory at .cockpit/memory.md — ' +
@@ -678,6 +1035,7 @@ export async function deletePlan(
   }
   plans.register(preview, {
     workspaceIds: [...wss.map((w) => w.id), ...repos.map((r) => r.id)],
+    ...(Object.keys(dbEnv).length ? { env: dbEnv } : {}),
     onApplied: finish,
   })
   return { ok: true, detail: 'plan ready', warnings, plan: preview }

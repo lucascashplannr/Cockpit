@@ -1,11 +1,12 @@
 import { basename, dirname, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { newId } from '@cockpit/shared'
-import type { PlanPreview, PlanStep } from '@cockpit/shared'
+import type { ApplyResult, PlanPreview, PlanStep } from '@cockpit/shared'
 import { getDb } from './db.js'
-import { defaultBranch, git } from './git.js'
+import { defaultBranch, git, probeOperation } from './git.js'
+import { run } from './exec.js'
 import { append } from './journal.js'
-import { requireWorkspace } from './registry.js'
+import { getWorkspace, requireWorkspace } from './registry.js'
 import { readManifest, findManifest } from './detect.js'
 
 /**
@@ -22,6 +23,10 @@ interface StoredPlan extends PlanPreview {
   workspaceIds: string[]
   cwd: string
   createdAt: number
+  /** Which workspace each step runs in, so a halt can name the one that stopped. */
+  stepOwner: (string | null)[]
+  /** §16 — secrets for the steps that need them. Never sent, never journaled. */
+  env?: Record<string, string>
   /**
    * Run once every step succeeded. This is what keeps a feature from being
    * recorded before its worktrees actually exist on disk (§3.4: never remember
@@ -41,6 +46,26 @@ function gc(): void {
 export interface RegisterOptions {
   workspaceIds: string[]
   onApplied?: StoredPlan['onApplied']
+  /**
+   * §16 — "Aucun environnement de process journalisé." Passed to every step and
+   * never serialized: this is how a database password reaches `mysql` without
+   * appearing in the previewed command, in the journal, or on anyone's `ps`.
+   */
+  env?: Record<string, string>
+}
+
+/**
+ * Which workspace a step belongs to, matched by the cwd it runs in. A halted
+ * plan has to name the repository that stopped, and `cwd` is the only thing a
+ * step carries that identifies one.
+ */
+function ownersFor(steps: PlanStep[], workspaceIds: string[]): (string | null)[] {
+  const byPath = new Map<string, string>()
+  for (const id of workspaceIds) {
+    const ws = getWorkspace(id)
+    if (ws) byPath.set(ws.path, id)
+  }
+  return steps.map((s) => byPath.get(s.cwd) ?? null)
 }
 
 /**
@@ -54,6 +79,8 @@ export function register(preview: PlanPreview, opts: RegisterOptions): PlanPrevi
     workspaceIds: opts.workspaceIds,
     cwd: preview.steps[0]?.cwd ?? process.cwd(),
     createdAt: Date.now(),
+    stepOwner: ownersFor(preview.steps, opts.workspaceIds),
+    env: opts.env,
     onApplied: opts.onApplied,
   })
   append({
@@ -92,14 +119,10 @@ export async function plan(
 
   switch (operation) {
     case 'rebase': {
-      const dirty = (ws.git?.unstaged ?? 0) + (ws.git?.staged ?? 0) > 0
-      if (dirty) {
-        steps.push({ title: 'Stash local changes', command: 'git stash push -u -m cockpit-rebase', cwd: ws.path, destructive: false })
-      }
       steps.push({ title: 'Fetch ' + base, command: 'git fetch origin ' + base, cwd: ws.path, destructive: false })
-      steps.push({ title: 'Rebase ' + branch + ' onto ' + base, command: 'git rebase origin/' + base, cwd: ws.path, destructive: true })
-      if (dirty) {
-        steps.push({ title: 'Restore stashed changes', command: 'git stash pop', cwd: ws.path, destructive: false })
+      steps.push(...rebaseStep(ws.path, branch, base))
+      if ((ws.git?.unstaged ?? 0) + (ws.git?.staged ?? 0) > 0) {
+        warnings.push('Uncommitted changes are set aside by --autostash and put back when the rebase ends — including when it is aborted. Git owns that stash, so a conflict cannot strand it.')
       }
       if ((ws.git?.ahead ?? 0) > 0 && ws.git?.upstream) {
         warnings.push('This branch is ' + ws.git.ahead + ' commit(s) ahead of ' + ws.git.upstream + '; a rebase rewrites them and a force-push will be required.')
@@ -170,10 +193,41 @@ export async function plan(
     warnings,
     capturesRestorePoint: steps.some((s) => s.destructive),
     repos: [ws.name],
+    // A rebase or merge that stops has stopped on a conflict, and the conflict
+    // is the point: rolling it back would undo the work the user is about to
+    // resolve. Everything else is still all-or-nothing.
+    onFailure: operation === 'rebase' || operation === 'merge' ? 'halt' : 'rollback',
   }
-  plans.set(preview.planId, { ...preview, workspaceIds: [workspaceId], cwd: ws.path, createdAt: Date.now() })
+  plans.set(preview.planId, {
+    ...preview,
+    workspaceIds: [workspaceId],
+    cwd: ws.path,
+    createdAt: Date.now(),
+    stepOwner: steps.map(() => workspaceId),
+  })
   append({ type: 'git.plan', workspaceId, payload: { operation, steps, warnings } })
   return preview
+}
+
+/**
+ * The one rebase step, shared by the single-repo plan and the feature-wide one
+ * so both get `--autostash`.
+ *
+ * `--autostash` rather than a stash push before and a pop after: those were two
+ * separate steps, and a conflict in between meant the pop never ran. The work
+ * was then sitting in a stash nothing in the app mentioned. Handing the stash
+ * to git makes it git's problem — it pops it when the rebase finishes, when it
+ * is aborted, and never leaves it behind.
+ */
+export function rebaseStep(cwd: string, branch: string, base: string): PlanStep[] {
+  return [
+    {
+      title: 'Rebase ' + branch + ' onto ' + base,
+      command: 'git rebase --autostash origin/' + base,
+      cwd,
+      destructive: true,
+    },
+  ]
 }
 
 export interface WorktreeRootOptions {
@@ -226,7 +280,7 @@ async function captureRestorePoint(workspaceId: string, cwd: string, reason: str
   return { id, head }
 }
 
-export async function apply(planId: string): Promise<{ ok: boolean; output: string; restorePoint: string | null }> {
+export async function apply(planId: string): Promise<ApplyResult> {
   gc()
   const stored = plans.get(planId)
   if (!stored) return { ok: false, output: 'plan expired or unknown; build a new one', restorePoint: null }
@@ -248,18 +302,53 @@ export async function apply(planId: string): Promise<{ ok: boolean; output: stri
   /** Steps that already ran, newest last — the rollback order is their reverse. */
   const done: PlanStep[] = []
 
-  for (const step of stored.steps) {
-    const parts = tokenize(step.command)
-    const r = await git(step.cwd, parts.slice(1), 180_000)
+  for (let i = 0; i < stored.steps.length; i++) {
+    const step = stored.steps[i]!
+    const r = await exec(step, stored.env)
     lines.push('$ ' + step.command)
     if (r.stdout.trim()) lines.push(r.stdout.trim())
     if (r.stderr.trim()) lines.push(r.stderr.trim())
 
     if (!r.ok) {
+      const remaining = stored.steps.length - i - 1
+
+      // The one failure that is not one. Git exits non-zero on a conflict
+      // exactly as it does on a real error, so the exit code cannot tell them
+      // apart — the repository can: an operation is now in progress there.
+      const operation = await probeOperation(step.cwd)
+      if (operation) {
+        const workspaceId = stored.stepOwner[i] ?? stored.workspaceIds[0] ?? null
+        const repo = workspaceId ? (getWorkspace(workspaceId)?.name ?? basename(step.cwd)) : basename(step.cwd)
+        append({
+          type: 'git.conflict',
+          level: 'warn',
+          workspaceId,
+          payload: { operation: stored.operation, kind: operation.kind, repo, paths: operation.conflictedPaths },
+        })
+        lines.push('')
+        lines.push(
+          '[cockpit] ' + repo + ': ' + operation.conflictedPaths.length +
+            ' conflicted file(s). Resolve them and continue — nothing was rolled back.' +
+            // Only a rebase has an autostash to reassure anyone about; saying it
+            // during a merge is noise that describes a mechanism not in play.
+            (operation.kind === 'rebase'
+              ? ' Your uncommitted work is held by git\'s autostash until the rebase ends.'
+              : ''),
+        )
+        if (remaining) lines.push('[cockpit] ' + remaining + ' step(s) not run; re-run the plan once this is resolved.')
+        return {
+          ok: false,
+          output: lines.join('\n'),
+          restorePoint,
+          conflict: { workspaceId: workspaceId ?? '', repo, kind: operation.kind },
+          remaining,
+        }
+      }
+
       append({
         type: 'git.failed',
         level: 'error',
-        workspaceId: stored.workspaceIds[0] ?? null,
+        workspaceId: stored.stepOwner[i] ?? stored.workspaceIds[0] ?? null,
         payload: { operation: stored.operation, step: step.title, code: r.code, output: r.stderr.slice(-2000) },
       })
       lines.push('')
@@ -267,11 +356,16 @@ export async function apply(planId: string): Promise<{ ok: boolean; output: stri
 
       // §3.7 — a plan spanning several repositories is all-or-nothing. Leaving
       // two of three worktrees behind is worse than not starting: the feature
-      // would look opened and be unusable.
-      const rolled = await rollback(done, lines)
-      if (rolled) lines.push('[cockpit] rolled back ' + rolled + ' step(s); nothing was left behind.')
+      // would look opened and be unusable. A plan that says `halt` has opted
+      // out: what already succeeded there is worth keeping.
+      if ((stored.onFailure ?? 'rollback') === 'rollback') {
+        const rolled = await rollback(done, lines, stored.env)
+        if (rolled) lines.push('[cockpit] rolled back ' + rolled + ' step(s); nothing was left behind.')
+      } else if (remaining) {
+        lines.push('[cockpit] ' + remaining + ' step(s) not run; what succeeded before this was kept.')
+      }
       if (restorePoint) lines.push('[cockpit] restore point ' + restorePoint.slice(0, 8) + ' is available via undo.')
-      return { ok: false, output: lines.join('\n'), restorePoint }
+      return { ok: false, output: lines.join('\n'), restorePoint, remaining }
     }
     done.push(step)
   }
@@ -288,14 +382,49 @@ export async function apply(planId: string): Promise<{ ok: boolean; output: stri
   return { ok: true, output, restorePoint }
 }
 
+/**
+ * Runs one step. Git goes through the per-repository queue (§16), so two git
+ * commands in one repo never overlap; anything else runs directly.
+ *
+ * A step that names a non-git binary without declaring `run` is refused rather
+ * than executed: that is what keeps "a plan can only run git" true by default,
+ * so a command string assembled from a manifest cannot become an exec.
+ */
+async function exec(
+  step: { command: string; cwd: string; run?: string },
+  env?: Record<string, string>,
+): Promise<{ ok: boolean; code: number; stdout: string; stderr: string }> {
+  const parts = tokenize(step.command)
+  const bin = parts[0] ?? 'git'
+  const args = parts.slice(1)
+
+  if (bin === 'git' && !step.run) return git(step.cwd, args, 180_000)
+
+  if (!step.run || step.run !== bin) {
+    return {
+      ok: false,
+      code: 126,
+      stdout: '',
+      stderr:
+        'refusing to run "' + bin + '": a step that is not git must declare run: "' + bin + '"',
+    }
+  }
+  return run(bin, args, { cwd: step.cwd, timeoutMs: 600_000, env })
+}
+
 /** Undoes completed steps in reverse. Best effort: a failed undo is reported,
  *  never thrown, because the caller is already handling a failure. */
-async function rollback(done: PlanStep[], lines: string[]): Promise<number> {
+async function rollback(
+  done: PlanStep[],
+  lines: string[],
+  env?: Record<string, string>,
+): Promise<number> {
   let n = 0
   for (const step of [...done].reverse()) {
     for (const u of step.undo ?? []) {
-      const parts = tokenize(u.command)
-      const r = await git(u.cwd, parts.slice(1), 120_000)
+      // Its own binary when it names one — the undo of `createdb` is `dropdb`
+      // — and its step's otherwise, which keeps every git undo unchanged.
+      const r = await exec({ ...u, run: u.run ?? step.run }, env)
       lines.push('$ ' + u.command + (r.ok ? '' : '   # failed: ' + r.stderr.trim().slice(-200)))
       if (r.ok) n++
     }
@@ -303,8 +432,45 @@ async function rollback(done: PlanStep[], lines: string[]): Promise<number> {
   return n
 }
 
+/**
+ * Splits a previewed command into argv, honouring quotes.
+ *
+ * Written out longhand because the regex it replaces only stripped quotes at
+ * the very ends of a token, so a quoted argument that was not the last one
+ * kept a stray quote: `--a="one two" --b=three` yielded `--a="one two`. The
+ * last argument happened to survive, which is why every command here worked
+ * while they all ended in their quoted part — a trap for the next one that
+ * does not. Nothing could hit it while every step was git with no spaces in
+ * any argument; cloning a database is the first step that needs one.
+ */
 function tokenize(cmd: string): string[] {
-  return cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((s) => s.replace(/^["']|["']$/g, '')) ?? []
+  const out: string[] = []
+  let cur = ''
+  let quote: '"' | "'" | null = null
+  /** A token can be legitimately empty — `--flag=""` — but only if quoted. */
+  let quoted = false
+
+  for (const ch of cmd) {
+    if (quote) {
+      if (ch === quote) quote = null
+      else cur += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      quoted = true
+      continue
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+      if (cur || quoted) out.push(cur)
+      cur = ''
+      quoted = false
+      continue
+    }
+    cur += ch
+  }
+  if (cur || quoted) out.push(cur)
+  return out
 }
 
 /** §16 — "Bouton d'annulation alimenté par le reflog." */

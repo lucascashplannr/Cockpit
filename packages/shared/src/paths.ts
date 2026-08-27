@@ -133,3 +133,44 @@ export function starterManifest(name: string, repoFolder?: string | null): strin
     '',
   ].join('\n')
 }
+
+/**
+ * §4 — the branch- and folder-safe form of a feature name.
+ *
+ * It lives here, beside the other pure path work, because it is no longer just
+ * a branch name: it is the branch in every repository, the folder under
+ * `worktrees/`, half of the Herd hostname and half of the per-worktree
+ * database name. Three implementations of it that disagree by one character
+ * is four things pointing at three places.
+ */
+export function slugify(name: string): string {
+  const s = name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 60)
+    .replace(/-+$/, '')
+  return s || 'feature'
+}
+
+/**
+ * §8 + §11 — a name unique across features, for every tool that keys on the
+ * folder name rather than the path.
+ *
+ * This is the collision that silently breaks running two features at once:
+ * `worktrees/2fa/api` and `worktrees/search/api` are both `api`, so Herd serves
+ * one feature's code at the other's hostname and Compose adopts the other
+ * feature's containers. The feature slug is the disambiguator.
+ *
+ * Shared by the runtime that links the site and the seed that writes the
+ * hostname into `.env` — those two disagreeing is the same bug in two hats.
+ */
+export function scopedName(repoFolder: string, featureSlug: string | null): string {
+  if (!featureSlug) return repoFolder
+  const clean = slugify(featureSlug)
+  if (repoFolder === clean) return repoFolder
+  return repoFolder + '-' + clean
+}
