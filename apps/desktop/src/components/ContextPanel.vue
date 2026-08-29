@@ -103,8 +103,6 @@ const changed = computed(() => {
             Review
             <span v-if="changed" class="tbadge num">{{ changed }}</span>
           </button>
-
-          <span class="path mono" :title="w.path">{{ w.path }}</span>
         </div>
       </header>
 
@@ -164,27 +162,13 @@ const changed = computed(() => {
   padding: var(--col-top) 18px 0;
 }
 .grow { flex: 1; }
-.path {
-  flex: none;
-  margin-left: 10px;
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  /* Truncate from the left; `plaintext` keeps the string itself in reading
-     order, which bare `rtl` does not — it moves the leading slash to the end. */
-  direction: rtl;
-  unicode-bidi: plaintext;
-  max-width: 30%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .status {
   display: flex;
   align-items: center;
   gap: 8px 10px;
-  /* 34px is the height of the search field in the column to the left, so the
-     two columns start their content on one line. */
+  /* Tall enough that the pills and the Review button sit on one line without
+     the row collapsing onto them. */
   min-height: 34px;
   padding: 0 0 12px;
   min-width: 0;

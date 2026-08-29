@@ -1,14 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import {
-  ArrowUp, FolderPlus, GitCompareArrows, GitMerge, Layers, Pause, Play, Plus, RefreshCw, Search,
-  Sparkles,
-} from '@lucide/vue'
-import type { Feature } from '@cockpit/shared'
+import { ArrowUp, FolderPlus, Layers, Plus, RefreshCw, Sparkles } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activateFeature, activeProject, addRepoTo, client, guard, landFeature, openAgentOn, parkFeature,
-  rebaseFeature, state, workspaceGroups,
+  activeProject, addRepoTo, client, guard, openAgentOn, selectedFeatureId, state,
+  workspaceGroups,
 } from '../core/store.js'
 
 /**
@@ -32,48 +28,18 @@ async function rescan() {
 }
 
 /**
- * §8 + §11 — the switch. Parked means the worktrees are on disk and agents may
- * still run in them; live means the servers are up and the ports are bound.
- * Only a feature Cockpit actually opened has somewhere to keep that state, so
- * an inferred one gets no toggle (§3.9 — absent, not disabled).
+ * §4 — the feature is the unit of work, so it is something you select, exactly
+ * as you select one of its rows. Selecting it aims the chat at the whole
+ * feature; its verbs — land, rebase, park — are then in the title band, where
+ * the verbs of the selected thing belong (FeatureActions).
  */
-function togglable(f: Feature | null): boolean {
-  return !!f && !f.derived && f.state !== 'archived'
-}
-
-async function toggle(f: Feature) {
-  if (f.state === 'live') await parkFeature(f.id)
-  else await activateFeature(f.id)
-}
-
-/**
- * §4 — the feature is the unit of work, so catching it up is one act. Rebasing
- * three worktrees used to mean selecting each one and approving three plans.
- */
-function behind(ws: { git: { behind: number } | null }[]): number {
-  return ws.reduce((n, w) => n + (w.git?.behind ?? 0), 0)
-}
-
-function ahead(ws: { git: { ahead: number } | null }[]): number {
-  return ws.reduce((n, w) => n + (w.git?.ahead ?? 0), 0)
-}
-
-/** Uncommitted work: landing refuses over it, so the button says so up front. */
-function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): number {
-  return ws.reduce((n, w) => n + (w.git?.staged ?? 0) + (w.git?.unstaged ?? 0), 0)
+function selectFeature(featureId: string) {
+  openAgentOn({ kind: 'feature', featureId })
 }
 </script>
 
 <template>
   <section class="list">
-    <header class="head">
-      <button class="search" @click="state.paletteOpen = true">
-        <Search class="sm" />
-        <span class="ph">Search or run a command</span>
-        <span class="kbd">⌘K</span>
-      </button>
-    </header>
-
     <div class="scroll">
       <div v-if="!hasProjects" class="empty">
         <FolderPlus />
@@ -86,8 +52,15 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
 
       <template v-else>
         <div v-for="(g, i) in groups" :key="g.featureId ?? 'loose-' + i" class="group">
-          <!-- A feature is a decoration (§4): no feature, no header. -->
-          <div v-if="g.title" class="group-head" :class="{ live: g.feature?.state === 'live' }">
+          <!-- A feature is a decoration (§4): no feature, no header. And a
+               header you can stand on: selecting it is selecting its scope. -->
+          <button
+            v-if="g.title"
+            class="group-head"
+            :class="{ live: g.feature?.state === 'live', selected: g.featureId === selectedFeatureId }"
+            :disabled="!g.featureId"
+            @click="g.featureId && selectFeature(g.featureId)"
+          >
             <Layers class="sm gi" />
             <span class="title">{{ g.title }}</span>
             <span class="summary num">
@@ -96,55 +69,7 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
               </span>
               <span class="dim">{{ featureSummary(g.workspaces).total }}</span>
             </span>
-            <!-- §7 — one chat across every worktree the feature spans, with
-                 its memory prepended. First in the row because it is what the
-                 feature is for; the git verbs are what you do afterwards. -->
-            <button
-              v-if="g.featureId"
-              class="icon-btn small go"
-              :title="'Chat on the whole feature — ' + g.workspaces.length + ' worktree(s), with its memory'"
-              @click="openAgentOn({ kind: 'feature', featureId: g.featureId! })"
-            >
-              <Sparkles class="sm" />
-            </button>
-            <!-- §4 — the step the lifecycle was missing: the branch goes onto
-                 the base, in each repository's main checkout. Before this the
-                 last move was always "go to a terminal". -->
-            <button
-              v-if="togglable(g.feature)"
-              class="icon-btn small"
-              :class="{ ready: ahead(g.workspaces) && !dirty(g.workspaces) }"
-              :title="dirty(g.workspaces)
-                ? 'Commit first — landing refuses over uncommitted changes'
-                : 'Land on the base branch — one --no-ff merge per repository'"
-              @click="landFeature(g.feature!.id, false)"
-            >
-              <GitMerge class="sm" />
-            </button>
-            <!-- One plan across every repository it spans, stopping at the
-                 first conflict and keeping what already replayed. -->
-            <button
-              v-if="togglable(g.feature)"
-              class="icon-btn small"
-              :class="{ nudge: behind(g.workspaces) }"
-              :title="behind(g.workspaces)
-                ? 'Rebase every repository onto its base — ' + behind(g.workspaces) + ' commit(s) behind'
-                : 'Rebase every repository in this feature onto its base'"
-              @click="rebaseFeature(g.feature!.id)"
-            >
-              <GitCompareArrows class="sm" />
-            </button>
-            <!-- §3.9 - an inferred feature has no state to toggle, so no button. -->
-            <button
-              v-if="togglable(g.feature)"
-              class="icon-btn small toggle"
-              :class="{ on: g.feature!.state === 'live' }"
-              :title="g.feature!.state === 'live' ? 'Park - servers down, worktrees kept' : 'Make live - bring its runtimes up'"
-              @click="toggle(g.feature!)"
-            >
-              <component :is="g.feature!.state === 'live' ? Pause : Play" class="sm" />
-            </button>
-          </div>
+          </button>
           <div v-else-if="groups.length > 1 && i > 0" class="divider">
             <span class="section-label">other workspaces</span>
           </div>
@@ -193,11 +118,6 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
 /* The one verb that is not git: it gets the accent that means agent. */
 .go:hover { color: var(--agent); background: var(--agent-soft); }
 
-/* Behind its base is the one state where this verb is the next thing to do. */
-.nudge { color: var(--warn); }
-/* Committed and ahead: landing is the next thing, so it says so. */
-.ready { color: var(--ok); }
-
 .list {
   display: flex;
   flex-direction: column;
@@ -206,54 +126,45 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
   border-right: 1px solid var(--line);
 }
 
-.head {
-  padding: var(--col-top) 12px 10px;
-  flex: none;
-}
-
-/* The palette trigger doubles as the column header — §12 makes it the real
-   entry point, so it sits where the eye lands first. */
-.search {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  height: 34px;
-  padding: 0 8px 0 11px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--bg-sunken);
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-  box-shadow: var(--shadow-xs);
-  transition:
-    border-color var(--dur-2) var(--ease-soft),
-    background var(--dur-2) var(--ease-soft),
-    box-shadow var(--dur-2) var(--ease-soft);
-  -webkit-app-region: no-drag;
-}
-.search:hover {
-  border-color: var(--line-strong);
-  background: var(--panel-raised);
-  box-shadow: var(--shadow-sm);
-  color: var(--text-muted);
-}
-.ph { flex: 1; text-align: left; }
-
 .scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 2px 10px 12px;
+  /* The column starts at its own top edge now that the search field has gone
+     up into the band: --col-top is the same inset the rail and the third
+     column take, so all three begin on one line. */
+  padding: var(--col-top) 10px 12px;
 }
 
 .group + .group { margin-top: 14px; }
 
+/* Same shape as a row, one step up in weight: it is selected the same way,
+   and the rows beneath it are what it holds. */
 .group-head {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 10px 11px 6px;
+  width: 100%;
+  padding: 7px 11px;
+  margin-bottom: 2px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  position: relative;
+  transition: background var(--dur-1) var(--ease-soft);
 }
+.group-head:not(:disabled):hover { background: var(--hover); }
+.group-head:disabled { cursor: default; }
+.group-head.selected { background: var(--selected); }
+.group-head.selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+}
+.group-head.selected .gi { color: var(--accent); }
 .gi { color: var(--text-dim); }
 .title {
   flex: 1;
@@ -273,10 +184,6 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
 
 /* Live reads as a state of the header, not as a badge to hunt for. */
 .group-head.live .gi { color: var(--ok); }
-.toggle { margin-left: 4px; opacity: 0; transition: opacity var(--dur-2) var(--ease-soft); }
-.group-head:hover .toggle,
-.toggle.on { opacity: 1; }
-.toggle.on { color: var(--ok); }
 
 .divider { padding: 16px 11px 6px; }
 

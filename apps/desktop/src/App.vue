@@ -15,10 +15,13 @@ import ConnectionBanner from './components/ConnectionBanner.vue'
 import HomeView from './components/HomeView.vue'
 import ReviewTools from './components/ReviewTools.vue'
 import WorkspaceActions from './components/WorkspaceActions.vue'
+import FeatureActions from './components/FeatureActions.vue'
 import WorkspaceTitle from './components/WorkspaceTitle.vue'
+import GlobalSearch from './components/GlobalSearch.vue'
 import TrafficLights from './components/TrafficLights.vue'
 import {
   activeWorkspace, canLeaveHome, client, state, goTo, guard, keyTargets, requestPlan,
+  selectedFeatureGroup,
 } from './core/store.js'
 
 /**
@@ -117,7 +120,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       <span class="lead" />
       <div class="title"><WorkspaceTitle /></div>
       <span class="grow" />
-      <WorkspaceActions />
+      <!-- ⌘K is not about the selected workspace, so it is not in its column:
+           it searches everything, and it sits in the window's own chrome. -->
+      <GlobalSearch />
+      <span class="grow" />
+      <!-- The verbs of whatever is selected. A feature is selectable too, and
+           when it is the one selected, these are its verbs (§4). -->
+      <FeatureActions v-if="selectedFeatureGroup" :group="selectedFeatureGroup" />
+      <WorkspaceActions v-else />
     </header>
 
     <ProjectRail />
@@ -178,7 +188,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
 }
-.grow { flex: 1; }
+/* Two of them, so the search field lands in the middle of the band rather
+   than against whichever side has less in it. */
+.grow { flex: 1; min-width: 12px; }
 
 /* The rail's own width, holding nothing: macOS paints its three lights here.
    Carrying the rail's right border up through the band means the divider the
@@ -202,4 +214,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   margin-left: 12px;
   min-width: 0;
 }
+
+/* Between the title and the verbs the band is one flex row, and every part of
+   it has to be able to give width back. */
+.titlebar > * { min-width: 0; }
 </style>

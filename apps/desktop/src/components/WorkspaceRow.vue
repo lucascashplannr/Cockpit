@@ -2,12 +2,17 @@
 import { computed } from 'vue'
 import { ArrowDown, ArrowUp, GitBranch, Lock, Sparkles, SquareDot, TriangleAlert } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
-import { openAgentOn, selectWorkspace, state } from '../core/store.js'
+import { openAgentOn, selectedFeatureId, selectWorkspace, state } from '../core/store.js'
 
 const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
 
 const w = computed(() => props.workspace)
-const selected = computed(() => w.value.id === state.activeWorkspaceId)
+// Selecting a feature anchors the panel on one of its rows, so the row id
+// alone would light two things at once. The narrower selection wins: while the
+// feature is what is selected, none of its rows is.
+const selected = computed(
+  () => w.value.id === state.activeWorkspaceId && !selectedFeatureId.value,
+)
 
 const dirty = computed(() => {
   const g = w.value.git

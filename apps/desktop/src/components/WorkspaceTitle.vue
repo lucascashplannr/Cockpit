@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { GitBranch } from '@lucide/vue'
-import { activeProject, activeWorkspace } from '../core/store.js'
+import { GitBranch, Layers } from '@lucide/vue'
+import { activeProject, activeWorkspace, selectedFeatureGroup } from '../core/store.js'
 
 /**
  * What the window is currently about.
@@ -23,13 +23,29 @@ import { activeProject, activeWorkspace } from '../core/store.js'
 
 const w = computed(() => activeWorkspace.value)
 const project = computed(() => activeProject.value)
+
+/**
+ * A feature is selectable in the list, and the band is what the window is
+ * about: while the feature is the selection, it is the feature that is named
+ * here — otherwise the verbs beside it (FeatureActions) would read as acting
+ * on whichever of its worktrees happened to be the anchor.
+ */
+const feature = computed(() => selectedFeatureGroup.value)
 const showProject = computed(
   () => !!project.value && !!w.value && w.value.path !== project.value.root,
 )
 </script>
 
 <template>
-  <div v-if="w" class="wsid">
+  <div v-if="feature" class="wsid">
+    <span class="proj">{{ project?.name }}</span>
+    <span class="sep">/</span>
+    <h1 class="name">{{ feature.title }}</h1>
+    <span class="chip"><Layers />feature</span>
+    <span class="chip dim">{{ feature.workspaces.length }} worktree(s)</span>
+  </div>
+
+  <div v-else-if="w" class="wsid">
     <template v-if="showProject">
       <span class="proj">{{ project?.name }}</span>
       <span class="sep">/</span>
@@ -83,4 +99,5 @@ const showProject = computed(
   height: 21px;
   font-size: 11px;
 }
+.wsid .chip.dim { color: var(--text-dim); }
 </style>

@@ -385,6 +385,20 @@ export const activeAgentScope = computed<AgentScope | null>(() => {
   return w ? { kind: 'workspace', workspaceId: w.id } : null
 })
 
+/**
+ * §4 — the feature is a thing you can stand on, not only a header above its
+ * rows. Selecting it *is* selecting its scope: the chat aims at the whole
+ * feature, and the verbs that act on every worktree it spans move up into the
+ * title band, where the workspace verbs already live.
+ *
+ * Read from `state.agentScope` rather than `activeAgentScope`: the fallback
+ * there resolves to a workspace, and the list has to know that nothing narrower
+ * than the feature is selected.
+ */
+export const selectedFeatureId = computed(() =>
+  state.agentScope?.kind === 'feature' ? state.agentScope.featureId : null,
+)
+
 /** §7 — what a scope would do, before it is asked to do it. */
 export async function previewScope(scope: AgentScope): Promise<AgentScopePreview | null> {
   try {
@@ -463,6 +477,12 @@ export const workspaceGroups = computed<ListGroup[]>(() => {
 
   if (loose.length) groups.push({ featureId: null, title: null, feature: null, workspaces: loose })
   return groups
+})
+
+/** The feature standing selected, with the rows it spans — null unless one is. */
+export const selectedFeatureGroup = computed<ListGroup | null>(() => {
+  const id = selectedFeatureId.value
+  return id ? (workspaceGroups.value.find((g) => g.featureId === id) ?? null) : null
 })
 
 /** §5 — asking whether a capability exists is how the UI decides to render
@@ -681,6 +701,12 @@ async function refreshProjects(): Promise<void> {
 
 export function selectWorkspace(id: string): void {
   state.activeWorkspaceId = id
+  // Clicking a row is saying "this one", so a scope wider than the row — the
+  // feature it sits under, the project — stops being the answer. Dropping it
+  // lets activeAgentScope fall back to this workspace; a folder scope inside
+  // it is narrower than the click, and survives.
+  const scope = state.agentScope
+  if (scope && (scope.kind === 'feature' || scope.kind === 'project')) state.agentScope = null
   const w = state.workspaces.find((x) => x.id === id)
   if (w && w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
   remember(id)
