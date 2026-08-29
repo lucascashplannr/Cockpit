@@ -64,7 +64,6 @@ export function allFeatures(projectId?: string, includeArchived = false): Featur
         derived: false,
         createdAt: rec.createdAt,
         updatedAt: rec.updatedAt,
-        costUsd: featureStore.costFor(rec.id),
       })
     }
   }
@@ -99,7 +98,6 @@ function withRecord(f: Feature): Feature {
     ticket: rec.ticket,
     review: rec.review,
     updatedAt: rec.updatedAt,
-    costUsd: featureStore.costFor(f.id),
   }
 }
 
@@ -487,7 +485,6 @@ function deriveFeatures(project: Project): void {
       derived: false,
       createdAt: rec.createdAt,
       updatedAt: rec.updatedAt,
-      costUsd: featureStore.costFor(rec.id),
     }
     features.set(feature.id, feature)
     project.featureIds.push(feature.id)
@@ -539,7 +536,6 @@ function deriveFeatures(project: Project): void {
       derived: true,
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now(),
-      costUsd: 0,
     }
     features.set(id, feature)
     project.featureIds.push(id)

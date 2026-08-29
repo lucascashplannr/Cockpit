@@ -269,7 +269,7 @@ export function goTo(id: TabId): void {
 
 
 
-/** §12's "where am I" for the Agent: the sessions still costing money. */
+/** §12's "where am I" for the Agent: the sessions still running. */
 export const liveSessions = computed(() =>
   state.agents.filter((s) => s.status !== 'ended' && s.status !== 'failed'),
 )

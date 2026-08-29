@@ -14,7 +14,7 @@ import * as leases from './leases.js'
  * Never "a feature". That is what makes it work identically in C0 and C3.
  *
  * §16 — scope confined, command allow-list, never a push, never the main
- * branch, human diff review before any commit, cost displayed.
+ * branch, human diff review before any commit.
  */
 
 /**
@@ -74,11 +74,10 @@ export const DEFAULT_ALLOW = [
 ]
 
 export interface NormalizedEvent {
-  kind: 'text' | 'tool' | 'cost' | 'end' | 'error'
+  kind: 'text' | 'tool' | 'end' | 'error'
   text?: string
   tool?: string
   paths?: string[]
-  costUsd?: number
 }
 
 /**
@@ -146,7 +145,7 @@ const claudeEngine: EngineSpec = {
       return text ? { kind: 'text', text } : null
     }
     if (type === 'result') {
-      return { kind: 'end', costUsd: Number(o.total_cost_usd ?? 0), text: String(o.result ?? '') }
+      return { kind: 'end', text: String(o.result ?? '') }
     }
     return null
   },
@@ -176,7 +175,7 @@ const codexEngine: EngineSpec = {
       return { kind: 'tool', tool: String(o.name ?? 'exec') }
     }
     if (type.includes('complete') || type === 'task_complete') {
-      return { kind: 'end', costUsd: Number(o.cost_usd ?? 0) }
+      return { kind: 'end' }
     }
     return null
   },
@@ -215,10 +214,10 @@ agentBus.setMaxListeners(50)
 function persist(s: AgentSession): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, cost_usd, turns, lease_id, last_message, feature_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, feature_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET status=excluded.status, ended_at=excluded.ended_at,
-         cost_usd=excluded.cost_usd, turns=excluded.turns, last_message=excluded.last_message,
+         turns=excluded.turns, last_message=excluded.last_message,
          lease_id=excluded.lease_id, engine_session_id=excluded.engine_session_id,
          prompt=excluded.prompt`,
     )
@@ -230,7 +229,6 @@ function persist(s: AgentSession): void {
       s.status,
       s.startedAt,
       s.endedAt,
-      s.costUsd,
       s.turns,
       s.leaseId,
       s.lastMessage,
@@ -287,7 +285,6 @@ export function turnsOf(sessionId: string): AgentTurn[] {
     prompt: String(r.prompt),
     startedAt: Number(r.started_at),
     endedAt: r.ended_at === null ? null : Number(r.ended_at),
-    costUsd: Number(r.cost_usd ?? 0),
     status: String(r.status) as AgentTurn['status'],
   }))
 }
@@ -303,20 +300,19 @@ function openTurn(sessionId: string, prompt: string): void {
     ) + 1
   getDb()
     .prepare(
-      'INSERT INTO agent_turns (id, session_id, seq, prompt, started_at, ended_at, cost_usd, status) VALUES (?,?,?,?,?,?,?,?)',
+      'INSERT INTO agent_turns (id, session_id, seq, prompt, started_at, ended_at, status) VALUES (?,?,?,?,?,?,?)',
     )
-    .run(newId('turn_'), sessionId, seq, prompt, Date.now(), null, 0, 'running')
+    .run(newId('turn_'), sessionId, seq, prompt, Date.now(), null, 'running')
 }
 
-/** The cost of a turn is what the session gained while it was the open one. */
-function closeTurn(sessionId: string, status: AgentTurn['status'], costUsd: number): void {
+function closeTurn(sessionId: string, status: AgentTurn['status']): void {
   const row = getDb()
     .prepare("SELECT id FROM agent_turns WHERE session_id = ? AND status = 'running' ORDER BY seq DESC LIMIT 1")
     .get(sessionId) as { id: string } | undefined
   if (!row) return
   getDb()
-    .prepare('UPDATE agent_turns SET ended_at = ?, status = ?, cost_usd = ? WHERE id = ?')
-    .run(Date.now(), status, costUsd, row.id)
+    .prepare('UPDATE agent_turns SET ended_at = ?, status = ? WHERE id = ?')
+    .run(Date.now(), status, row.id)
 }
 
 function hydrate(r: Record<string, unknown>): AgentSession {
@@ -330,7 +326,6 @@ function hydrate(r: Record<string, unknown>): AgentSession {
     status,
     startedAt: Number(r.started_at),
     endedAt: r.ended_at === null ? null : Number(r.ended_at),
-    costUsd: Number(r.cost_usd),
     turns: Number(r.turns),
     leaseId: r.lease_id === null ? null : String(r.lease_id),
     lastMessage: r.last_message === null ? null : String(r.last_message),
@@ -419,7 +414,6 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
     status: 'starting',
     startedAt: Date.now(),
     endedAt: null,
-    costUsd: 0,
     turns: 0,
     leaseId: null,
     lastMessage: null,
@@ -574,9 +568,7 @@ function launch(
         for (const wsId of session.workspaceIds) recordTouch(wsId, relativeTo(cwd, p), actor, session.id)
       }
     } else if (ev.kind === 'end') {
-      session.costUsd += ev.costUsd ?? 0
       session.status = 'idle'
-      append({ type: 'agent.cost', actor, payload: { costUsd: session.costUsd, turns: session.turns } })
     }
     persist(session)
     agentBus.emit('changed')
@@ -594,15 +586,12 @@ function launch(
     append({ type: 'agent.output', level: 'warn', actor, payload: { text: c.toString('utf8').slice(0, 2000) } })
   })
 
-  const costAtStart = session.costUsd
-
   child.on('close', (code) => {
     live.delete(session.id)
     session.status = code === 0 ? 'ended' : 'failed'
     session.endedAt = Date.now()
     persist(session)
-    // What this turn cost is what the session gained while it was the open one.
-    closeTurn(session.id, code === 0 ? 'done' : 'failed', session.costUsd - costAtStart)
+    closeTurn(session.id, code === 0 ? 'done' : 'failed')
     if (session.leaseId) leases.release(session.leaseId)
     append({
       type: 'agent.session_ended',
@@ -610,7 +599,6 @@ function launch(
       actor,
       payload: {
         code,
-        costUsd: session.costUsd,
         turns: session.turns,
         resumable: !!session.engineSessionId,
       },

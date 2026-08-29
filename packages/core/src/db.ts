@@ -164,6 +164,8 @@ function migrate(d: Db): void {
       status      TEXT NOT NULL,
       started_at  INTEGER NOT NULL,
       ended_at    INTEGER,
+      -- Vestigial: nothing writes or reads it since the cost display was
+      -- dropped. Kept so an existing database still opens unmodified.
       cost_usd    REAL NOT NULL DEFAULT 0,
       turns       INTEGER NOT NULL DEFAULT 0,
       lease_id    TEXT,
@@ -238,7 +240,7 @@ function migrate(d: Db): void {
       prompt     TEXT NOT NULL,
       started_at INTEGER NOT NULL,
       ended_at   INTEGER,
-      cost_usd   REAL NOT NULL DEFAULT 0,
+      cost_usd   REAL NOT NULL DEFAULT 0,  -- vestigial, see agent_sessions
       status     TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS agent_turn_session ON agent_turns(session_id, seq);

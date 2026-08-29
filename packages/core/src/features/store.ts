@@ -121,14 +121,6 @@ export function remove(id: string): void {
   getDb().prepare('DELETE FROM features WHERE id = ?').run(id)
 }
 
-/** §7 — cost is per feature as well as per session; it is what accumulates. */
-export function costFor(id: string): number {
-  const row = getDb()
-    .prepare('SELECT COALESCE(SUM(cost_usd), 0) AS total FROM agent_sessions WHERE feature_id = ?')
-    .get(id) as { total: number }
-  return row.total
-}
-
 /**
  * Branch- and folder-safe, and stable: the same name always yields the same
  * slug, so re-opening a feature after a crash lands on the same worktrees.

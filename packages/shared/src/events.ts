@@ -81,7 +81,6 @@ export type EventType =
   | 'agent.output'
   | 'agent.tool_use'
   | 'agent.session_ended'
-  | 'agent.cost'
   // leases
   | 'lease.acquired'
   | 'lease.released'

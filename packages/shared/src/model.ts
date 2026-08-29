@@ -258,8 +258,6 @@ export interface Feature {
   derived: boolean
   createdAt: number
   updatedAt: number
-  /** §7 — every session ever run inside it, summed. Cost stays visible. */
-  costUsd: number
 }
 
 export interface TicketRef {
@@ -340,7 +338,6 @@ export interface AgentTurn {
   prompt: string
   startedAt: number
   endedAt: number | null
-  costUsd: number
   status: 'running' | 'done' | 'failed'
 }
 
@@ -352,7 +349,6 @@ export interface AgentSession {
   status: 'starting' | 'idle' | 'thinking' | 'ended' | 'failed'
   startedAt: number
   endedAt: number | null
-  costUsd: number
   turns: number
   leaseId: string | null
   lastMessage: string | null

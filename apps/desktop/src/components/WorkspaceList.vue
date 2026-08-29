@@ -91,9 +91,6 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
             <Layers class="sm gi" />
             <span class="title">{{ g.title }}</span>
             <span class="summary num">
-              <span v-if="g.feature && g.feature.costUsd > 0" class="dim cost">
-                ${{ g.feature.costUsd.toFixed(2) }}
-              </span>
               <span v-if="featureSummary(g.workspaces).ahead" class="up">
                 <ArrowUp class="sm" />{{ featureSummary(g.workspaces).ahead }}
               </span>
@@ -273,7 +270,6 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
 .summary .up { color: var(--ok); display: inline-flex; align-items: center; gap: 2px; }
 .summary .up .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
 .summary .dim { color: var(--text-dim); }
-.summary .cost { font-variant-numeric: tabular-nums; }
 
 /* Live reads as a state of the header, not as a badge to hunt for. */
 .group-head.live .gi { color: var(--ok); }

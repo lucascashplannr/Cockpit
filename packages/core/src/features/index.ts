@@ -803,8 +803,7 @@ export async function closePlan(
  */
 /**
  * What `promptPreamble` would find, without building it — so the composer can
- * say "this run carries the feature memory" before a run costs anything (§7,
- * coût affiché).
+ * say "this run carries the feature memory" before the run starts (§7).
  */
 export function preambleParts(
   featureId: string,
@@ -837,7 +836,7 @@ export function promptPreamble(featureId: string, scopePaths: string[]): string 
   }
   // Only when the session actually spans more than one repository — a
   // single-repo session does not need the map, and padding the prompt with it
-  // costs money for nothing (§7, coût affiché).
+  // buys nothing (§7).
   if (context && scopePaths.length > 1) {
     parts.push('', '# Cross-repository context', '', context)
   }

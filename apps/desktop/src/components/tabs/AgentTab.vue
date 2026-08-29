@@ -257,7 +257,6 @@ function dotClass(s: AgentSession): string {
             <span class="ceng">{{ c.engine }}</span>
             <span class="cturns">{{ c.history.length }} turn{{ c.history.length === 1 ? '' : 's' }}</span>
             <span class="grow" />
-            <span class="ccost num">${{ c.costUsd.toFixed(2) }}</span>
             <span class="cwhen">{{ ago(c.startedAt) }}</span>
           </span>
           <span class="ctitle">{{ c.title || 'untitled' }}</span>
@@ -323,7 +322,6 @@ function dotClass(s: AgentSession): string {
           <span class="dot" :class="dotClass(selected)" />
           <span class="ttitle">{{ selected.title || 'untitled' }}</span>
           <span class="grow" />
-          <span class="meta num">${{ selected.costUsd.toFixed(2) }}</span>
           <button
             v-if="isLive(selected)"
             class="icon-btn"
@@ -554,7 +552,6 @@ function dotClass(s: AgentSession): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.meta { font-size: var(--fs-xs); color: var(--text-dim); }
 
 .ex + .ex { margin-top: 20px; }
 /* What was asked reads as said, not as logged: it is the only thing on the

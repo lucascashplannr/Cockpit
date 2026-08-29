@@ -794,10 +794,9 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       if (!featues.length) out(C.dim('  no feature'))
       for (const f of featues) {
         const dot = f.state === 'live' ? C.green('●') : f.state === 'archived' ? C.dim('○') : C.yellow('◐')
-        const cost = f.costUsd > 0 ? C.dim(' · $' + f.costUsd.toFixed(2)) : ''
         const origin = f.derived ? C.dim(' · inferred') : ''
         out('')
-        out('  ' + dot + ' ' + C.bold(f.name) + '  ' + C.dim(f.slug + ' · ' + f.ceremony) + cost + origin)
+        out('  ' + dot + ' ' + C.bold(f.name) + '  ' + C.dim(f.slug + ' · ' + f.ceremony) + origin)
         if (f.rootPath) out('    ' + C.dim(f.rootPath))
         for (const w of workspaces.filter((w) => f.workspaceIds.includes(w.id) && w.kind !== 'group')) {
           out('    ' + workspaceLine(w))
@@ -1076,7 +1075,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
         const mark = s.resumable ? C.green(' ↻') : '  '
         out(
           '  ' + C.dim(s.id.slice(-6)) + mark + ' ' + C.mag(s.engine.padEnd(8)) + s.status.padEnd(9) +
-            C.dim(s.turns + ' turns · $' + s.costUsd.toFixed(2)) + '  ' + C.dim(s.paths.join(', ')),
+            C.dim(s.turns + ' turns') + '  ' + C.dim(s.paths.join(', ')),
         )
         if (s.prompt) out('         ' + C.dim(s.prompt.replace(/\s+/g, ' ').slice(0, 76)))
       }
