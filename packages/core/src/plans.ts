@@ -4,6 +4,7 @@ import { newId } from '@cockpit/shared'
 import type { ApplyResult, PlanPreview, PlanStep } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { defaultBranch, git, probeOperation } from './git.js'
+import * as restore from './restore.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
 import { getWorkspace, requireWorkspace } from './registry.js'
@@ -265,21 +266,6 @@ export function featureRootPath(repoPath: string, featureSlug: string, override?
   return worktreeRoot(repoPath, { featureSlug, override })
 }
 
-/**
- * §16 — a restore point before every risky operation, so undo is backed by
- * something real rather than by hope.
- */
-async function captureRestorePoint(workspaceId: string, cwd: string, reason: string) {
-  const head = (await git(cwd, ['rev-parse', 'HEAD'])).stdout.trim()
-  if (!head) return null
-  const id = newId('rp_')
-  getDb()
-    .prepare('INSERT INTO restore_points (id, workspace_id, ref, head, strategy, reason, created_at) VALUES (?,?,?,?,?,?,?)')
-    .run(id, workspaceId, head, head, 'reflog', reason, Date.now())
-  append({ type: 'git.restore_point', workspaceId, payload: { id, head, strategy: 'reflog', reason } })
-  return { id, head }
-}
-
 export async function apply(planId: string): Promise<ApplyResult> {
   gc()
   const stored = plans.get(planId)
@@ -293,7 +279,7 @@ export async function apply(planId: string): Promise<ApplyResult> {
     for (const wsId of stored.workspaceIds) {
       const ws = requireWorkspace(wsId)
       if (!ws.repo) continue
-      const rp = await captureRestorePoint(wsId, ws.path, stored.operation)
+      const rp = await restore.capture(wsId, ws.path, stored.operation)
       restorePoint ??= rp?.head ?? null
     }
   }

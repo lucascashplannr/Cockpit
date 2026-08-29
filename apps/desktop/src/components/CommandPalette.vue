@@ -11,10 +11,7 @@ import {
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  activateFeature, activeProject, activeWorkspace, addRepoTo, archivedFeatures, client,
-  closeFeature, deleteFeature, guard, landFeature, markResolved, newProject, parkFeature,
-  projectFeatures, rebaseFeature, reopenFeature, resolveConflict,
-  requestPlan, restartCore, selectWorkspace, state, toast,
+  activateFeature, activeProject, activeWorkspace, addRepoTo, archivedFeatures, client, closeFeature, deleteFeature, goTo, guard, landFeature, markResolved, newProject, parkFeature, projectFeatures, rebaseFeature, reopenFeature, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { TabId } from '../core/store.js'
 
@@ -209,7 +206,7 @@ const commands = computed<Item[]>(() => {
       group: 'View',
       icon,
       run: act(() => {
-        state.activeTab = id
+        goTo(id)
       }),
     })
 
@@ -362,7 +359,7 @@ const commands = computed<Item[]>(() => {
       group: 'Agent',
       icon: Sparkles,
       run: act(() => {
-        state.activeTab = 'agent'
+        goTo('agent')
       }),
     })
   }
@@ -455,7 +452,7 @@ const fileItems = computed<Item[]>(() => {
     group: 'Files',
     icon: FileCode,
     run: act(() => {
-      state.activeTab = 'code'
+      goTo('code')
       toast('info', f)
     }),
   }))
@@ -470,7 +467,7 @@ const textItems = computed<Item[]>(() =>
     icon: TextSearch,
     run: act(() => {
       selectWorkspace(h.workspaceId)
-      state.activeTab = 'code'
+      goTo('code')
     }),
   })),
 )

@@ -1,6 +1,7 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
-  AddRepoSource, AgentSession, CockpitEvent, CockpitSettings, CommitPreview, CoreStatus,
+  AddRepoSource, AgentScope, AgentScopePreview, AgentSession, CockpitEvent, CockpitSettings,
+  CommitPreview, CoreStatus,
   DatabasePlan, Feature,
   NewProjectSource, PlanPreview, Project, SeedProposal, Workspace,
 } from '@cockpit/shared'
@@ -47,6 +48,56 @@ const URL = 'ws://127.0.0.1:' + PORT
 
 export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'journal' | 'terminal' | 'ticket'
 
+/**
+ * The four roles, in the order they are used.
+ *
+ *   1. navigate  — projects, repos, worktrees, branches: what you aim at
+ *   2. agent     — the act, working on (1), with the memory as its tool
+ *   3. review    — Diff, Code, Journal: reading what came out of (2)
+ *   4. run       — the runtime and the terminal: seeing it work
+ *
+ * The Agent owns the panel permanently; these are what open beside it.
+ */
+export type ReviewTool = 'diff' | 'code' | 'journal' | 'terminal'
+
+/**
+ * Where the review layer lives is an open question, so it is a switch rather
+ * than a decision — the bench (⌘⇧D) flips between these live. When one wins,
+ * delete the others and collapse `ReviewSurface` onto it.
+ */
+export type ReviewLayout = 'panel' | 'modes' | 'drawer'
+
+export const REVIEW_LAYOUTS: { id: ReviewLayout; label: string; hint: string }[] = [
+  {
+    id: 'panel',
+    label: 'Panel',
+    hint: 'A fourth column, opened on demand. Watch a run and read what it wrote at once.',
+  },
+  {
+    id: 'modes',
+    label: 'Modes',
+    hint: 'One toggle: Work or Review, each with the whole window. Neither is ever cramped.',
+  },
+  {
+    id: 'drawer',
+    label: 'Drawer',
+    hint: 'A resizable drawer under the conversation, the way a terminal panel sits in an editor.',
+  },
+]
+
+const REVIEW_LAYOUT_KEY = 'cockpit.reviewLayout'
+const DRAWER_KEY = 'cockpit.drawerH'
+
+function readReviewLayout(): ReviewLayout {
+  const raw = localStorage.getItem(REVIEW_LAYOUT_KEY)
+  return REVIEW_LAYOUTS.some((l) => l.id === raw) ? (raw as ReviewLayout) : 'panel'
+}
+
+function readDrawerH(): number {
+  const n = Number(localStorage.getItem(DRAWER_KEY))
+  return Number.isFinite(n) && n >= 140 ? n : 320
+}
+
 export const state = reactive({
   connection: 'connecting' as ConnectionState,
   connectionDetail: '' as string,
@@ -60,7 +111,30 @@ export const state = reactive({
 
   activeProjectId: null as string | null,
   activeWorkspaceId: null as string | null,
-  activeTab: 'diff' as TabId,
+  /**
+   * §12 had six peer tabs, which flattened four different roles into one row:
+   * the Agent is the act, Memory is its tool, Diff/Code/Journal are review
+   * after the fact, and the runtime is how you see it run. So there is no
+   * `activeTab` any more — there is what the agent is doing, and what you have
+   * opened beside it.
+   */
+  reviewLayout: readReviewLayout(),
+  reviewOpen: false,
+  reviewTool: 'diff' as ReviewTool,
+  /** `drawer` only: its height in px, dragged and remembered. */
+  drawerH: readDrawerH(),
+  /** §6 — the agent's own tool, over the conversation rather than beside it. */
+  memoryOpen: false,
+  /** The bench that switches `reviewLayout`. Scaffolding; see ReviewBench. */
+  benchOpen: false,
+
+  /**
+   * §7 — the scope the composer is aimed at, and the prompt being written for
+   * it. Held here rather than in the tab so that going to the Diff to check
+   * what changed does not throw away a half-written prompt.
+   */
+  agentScope: null as AgentScope | null,
+  agentDraft: '',
 
   /** The start page. It owns the window on launch and whenever the mark is
    *  clicked; §12's "zero click" target starts from a search field, not from
@@ -185,6 +259,203 @@ export const activeWorkspace = computed(
 export const projectWorkspaces = computed(() =>
   state.workspaces.filter((w) => w.projectId === state.activeProjectId),
 )
+
+/**
+ * The review tools this workspace has, in order — §3.9 drops the Diff on a
+ * folder with no repository, and the strip must not draw a tool that would
+ * open on nothing.
+ */
+export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
+  if (!w) return []
+  const ids: ReviewTool[] = []
+  if (w.git) ids.push('diff')
+  ids.push('code', 'journal', 'terminal')
+  return ids
+}
+
+export const reviewTools = computed(() => reviewToolsFor(activeWorkspace.value))
+
+/**
+ * What ⌘1..⌘n land on, and the only list they read — so a number can never
+ * point at a tool this workspace does not have. ⌘1 is the Agent because the
+ * Agent is what the window is for; the review tools follow it.
+ */
+export const keyTargets = computed<TabId[]>(() =>
+  activeWorkspace.value ? ['agent', ...reviewTools.value] : [],
+)
+
+/**
+ * The one way to say "show me X", from the palette, a keystroke or a badge.
+ * Every layout's rules live here rather than in three components: `memory` is
+ * the agent's tool and opens over the conversation, `agent` is the ground
+ * state and closes whatever is on top of it, and the rest are review.
+ */
+export function goTo(id: TabId): void {
+  if (id === 'agent') {
+    state.reviewOpen = false
+    state.memoryOpen = false
+    return
+  }
+  if (id === 'memory') {
+    state.memoryOpen = true
+    return
+  }
+  if (id === 'ticket') return
+  state.reviewTool = id
+  state.reviewOpen = true
+  state.memoryOpen = false
+}
+
+export function setReviewLayout(id: ReviewLayout): void {
+  state.reviewLayout = id
+  localStorage.setItem(REVIEW_LAYOUT_KEY, id)
+}
+
+export function setDrawerH(px: number): void {
+  state.drawerH = Math.max(140, Math.min(px, window.innerHeight - 260))
+  localStorage.setItem(DRAWER_KEY, String(state.drawerH))
+}
+
+/** §12's "where am I" for the Agent: the sessions still costing money. */
+export const liveSessions = computed(() =>
+  state.agents.filter((s) => s.status !== 'ended' && s.status !== 'failed'),
+)
+
+/* ── agents (§7) ────────────────────────────────────────────────────────
+ * The scope is the whole idea: a session says what it is *for* — a feature,
+ * a project, one checkout, one folder — and the core turns that into the paths
+ * the lease is taken on. What the window has to do is offer those four and
+ * never the checkbox soup that came before, where "an agent on this feature"
+ * and "an agent on this repo" were the same control with different boxes
+ * ticked, and nothing afterwards could tell you which you had run.
+ */
+
+export interface ScopeOption {
+  /** Stable across re-renders, so the segmented control keeps its selection. */
+  key: string
+  scope: AgentScope
+  label: string
+  /** What it resolves to, in words: the feature's name, the repo count. */
+  detail: string
+}
+
+export function scopeKey(scope: AgentScope): string {
+  switch (scope.kind) {
+    case 'feature':
+      return 'feature:' + scope.featureId
+    case 'project':
+      return 'project:' + scope.projectId
+    case 'folder':
+      return 'folder:' + scope.workspaceId + ':' + scope.subpath
+    default:
+      return 'workspace:' + scope.workspaceId
+  }
+}
+
+export function sameScope(a: AgentScope | null, b: AgentScope | null): boolean {
+  return !!a && !!b && scopeKey(a) === scopeKey(b)
+}
+
+/**
+ * The levels this workspace can be the starting point for, widest first.
+ *
+ * A folder-level scope is not offered as a preset — it needs a subpath typed —
+ * so it is added by the composer once there is one.
+ */
+export const agentScopeOptions = computed<ScopeOption[]>(() => {
+  const w = activeWorkspace.value
+  if (!w) return []
+  const out: ScopeOption[] = []
+
+  const project = state.projects.find((p) => p.id === w.projectId)
+  if (project) {
+    const repos = state.workspaces.filter((x) => x.projectId === project.id && x.kind === 'main')
+    out.push({
+      key: scopeKey({ kind: 'project', projectId: project.id }),
+      scope: { kind: 'project', projectId: project.id },
+      label: 'Project',
+      detail:
+        project.name +
+        ' — ' +
+        (repos.length || 1) +
+        ' repo' +
+        (repos.length === 1 ? '' : 's') +
+        ', on main',
+    })
+  }
+
+  const feature = state.features.find((f) => f.id === w.featureId)
+  if (feature) {
+    const n = state.workspaces.filter((x) => x.featureId === feature.id && x.kind !== 'group').length
+    out.push({
+      key: scopeKey({ kind: 'feature', featureId: feature.id }),
+      scope: { kind: 'feature', featureId: feature.id },
+      label: 'Feature',
+      detail: feature.name + ' — ' + n + ' worktree' + (n === 1 ? '' : 's') + ', with its memory',
+    })
+  }
+
+  out.push({
+    key: scopeKey({ kind: 'workspace', workspaceId: w.id }),
+    scope: { kind: 'workspace', workspaceId: w.id },
+    label: w.repo ? 'This repo' : 'This folder',
+    detail: w.name + (w.git?.branch ? ' — ' + w.git.branch : ''),
+  })
+
+  return out
+})
+
+/** The selection, or the narrowest scope — the safest thing to default to. */
+export const activeAgentScope = computed<AgentScope | null>(() => {
+  const options = agentScopeOptions.value
+  const chosen = state.agentScope
+  if (chosen && options.some((o) => sameScope(o.scope, chosen))) return chosen
+  // A folder scope is never in the presets; it is still a real selection.
+  if (chosen?.kind === 'folder') return chosen
+  return options[options.length - 1]?.scope ?? null
+})
+
+/** §7 — what a scope would do, before it is asked to do it. */
+export async function previewScope(scope: AgentScope): Promise<AgentScopePreview | null> {
+  try {
+    return await client.call('agent.preview', { scope })
+  } catch {
+    // A core that does not speak this yet is not an error worth a toast: the
+    // composer simply shows no preview and the start call still answers.
+    return null
+  }
+}
+
+/** Every conversation ever run against this exact scope, newest first. */
+export function sessionsForScope(scope: AgentScope | null): AgentSession[] {
+  if (!scope) return []
+  const key = scopeKey(scope)
+  return state.agents.filter((s) => scopeKey(s.scope) === key)
+}
+
+export async function startAgentIn(
+  engine: string,
+  scope: AgentScope,
+  prompt: string,
+): Promise<boolean> {
+  const res = await guard(() => client.call('agent.start', { engine, scope, prompt }))
+  if (!res) return false
+  if ('denied' in res) {
+    // §7 — a refusal explains itself; a silent no is worse than a blocked run.
+    toast('error', res.reason)
+    return false
+  }
+  state.agentDraft = ''
+  // §4 — say that the anchor exists, or capturing it was pointless.
+  toast(
+    'ok',
+    res.restorePoints.length
+      ? 'session started · restore point ' + res.restorePoints[0]!.head.slice(0, 8)
+      : 'session started',
+  )
+  return true
+}
+
 
 /**
  * §12 — "La liste centrale liste des workspaces, groupés par feature quand une

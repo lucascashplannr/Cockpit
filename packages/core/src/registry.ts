@@ -596,7 +596,10 @@ export async function probeWorkspace(id: string): Promise<Workspace> {
   ws.runtime = await runtimeStateFor(ws)
   ws.lease = leaseCovering(ws.path)
   ws.agentSessions = sessionsTouching(ws.path).map((s) => s.id)
-  ws.hasMemory = existsSync(join(ws.path, '.cockpit', 'memory.md'))
+  // §6 — the feature's memory when there is one, so this agrees with what
+  // `memory.read` returns and what the agent is actually handed.
+  const memRoot = ws.featureId ? (getFeature(ws.featureId)?.rootPath ?? ws.path) : ws.path
+  ws.hasMemory = existsSync(join(memRoot, '.cockpit', 'memory.md'))
   ws.lastProbedAt = Date.now()
   workspaces.set(id, ws)
   return ws

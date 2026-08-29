@@ -6,12 +6,46 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentSession, AgentSessionFile, CockpitSettings, CommitPreview, CoreStatus,
+  AddRepoSource, AgentScope, AgentSession, AgentSessionFile, CockpitSettings, CommitPreview,
+  CoreStatus,
   DatabasePlan,
   DiffFile, Feature,
   FileDiff, GitOperation, MemoryDoc, NewProjectSource, Project, SearchHit, SeedProposal,
   Workspace,
 } from './model.js'
+
+/**
+ * §7 — starting is allowed to refuse, and a refusal that does not say what to
+ * do instead is a dead end. `remedy` is the offer the window can act on.
+ */
+export type AgentStartResult =
+  | { sessionId: string; restorePoints: { workspaceId: string; head: string }[] }
+  | { denied: true; reason: string; remedy?: { kind: 'branch'; workspaceIds: string[] } }
+
+/** One path a scope resolves to, and what running there would mean. */
+export interface AgentScopePath {
+  workspaceId: string
+  name: string
+  path: string
+  /** Null for a folder with no repository at all (§7, last row of the table). */
+  branch: string | null
+  kind: string
+  /** On its repository's default branch: allowed, but a restore point first. */
+  onProtectedBranch: boolean
+  /** Held by another session; this scope cannot start until it is released. */
+  leasedBy: string | null
+}
+
+/** What `agent.start` would do with this scope, before it is asked to do it. */
+export interface AgentScopePreview {
+  scope: AgentScope
+  label: string
+  paths: AgentScopePath[]
+  /** Non-empty when a lease already covers part of the scope: start will refuse. */
+  blocked: string[]
+  /** Whether a feature memory / cross-repo CONTEXT.md will be prepended (§6). */
+  preamble: { memory: boolean; context: boolean }
+}
 
 /** The outcome of acting on a conflict — always carrying the state after. */
 export interface GitResolveResult {
@@ -384,16 +418,33 @@ export interface Rpc {
   'ports.map': { params: void; result: { port: number; owner: string; name: string }[] }
 
   'agent.engines': { params: void; result: { id: string; available: boolean; bin: string }[] }
+  /**
+   * §7 — the scope says what the session is for; the core resolves it to the
+   * paths the lease is taken on. `workspaceIds` is still accepted for a caller
+   * that only knows where it is standing, and is read as a workspace scope.
+   */
   'agent.start': {
     params: {
       engine: string
-      workspaceIds: string[]
+      scope?: AgentScope
+      /** Legacy form: one or more workspaces, read as `{ kind: 'workspace' }`. */
+      workspaceIds?: string[]
       prompt: string
       ceremony?: string
       /** Scopes the session to a feature: its memory and CONTEXT.md are prepended. */
       featureId?: string
     }
-    result: { sessionId: string } | { denied: true; reason: string }
+    result: AgentStartResult
+  }
+  /**
+   * §7 — what a scope would actually do, before it is asked to do it: which
+   * paths, which of them are on a protected branch, and what the lease would
+   * collide with. The window shows this under the composer so a refusal never
+   * arrives after the prompt has been written.
+   */
+  'agent.preview': {
+    params: { scope: AgentScope }
+    result: AgentScopePreview
   }
   /**
    * §6 — the session is disposable, the memory is not. Resuming hands the
@@ -402,7 +453,7 @@ export interface Rpc {
    */
   'agent.resume': {
     params: { sessionId: string; prompt: string }
-    result: { sessionId: string } | { denied: true; reason: string }
+    result: AgentStartResult
   }
   'agent.list': { params: void; result: AgentSession[] }
   'agent.stop': { params: { sessionId: string }; result: { ok: true } }

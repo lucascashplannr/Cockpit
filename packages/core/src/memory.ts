@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentSessionFile, MemoryDoc } from '@cockpit/shared'
-import { requireWorkspace } from './registry.js'
+import { getFeature, requireWorkspace } from './registry.js'
 import { append } from './journal.js'
 
 /**
@@ -38,6 +38,27 @@ function cockpitDir(wsPath: string): string {
   return join(wsPath, '.cockpit')
 }
 
+/**
+ * §6 is titled "la mémoire **de feature**", and that is the whole point: the
+ * understanding belongs to the work, not to one of the checkouts the work
+ * happens to span. So a workspace inside a feature reads and writes the
+ * feature's memory, at the feature root — the same file `promptPreamble`
+ * prepends to every run.
+ *
+ * This used to resolve to `ws.path` unconditionally, which meant the Memory
+ * tool edited `<worktree>/.cockpit/memory.md` while the agent read
+ * `<feature-root>/.cockpit/memory.md`. Two files, one name, and anything
+ * promoted from a feature worktree was never seen by the agent running on it.
+ *
+ * Outside a feature — a bare repo, a scratch folder — the workspace is the
+ * unit of work and its own path is the right answer.
+ */
+function memoryRoot(workspaceId: string): string {
+  const ws = requireWorkspace(workspaceId)
+  if (!ws.featureId) return ws.path
+  return getFeature(ws.featureId)?.rootPath ?? ws.path
+}
+
 export function memoryPath(wsPath: string): string {
   return join(cockpitDir(wsPath), 'memory.md')
 }
@@ -63,8 +84,7 @@ function parseSections(content: string): { title: string; body: string }[] {
 }
 
 export function read(workspaceId: string): MemoryDoc | null {
-  const ws = requireWorkspace(workspaceId)
-  const p = memoryPath(ws.path)
+  const p = memoryPath(memoryRoot(workspaceId))
   if (!existsSync(p)) return null
   const content = readFileSync(p, 'utf8')
   return {
@@ -76,10 +96,10 @@ export function read(workspaceId: string): MemoryDoc | null {
 }
 
 export function ensure(workspaceId: string): MemoryDoc {
-  const ws = requireWorkspace(workspaceId)
-  const p = memoryPath(ws.path)
+  const root = memoryRoot(workspaceId)
+  const p = memoryPath(root)
   if (!existsSync(p)) {
-    mkdirSync(cockpitDir(ws.path), { recursive: true })
+    mkdirSync(cockpitDir(root), { recursive: true })
     writeFileSync(p, TEMPLATE, 'utf8')
     append({ type: 'memory.written', workspaceId, payload: { path: p, created: true } })
   }
@@ -88,8 +108,9 @@ export function ensure(workspaceId: string): MemoryDoc {
 
 export function write(workspaceId: string, content: string): void {
   const ws = requireWorkspace(workspaceId)
-  mkdirSync(cockpitDir(ws.path), { recursive: true })
-  writeFileSync(memoryPath(ws.path), content, 'utf8')
+  const root = memoryRoot(workspaceId)
+  mkdirSync(cockpitDir(root), { recursive: true })
+  writeFileSync(memoryPath(root), content, 'utf8')
   ws.hasMemory = true
   append({ type: 'memory.written', workspaceId, payload: { bytes: content.length } })
 }

@@ -302,6 +302,48 @@ export interface LeaseInfo {
   reason: string
 }
 
+/**
+ * §7 — what a session is *for*.
+ *
+ * The doc's scope table is four rows, and until now the code had none of them:
+ * a session was a bag of `workspaceIds` with a `featureId` bolted on the side,
+ * so "an agent on this feature" and "an agent on this repo" were the same call
+ * with different checkboxes ticked, and nothing downstream could tell them
+ * apart. The scope is what the window, the journal and the preamble read.
+ *
+ * The **lease is still taken on paths and never on this** (§7: "le verrou porte
+ * sur des chemins, jamais sur des features"), which is what makes a feature
+ * agent and a repo agent inside it collide exactly as they should.
+ */
+export type AgentScope =
+  /** Every worktree the feature spans, with its memory and CONTEXT.md (§6). */
+  | { kind: 'feature'; featureId: string }
+  /** Every repository in the project, at its main checkout (§7, C0). */
+  | { kind: 'project'; projectId: string }
+  /** One checkout — a worktree, or a main, or a folder with no repo at all. */
+  | { kind: 'workspace'; workspaceId: string }
+  /** One subtree of one checkout, for when the blast radius should be smaller. */
+  | { kind: 'folder'; workspaceId: string; subpath: string }
+
+/**
+ * §6 — one exchange in a conversation.
+ *
+ * A session used to carry a single `prompt` column that `agent.resume`
+ * overwrote, so the opening question was destroyed the first time the work was
+ * picked back up: exactly the state in which nobody can tell what a session was
+ * ever for. Turns are append-only; the session's `title` is turn 1 and never
+ * moves.
+ */
+export interface AgentTurn {
+  id: string
+  seq: number
+  prompt: string
+  startedAt: number
+  endedAt: number | null
+  costUsd: number
+  status: 'running' | 'done' | 'failed'
+}
+
 export interface AgentSession {
   id: string
   engine: string
@@ -325,6 +367,12 @@ export interface AgentSession {
   resumable: boolean
   /** The opening prompt, kept so a resumed session is recognisable in a list. */
   prompt: string
+  /** §7 — what this session is for. Resolved to `paths` at launch. */
+  scope: AgentScope
+  /** Turn 1's prompt, frozen: what the conversation is called, forever. */
+  title: string
+  /** §6 — every turn, oldest first. Append-only; a resume adds, never replaces. */
+  history: AgentTurn[]
 }
 
 export interface DiffFile {

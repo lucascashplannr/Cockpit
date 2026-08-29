@@ -2,7 +2,7 @@ import { resolve } from 'node:path'
 import { WebSocketServer, WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@cockpit/shared'
 import type {
-  CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse, ServerPush,
+  AgentScope, CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse, ServerPush,
 } from '@cockpit/shared'
 import { DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, tail } from './journal.js'
@@ -25,6 +25,8 @@ import * as runtime from './runtime/index.js'
 import * as supervisor from './supervisor.js'
 import { portMap } from './ports.js'
 import { defaultBranch } from './git.js'
+import * as restore from './restore.js'
+import * as scope from './scope.js'
 import { readManifest } from './detect.js'
 import { run } from './exec.js'
 import { termBus } from './terminals.js'
@@ -404,36 +406,54 @@ const handlers: Record<string, Handler> = {
   'ports.map': () => portMap(),
 
   'agent.engines': () => agents.engines(),
+  'agent.preview': (p: { scope: AgentScope }) => scope.preview(p.scope),
+
   'agent.start': async (p: {
     engine: string
-    workspaceIds: string[]
+    scope?: AgentScope
+    workspaceIds?: string[]
     prompt: string
     featureId?: string
   }) => {
-    const wss = p.workspaceIds.map((id) => registry.requireWorkspace(id))
-    const first = wss[0]
-    if (!first) throw new Error('no workspace given')
-    const protectedBranch = first.repo ? await defaultBranch(first.path) : null
-    // Explicit, or the one the scope already sits in — a session started from
-    // inside a feature should not have to be told which feature it is in.
-    const featureId = p.featureId ?? first.featureId ?? null
-    const paths = wss.map((w) => w.path)
+    // §7 — the scope says what this is for. A caller that only knows where it
+    // is standing may still pass workspaces, and that reads as a workspace
+    // scope; more than one of them is a scope nothing can name, so it keeps
+    // the first and the rest come along as paths under it.
+    const requested: AgentScope =
+      p.scope ??
+      (p.featureId
+        ? { kind: 'feature', featureId: p.featureId }
+        : { kind: 'workspace', workspaceId: p.workspaceIds?.[0] ?? '' })
+    const r = scope.resolveScope(requested)
+    if (!r.paths.length) {
+      return { denied: true as const, reason: 'this scope resolves to no path to run in' }
+    }
+
+    // §4 — "un point de restauration est capturé avant toute écriture d'agent",
+    // and C0 on the main checkout is where there is most to lose. One anchor
+    // per repository in scope: a two-repo run that goes wrong needs two.
+    const restorePoints: { workspaceId: string; head: string }[] = []
+    for (const w of r.workspaces) {
+      if (!w.repo) continue
+      const rp = await restore.capture(w.id, w.path, 'agent:' + requested.kind + ' — ' + r.label)
+      if (rp) restorePoints.push({ workspaceId: w.id, head: rp.head })
+    }
+
     const res = agents.startAgent({
       engine: p.engine,
-      workspaceIds: p.workspaceIds,
-      paths,
+      scope: requested,
+      workspaceIds: r.workspaces.map((w) => w.id),
+      paths: r.paths,
       prompt: p.prompt,
-      protectedBranch,
-      currentBranch: first.git?.branch ?? null,
-      featureId,
-      preamble: featureId ? features.promptPreamble(featureId, paths) : '',
+      featureId: r.featureId,
+      preamble: r.featureId ? features.promptPreamble(r.featureId, r.paths) : '',
       // §5 + §16 — the manifest already has a place to widen the allow-list;
       // absent, the built-in one applies.
-      allow: allowFor(first.projectId),
+      allow: allowFor(r.workspaces[0]?.projectId),
     })
     pushAgents()
     pushWorkspaces()
-    return res
+    return 'denied' in res ? res : { ...res, restorePoints }
   },
   'agent.resume': (p: { sessionId: string; prompt: string }) => {
     const prev = agents.get(p.sessionId)
@@ -448,7 +468,7 @@ const handlers: Record<string, Handler> = {
     )
     pushAgents()
     pushWorkspaces()
-    return res
+    return 'denied' in res ? res : { ...res, restorePoints: [] }
   },
   'agent.list': () => agents.list(),
   'agent.stop': (p: { sessionId: string }) => {

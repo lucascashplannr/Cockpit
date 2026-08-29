@@ -1,60 +1,53 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { Component } from 'vue'
+import { computed, ref } from 'vue'
 import {
-  ArrowDown, ArrowUp, BookMarked, FileCode, FileDiff, GitBranch, GitCompareArrows,
-  MousePointerClick, Plug, ScrollText, Sparkles, SquareTerminal,
+  ArrowDown, ArrowUp, FileDiff, GitBranch, MousePointerClick, PanelRight, Plug,
 } from '@lucide/vue'
-import CodeTab from './tabs/CodeTab.vue'
-import DiffTab from './tabs/DiffTab.vue'
 import AgentTab from './tabs/AgentTab.vue'
-import MemoryTab from './tabs/MemoryTab.vue'
-import JournalTab from './tabs/JournalTab.vue'
-import TerminalTab from './tabs/TerminalTab.vue'
+import ReviewTools from './ReviewTools.vue'
 import ConflictPanel from './ConflictPanel.vue'
 import Wordmark from './brand/Wordmark.vue'
-import { activeWorkspace, has, state } from '../core/store.js'
-import type { TabId } from '../core/store.js'
+import { activeWorkspace, goTo, setDrawerH, state } from '../core/store.js'
+
+/**
+ * The third column, and the four roles in the order they are used (§12,
+ * rewritten):
+ *
+ *   1. navigate — the rail and the list to the left, and the scope bar the
+ *                 Agent carries: project, feature, repo, folder.
+ *   2. agent    — this column. Permanently. It is what the window is for.
+ *   3. review   — Diff / Code / Journal / Terminal, opened beside it. Three
+ *                 candidate placements, switched by the bench (⌘⇧D).
+ *   4. run      — the runtime verbs, in the title band above.
+ *
+ * They used to be six peer tabs, which said all four were the same kind of
+ * thing. They are not: one of them is the act and the rest are its instruments.
+ */
 
 const w = computed(() => activeWorkspace.value)
-
-interface Tab {
-  id: TabId
-  label: string
-  icon: Component
-  badge?: number | string
-}
-
-/** §3.9 / §5 — a tab whose capability is absent is not rendered at all. */
-const tabs = computed<Tab[]>(() => {
-  const ws = w.value
-  if (!ws) return []
-  const list: Tab[] = [{ id: 'code', label: 'Code', icon: FileCode }]
-
-  if (ws.git) {
-    const changed = ws.git.staged + ws.git.unstaged + ws.git.untracked
-    list.push({ id: 'diff', label: 'Diff', icon: GitCompareArrows, badge: changed || undefined })
-  }
-  if (has(ws, 'agents') || state.agents.length || true) {
-    // Agents are available wherever a path is, including a repo-less folder (§7).
-    list.push({
-      id: 'agent',
-      label: 'Agent',
-      icon: Sparkles,
-      badge: ws.agentSessions.length || undefined,
-    })
-  }
-  list.push({ id: 'memory', label: 'Memory', icon: BookMarked, badge: ws.hasMemory ? '·' : undefined })
-  list.push({ id: 'journal', label: 'Journal', icon: ScrollText })
-  list.push({ id: 'terminal', label: 'Terminal', icon: SquareTerminal })
-  return list
-})
 
 const changed = computed(() => {
   const g = w.value?.git
   return g ? g.staged + g.unstaged + g.untracked : 0
 })
 
+/* ── the drawer's drag handle ──────────────────────────────────────────── */
+const dragging = ref(false)
+
+function startDrag(e: PointerEvent): void {
+  dragging.value = true
+  const el = e.currentTarget as HTMLElement
+  el.setPointerCapture(e.pointerId)
+  const move = (ev: PointerEvent) => setDrawerH(window.innerHeight - ev.clientY)
+  const up = (ev: PointerEvent) => {
+    dragging.value = false
+    el.releasePointerCapture(ev.pointerId)
+    el.removeEventListener('pointermove', move)
+    el.removeEventListener('pointerup', up)
+  }
+  el.addEventListener('pointermove', move)
+  el.addEventListener('pointerup', up)
+}
 </script>
 
 <template>
@@ -71,9 +64,8 @@ const changed = computed(() => {
 
     <template v-else>
       <header class="head">
-        <!-- The name and the verbs for this workspace are in the title band
-             (WorkspaceTitle / WorkspaceActions); this column carries its state.
-             One status strip: git, runtime, agent, cost. §12's summary row. -->
+        <!-- Layer 1's state line: where this is, what has moved, what is up.
+             The verbs that act on it are in the title band (WorkspaceActions). -->
         <div class="status">
           <template v-if="w.git">
             <span class="stat">
@@ -86,10 +78,16 @@ const changed = computed(() => {
                 <span :class="{ warn: w.git.behind }"><ArrowDown class="sm" />{{ w.git.behind }}</span>
               </span>
             </span>
-            <span class="stat num" :title="changed + ' uncommitted change(s)'">
+            <!-- The count is the way into the review layer: what changed is
+                 the reason you would open it at all. -->
+            <button
+              class="stat num act"
+              :title="changed + ' uncommitted change(s) — open the diff'"
+              @click="goTo('diff')"
+            >
               <FileDiff class="sm si" />
               <span class="v" :class="{ warn: changed }">{{ changed }}</span>
-            </span>
+            </button>
           </template>
 
           <span v-if="w.runtime" class="stat">
@@ -112,36 +110,60 @@ const changed = computed(() => {
           <span v-if="w.lease" class="chip warn" :title="w.lease.reason">leased</span>
 
           <span class="grow" />
+
+          <!-- `modes` is a switch between two whole screens; the other two open
+               a surface beside the conversation and leave it where it is. -->
+          <div v-if="state.reviewLayout === 'modes'" class="seg modes">
+            <button :class="{ on: !state.reviewOpen }" @click="state.reviewOpen = false">Work</button>
+            <button :class="{ on: state.reviewOpen }" @click="state.reviewOpen = true">
+              Review
+              <span v-if="changed" class="tbadge num">{{ changed }}</span>
+            </button>
+          </div>
+          <button
+            v-else
+            class="btn ghost rev"
+            :class="{ on: state.reviewOpen }"
+            :title="state.reviewLayout === 'drawer' ? 'Review drawer' : 'Review panel'"
+            @click="state.reviewOpen = !state.reviewOpen"
+          >
+            <PanelRight class="sm" />
+            Review
+            <span v-if="changed" class="tbadge num">{{ changed }}</span>
+          </button>
+
           <span class="path mono" :title="w.path">{{ w.path }}</span>
         </div>
       </header>
 
-      <!-- §3.7 — above the tabs on purpose: while a rebase is stopped, nothing
-           in those tabs is the next thing to do. Absent otherwise (§3.9). -->
+      <!-- §3.7 — above everything on purpose: while a rebase is stopped, none
+           of what is below is the next thing to do. Absent otherwise (§3.9). -->
       <ConflictPanel />
 
-      <nav class="tabs">
-        <button
-          v-for="t in tabs"
-          :key="t.id"
-          class="tab"
-          :class="{ on: state.activeTab === t.id }"
-          @click="state.activeTab = t.id"
-        >
-          <component :is="t.icon" class="sm" />
-          <span>{{ t.label }}</span>
-          <span v-if="t.badge !== undefined" class="tbadge num">{{ t.badge }}</span>
-        </button>
-      </nav>
-
-      <div class="body">
-        <CodeTab v-if="state.activeTab === 'code'" :workspace="w" />
-        <DiffTab v-else-if="state.activeTab === 'diff'" :workspace="w" />
-        <AgentTab v-else-if="state.activeTab === 'agent'" :workspace="w" />
-        <MemoryTab v-else-if="state.activeTab === 'memory'" :workspace="w" />
-        <JournalTab v-else-if="state.activeTab === 'journal'" :workspace="w" />
-        <TerminalTab v-else-if="state.activeTab === 'terminal'" :workspace="w" />
+      <!-- `modes`: the review layer takes the whole column instead. -->
+      <div v-if="state.reviewLayout === 'modes' && state.reviewOpen" class="body">
+        <ReviewTools :workspace="w" />
       </div>
+
+      <template v-else>
+        <div class="body">
+          <AgentTab :workspace="w" />
+        </div>
+
+        <!-- `drawer`: under the conversation, dragged to size, the way a
+             terminal panel sits in an editor. -->
+        <template v-if="state.reviewLayout === 'drawer' && state.reviewOpen">
+          <div
+            class="handle"
+            :class="{ dragging }"
+            title="Drag to resize"
+            @pointerdown.prevent="startDrag"
+          />
+          <div class="drawer" :style="{ height: state.drawerH + 'px' }">
+            <ReviewTools :workspace="w" closable />
+          </div>
+        </template>
+      </template>
     </template>
   </section>
 </template>
@@ -193,14 +215,14 @@ const changed = computed(() => {
 .grow { flex: 1; }
 .path {
   flex: none;
-  margin-left: 4px;
+  margin-left: 10px;
   color: var(--text-dim);
   font-size: var(--fs-xs);
   /* Truncate from the left; `plaintext` keeps the string itself in reading
      order, which bare `rtl` does not — it moves the leading slash to the end. */
   direction: rtl;
   unicode-bidi: plaintext;
-  max-width: 45%;
+  max-width: 30%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -236,45 +258,21 @@ const changed = computed(() => {
 .sync span.on { color: var(--ok); }
 .sync span.warn { color: var(--warn); }
 
-/* ── tabs ────────────────────────────────────────────────────────────── */
-.tabs {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 18px;
-  border-bottom: 1px solid var(--line);
-}
-.tab {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 38px;
-  padding: 0 11px;
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  color: var(--text-dim);
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
-}
-.tab:hover { color: var(--text-muted); background: var(--hover); }
-.tab.on { color: var(--text); background: transparent; }
-.tab.on::after {
-  content: '';
-  position: absolute;
-  left: 9px;
-  right: 9px;
-  bottom: -1px;
-  height: 2px;
-  border-radius: 2px 2px 0 0;
-  background: var(--accent);
-}
+/* ── the way into layer 3 ────────────────────────────────────────────── */
+/* The changed count is a button, because it is the reason you would open the
+   review layer at all: what moved is what there is to read. */
+.stat.act { cursor: pointer; }
+.stat.act:hover { background: var(--active); }
+
+.seg.modes { flex: none; height: 26px; }
+.seg.modes > button { height: 22px; font-size: var(--fs-xs); gap: 6px; }
+.btn.ghost.rev { flex: none; height: 26px; padding: 0 10px; font-size: var(--fs-xs); gap: 6px; }
+.btn.ghost.rev.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .tbadge {
-  font-size: 11px;
+  font-size: 10px;
   padding: 0 5px;
-  height: 17px;
-  min-width: 17px;
+  height: 16px;
+  min-width: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -282,7 +280,24 @@ const changed = computed(() => {
   background: var(--hover);
   color: var(--text-muted);
 }
-.tab.on .tbadge { background: var(--accent-soft); color: var(--accent); }
+.on .tbadge { background: var(--accent-soft); color: var(--accent); }
+
+/* ── the drawer ──────────────────────────────────────────────────────── */
+/* 5px of grab area for a 1px line: a hairline is the right thing to see and
+   the wrong thing to aim at. */
+.handle {
+  flex: none;
+  height: 5px;
+  cursor: ns-resize;
+  background: var(--line);
+  background-clip: content-box;
+  border-top: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  touch-action: none;
+}
+.handle:hover, .handle.dragging { background: var(--accent); }
+
+.drawer { flex: none; min-height: 0; overflow: hidden; }
 
 .body { flex: 1; min-height: 0; overflow: hidden; }
 </style>

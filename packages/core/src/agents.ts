@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
 import { newId } from '@cockpit/shared'
-import type { AgentSession } from '@cockpit/shared'
+import type { AgentScope, AgentSession, AgentTurn } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { append, recordTouch } from './journal.js'
 import { which } from './exec.js'
@@ -215,11 +215,12 @@ agentBus.setMaxListeners(50)
 function persist(s: AgentSession): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, cost_usd, turns, lease_id, last_message, feature_id, engine_session_id, prompt)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, cost_usd, turns, lease_id, last_message, feature_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET status=excluded.status, ended_at=excluded.ended_at,
          cost_usd=excluded.cost_usd, turns=excluded.turns, last_message=excluded.last_message,
-         lease_id=excluded.lease_id, engine_session_id=excluded.engine_session_id`,
+         lease_id=excluded.lease_id, engine_session_id=excluded.engine_session_id,
+         prompt=excluded.prompt`,
     )
     .run(
       s.id,
@@ -236,7 +237,86 @@ function persist(s: AgentSession): void {
       s.featureId,
       s.engineSessionId,
       s.prompt,
+      s.scope.kind,
+      scopeId(s.scope),
+      s.scope.kind === 'folder' ? s.scope.subpath : null,
+      // Frozen at turn 1: `prompt` moves with the conversation, this does not.
+      s.title,
     )
+}
+
+function scopeId(scope: AgentScope): string {
+  switch (scope.kind) {
+    case 'feature':
+      return scope.featureId
+    case 'project':
+      return scope.projectId
+    default:
+      return scope.workspaceId
+  }
+}
+
+function readScope(r: Record<string, unknown>): AgentScope {
+  const id = String(r.scope_id ?? '')
+  switch (String(r.scope_kind ?? 'workspace')) {
+    case 'feature':
+      return { kind: 'feature', featureId: id }
+    case 'project':
+      return { kind: 'project', projectId: id }
+    case 'folder':
+      return { kind: 'folder', workspaceId: id, subpath: String(r.scope_subpath ?? '') }
+    default:
+      return { kind: 'workspace', workspaceId: id }
+  }
+}
+
+/* ── the conversation (§6) ───────────────────────────────────────────────
+ * Append-only. `agent.resume` used to overwrite the session's single `prompt`
+ * column, which destroyed the opening question the first time work was picked
+ * back up — the exact state in which a session can no longer be told apart
+ * from any other in the list.
+ */
+
+export function turnsOf(sessionId: string): AgentTurn[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM agent_turns WHERE session_id = ? ORDER BY seq ASC')
+    .all(sessionId) as Record<string, unknown>[]
+  return rows.map((r) => ({
+    id: String(r.id),
+    seq: Number(r.seq),
+    prompt: String(r.prompt),
+    startedAt: Number(r.started_at),
+    endedAt: r.ended_at === null ? null : Number(r.ended_at),
+    costUsd: Number(r.cost_usd ?? 0),
+    status: String(r.status) as AgentTurn['status'],
+  }))
+}
+
+function openTurn(sessionId: string, prompt: string): void {
+  const seq =
+    Number(
+      (
+        getDb()
+          .prepare('SELECT MAX(seq) AS n FROM agent_turns WHERE session_id = ?')
+          .get(sessionId) as { n: number | null }
+      ).n ?? 0,
+    ) + 1
+  getDb()
+    .prepare(
+      'INSERT INTO agent_turns (id, session_id, seq, prompt, started_at, ended_at, cost_usd, status) VALUES (?,?,?,?,?,?,?,?)',
+    )
+    .run(newId('turn_'), sessionId, seq, prompt, Date.now(), null, 0, 'running')
+}
+
+/** The cost of a turn is what the session gained while it was the open one. */
+function closeTurn(sessionId: string, status: AgentTurn['status'], costUsd: number): void {
+  const row = getDb()
+    .prepare("SELECT id FROM agent_turns WHERE session_id = ? AND status = 'running' ORDER BY seq DESC LIMIT 1")
+    .get(sessionId) as { id: string } | undefined
+  if (!row) return
+  getDb()
+    .prepare('UPDATE agent_turns SET ended_at = ?, status = ?, cost_usd = ? WHERE id = ?')
+    .run(Date.now(), status, costUsd, row.id)
 }
 
 function hydrate(r: Record<string, unknown>): AgentSession {
@@ -260,6 +340,9 @@ function hydrate(r: Record<string, unknown>): AgentSession {
     // holds the conversation, picking it back up tomorrow is one click.
     resumable: !!engineSessionId && (status === 'ended' || status === 'failed'),
     prompt: r.prompt == null ? '' : String(r.prompt),
+    scope: readScope(r),
+    title: r.title == null || String(r.title) === '' ? String(r.prompt ?? '') : String(r.title),
+    history: turnsOf(String(r.id)),
   }
 }
 
@@ -297,12 +380,11 @@ export function sessionsTouching(path: string): AgentSession[] {
 
 export interface StartAgentInput {
   engine: string
+  /** §7 — what the session is for. `paths` is this, resolved by the caller. */
+  scope: AgentScope
   workspaceIds: string[]
   paths: string[]
   prompt: string
-  /** Branch the agent must never touch (§7, "jamais sur la branche principale"). */
-  protectedBranch?: string | null
-  currentBranch?: string | null
   /** §4 — the feature this session belongs to, when it belongs to one. */
   featureId?: string | null
   /**
@@ -316,24 +398,18 @@ export interface StartAgentInput {
 
 export type StartAgentResult = { sessionId: string } | { denied: true; reason: string }
 
+/**
+ * §4 — the main checkout is a workspace of full standing, not a degraded case,
+ * and "yolo sur le checkout principal" is the first row of §7's scope table.
+ * So this no longer refuses there: what §4 actually requires of C0 is that the
+ * traceability is not relaxed, and the caller captures a restore point on every
+ * repository in scope before this is reached. The refusals that remain are the
+ * ones that protect something a restore point cannot: an overlapping lease,
+ * and an engine that is not installed.
+ */
 export function startAgent(input: StartAgentInput): StartAgentResult {
   const spec = ENGINES[input.engine]
   if (!spec) return { denied: true, reason: 'unknown engine: ' + input.engine }
-
-  // §7 — never on the main branch, at any ceremony level.
-  if (
-    input.protectedBranch &&
-    input.currentBranch &&
-    input.protectedBranch === input.currentBranch
-  ) {
-    return {
-      denied: true,
-      reason:
-        'refusing to run an agent on the protected branch "' +
-        input.protectedBranch +
-        '". Create a branch first (C1) or pick another workspace.',
-    }
-  }
 
   const session: AgentSession = {
     id: newId('agent_'),
@@ -351,6 +427,9 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
     engineSessionId: null,
     resumable: false,
     prompt: input.prompt,
+    scope: input.scope,
+    title: input.prompt.slice(0, 200),
+    history: [],
   }
 
   return launch(session, spec, (input.preamble ?? '') + input.prompt, false, input.allow)
@@ -381,6 +460,9 @@ export function resumeAgent(
   const spec = ENGINES[prev.engine]
   if (!spec) return { denied: true, reason: 'unknown engine: ' + prev.engine }
 
+  // `prompt` is the turn in flight; `title` is turn 1 and never moves. Before
+  // turns existed this line was the whole bug: it overwrote the only record of
+  // what the conversation had originally been asked to do.
   const session: AgentSession = {
     ...prev,
     status: 'starting',
@@ -420,6 +502,8 @@ function launch(
   }
   session.leaseId = lease.lease.id
   persist(session)
+  // After persist: the turn references the session row (§6).
+  openTurn(session.id, session.prompt)
 
   const cwd = session.paths[0]!
   // §7 — the engine runs in the first path; the rest have to be handed over
@@ -510,11 +594,15 @@ function launch(
     append({ type: 'agent.output', level: 'warn', actor, payload: { text: c.toString('utf8').slice(0, 2000) } })
   })
 
+  const costAtStart = session.costUsd
+
   child.on('close', (code) => {
     live.delete(session.id)
     session.status = code === 0 ? 'ended' : 'failed'
     session.endedAt = Date.now()
     persist(session)
+    // What this turn cost is what the session gained while it was the open one.
+    closeTurn(session.id, code === 0 ? 'done' : 'failed', session.costUsd - costAtStart)
     if (session.leaseId) leases.release(session.leaseId)
     append({
       type: 'agent.session_ended',
@@ -571,7 +659,13 @@ export function send(sessionId: string): { ok: false; reason: string } {
  * what makes yesterday's session resumable rather than merely readable (§6).
  */
 export function reapSessions(): void {
+  const now = Date.now()
   getDb()
     .prepare("UPDATE agent_sessions SET status = 'ended', ended_at = ? WHERE status IN ('starting','thinking','idle')")
-    .run(Date.now())
+    .run(now)
+  // Its process died with the core; a turn that still reads "running" would
+  // make the conversation look live forever.
+  getDb()
+    .prepare("UPDATE agent_turns SET status = 'done', ended_at = ? WHERE status = 'running'")
+    .run(now)
 }

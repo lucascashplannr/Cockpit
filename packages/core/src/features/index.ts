@@ -801,6 +801,23 @@ export async function closePlan(
  * of the prompt, so clearing a session costs nothing (§6) — the next one
  * starts by reading the same two files.
  */
+/**
+ * What `promptPreamble` would find, without building it — so the composer can
+ * say "this run carries the feature memory" before a run costs anything (§7,
+ * coût affiché).
+ */
+export function preambleParts(
+  featureId: string,
+  scopePaths: string[],
+): { memory: boolean; context: boolean } {
+  const f = store.get(featureId)
+  if (!f?.rootPath) return { memory: false, context: false }
+  return {
+    memory: !!readIfPresent(join(f.rootPath, '.cockpit', 'memory.md')),
+    context: !!readIfPresent(join(f.rootPath, 'CONTEXT.md')) && scopePaths.length > 1,
+  }
+}
+
 export function promptPreamble(featureId: string, scopePaths: string[]): string {
   const f = store.get(featureId)
   if (!f?.rootPath) return ''

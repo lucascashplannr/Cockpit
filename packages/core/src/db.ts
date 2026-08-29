@@ -17,7 +17,7 @@ export type Db = Database.Database
  * indexes, which is exactly the kind of opaque breakage §13 rule 3 exists to
  * avoid.
  */
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 
 export type SchemaOutcome =
   | { kind: 'fresh' }
@@ -216,6 +216,83 @@ function migrate(d: Db): void {
   addColumn(d, 'agent_sessions', 'feature_id', 'TEXT')
   addColumn(d, 'agent_sessions', 'engine_session_id', 'TEXT')
   addColumn(d, 'agent_sessions', 'prompt', "TEXT NOT NULL DEFAULT ''")
+
+  // Added in v3 — §7's scope, and §6's conversation.
+  //
+  // `scope_kind` defaults to 'workspace' because that is what every v2 session
+  // actually was: a set of paths under one checkout, or a feature's worktrees
+  // with `feature_id` set. `backfillScopes` below reads the latter back into a
+  // feature scope rather than leaving old sessions mislabelled.
+  addColumn(d, 'agent_sessions', 'scope_kind', "TEXT NOT NULL DEFAULT 'workspace'")
+  addColumn(d, 'agent_sessions', 'scope_id', "TEXT NOT NULL DEFAULT ''")
+  addColumn(d, 'agent_sessions', 'scope_subpath', 'TEXT')
+  addColumn(d, 'agent_sessions', 'title', "TEXT NOT NULL DEFAULT ''")
+
+  d.exec(`
+    -- §6 — the conversation. Append-only: a resume adds a row, it never
+    -- overwrites the question that opened the thread.
+    CREATE TABLE IF NOT EXISTS agent_turns (
+      id         TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      seq        INTEGER NOT NULL,
+      prompt     TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      ended_at   INTEGER,
+      cost_usd   REAL NOT NULL DEFAULT 0,
+      status     TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS agent_turn_session ON agent_turns(session_id, seq);
+  `)
+
+  backfillScopes(d)
+}
+
+/**
+ * v2 → v3. Every existing session becomes a conversation with one turn, so the
+ * history view is not empty for work that predates it, and a session that ran
+ * under a feature is labelled as a feature scope rather than as a workspace
+ * one. Idempotent: `scope_id` is only empty before this has run.
+ */
+function backfillScopes(d: Db): void {
+  const rows = d
+    .prepare("SELECT id, feature_id, workspace_ids, prompt, started_at, ended_at, cost_usd, status FROM agent_sessions WHERE scope_id = ''")
+    .all() as Record<string, unknown>[]
+  if (!rows.length) return
+
+  const setScope = d.prepare('UPDATE agent_sessions SET scope_kind = ?, scope_id = ?, title = ? WHERE id = ?')
+  const addTurn = d.prepare(
+    'INSERT OR IGNORE INTO agent_turns (id, session_id, seq, prompt, started_at, ended_at, cost_usd, status) VALUES (?,?,?,?,?,?,?,?)',
+  )
+  const tx = d.transaction(() => {
+    for (const r of rows) {
+      const id = String(r.id)
+      const featureId = r.feature_id == null ? '' : String(r.feature_id)
+      let wsId = ''
+      try {
+        wsId = (JSON.parse(String(r.workspace_ids)) as string[])[0] ?? ''
+      } catch {
+        wsId = ''
+      }
+      const kind = featureId ? 'feature' : 'workspace'
+      const scopeId = featureId || wsId
+      // A session whose only workspace is gone has nothing to point at; it
+      // keeps its journal and its cost, and reads as scopeless in the list.
+      const prompt = r.prompt == null ? '' : String(r.prompt)
+      setScope.run(kind, scopeId, prompt.slice(0, 200), id)
+      const status = String(r.status)
+      addTurn.run(
+        'turn_' + id + '_1',
+        id,
+        1,
+        prompt,
+        Number(r.started_at),
+        r.ended_at === null ? null : Number(r.ended_at),
+        Number(r.cost_usd ?? 0),
+        status === 'failed' ? 'failed' : status === 'ended' ? 'done' : 'running',
+      )
+    }
+  })
+  tx()
 }
 
 /** Idempotent ALTER, so migrating an adopted database never loses its journal. */
