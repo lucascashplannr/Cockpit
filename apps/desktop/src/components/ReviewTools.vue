@@ -12,9 +12,8 @@ import type { ReviewTool } from '../core/store.js'
 
 /**
  * Layer 3 — reading what came out of the run: the diff, the code around it,
- * the journal, and the terminal you check it in. Secondary by definition, so
- * they share one implementation and the three candidate layouts only decide
- * where it is mounted (see ReviewBench).
+ * the journal, and the terminal you check it in. Secondary by definition, and
+ * closed by default: the chat gets the width until there is something to read.
  */
 
 const props = defineProps<{ workspace: Workspace; closable?: boolean }>()

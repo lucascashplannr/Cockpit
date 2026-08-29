@@ -14,13 +14,11 @@ import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import HomeView from './components/HomeView.vue'
 import ReviewTools from './components/ReviewTools.vue'
-import ReviewBench from './components/ReviewBench.vue'
 import WorkspaceActions from './components/WorkspaceActions.vue'
 import WorkspaceTitle from './components/WorkspaceTitle.vue'
 import TrafficLights from './components/TrafficLights.vue'
 import {
-  REVIEW_LAYOUTS, activeWorkspace, canLeaveHome, client, state, goTo, guard, keyTargets,
-  requestPlan, setReviewLayout,
+  activeWorkspace, canLeaveHome, client, state, goTo, guard, keyTargets, requestPlan,
 } from './core/store.js'
 
 /**
@@ -34,23 +32,6 @@ function onKey(e: KeyboardEvent) {
   const typing =
     target &&
     (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-
-  // The review bench (scaffolding — see ReviewBench). Before every guard
-  // below, because the layouts it switches differ on the start page too.
-  if (meta && e.shiftKey) {
-    if (e.code === 'KeyD') {
-      e.preventDefault()
-      state.benchOpen = !state.benchOpen
-      return
-    }
-    const n = /^Digit([1-9])$/.exec(e.code)
-    const layout = n ? REVIEW_LAYOUTS[Number(n[1]) - 1] : undefined
-    if (layout) {
-      e.preventDefault()
-      setReviewLayout(layout.id)
-      return
-    }
-  }
 
   // ⌘K is the real entry point and must work from anywhere, typing included.
   if (meta && !e.shiftKey && e.key.toLowerCase() === 'k') {
@@ -66,10 +47,10 @@ function onKey(e: KeyboardEvent) {
     else if (state.pendingPlan) state.pendingPlan = null
     else if (state.paletteOpen) state.paletteOpen = false
     // Layer by layer back to the conversation, which is the ground state.
+    else if (state.historyOpen) state.historyOpen = false
     else if (state.memoryOpen) state.memoryOpen = false
     else if (state.reviewOpen) state.reviewOpen = false
     else if (state.homeOpen && canLeaveHome.value) state.homeOpen = false
-    else if (state.benchOpen) state.benchOpen = false
     return
   }
   if (typing) return
@@ -126,7 +107,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 <template>
   <div
     class="shell"
-    :class="{ withreview: state.reviewLayout === 'panel' && state.reviewOpen && !!activeWorkspace }"
+    :class="{ withreview: state.reviewOpen && !!activeWorkspace }"
   >
     <!-- One band across the top, the way macOS apps carry their chrome: the
          traffic lights and the mark on a single row rather than stacked in a
@@ -142,9 +123,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <ProjectRail />
     <WorkspaceList />
     <ContextPanel />
-    <!-- `panel` — layer 3 as a fourth column, opened on demand (review bench). -->
+    <!-- Layer 3 as a fourth column, opened on demand. -->
     <ReviewTools
-      v-if="state.reviewLayout === 'panel' && state.reviewOpen && activeWorkspace"
+      v-if="state.reviewOpen && activeWorkspace"
       :workspace="activeWorkspace"
       closable
       class="reviewcol"
@@ -163,9 +144,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <!-- Last, and over everything: the start page is the whole window. -->
     <HomeView v-if="state.homeOpen" />
 
-    <!-- Over even that: it switches the layouts, and they differ there too.
-         Scaffolding — it goes when the placement is settled. -->
-    <ReviewBench v-if="state.benchOpen" />
 
     <!-- Over even that: the native buttons floated above the start page, and
          these stand in for them (see TrafficLights). -->
@@ -183,8 +161,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   position: relative;
 }
 
-/* `panel` — the review layer as a fourth column. The conversation gives up
-   the width, not the list: the list is how you got here. */
+/* Layer 3 as a fourth column. The conversation gives up the width, not the
+   list: the list is how you got here, and it is also how a chat is opened. */
 .shell.withreview {
   grid-template-columns: var(--rail-w) var(--list-w) minmax(0, 1fr) var(--review-w);
 }

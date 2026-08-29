@@ -60,43 +60,6 @@ export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'journal' | 'terminal
  */
 export type ReviewTool = 'diff' | 'code' | 'journal' | 'terminal'
 
-/**
- * Where the review layer lives is an open question, so it is a switch rather
- * than a decision — the bench (⌘⇧D) flips between these live. When one wins,
- * delete the others and collapse `ReviewSurface` onto it.
- */
-export type ReviewLayout = 'panel' | 'modes' | 'drawer'
-
-export const REVIEW_LAYOUTS: { id: ReviewLayout; label: string; hint: string }[] = [
-  {
-    id: 'panel',
-    label: 'Panel',
-    hint: 'A fourth column, opened on demand. Watch a run and read what it wrote at once.',
-  },
-  {
-    id: 'modes',
-    label: 'Modes',
-    hint: 'One toggle: Work or Review, each with the whole window. Neither is ever cramped.',
-  },
-  {
-    id: 'drawer',
-    label: 'Drawer',
-    hint: 'A resizable drawer under the conversation, the way a terminal panel sits in an editor.',
-  },
-]
-
-const REVIEW_LAYOUT_KEY = 'cockpit.reviewLayout'
-const DRAWER_KEY = 'cockpit.drawerH'
-
-function readReviewLayout(): ReviewLayout {
-  const raw = localStorage.getItem(REVIEW_LAYOUT_KEY)
-  return REVIEW_LAYOUTS.some((l) => l.id === raw) ? (raw as ReviewLayout) : 'panel'
-}
-
-function readDrawerH(): number {
-  const n = Number(localStorage.getItem(DRAWER_KEY))
-  return Number.isFinite(n) && n >= 140 ? n : 320
-}
 
 export const state = reactive({
   connection: 'connecting' as ConnectionState,
@@ -118,15 +81,13 @@ export const state = reactive({
    * `activeTab` any more — there is what the agent is doing, and what you have
    * opened beside it.
    */
-  reviewLayout: readReviewLayout(),
+  /** Layer 3, as a fourth column. Closed by default: the chat gets the width. */
   reviewOpen: false,
   reviewTool: 'diff' as ReviewTool,
-  /** `drawer` only: its height in px, dragged and remembered. */
-  drawerH: readDrawerH(),
   /** §6 — the agent's own tool, over the conversation rather than beside it. */
   memoryOpen: false,
-  /** The bench that switches `reviewLayout`. Scaffolding; see ReviewBench. */
-  benchOpen: false,
+  /** Every conversation on this scope, over the chat rather than beside it. */
+  historyOpen: false,
 
   /**
    * §7 — the scope the composer is aimed at, and the prompt being written for
@@ -306,15 +267,7 @@ export function goTo(id: TabId): void {
   state.memoryOpen = false
 }
 
-export function setReviewLayout(id: ReviewLayout): void {
-  state.reviewLayout = id
-  localStorage.setItem(REVIEW_LAYOUT_KEY, id)
-}
 
-export function setDrawerH(px: number): void {
-  state.drawerH = Math.max(140, Math.min(px, window.innerHeight - 260))
-  localStorage.setItem(DRAWER_KEY, String(state.drawerH))
-}
 
 /** §12's "where am I" for the Agent: the sessions still costing money. */
 export const liveSessions = computed(() =>
@@ -329,15 +282,6 @@ export const liveSessions = computed(() =>
  * and "an agent on this repo" were the same control with different boxes
  * ticked, and nothing afterwards could tell you which you had run.
  */
-
-export interface ScopeOption {
-  /** Stable across re-renders, so the segmented control keeps its selection. */
-  key: string
-  scope: AgentScope
-  label: string
-  /** What it resolves to, in words: the feature's name, the repo count. */
-  detail: string
-}
 
 export function scopeKey(scope: AgentScope): string {
   switch (scope.kind) {
@@ -357,62 +301,88 @@ export function sameScope(a: AgentScope | null, b: AgentScope | null): boolean {
 }
 
 /**
- * The levels this workspace can be the starting point for, widest first.
- *
- * A folder-level scope is not offered as a preset — it needs a subpath typed —
- * so it is added by the composer once there is one.
+ * §7 — a chat is opened *on* something: a feature row, a workspace row, the
+ * project. The scope is where you clicked, never a menu inside the agent —
+ * picking it there meant navigating twice, once to the workspace and once
+ * again to say which workspace you meant.
  */
-export const agentScopeOptions = computed<ScopeOption[]>(() => {
-  const w = activeWorkspace.value
-  if (!w) return []
-  const out: ScopeOption[] = []
-
-  const project = state.projects.find((p) => p.id === w.projectId)
-  if (project) {
-    const repos = state.workspaces.filter((x) => x.projectId === project.id && x.kind === 'main')
-    out.push({
-      key: scopeKey({ kind: 'project', projectId: project.id }),
-      scope: { kind: 'project', projectId: project.id },
-      label: 'Project',
-      detail:
-        project.name +
-        ' — ' +
-        (repos.length || 1) +
-        ' repo' +
-        (repos.length === 1 ? '' : 's') +
-        ', on main',
-    })
+export function openAgentOn(scope: AgentScope): void {
+  // The panel still renders against a workspace, so the scope has to bring one
+  // with it: the first it resolves to is the one you were pointing at.
+  const w = anchorFor(scope)
+  if (w) {
+    state.activeWorkspaceId = w.id
+    state.activeProjectId = w.projectId
   }
+  state.agentScope = scope
+  state.homeOpen = false
+  state.memoryOpen = false
+  state.historyOpen = false
+  state.paletteOpen = false
+}
 
-  const feature = state.features.find((f) => f.id === w.featureId)
-  if (feature) {
-    const n = state.workspaces.filter((x) => x.featureId === feature.id && x.kind !== 'group').length
-    out.push({
-      key: scopeKey({ kind: 'feature', featureId: feature.id }),
-      scope: { kind: 'feature', featureId: feature.id },
-      label: 'Feature',
-      detail: feature.name + ' — ' + n + ' worktree' + (n === 1 ? '' : 's') + ', with its memory',
-    })
+function anchorFor(scope: AgentScope): Workspace | null {
+  const real = (w: Workspace) => w.kind !== 'group'
+  switch (scope.kind) {
+    case 'feature':
+      return state.workspaces.find((w) => w.featureId === scope.featureId && real(w)) ?? null
+    case 'project':
+      return (
+        state.workspaces.find((w) => w.projectId === scope.projectId && w.kind === 'main') ??
+        state.workspaces.find((w) => w.projectId === scope.projectId && real(w)) ??
+        null
+      )
+    default:
+      return state.workspaces.find((w) => w.id === scope.workspaceId) ?? null
   }
+}
 
-  out.push({
-    key: scopeKey({ kind: 'workspace', workspaceId: w.id }),
-    scope: { kind: 'workspace', workspaceId: w.id },
-    label: w.repo ? 'This repo' : 'This folder',
-    detail: w.name + (w.git?.branch ? ' — ' + w.git.branch : ''),
-  })
+/** What to call the current scope in the chat's one line of chrome. */
+export function scopeLabel(scope: AgentScope | null): { kind: string; name: string } {
+  if (!scope) return { kind: '', name: '' }
+  switch (scope.kind) {
+    case 'feature':
+      return {
+        kind: 'Feature',
+        name: state.features.find((f) => f.id === scope.featureId)?.name ?? 'feature',
+      }
+    case 'project':
+      return {
+        kind: 'Project',
+        name: state.projects.find((p) => p.id === scope.projectId)?.name ?? 'project',
+      }
+    case 'folder': {
+      const w = state.workspaces.find((x) => x.id === scope.workspaceId)
+      return { kind: 'Folder', name: (w?.name ?? '') + '/' + scope.subpath }
+    }
+    default: {
+      const w = state.workspaces.find((x) => x.id === scope.workspaceId)
+      return { kind: w?.repo ? 'Repo' : 'Folder', name: w?.name ?? 'workspace' }
+    }
+  }
+}
 
-  return out
-})
-
-/** The selection, or the narrowest scope — the safest thing to default to. */
+/**
+ * What the chat is aimed at: whatever was last opened on, and otherwise the
+ * workspace that is selected — clicking a row in the list is itself a way of
+ * saying "here", so the chat follows the selection when nothing narrower has
+ * been asked for.
+ */
 export const activeAgentScope = computed<AgentScope | null>(() => {
-  const options = agentScopeOptions.value
   const chosen = state.agentScope
-  if (chosen && options.some((o) => sameScope(o.scope, chosen))) return chosen
-  // A folder scope is never in the presets; it is still a real selection.
-  if (chosen?.kind === 'folder') return chosen
-  return options[options.length - 1]?.scope ?? null
+  const w = activeWorkspace.value
+  if (chosen) {
+    // A scope whose anchor is gone (feature closed, repo forgotten) would leave
+    // the chat pointing at nothing; fall back to where we are standing.
+    const stillThere =
+      chosen.kind === 'feature'
+        ? state.features.some((f) => f.id === chosen.featureId)
+        : chosen.kind === 'project'
+          ? state.projects.some((p) => p.id === chosen.projectId)
+          : state.workspaces.some((x) => x.id === chosen.workspaceId)
+    if (stillThere) return chosen
+  }
+  return w ? { kind: 'workspace', workspaceId: w.id } : null
 })
 
 /** §7 — what a scope would do, before it is asked to do it. */

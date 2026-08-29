@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import {
   ArrowDown, ArrowUp, FileDiff, GitBranch, MousePointerClick, PanelRight, Plug,
 } from '@lucide/vue'
 import AgentTab from './tabs/AgentTab.vue'
-import ReviewTools from './ReviewTools.vue'
 import ConflictPanel from './ConflictPanel.vue'
 import Wordmark from './brand/Wordmark.vue'
-import { activeWorkspace, goTo, setDrawerH, state } from '../core/store.js'
+import { activeWorkspace, goTo, state } from '../core/store.js'
 
 /**
  * The third column, and the four roles in the order they are used (§12,
@@ -16,8 +15,8 @@ import { activeWorkspace, goTo, setDrawerH, state } from '../core/store.js'
  *   1. navigate — the rail and the list to the left, and the scope bar the
  *                 Agent carries: project, feature, repo, folder.
  *   2. agent    — this column. Permanently. It is what the window is for.
- *   3. review   — Diff / Code / Journal / Terminal, opened beside it. Three
- *                 candidate placements, switched by the bench (⌘⇧D).
+ *   3. review   — Diff / Code / Journal / Terminal, in a fourth column that
+ *                 opens on demand and is closed by default.
  *   4. run      — the runtime verbs, in the title band above.
  *
  * They used to be six peer tabs, which said all four were the same kind of
@@ -31,23 +30,6 @@ const changed = computed(() => {
   return g ? g.staged + g.unstaged + g.untracked : 0
 })
 
-/* ── the drawer's drag handle ──────────────────────────────────────────── */
-const dragging = ref(false)
-
-function startDrag(e: PointerEvent): void {
-  dragging.value = true
-  const el = e.currentTarget as HTMLElement
-  el.setPointerCapture(e.pointerId)
-  const move = (ev: PointerEvent) => setDrawerH(window.innerHeight - ev.clientY)
-  const up = (ev: PointerEvent) => {
-    dragging.value = false
-    el.releasePointerCapture(ev.pointerId)
-    el.removeEventListener('pointermove', move)
-    el.removeEventListener('pointerup', up)
-  }
-  el.addEventListener('pointermove', move)
-  el.addEventListener('pointerup', up)
-}
 </script>
 
 <template>
@@ -111,20 +93,10 @@ function startDrag(e: PointerEvent): void {
 
           <span class="grow" />
 
-          <!-- `modes` is a switch between two whole screens; the other two open
-               a surface beside the conversation and leave it where it is. -->
-          <div v-if="state.reviewLayout === 'modes'" class="seg modes">
-            <button :class="{ on: !state.reviewOpen }" @click="state.reviewOpen = false">Work</button>
-            <button :class="{ on: state.reviewOpen }" @click="state.reviewOpen = true">
-              Review
-              <span v-if="changed" class="tbadge num">{{ changed }}</span>
-            </button>
-          </div>
           <button
-            v-else
             class="btn ghost rev"
             :class="{ on: state.reviewOpen }"
-            :title="state.reviewLayout === 'drawer' ? 'Review drawer' : 'Review panel'"
+            title="Review what changed — diff, code, journal, terminal"
             @click="state.reviewOpen = !state.reviewOpen"
           >
             <PanelRight class="sm" />
@@ -140,30 +112,9 @@ function startDrag(e: PointerEvent): void {
            of what is below is the next thing to do. Absent otherwise (§3.9). -->
       <ConflictPanel />
 
-      <!-- `modes`: the review layer takes the whole column instead. -->
-      <div v-if="state.reviewLayout === 'modes' && state.reviewOpen" class="body">
-        <ReviewTools :workspace="w" />
+      <div class="body">
+        <AgentTab :workspace="w" />
       </div>
-
-      <template v-else>
-        <div class="body">
-          <AgentTab :workspace="w" />
-        </div>
-
-        <!-- `drawer`: under the conversation, dragged to size, the way a
-             terminal panel sits in an editor. -->
-        <template v-if="state.reviewLayout === 'drawer' && state.reviewOpen">
-          <div
-            class="handle"
-            :class="{ dragging }"
-            title="Drag to resize"
-            @pointerdown.prevent="startDrag"
-          />
-          <div class="drawer" :style="{ height: state.drawerH + 'px' }">
-            <ReviewTools :workspace="w" closable />
-          </div>
-        </template>
-      </template>
     </template>
   </section>
 </template>
@@ -264,8 +215,6 @@ function startDrag(e: PointerEvent): void {
 .stat.act { cursor: pointer; }
 .stat.act:hover { background: var(--active); }
 
-.seg.modes { flex: none; height: 26px; }
-.seg.modes > button { height: 22px; font-size: var(--fs-xs); gap: 6px; }
 .btn.ghost.rev { flex: none; height: 26px; padding: 0 10px; font-size: var(--fs-xs); gap: 6px; }
 .btn.ghost.rev.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .tbadge {
@@ -282,22 +231,6 @@ function startDrag(e: PointerEvent): void {
 }
 .on .tbadge { background: var(--accent-soft); color: var(--accent); }
 
-/* ── the drawer ──────────────────────────────────────────────────────── */
-/* 5px of grab area for a 1px line: a hairline is the right thing to see and
-   the wrong thing to aim at. */
-.handle {
-  flex: none;
-  height: 5px;
-  cursor: ns-resize;
-  background: var(--line);
-  background-clip: content-box;
-  border-top: 2px solid transparent;
-  border-bottom: 2px solid transparent;
-  touch-action: none;
-}
-.handle:hover, .handle.dragging { background: var(--accent); }
-
-.drawer { flex: none; min-height: 0; overflow: hidden; }
 
 .body { flex: 1; min-height: 0; overflow: hidden; }
 </style>

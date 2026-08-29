@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { ArrowDown, ArrowUp, GitBranch, Lock, Sparkles, SquareDot, TriangleAlert } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
-import { selectWorkspace, state } from '../core/store.js'
+import { openAgentOn, selectWorkspace, state } from '../core/store.js'
 
 const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
 
@@ -57,11 +57,40 @@ const kindLabel = computed(() =>
         <Sparkles class="sm" />{{ w.agentSessions.length }}
       </span>
       <span v-if="w.lease" class="lease" title="path lease held"><Lock class="sm" /></span>
+
+      <!-- §7 — the chat is opened *on* this checkout. The scope is where you
+           clicked; there is no second menu asking which workspace you meant. -->
+      <span
+        class="go"
+        role="button"
+        :title="'Chat on ' + w.name"
+        @click.stop="openAgentOn({ kind: 'workspace', workspaceId: w.id })"
+      >
+        <Sparkles class="sm" />
+      </span>
     </span>
   </button>
 </template>
 
 <style scoped>
+/* Hidden until the row is under the cursor or selected: every row carries it,
+   and twenty of them lit at once would read as decoration. */
+.go {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
+}
+.row:hover .go, .row.selected .go { opacity: 1; }
+.go:hover { background: var(--agent-soft); color: var(--agent); }
+
 .row {
   display: flex;
   align-items: center;

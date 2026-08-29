@@ -2,12 +2,13 @@
 import { computed } from 'vue'
 import {
   ArrowUp, FolderPlus, GitCompareArrows, GitMerge, Layers, Pause, Play, Plus, RefreshCw, Search,
+  Sparkles,
 } from '@lucide/vue'
 import type { Feature } from '@cockpit/shared'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activateFeature, activeProject, addRepoTo, client, guard, landFeature, parkFeature, rebaseFeature,
-  state, workspaceGroups,
+  activateFeature, activeProject, addRepoTo, client, guard, landFeature, openAgentOn, parkFeature,
+  rebaseFeature, state, workspaceGroups,
 } from '../core/store.js'
 
 /**
@@ -98,6 +99,17 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
               </span>
               <span class="dim">{{ featureSummary(g.workspaces).total }}</span>
             </span>
+            <!-- §7 — one chat across every worktree the feature spans, with
+                 its memory prepended. First in the row because it is what the
+                 feature is for; the git verbs are what you do afterwards. -->
+            <button
+              v-if="g.featureId"
+              class="icon-btn small go"
+              :title="'Chat on the whole feature — ' + g.workspaces.length + ' worktree(s), with its memory'"
+              @click="openAgentOn({ kind: 'feature', featureId: g.featureId! })"
+            >
+              <Sparkles class="sm" />
+            </button>
             <!-- §4 — the step the lifecycle was missing: the branch goes onto
                  the base, in each repository's main checkout. Before this the
                  last move was always "go to a terminal". -->
@@ -147,6 +159,15 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
 
     <footer v-if="activeProject" class="foot">
       <span class="root" :title="activeProject.root">{{ activeProject.root }}</span>
+      <!-- §7 — the widest scope, from the thing it is scoped to: every
+           repository in the project, at its main checkout. -->
+      <button
+        class="icon-btn small go"
+        title="Chat on the whole project — every repository, on main"
+        @click="openAgentOn({ kind: 'project', projectId: activeProject.id })"
+      >
+        <Sparkles class="sm" />
+      </button>
       <button
         class="icon-btn small"
         title="Open a feature - a branch per repository, one plan"
@@ -172,6 +193,9 @@ function dirty(ws: { git: { staged: number; unstaged: number } | null }[]): numb
 </template>
 
 <style scoped>
+/* The one verb that is not git: it gets the accent that means agent. */
+.go:hover { color: var(--agent); background: var(--agent-soft); }
+
 /* Behind its base is the one state where this verb is the next thing to do. */
 .nudge { color: var(--warn); }
 /* Committed and ahead: landing is the next thing, so it says so. */

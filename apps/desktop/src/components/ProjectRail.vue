@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { FlaskConical, Plus, SlidersHorizontal, Sun, Moon, MonitorCog } from '@lucide/vue'
+import { Plus, SlidersHorizontal, Sun, Moon, MonitorCog } from '@lucide/vue'
 import Mark from './brand/Mark.vue'
 import { cycleTheme, newProject, openHome, selectProject, state } from '../core/store.js'
 
@@ -67,17 +67,6 @@ const themeLabel = computed(() =>
     </div>
 
     <div class="grow" />
-
-    <!-- Scaffolding, and it looks it: the bench that switches where the review
-         layer lives (⌘⇧D). It goes when the placement is settled. -->
-    <button
-      class="icon-btn flask"
-      :class="{ on: state.benchOpen }"
-      title="Review layer bench (⌘⇧D)"
-      @click="state.benchOpen = !state.benchOpen"
-    >
-      <FlaskConical />
-    </button>
 
     <button class="icon-btn" title="Settings" @click="state.settingsOpen = true">
       <SlidersHorizontal />
@@ -210,6 +199,5 @@ const themeLabel = computed(() =>
 .b.dirty { background: var(--warn); }
 
 .theme { width: 38px; height: 38px; }
-.flask { width: 38px; height: 38px; color: var(--text-dim); }
 
 </style>
