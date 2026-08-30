@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowUp, FolderPlus, Layers, Plus, RefreshCw, Sparkles } from '@lucide/vue'
+import { ArrowUp, CircleAlert, FolderPlus, Hand, Layers, Plus, RefreshCw, Sparkles } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activeProject, addRepoTo, client, guard, openAgentOn, selectedTopicId, state,
+  activeProject, activityFor, addRepoTo, client, guard, openAgentOn, selectedTopicId, state,
   workspaceGroups,
 } from '../core/store.js'
 
@@ -39,6 +39,18 @@ async function refresh() {
 function selectTopic(topicId: string) {
   openAgentOn({ kind: 'topic', topicId })
 }
+
+/**
+ * §4 — a topic is where the work is put down and picked back up, so it is also
+ * where "an agent is on this" has to be visible. A conversation opened on the
+ * topic itself lights this, and so does one opened on any single row under it:
+ * from the header, both are the same answer to "is something happening here".
+ */
+const ATTENTION_TEXT: Record<string, string> = {
+  reply: 'an agent answered on this topic — waiting for you',
+  blocked: 'an agent stopped on this topic: it was refused a tool it needed',
+  failed: 'an agent failed on this topic',
+}
 </script>
 
 <template>
@@ -67,6 +79,24 @@ function selectTopic(topicId: string) {
             <Layers class="sm gi" />
             <span class="title">{{ g.title }}</span>
             <span class="summary num">
+              <span
+                v-if="g.topicId && activityFor('topic', g.topicId).running"
+                class="agent live"
+                :title="activityFor('topic', g.topicId).running + ' conversation(s) running on this topic'"
+              >
+                <Sparkles class="sm" />{{ activityFor('topic', g.topicId).running }}
+              </span>
+              <span
+                v-if="g.topicId && activityFor('topic', g.topicId).attention !== 'none'"
+                class="needs"
+                :class="activityFor('topic', g.topicId).attention"
+                :title="ATTENTION_TEXT[activityFor('topic', g.topicId).attention]"
+              >
+                <component
+                  :is="activityFor('topic', g.topicId).attention === 'reply' ? Hand : CircleAlert"
+                  class="sm"
+                />
+              </span>
               <span v-if="topicSummary(g.workspaces).ahead" class="up">
                 <ArrowUp class="sm" />{{ topicSummary(g.workspaces).ahead }}
               </span>
@@ -184,6 +214,16 @@ function selectTopic(topicId: string) {
 .summary .up { color: var(--ok); display: inline-flex; align-items: center; gap: 2px; }
 .summary .up .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
 .summary .dim { color: var(--text-dim); }
+.summary .agent { color: var(--agent); display: inline-flex; align-items: center; gap: 2px; }
+.summary .agent .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
+/* Only ever on the thing that is actually running — the header inherits it
+   from its rows, and two pulses side by side would say nothing extra. */
+.summary .live { animation: pulse 1.6s var(--ease-soft) infinite; }
+.summary .needs { display: inline-flex; align-items: center; }
+.summary .needs .lucide { width: 12px; height: 12px; stroke-width: 2.4; }
+.summary .needs.reply { color: var(--agent); }
+.summary .needs.blocked { color: var(--warn); }
+.summary .needs.failed { color: var(--danger); }
 
 /* Live reads as a state of the header, not as a badge to hunt for. */
 .group-head.running .gi { color: var(--ok); }

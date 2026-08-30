@@ -2,14 +2,16 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { AgentScopePreview, Conversation, AgentTurn, CockpitEvent, Workspace } from '@cockpit/shared'
 import {
-  BookMarked, CircleStop, CornerDownLeft, History, Lock, RotateCcw, ShieldCheck, Sparkles,
-  Wrench, X,
+  BookMarked, CircleAlert, CircleStop, CornerDownLeft, Hand, History, Lock, RotateCcw,
+  ShieldCheck, Sparkles, Wrench, X,
 } from '@lucide/vue'
 import MemoryTab from './MemoryTab.vue'
 import {
-  activeAgentScope, client, guard, previewScope, resumeSession, scopeLabel, sessionsForScope,
+  activeAgentScope, attentionOf, client, closeThread, guard, isRunning, markThreadRead,
+  openThreadFor, pinThread, previewScope, resumeSession, scopeLabel, sessionsForScope,
   startAgentIn, state,
 } from '../../core/store.js'
+import type { Attention } from '../../core/store.js'
 
 /**
  * Layer 2 — the agent, and nothing else.
@@ -55,18 +57,52 @@ const conversations = computed(() =>
   [...sessionsForScope(scope.value)].sort((a, b) => b.startedAt - a.startedAt),
 )
 
-const selectedId = ref<string | null>(null)
-const selected = computed(() => conversations.value.find((c) => c.id === selectedId.value) ?? null)
+/**
+ * Which thread is open is the scope's business, not this component's: it used
+ * to be a local ref, so walking over to another project and back reset the
+ * panel to its empty composer while the work was still running. It lives in
+ * the store now, and it is remembered.
+ */
+const selected = computed(() => openThreadFor(scope.value))
 
-// A thread from another scope must not stay open under this one.
-watch(scope, () => {
-  selectedId.value = null
-})
-watch(conversations, (list) => {
-  if (selectedId.value && !list.some((c) => c.id === selectedId.value)) selectedId.value = null
-})
+function open(c: Conversation): void {
+  if (scope.value) pinThread(scope.value, c.id)
+  state.historyOpen = false
+}
 
-const isLive = (s: Conversation) => s.status !== 'ended' && s.status !== 'failed'
+function close(c: Conversation): void {
+  if (scope.value) closeThread(scope.value, c.id)
+}
+
+/**
+ * Having a finished thread on screen is having read it — that is what clears
+ * the "waiting for you" marks in the rail and the list.
+ *
+ * On screen, and not merely mounted: the panel is built under the start page,
+ * which covers the whole window, so without the `homeOpen` guard a launch
+ * would quietly mark the last thread read over a page nobody can see through.
+ * The same guard is why the start page is in the dependency list: leaving it
+ * is the moment the thread actually becomes visible.
+ */
+watch(
+  () => [selected.value?.id, selected.value?.status, selected.value?.endedAt, state.homeOpen],
+  () => {
+    const c = selected.value
+    if (c && !state.homeOpen) markThreadRead(c)
+  },
+  { immediate: true },
+)
+
+const waiting = computed(() =>
+  conversations.value.filter((c) => attentionOf(c) !== 'none').length,
+)
+
+const ATTENTION_TEXT: Record<Attention, string> = {
+  none: '',
+  reply: 'answered — waiting for you',
+  blocked: 'stopped: it was refused a tool it needed',
+  failed: 'the engine failed',
+}
 
 /**
  * §3.3 — the transcript is the journal filtered, never a second copy. Split by
@@ -102,7 +138,7 @@ const exchanges = computed<Exchange[]>(() => {
 const continuing = computed(() => !!selected.value?.resumable)
 const canSend = computed(() => {
   if (!state.agentDraft.trim() || busy.value) return false
-  if (selected.value && isLive(selected.value)) return false
+  if (selected.value && isRunning(selected.value)) return false
   if (blocked.value.length) return false
   return continuing.value || !!scope.value
 })
@@ -115,14 +151,8 @@ async function send(): Promise<void> {
     const ok = await resumeSession(selected.value.id, text)
     if (ok) state.agentDraft = ''
   } else if (scope.value) {
-    const before = new Set(conversations.value.map((c) => c.id))
-    const ok = await startAgentIn(engine.value, scope.value, text)
-    // Land in the thread that was just opened, rather than back on the hero.
-    if (ok) {
-      await nextTick()
-      const fresh = conversations.value.find((c) => !before.has(c.id))
-      if (fresh) selectedId.value = fresh.id
-    }
+    // `startAgentIn` opens the new thread on this scope; nothing to do here.
+    await startAgentIn(engine.value, scope.value, text)
   }
   busy.value = false
 }
@@ -167,10 +197,9 @@ function ago(ts: number): string {
 }
 
 function dotClass(s: Conversation): string {
-  if (s.status === 'ended') return 'down'
+  if (isRunning(s)) return 'working'
   if (s.status === 'failed') return 'unhealthy'
-  if (s.status === 'starting') return 'starting'
-  return 'up'
+  return 'down'
 }
 </script>
 
@@ -189,12 +218,13 @@ function dotClass(s: Conversation): string {
 
       <button
         class="chip-btn"
-        :class="{ on: state.historyOpen }"
+        :class="{ on: state.historyOpen, waiting: waiting > 0 }"
         title="Earlier conversations here"
         @click="state.historyOpen = !state.historyOpen"
       >
         <History class="sm" />
         <span v-if="conversations.length" class="num">{{ conversations.length }}</span>
+        <span v-if="waiting" class="pip warn" />
       </button>
       <!-- §6 — the memory is what gets prepended to the prompt, so it belongs
            to the thing that sends it rather than beside it as a peer. -->
@@ -250,13 +280,21 @@ function dotClass(s: Conversation): string {
           v-for="c in conversations"
           :key="c.id"
           class="conv"
-          :class="{ on: selectedId === c.id }"
-          @click="selectedId = c.id; state.historyOpen = false"
+          :class="{ on: selected?.id === c.id }"
+          @click="open(c)"
         >
           <span class="crow">
             <span class="dot" :class="dotClass(c)" />
             <span class="ceng">{{ c.engine }}</span>
             <span class="cturns">{{ c.history.length }} turn{{ c.history.length === 1 ? '' : 's' }}</span>
+            <span
+              v-if="attentionOf(c) !== 'none'"
+              class="needs"
+              :class="attentionOf(c)"
+              :title="ATTENTION_TEXT[attentionOf(c)]"
+            >
+              <component :is="attentionOf(c) === 'reply' ? Hand : CircleAlert" class="sm" />
+            </span>
             <span class="grow" />
             <span class="cwhen">{{ ago(c.startedAt) }}</span>
           </span>
@@ -322,16 +360,26 @@ function dotClass(s: Conversation): string {
         <div class="tbar">
           <span class="dot" :class="dotClass(selected)" />
           <span class="ttitle">{{ selected.title || 'untitled' }}</span>
+          <!-- Running is the one state worth a word: it is why the panel comes
+               back to this thread rather than to an empty composer. -->
+          <span v-if="isRunning(selected)" class="live">working</span>
+          <span v-else-if="selected.denials.length" class="needs blocked chip warn" :title="'refused: ' + selected.denials.join(', ')">
+            <Hand class="sm" /> needs you
+          </span>
           <span class="grow" />
           <button
-            v-if="isLive(selected)"
+            v-if="isRunning(selected)"
             class="icon-btn"
             title="Stop this conversation"
             @click="stop(selected.id)"
           >
             <CircleStop class="sm" />
           </button>
-          <button class="icon-btn" title="Start a new conversation here" @click="selectedId = null">
+          <button
+            class="icon-btn"
+            title="Put this conversation away and start a new one here"
+            @click="close(selected)"
+          >
             <X class="sm" />
           </button>
         </div>
@@ -423,7 +471,9 @@ function dotClass(s: Conversation): string {
 }
 .chip-btn:hover { color: var(--text); border-color: var(--line-strong); }
 .chip-btn.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.chip-btn.waiting { border-color: var(--warn); color: var(--warn); }
 .chip-btn .pip { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); }
+.chip-btn .pip.warn { background: var(--warn); }
 
 .note {
   flex: none;
@@ -470,6 +520,14 @@ function dotClass(s: Conversation): string {
 .conv:hover { background: var(--hover); }
 .conv.on { background: var(--selected); border-color: var(--accent-soft); }
 .crow { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); }
+
+/* One glyph, three tints: the agent's own colour when it simply answered, and
+   the warning ramp when it stopped on something only a person can settle. */
+.needs { display: inline-flex; align-items: center; }
+.needs .lucide { width: 12px; height: 12px; stroke-width: 2.4; }
+.needs.reply { color: var(--agent); }
+.needs.blocked { color: var(--warn); }
+.needs.failed { color: var(--danger); }
 .ceng { font-weight: 600; color: var(--text); font-size: 11px; }
 .ctitle {
   font-size: var(--fs-xs);
@@ -552,6 +610,23 @@ function dotClass(s: Conversation): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.live {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--agent);
+  animation: pulse 1.6s var(--ease-soft) infinite;
+}
+.tbar .needs.chip { flex: none; height: 20px; padding: 0 8px; font-size: 10px; }
+
+/* The conversation's own heartbeat. `--agent` rather than the runtime green:
+   this is a thing an agent is doing, and colour maps to one idea (tokens.css). */
+.dot.working {
+  background: var(--agent);
+  box-shadow: 0 0 0 3px var(--agent-soft);
+  animation: pulse 1.6s var(--ease-soft) infinite;
 }
 
 .ex + .ex { margin-top: 20px; }

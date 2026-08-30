@@ -17,7 +17,7 @@ export type Db = Database.Database
  * indexes, which is exactly the kind of opaque breakage §13 rule 3 exists to
  * avoid.
  */
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 5
 
 export type SchemaOutcome =
   | { kind: 'fresh' }
@@ -241,6 +241,11 @@ function migrate(d: Db): void {
   addColumn(d, 'agent_sessions', 'scope_id', "TEXT NOT NULL DEFAULT ''")
   addColumn(d, 'agent_sessions', 'scope_subpath', 'TEXT')
   addColumn(d, 'agent_sessions', 'title', "TEXT NOT NULL DEFAULT ''")
+
+  // Added in v5 — §16's refusals, kept rather than merely logged. A session
+  // that stopped because the allow-list said no looks exactly like one that
+  // finished, and the window has no way to tell them apart without this.
+  addColumn(d, 'agent_sessions', 'denials', "TEXT NOT NULL DEFAULT '[]'")
 
   d.exec(`
     -- §6 — the conversation. Append-only: a resume adds a row, it never

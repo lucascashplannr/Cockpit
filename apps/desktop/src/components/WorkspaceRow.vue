@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowDown, ArrowUp, GitBranch, Lock, Sparkles, SquareDot, TriangleAlert } from '@lucide/vue'
+import {
+  ArrowDown, ArrowUp, CircleAlert, GitBranch, Hand, Lock, Sparkles, SquareDot, TriangleAlert,
+} from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
-import { openAgentOn, selectedTopicId, selectWorkspace, state } from '../core/store.js'
+import { activityFor, openAgentOn, selectedTopicId, selectWorkspace, state } from '../core/store.js'
 
 const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
 
@@ -18,6 +20,21 @@ const dirty = computed(() => {
   const g = w.value.git
   return g ? g.staged + g.unstaged + g.untracked : 0
 })
+
+/**
+ * §12 — "où j'en suis", for the one thing that moves while you are looking
+ * somewhere else. Read from the conversations rather than from
+ * `w.agentSessions`: that array only ever holds running sessions, and a
+ * conversation that finished and has not been read is exactly what this row
+ * has to be able to say.
+ */
+const act = computed(() => activityFor('workspace', w.value.id))
+
+const ATTENTION_TEXT: Record<string, string> = {
+  reply: 'an agent answered here — waiting for you',
+  blocked: 'an agent stopped here: it was refused a tool it needed',
+  failed: 'an agent failed here',
+}
 
 /**
  * Two things live in this list and the icon is what tells them apart: a
@@ -70,12 +87,23 @@ const kindLabel = computed(() =>
         :class="w.runtime.status"
         :title="'servers ' + w.runtime.status"
       />
+      <!-- Two different facts, never merged into one number: an agent is at
+           work here, and an agent is waiting on you here. -->
       <span
-        v-if="w.agentSessions.length"
-        class="c agent"
-        :title="w.agentSessions.length + ' conversation(s) running here'"
+        v-if="act.running"
+        class="c agent live"
+        :title="act.running + ' conversation(s) running here'"
       >
-        <Sparkles class="sm" />{{ w.agentSessions.length }}
+        <Sparkles class="sm" />{{ act.running }}
+      </span>
+      <span
+        v-if="act.attention !== 'none'"
+        class="c needs"
+        :class="act.attention"
+        :title="ATTENTION_TEXT[act.attention]"
+      >
+        <component :is="act.attention === 'reply' ? Hand : CircleAlert" class="sm" />
+        <template v-if="act.waiting > 1">{{ act.waiting }}</template>
       </span>
       <span v-if="w.lease" class="lease" title="locked — an agent is working here">
         <Lock class="sm" />
@@ -175,6 +203,12 @@ const kindLabel = computed(() =>
 .dirty { color: var(--warn); }
 .conflict { color: var(--danger); font-weight: 600; }
 .agent { color: var(--agent); }
+/* The row's only animated thing, and it means exactly one thing: something is
+   running in here right now. */
+.live { animation: pulse 1.6s var(--ease-soft) infinite; }
+.needs.reply { color: var(--agent); }
+.needs.blocked { color: var(--warn); }
+.needs.failed { color: var(--danger); }
 .pip {
   width: 6px;
   height: 6px;

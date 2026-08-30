@@ -80,6 +80,8 @@ export type EventType =
   | 'agent.session_resumed'
   | 'agent.output'
   | 'agent.tool_use'
+  /** §16 — the allow-list refused a tool, so the turn stopped short of its job. */
+  | 'agent.denied'
   | 'agent.session_ended'
   // leases
   | 'lease.acquired'

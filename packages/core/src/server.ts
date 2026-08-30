@@ -99,6 +99,19 @@ export function pushAgents(): void {
   broadcast({ t: 'agents', sessions: agents.list() })
 }
 
+/**
+ * A conversation starting, speaking or ending changes two things at once: the
+ * session list, and the `lease` / `agentSessions` the workspace rows draw their
+ * badges from. Pushing only the first is what made the list say "no agent here"
+ * while one was plainly running (§3.3 — the window shows the last push, so the
+ * last push has to be complete).
+ */
+function pushAgentActivity(): void {
+  registry.refreshAgentActivity()
+  pushAgents()
+  pushWorkspaces()
+}
+
 /** Opens a path in the configured editor / Finder / browser (§2: the cockpit
  *  opens the IDE at the right place, it is not the IDE). */
 async function openIn(workspaceId: string, target: string, path?: string) {
@@ -451,8 +464,7 @@ const handlers: Record<string, Handler> = {
       // absent, the built-in one applies.
       allow: allowFor(r.workspaces[0]?.projectId),
     })
-    pushAgents()
-    pushWorkspaces()
+    pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints }
   },
   'agent.resume': (p: { sessionId: string; prompt: string }) => {
@@ -466,14 +478,13 @@ const handlers: Record<string, Handler> = {
       prev.topicId ? topics.promptPreamble(prev.topicId, prev.paths) : '',
       allowFor(registry.getWorkspace(prev.workspaceIds[0] ?? '')?.projectId),
     )
-    pushAgents()
-    pushWorkspaces()
+    pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints: [] }
   },
   'agent.list': () => agents.list(),
   'agent.stop': (p: { sessionId: string }) => {
     agents.stop(p.sessionId)
-    pushAgents()
+    pushAgentActivity()
     return { ok: true }
   },
   'agent.send': (p: { sessionId: string }) => agents.send(p.sessionId),
@@ -583,7 +594,7 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
   bus.on('event', (event: CockpitEvent) => broadcast({ t: 'event', event }))
   // §3.3 — a session that ends on its own has to reach the window; nothing
   // else was going to call this until the user happened to click something.
-  agents.agentBus.on('changed', () => pushAgents())
+  agents.agentBus.on('changed', () => pushAgentActivity())
   termBus.on('data', ({ termId, data }) => broadcast({ t: 'term', termId, data }))
   termBus.on('exit', ({ termId, code }) => broadcast({ t: 'term-exit', termId, code }))
 

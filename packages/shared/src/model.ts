@@ -369,6 +369,15 @@ export interface Conversation {
   title: string
   /** §6 — every turn, oldest first. Append-only; a resume adds, never replaces. */
   history: AgentTurn[]
+  /**
+   * §16 — the tools the allow-list refused during the last turn, by name.
+   *
+   * The engine reports them on the event that ends the turn and then stops. A
+   * conversation that ends with this non-empty did not finish what it was
+   * asked: it ran out of permission, and that is a question for a person
+   * rather than a session to leave sitting in a list looking done.
+   */
+  denials: string[]
 }
 
 export interface DiffFile {

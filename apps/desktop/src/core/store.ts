@@ -433,6 +433,9 @@ export async function startAgentIn(
     return false
   }
   state.agentDraft = ''
+  // The thread that was just opened is the one to land in, and the panel must
+  // still be on it after a detour through three other projects (§6).
+  pinThread(scope, res.sessionId)
   // §4 — say that the anchor exists, or capturing it was pointless.
   toast(
     'ok',
@@ -441,6 +444,190 @@ export async function startAgentIn(
       : 'session started',
   )
   return true
+}
+
+/* ── which conversation is open, and which are waiting (§6) ─────────────
+ *
+ * A conversation used to be selected in a local ref inside the panel, so
+ * looking at another project and coming back destroyed the selection: the work
+ * was still running, and the panel was back on its empty composer as though
+ * nothing had ever been asked. Leaving a scope is not closing a thread. Which
+ * one is open is a property of the scope, it survives the detour, and it
+ * survives the window being closed.
+ *
+ * Three facts, and only the first is a preference:
+ *   pinned — the thread chosen by hand, out of the history
+ *   closed — the threads deliberately put away with the ✕
+ *   read   — how far into a finished thread the person has actually got
+ */
+const THREADS_KEY = 'cockpit.threads'
+
+interface ThreadMemory {
+  /** scopeKey → session id, chosen by hand and kept until it is closed. */
+  pinned: Record<string, string>
+  /** session id → put away. The one thing that stops it re-opening. */
+  closed: Record<string, true>
+  /** session id → the `endedAt` that has been read. */
+  read: Record<string, number>
+  /**
+   * When this window first learned to track any of the above. Every
+   * conversation that ended before it counts as read — otherwise switching to
+   * a build that has this would light up every project in the rail at once
+   * over work finished weeks ago.
+   */
+  since: number
+}
+
+export const threads = reactive<ThreadMemory>(readThreads())
+
+function readThreads(): ThreadMemory {
+  const empty: ThreadMemory = { pinned: {}, closed: {}, read: {}, since: Date.now() }
+  try {
+    const raw = JSON.parse(localStorage.getItem(THREADS_KEY) ?? 'null') as Partial<ThreadMemory> | null
+    if (!raw || typeof raw !== 'object') return empty
+    return {
+      pinned: raw.pinned ?? {},
+      closed: raw.closed ?? {},
+      read: raw.read ?? {},
+      since: typeof raw.since === 'number' ? raw.since : empty.since,
+    }
+  } catch {
+    return empty
+  }
+}
+
+function saveThreads(): void {
+  localStorage.setItem(THREADS_KEY, JSON.stringify(threads))
+}
+
+/** Still running, whatever it is doing — the only thing a spinner is about. */
+export function isRunning(c: Conversation): boolean {
+  return c.status !== 'ended' && c.status !== 'failed'
+}
+
+/**
+ * Why a finished conversation is still asking for a person.
+ *
+ *   blocked — the allow-list refused a tool, so it stopped short of the job
+ *   failed  — the engine died
+ *   reply   — it answered, and the answer has not been read
+ *
+ * A running conversation is never in any of these: it is working, not waiting.
+ */
+export type Attention = 'none' | 'reply' | 'blocked' | 'failed'
+
+export function attentionOf(c: Conversation): Attention {
+  if (isRunning(c)) return 'none'
+  const at = c.endedAt ?? c.startedAt
+  if (at < threads.since) return 'none'
+  if ((threads.read[c.id] ?? 0) >= at) return 'none'
+  if (c.status === 'failed') return 'failed'
+  if (c.denials.length) return 'blocked'
+  return 'reply'
+}
+
+const ATTENTION_RANK: Record<Attention, number> = { none: 0, reply: 1, blocked: 2, failed: 3 }
+
+/** What a badge somewhere in the shell has to say about one thing. */
+export interface AgentActivity {
+  running: number
+  waiting: number
+  /** The loudest of the waiting ones, which is the colour the badge takes. */
+  attention: Attention
+}
+
+const NO_ACTIVITY: AgentActivity = { running: 0, waiting: 0, attention: 'none' }
+
+/**
+ * §12's "where am I", answered for everything the shell draws at once: the
+ * project tiles in the rail, the topic headers and the rows in the list.
+ *
+ * Built from `state.agents` rather than from `Workspace.agentSessions`, for
+ * two reasons: that array only covers running sessions, and a conversation
+ * waiting to be read is exactly the thing this is for; and it says nothing
+ * about the scope, so a topic-wide conversation could never light its own
+ * header.
+ */
+export const agentActivity = computed(() => {
+  const map = new Map<string, AgentActivity>()
+  const bump = (key: string, running: boolean, att: Attention) => {
+    const a = map.get(key) ?? { running: 0, waiting: 0, attention: 'none' as Attention }
+    if (running) a.running++
+    if (att !== 'none') {
+      a.waiting++
+      if (ATTENTION_RANK[att] > ATTENTION_RANK[a.attention]) a.attention = att
+    }
+    map.set(key, a)
+  }
+
+  for (const c of state.agents) {
+    const running = isRunning(c)
+    const att = attentionOf(c)
+    if (!running && att === 'none') continue
+
+    // A conversation lights every level it belongs to: the checkouts it can
+    // write in, the topic those sit under, and the project holding them.
+    const keys = new Set<string>()
+    if (c.scope.kind === 'topic') keys.add('topic:' + c.scope.topicId)
+    if (c.scope.kind === 'project') keys.add('project:' + c.scope.projectId)
+    if (c.topicId) keys.add('topic:' + c.topicId)
+    for (const id of c.workspaceIds) {
+      keys.add('workspace:' + id)
+      const w = state.workspaces.find((x) => x.id === id)
+      if (!w) continue
+      keys.add('project:' + w.projectId)
+      if (w.topicId) keys.add('topic:' + w.topicId)
+    }
+    for (const k of keys) bump(k, running, att)
+  }
+  return map
+})
+
+export function activityFor(kind: 'workspace' | 'topic' | 'project', id: string): AgentActivity {
+  return agentActivity.value.get(kind + ':' + id) ?? NO_ACTIVITY
+}
+
+/**
+ * The conversation the panel should be showing on this scope.
+ *
+ * Nothing here is a guess about what the person wants next: it is what they
+ * left open. A thread runs until it is put away — and one still running comes
+ * back first, because that is the one there is news about.
+ */
+export function openThreadFor(scope: AgentScope | null): Conversation | null {
+  if (!scope) return null
+  const all = [...sessionsForScope(scope)].sort((a, b) => b.startedAt - a.startedAt)
+  const pinned = all.find((c) => c.id === threads.pinned[scopeKey(scope)])
+  if (pinned) return pinned
+  const open = all.filter((c) => !threads.closed[c.id])
+  return open.find(isRunning) ?? open[0] ?? null
+}
+
+/** Opening one out of the history, which also takes it back out of the bin. */
+export function pinThread(scope: AgentScope, sessionId: string): void {
+  threads.pinned[scopeKey(scope)] = sessionId
+  delete threads.closed[sessionId]
+  saveThreads()
+}
+
+/**
+ * The ✕ on a thread. Deliberate, and therefore respected even for a session
+ * still running: the conversation carries on, this window simply stops leading
+ * with it, and the badges still say it is there.
+ */
+export function closeThread(scope: AgentScope, sessionId: string): void {
+  if (threads.pinned[scopeKey(scope)] === sessionId) delete threads.pinned[scopeKey(scope)]
+  threads.closed[sessionId] = true
+  saveThreads()
+}
+
+/** Having it on screen is having read it; there is no second "mark as read". */
+export function markThreadRead(c: Conversation): void {
+  if (isRunning(c)) return
+  const at = c.endedAt ?? c.startedAt
+  if ((threads.read[c.id] ?? 0) >= at) return
+  threads.read[c.id] = at
+  saveThreads()
 }
 
 

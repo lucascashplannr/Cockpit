@@ -2,15 +2,15 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
-  ArrowDown, ArrowUp, CloudDownload, FolderOpen, FolderPlus, GitBranch, Lightbulb, Search,
-  SlidersHorizontal, Sparkles, SquareDot, X,
+  ArrowDown, ArrowUp, CircleAlert, CloudDownload, FolderOpen, FolderPlus, GitBranch, Hand,
+  Lightbulb, Search, SlidersHorizontal, Sparkles, SquareDot, X,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import Wordmark from './brand/Wordmark.vue'
 import NewProjectSources from './NewProjectSources.vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  activeProject, canLeaveHome, closeHome, cycleTheme, newProject, recentWorkspaces,
+  activeProject, activityFor, canLeaveHome, closeHome, cycleTheme, newProject, recentWorkspaces,
   selectWorkspace, state,
 } from '../core/store.js'
 
@@ -267,8 +267,23 @@ onMounted(() => void nextTick(() => input.value?.focus()))
                 <span v-if="h.ws.git.behind" class="c behind"><ArrowDown class="sm" />{{ h.ws.git.behind }}</span>
                 <span v-if="dirty(h.ws)" class="c dirty"><i class="pip" />{{ dirty(h.ws) }}</span>
               </template>
-              <span v-if="h.ws.agentSessions.length" class="c agent">
-                <Sparkles class="sm" />{{ h.ws.agentSessions.length }}
+              <span
+                v-if="activityFor('workspace', h.ws.id).running"
+                class="c agent live"
+                :title="activityFor('workspace', h.ws.id).running + ' conversation(s) running here'"
+              >
+                <Sparkles class="sm" />{{ activityFor('workspace', h.ws.id).running }}
+              </span>
+              <span
+                v-else-if="activityFor('workspace', h.ws.id).attention !== 'none'"
+                class="c needs"
+                :class="activityFor('workspace', h.ws.id).attention"
+                title="an agent here is waiting for you"
+              >
+                <component
+                  :is="activityFor('workspace', h.ws.id).attention === 'reply' ? Hand : CircleAlert"
+                  class="sm"
+                />
               </span>
               <span v-if="h.ws.runtime" class="dot" :class="h.ws.runtime.status" />
             </template>
@@ -483,6 +498,10 @@ onMounted(() => void nextTick(() => input.value?.focus()))
 .c.behind { color: var(--warn); }
 .c.dirty { color: var(--warn); }
 .c.agent { color: var(--agent); }
+.c.live { animation: pulse 1.6s var(--ease-soft) infinite; }
+.c.needs.reply { color: var(--agent); }
+.c.needs.blocked { color: var(--warn); }
+.c.needs.failed { color: var(--danger); }
 .pip {
   width: 5px;
   height: 5px;

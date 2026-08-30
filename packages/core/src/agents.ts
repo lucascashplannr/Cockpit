@@ -78,6 +78,12 @@ export interface NormalizedEvent {
   text?: string
   tool?: string
   paths?: string[]
+  /**
+   * §16 — on `end` only: the tools the allow-list refused during this turn.
+   * The engine reports them and stops, so a turn that carries any of these
+   * asked for something it was not given and is waiting on a person.
+   */
+  denials?: string[]
 }
 
 /**
@@ -145,10 +151,26 @@ const claudeEngine: EngineSpec = {
       return text ? { kind: 'text', text } : null
     }
     if (type === 'result') {
-      return { kind: 'end', text: String(o.result ?? '') }
+      return { kind: 'end', text: String(o.result ?? ''), denials: denialsIn(o) }
     }
     return null
   },
+}
+
+/**
+ * `claude` reports every refused tool call on its result event, as
+ * `permission_denials: [{ tool_name, tool_use_id, tool_input }]`. Read
+ * defensively: an engine that does not send the field is not an error, it
+ * simply has nothing to say about permission.
+ */
+function denialsIn(o: Record<string, unknown>): string[] {
+  const raw = o.permission_denials
+  if (!Array.isArray(raw)) return []
+  const names = raw.map((d) => {
+    const e = d as { tool_name?: unknown; name?: unknown }
+    return String(e?.tool_name ?? e?.name ?? 'tool')
+  })
+  return [...new Set(names)]
 }
 
 /**
@@ -214,12 +236,12 @@ agentBus.setMaxListeners(50)
 function persist(s: Conversation): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, topic_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, topic_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title, denials)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET status=excluded.status, ended_at=excluded.ended_at,
          turns=excluded.turns, last_message=excluded.last_message,
          lease_id=excluded.lease_id, engine_session_id=excluded.engine_session_id,
-         prompt=excluded.prompt`,
+         prompt=excluded.prompt, denials=excluded.denials`,
     )
     .run(
       s.id,
@@ -240,6 +262,7 @@ function persist(s: Conversation): void {
       s.scope.kind === 'folder' ? s.scope.subpath : null,
       // Frozen at turn 1: `prompt` moves with the conversation, this does not.
       s.title,
+      JSON.stringify(s.denials),
     )
 }
 
@@ -315,6 +338,16 @@ function closeTurn(sessionId: string, status: AgentTurn['status']): void {
     .run(Date.now(), status, row.id)
 }
 
+function readDenials(v: unknown): string[] {
+  if (typeof v !== 'string' || !v) return []
+  try {
+    const a = JSON.parse(v) as unknown
+    return Array.isArray(a) ? a.map(String) : []
+  } catch {
+    return []
+  }
+}
+
 function hydrate(r: Record<string, unknown>): Conversation {
   const engineSessionId = r.engine_session_id == null ? null : String(r.engine_session_id)
   const status = String(r.status) as Conversation['status']
@@ -338,6 +371,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     scope: readScope(r),
     title: r.title == null || String(r.title) === '' ? String(r.prompt ?? '') : String(r.title),
     history: turnsOf(String(r.id)),
+    denials: readDenials(r.denials),
   }
 }
 
@@ -363,14 +397,19 @@ export function listForTopic(topicId: string): Conversation[] {
   return rows.map(hydrate)
 }
 
-export function sessionsTouching(path: string): Conversation[] {
+/** Every conversation whose process is still up — the ones a badge is about. */
+export function liveSessions(): Conversation[] {
+  return list().filter((s) => s.status !== 'ended' && s.status !== 'failed')
+}
+
+/** Whether a session's scope and a path overlap, either way round. */
+export function covers(session: Conversation, path: string): boolean {
   const p = resolve(path)
-  return list().filter(
-    (s) =>
-      s.status !== 'ended' &&
-      s.status !== 'failed' &&
-      s.paths.some((sp) => p === sp || p.startsWith(sp + '/') || sp.startsWith(p + '/')),
-  )
+  return session.paths.some((sp) => p === sp || p.startsWith(sp + '/') || sp.startsWith(p + '/'))
+}
+
+export function sessionsTouching(path: string): Conversation[] {
+  return liveSessions().filter((s) => covers(s, path))
 }
 
 export interface StartAgentInput {
@@ -424,6 +463,7 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
     scope: input.scope,
     title: input.prompt.slice(0, 200),
     history: [],
+    denials: [],
   }
 
   return launch(session, spec, (input.preamble ?? '') + input.prompt, false, input.allow)
@@ -464,6 +504,10 @@ export function resumeAgent(
     leaseId: null,
     lastMessage: null,
     prompt,
+    // The refusals belong to a turn, not to the conversation: carrying the
+    // last one's forward would leave the thread flagged for help it has
+    // already been given.
+    denials: [],
   }
   return launch(session, spec, preamble + prompt, true, allow)
 }
@@ -569,6 +613,16 @@ function launch(
       }
     } else if (ev.kind === 'end') {
       session.status = 'idle'
+      session.denials = ev.denials ?? []
+      if (session.denials.length) {
+        append({
+          type: 'agent.denied',
+          level: 'warn',
+          actor,
+          workspaceId,
+          payload: { tools: session.denials },
+        })
+      }
     }
     persist(session)
     agentBus.emit('changed')

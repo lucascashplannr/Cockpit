@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { Plus, SlidersHorizontal, Sun, Moon, MonitorCog } from '@lucide/vue'
 import Mark from './brand/Mark.vue'
-import { cycleTheme, newProject, openHome, selectProject, state } from '../core/store.js'
+import { activityFor, cycleTheme, newProject, openHome, selectProject, state } from '../core/store.js'
 
 /**
  * The far-left rail: the mark, then one square per project, then add.
@@ -18,12 +18,39 @@ function monogram(name: string): string {
   return name.slice(0, 2).toUpperCase()
 }
 
+/**
+ * The tile is the whole of what this column can say about a project, so the
+ * three things worth interrupting for are the three it says: servers up, an
+ * agent at work, uncommitted changes — plus the one that is a request rather
+ * than a state, which gets its own mark rather than a fourth dot.
+ *
+ * The agent half comes from the conversations, not from `w.agentSessions`:
+ * that array holds only what is running, and a project you should go back to
+ * because an agent finished there and is waiting is exactly the case this
+ * column exists for.
+ */
 function counts(projectId: string) {
   const ws = state.workspaces.filter((w) => w.projectId === projectId && w.kind !== 'group')
   const dirty = ws.filter((w) => w.git && w.git.staged + w.git.unstaged + w.git.untracked > 0).length
   const running = ws.filter((w) => w.runtime?.status === 'up').length
-  const agents = ws.filter((w) => w.agentSessions.length > 0).length
-  return { dirty, running, agents }
+  const agent = activityFor('project', projectId)
+  return { dirty, running, agents: agent.running, attention: agent.attention, waiting: agent.waiting }
+}
+
+const ATTENTION_TEXT: Record<string, string> = {
+  reply: 'an agent answered here — waiting for you',
+  blocked: 'an agent stopped here: it was refused a tool it needed',
+  failed: 'an agent failed here',
+}
+
+/** What the tile's tooltip adds to the name: why it is marked at all. */
+function tileTitle(name: string, root: string, projectId: string): string {
+  const c = counts(projectId)
+  const lines = [name + ' — ' + root]
+  if (c.agents) lines.push(c.agents + ' agent conversation(s) running')
+  if (c.attention !== 'none') lines.push(ATTENTION_TEXT[c.attention] ?? '')
+  lines.push('Right-click for settings')
+  return lines.filter(Boolean).join('\n')
 }
 
 const themeLabel = computed(() =>
@@ -49,14 +76,22 @@ const themeLabel = computed(() =>
         :key="p.id"
         class="tile"
         :class="{ active: p.id === state.activeProjectId }"
-        :title="p.name + ' — ' + p.root + '\nRight-click for settings'"
+        :title="tileTitle(p.name, p.root, p.id)"
         @click="selectProject(p.id)"
         @contextmenu.prevent="state.editingProjectId = p.id"
       >
         <span class="gram">{{ monogram(p.name) }}</span>
+        <!-- A request, not a state: it sits on the corner rather than in the
+             row of dots, because it is the one thing here that is addressed
+             to you and the eye has to find it without counting. -->
+        <span
+          v-if="counts(p.id).attention !== 'none'"
+          class="ping"
+          :class="counts(p.id).attention"
+        />
         <span class="badges">
           <i v-if="counts(p.id).running" class="b run" />
-          <i v-if="counts(p.id).agents" class="b agent" />
+          <i v-if="counts(p.id).agents" class="b agent live" />
           <i v-if="counts(p.id).dirty" class="b dirty" />
         </span>
       </button>
@@ -197,6 +232,25 @@ const themeLabel = computed(() =>
 .b.run { background: var(--ok); }
 .b.agent { background: var(--agent); }
 .b.dirty { background: var(--warn); }
+/* The rail's only motion. It means one thing and it is the thing worth
+   catching out of the corner of the eye: an agent is working in there. */
+.b.live { animation: pulse 1.6s var(--ease-soft) infinite; }
+
+.ping {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  /* Ringed in the rail's own ground so it reads as sitting on the tile rather
+     than as part of the monogram. */
+  border: 2px solid var(--bg-sunken);
+  box-sizing: content-box;
+}
+.ping.reply { background: var(--agent); }
+.ping.blocked { background: var(--warn); }
+.ping.failed { background: var(--danger); }
 
 .theme { width: 38px; height: 38px; }
 

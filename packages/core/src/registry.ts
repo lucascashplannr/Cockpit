@@ -10,7 +10,7 @@ import { run } from './exec.js'
 import { append } from './journal.js'
 import { leaseCovering } from './leases.js'
 import { runtimeStateFor } from './runtime/index.js'
-import { sessionsTouching } from './agents.js'
+import { covers, liveSessions, sessionsTouching } from './agents.js'
 
 /**
  * §13 — "Réconciliation plutôt que mutation." Desired state is the manifest;
@@ -639,6 +639,24 @@ export async function reconcile(projectId?: string): Promise<number> {
     return changed
   } finally {
     reconciling = false
+  }
+}
+
+/**
+ * §3.4 — `lease` and `agentSessions` are the two fields on a workspace that a
+ * conversation moves without anything on disk changing. Probing a repository
+ * to learn that an agent started in it is absurd, and not refreshing them at
+ * all is why the badges in the list only caught up on the next reconcile: the
+ * push after `agent.start` carried the same stale array it had before.
+ *
+ * Both are read back from memory here, for every workspace at once, which is
+ * one query rather than one per row.
+ */
+export function refreshAgentActivity(): void {
+  const live = liveSessions()
+  for (const ws of workspaces.values()) {
+    ws.lease = leaseCovering(ws.path)
+    ws.agentSessions = live.filter((s) => covers(s, ws.path)).map((s) => s.id)
   }
 }
 
