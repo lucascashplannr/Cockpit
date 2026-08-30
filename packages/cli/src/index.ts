@@ -37,7 +37,7 @@ async function connect(): Promise<CoreClient> {
   try {
     await client.connect()
   } catch (e) {
-    out(C.red('cockpit core is not running.'))
+    out(C.red('the cockpit service is not running.'))
     out('Start it with:  ' + C.bold('cockpit daemon') + '   (or: pnpm daemon)')
     out(C.dim(String(e instanceof Error ? e.message : e)))
     process.exit(1)
@@ -45,11 +45,17 @@ async function connect(): Promise<CoreClient> {
   return client
 }
 
-/** §12 — the same compact status line the UI shows, in one row per workspace. */
+/** §12 — the same compact status line the UI shows, in one row per checkout. */
 function workspaceLine(w: Workspace): string {
   const parts: string[] = []
+  // The same two words the window uses: a repository on its default branch,
+  // and a branch checked out in a folder of its own.
   const kind =
-    w.kind === 'main' ? C.blue('main') : w.kind === 'worktree' ? C.mag('tree') : C.dim(w.kind.slice(0, 4))
+    w.kind === 'main'
+      ? C.blue('repo  ')
+      : w.kind === 'worktree'
+        ? C.mag('branch')
+        : C.dim(w.kind.slice(0, 6).padEnd(6))
   parts.push(kind)
   parts.push(C.bold(w.name.padEnd(24).slice(0, 24)))
 
@@ -152,8 +158,8 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     await c.call('core.shutdown', undefined)
     c.close()
     const freed = await waitForPort(false, 8000)
-    out(freed ? C.green('core stopped') : C.yellow('shutdown sent, but the port is still bound'))
-    out(C.dim('  dev servers and agents were left running — they outlive the core (§13)'))
+    out(freed ? C.green('service stopped') : C.yellow('shutdown sent, but the port is still bound'))
+    out(C.dim('  servers and agents were left running — they outlive the service (§13)'))
   },
 
   async restart() {
@@ -165,9 +171,9 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       await c.call('core.shutdown', undefined)
       c.close()
       await waitForPort(false, 8000)
-      out(C.dim('  stopped the running core'))
+      out(C.dim('  stopped the running service'))
     } catch {
-      out(C.dim('  no core was running'))
+      out(C.dim('  no service was running'))
     }
 
     const here = dirname(fileURLToPath(import.meta.url))
@@ -188,7 +194,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     const c = await connect()
     const st = await c.call('core.status', undefined)
     c.close()
-    out(C.green('core restarted') + '  ' + C.dim('pid ' + st.pid + ' · protocol v' + st.protocol.major + '.' + st.protocol.minor))
+    out(C.green('service restarted') + '  ' + C.dim('pid ' + st.pid + ' · protocol v' + st.protocol.major + '.' + st.protocol.minor))
   },
 
   async status() {
@@ -219,7 +225,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       const caps = p.capabilities.map((x) => x.id).join(' ')
       out('')
       out(C.bold(p.name) + '  ' + C.dim(p.root))
-      out(C.dim('  ' + p.defaultCeremony + (caps ? ' · ' + caps : '') + (p.manifestPath ? '' : ' · no manifest')))
+      out(C.dim('  ' + p.defaultSetup + (caps ? ' · ' + caps : '') + (p.manifestPath ? '' : ' · no manifest')))
       for (const w of workspaces.filter((w) => w.projectId === p.id)) {
         out('  ' + workspaceLine(w))
       }
@@ -568,24 +574,24 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
   /**
    * §16 — "revue humaine du diff avant tout commit". `cockpit diff` is the
    * review; this is the commit it was a review of, across every repository of
-   * the feature at once.
+   * the topic at once.
    */
   async commit(args) {
     const c = await connect()
     const flags = parseFlags(args)
     const message = args.filter((a) => !a.startsWith('--'))[0]
     if (!message) {
-      out('usage: cockpit commit "<message>" [--staged] [--at <feature|workspace>] [--yes]')
+      out('usage: cockpit commit "<message>" [--staged] [--at <topic|workspace>] [--yes]')
       out(C.dim('  --staged commits only what is already staged; the default stages everything'))
       process.exit(1)
     }
     const all = flags.staged === undefined
 
-    // A feature by slug, or the workspace the shell is standing in.
-    const features = await c.call('feature.list', {})
-    const f = flags.at ? features.find((x) => x.slug === flags.at || x.name === flags.at) : null
+    // A topic by slug, or the workspace the shell is standing in.
+    const topics = await c.call('topic.list', {})
+    const f = flags.at ? topics.find((x) => x.slug === flags.at || x.name === flags.at) : null
     const target = f
-      ? { featureId: f.id }
+      ? { topicId: f.id }
       : { workspaceIds: [(await pickWorkspace(c, flags.at)).id] }
 
     const res = await c.call('git.commit', { ...target, message, all })
@@ -702,7 +708,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
   },
 
   /**
-   * §10 — the database each worktree of a feature would get, and whether the
+   * §10 — the database each worktree of a topic would get, and whether the
    * client needed to make it is even installed.
    */
   async db(args) {
@@ -736,7 +742,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
   },
 
   /**
-   * §7 — what a worktree for this feature name would be missing, and what in
+   * §7 — what a worktree for this topic name would be missing, and what in
    * it must differ from the main checkout. Creates nothing; it is the answer
    * to "why did my worktree not boot" before the worktree exists.
    */
@@ -765,23 +771,23 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
 
   /**
    * §4 — the durable unit of work. Open it once, park it, come back on
-   * Thursday. Everything the window does with a feature is here too (§15).
+   * Thursday. Everything the window does with a topic is here too (§15).
    */
-  async feature(args) {
+  async topic(args) {
     const c = await connect()
     const sub = args[0] ?? 'ls'
 
-    const pickFeature = async (hint?: string) => {
-      const all = await c.call('feature.list', { includeArchived: true })
+    const pickTopic = async (hint?: string) => {
+      const all = await c.call('topic.list', { includeArchived: true })
       if (!all.length) {
-        out(C.dim('no feature open. Start one with:  cockpit feature open "<name>"'))
+        out(C.dim('no topic open. Start one with:  cockpit topic open "<name>"'))
         process.exit(1)
       }
       const f = hint
         ? all.find((x) => x.id === hint || x.slug === hint || x.name === hint)
-        : all.find((x) => x.state === 'live') ?? all[0]
+        : all.find((x) => x.state === 'running') ?? all[0]
       if (!f) {
-        out(C.red('no feature matching "' + hint + '"'))
+        out(C.red('no topic matching "' + hint + '"'))
         process.exit(1)
       }
       return f
@@ -789,24 +795,24 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
 
     if (sub === 'ls' || sub === 'list') {
       const all = args.includes('--all')
-      const featues = await c.call('feature.list', { includeArchived: all })
+      const featues = await c.call('topic.list', { includeArchived: all })
       const workspaces = await c.call('workspace.list', {})
-      if (!featues.length) out(C.dim('  no feature'))
+      if (!featues.length) out(C.dim('  no topic'))
       for (const f of featues) {
-        const dot = f.state === 'live' ? C.green('●') : f.state === 'archived' ? C.dim('○') : C.yellow('◐')
+        const dot = f.state === 'running' ? C.green('●') : f.state === 'closed' ? C.dim('○') : C.yellow('◐')
         const origin = f.derived ? C.dim(' · inferred') : ''
         out('')
-        out('  ' + dot + ' ' + C.bold(f.name) + '  ' + C.dim(f.slug + ' · ' + f.ceremony) + origin)
+        out('  ' + dot + ' ' + C.bold(f.name) + '  ' + C.dim(f.slug + ' · ' + f.setup) + origin)
         if (f.rootPath) out('    ' + C.dim(f.rootPath))
         for (const w of workspaces.filter((w) => f.workspaceIds.includes(w.id) && w.kind !== 'group')) {
           out('    ' + workspaceLine(w))
         }
       }
       if (!all) {
-        const closed = (await c.call('feature.list', { includeArchived: true })).filter(
-          (f) => f.state === 'archived',
+        const closed = (await c.call('topic.list', { includeArchived: true })).filter(
+          (f) => f.state === 'closed',
         ).length
-        if (closed) out(C.dim('  ' + closed + ' closed — cockpit feature ls --all'))
+        if (closed) out(C.dim('  ' + closed + ' closed — cockpit topic ls --all'))
       }
       out('')
       c.close()
@@ -814,8 +820,8 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     }
 
     if (sub === 'reopen') {
-      const f = await pickFeature(args[1])
-      const res = await c.call('feature.reopen', { featureId: f.id })
+      const f = await pickTopic(args[1])
+      const res = await c.call('topic.reopen', { topicId: f.id })
       if (!res.ok) {
         out(C.red(res.detail))
         c.close()
@@ -831,11 +837,11 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
      * separate verbs is the point: the safe one is the short one.
      */
     if (sub === 'delete' || sub === 'rm') {
-      const f = await pickFeature(args[1])
+      const f = await pickTopic(args[1])
       const branches = args.includes('--branches')
       const keep = args.includes('--keep-worktrees')
-      const res = await c.call('feature.delete', {
-        featureId: f.id,
+      const res = await c.call('topic.delete', {
+        topicId: f.id,
         removeWorktrees: !keep,
         deleteBranches: branches,
         // §10 — its own flag, and never implied by --branches: a branch that
@@ -863,7 +869,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     if (sub === 'open') {
       const name = args[1]
       if (!name) {
-        out('usage: cockpit feature open "<name>" [--repos a,b] [--base main] [--ceremony C2|C3]')
+        out('usage: cockpit topic open "<name>" [--repos a,b] [--base main] [--setup isolated|full]')
         process.exit(1)
       }
       const flags = parseFlags(args.slice(2))
@@ -880,25 +886,25 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
         ? workspaces.filter((w) => w.kind === 'main' && wanted.includes(w.name)).map((w) => w.id)
         : undefined
 
-      const ceremony = (flags.ceremony as 'C1' | 'C2' | 'C3') ?? 'C3'
+      const setup = (flags.setup as 'branch' | 'isolated' | 'full') ?? 'full'
 
       // §7 — what git will not check out. Shown with the plan so the whole of
       // what is about to happen is on one screen, and passed only when the
       // user said yes: a detected proposal nobody saw never writes to a .env.
       const slug = slugify(name)
       const seed =
-        ceremony === 'C1' || flags['no-seed'] !== undefined
+        setup === 'branch' || flags['no-seed'] !== undefined
           ? []
           : await c
               .call('worktree.seedPreview', { projectId: project.id, repoWorkspaceIds, slug })
               .catch(() => [])
       const carrying = seed.filter((x) => x.files.length)
 
-      const cloneDatabase = ceremony !== 'C1' && flags['clone-db'] !== undefined
-      const { plan } = await c.call('feature.open', {
+      const cloneDatabase = setup !== 'branch' && flags['clone-db'] !== undefined
+      const { plan } = await c.call('topic.open', {
         projectId: project.id,
         name,
-        ceremony,
+        setup,
         repoWorkspaceIds,
         base: flags.base,
         ...(carrying.length
@@ -912,7 +918,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       // §10 — offered rather than assumed. Copying a database is slow and
       // costs the disk again, so it is the user's call, but a worktree
       // silently sharing one is the collision no folder isolation prevents.
-      if (!cloneDatabase && ceremony !== 'C1') {
+      if (!cloneDatabase && setup !== 'branch') {
         const dbs = await c
           .call('database.preview', { projectId: project.id, repoWorkspaceIds, slug })
           .catch(() => [])
@@ -929,24 +935,24 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       if (flags.yes === undefined) {
         out(C.dim('  nothing has run. Apply it with:  cockpit apply ' + plan.planId))
         if (carrying.length) {
-          // The seed rides on `feature.open`, not on the plan id, so applying
+          // The seed rides on `topic.open`, not on the plan id, so applying
           // the plan by hand later would create worktrees and carry nothing.
-          out(C.yellow('  ! the local config above is carried only by `feature open --yes`'))
+          out(C.yellow('  ! the local config above is carried only by `topic open --yes`'))
         }
         c.close()
         return
       }
       const res = await c.call('git.apply', { planId: plan.planId })
       out(res.output)
-      out(res.ok ? C.green('feature open') : C.red('failed — nothing was left behind'))
+      out(res.ok ? C.green('topic open') : C.red('failed — nothing was left behind'))
       c.close()
       return
     }
 
-    if (sub === 'land') {
-      const f = await pickFeature(args[1])
-      const res = await c.call('feature.land', {
-        featureId: f.id,
+    if (sub === 'merge') {
+      const f = await pickTopic(args[1])
+      const res = await c.call('topic.merge', {
+        topicId: f.id,
         push: args.includes('--push'),
         ...(args.indexOf('--base') >= 0 ? { base: args[args.indexOf('--base') + 1] ?? '' } : {}),
       })
@@ -966,9 +972,9 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       if (applied.conflict) {
         out(C.yellow(applied.conflict.repo + ': the merge stopped on a conflict'))
         out(C.dim('  cockpit conflict show ' + applied.conflict.repo + '   then:  cockpit conflict continue'))
-        out(C.dim('  what already merged was kept; run land again when it is resolved'))
+        out(C.dim('  what already merged was kept; run merge again when it is resolved'))
       } else {
-        out(applied.ok ? C.green('landed') : C.red('stopped'))
+        out(applied.ok ? C.green('merged') : C.red('stopped'))
         if (applied.ok && !args.includes('--push')) {
           out(C.dim('  local only — push the base branch, or use --push next time'))
         }
@@ -978,10 +984,10 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     }
 
     if (sub === 'rebase') {
-      const f = await pickFeature(args[1])
+      const f = await pickTopic(args[1])
       const baseIdx = args.indexOf('--base')
-      const res = await c.call('feature.rebase', {
-        featureId: f.id,
+      const res = await c.call('topic.rebase', {
+        topicId: f.id,
         ...(baseIdx >= 0 ? { base: args[baseIdx + 1] ?? '' } : {}),
       })
       if (!res.ok || !res.plan) {
@@ -1007,34 +1013,34 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       return
     }
 
-    if (sub === 'live' || sub === 'activate') {
-      const f = await pickFeature(args[1])
-      const res = await c.call('feature.activate', { featureId: f.id, force: args.includes('--force') })
+    if (sub === 'start') {
+      const f = await pickTopic(args[1])
+      const res = await c.call('topic.start', { topicId: f.id, force: args.includes('--force') })
       if (!res.ok) {
         for (const x of res.conflicts) out('  ' + C.yellow('! ' + x))
         out(C.red(res.detail))
         c.close()
         process.exit(1)
       }
-      for (const x of res.parked) out(C.dim('  parked ' + x))
-      out(C.green('live ') + C.bold(f.name))
+      for (const x of res.stoppedTopics) out(C.dim('  stopped ' + x))
+      out(C.green('started ') + C.bold(f.name))
       if (res.detail) out(C.dim(res.detail.split('\n').map((l) => '  ' + l).join('\n')))
       c.close()
       return
     }
 
-    if (sub === 'park') {
-      const f = await pickFeature(args[1])
-      const res = await c.call('feature.park', { featureId: f.id })
-      out(C.green('parked ') + C.bold(f.name) + '  ' + C.dim(res.detail))
+    if (sub === 'stop') {
+      const f = await pickTopic(args[1])
+      const res = await c.call('topic.stop', { topicId: f.id })
+      out(C.green('stopped ') + C.bold(f.name) + '  ' + C.dim(res.detail))
       c.close()
       return
     }
 
     if (sub === 'close') {
-      const f = await pickFeature(args[1])
+      const f = await pickTopic(args[1])
       const remove = args.includes('--remove')
-      const res = await c.call('feature.close', { featureId: f.id, removeWorktrees: remove })
+      const res = await c.call('topic.close', { topicId: f.id, removeWorktrees: remove })
       if (!res.ok) {
         out(C.red('refusing: ') + res.detail)
         c.close()
@@ -1050,16 +1056,17 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       return
     }
 
-    out('usage: cockpit feature <command>')
-    out('  ls [--all]                    every feature; --all includes closed ones')
-    out('  open "<name>"                 [--repos a,b --base main --ceremony C3 --yes]')
-    out('  live [name] [--force]         bring its runtimes up')
-    out('  park [name]                   servers down, worktrees kept')
-    out('  close [name] [--remove]       archive it; reversible with reopen')
+    out('usage: cockpit topic <command>')
+    out('  ls [--all]                    every topic; --all includes closed ones')
+    out('  open "<name>"                 [--repos a,b --base main --setup full --yes]')
+    out('  merge [name]                  merge it onto the base branch in every repository')
+    out('  start [name] [--force]        bring its servers up')
+    out('  stop [name]                   servers down; the branches stay')
+    out('  close [name] [--remove]       close it; reversible with reopen')
     out('  reopen [name]                 bring a closed one back')
     out('  delete [name]                 drop the record for good')
     out('      --branches                also delete the branch in every repo')
-    out('      --keep-worktrees          leave the checkouts on disk')
+    out('      --keep-worktrees          leave the branch folders on disk')
     out('      --force                   proceed over UNMERGED branches')
     c.close()
     process.exit(1)
@@ -1128,7 +1135,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       engine,
       workspaceIds: [w.id],
       prompt,
-      ...(flags.feature ? { featureId: flags.feature } : {}),
+      ...(flags.topic ? { topicId: flags.topic } : {}),
     })
     if ('denied' in r) {
       out(C.red('denied: ') + r.reason)
@@ -1245,7 +1252,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     out(C.bold('  work'))
     out('    diff [workspace]            changed files, split human / agent')
     out('    search <query>              full-text across every repo at once')
-    out('    commit "<msg>"              stage and commit, every repo of the feature at once')
+    out('    commit "<msg>"              stage and commit, every repo of the topic at once')
     out('    plan <op> [ws] [--name X]   preview a git operation')
     out('    apply <planId>              run a previewed plan')
     out('    undo [workspace]            roll back to the last restore point')
@@ -1253,31 +1260,31 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     out('    db [slug]                   the database each worktree would get')
     out('    conflict [show|ls]          what a stopped rebase left behind')
     out('    conflict continue|skip|abort   end it  [mark = the markers belong there]')
-    out('    up | down [workspace]       start / stop the runtime')
+    out('    up | down [workspace]       start / stop the servers')
     out('')
-    out(C.bold('  features') + C.dim('   — the durable unit of work: multi-repo, multi-day'))
-    out('    feature ls                  every feature, live or parked')
-    out('    feature open "<name>"        one plan, a worktree per repo  [--repos a,b --base main]')
+    out(C.bold('  topics') + C.dim('   — the durable unit of work: multi-repo, multi-day'))
+    out('    topic ls                  every topic, running or stopped')
+    out('    topic open "<name>"        one plan, one branch per repository  [--repos a,b --base main]')
     out('        --no-seed / --no-remember   skip the local config, or do not record the answer')
-    out('        --clone-db                  give each worktree its own copy of the database')
-    out('    feature rebase [name]       every repo onto its base, one plan  [--base X --yes]')
-    out('    feature land [name]         merge it ONTO the base, in every repo  [--push --yes]')
-    out('    feature live [name]         bring its runtimes up  [--force to park whatever blocks it]')
-    out('    feature park [name]         servers down, worktrees kept')
-    out('    feature close [name]        archive it  [--remove to drop the worktrees too]')
-    out('    feature reopen [name]       bring a closed one back')
-    out('    feature delete [name]       drop the record for good  [--branches --databases --force]')
+    out('        --clone-db                  give each branch its own copy of the database')
+    out('    topic rebase [name]       every repository onto its base, one plan  [--base X --yes]')
+    out('    topic merge [name]        merge it ONTO the base, in every repository  [--push --yes]')
+    out('    topic start [name]        bring its servers up  [--force to stop whatever blocks it]')
+    out('    topic stop [name]         servers down; the branches stay')
+    out('    topic close [name]        close it  [--remove to drop the branch folders too]')
+    out('    topic reopen [name]       bring a closed one back')
+    out('    topic delete [name]       drop the record for good  [--branches --databases --force]')
     out('')
     out(C.bold('  agents & memory'))
     out('    agent engines               which engines are installed')
-    out('    agent list                  sessions; ↻ marks the resumable ones')
-    out('    agent <engine> <prompt>     start a session here  [--at ws --feature id]')
+    out('    agent list                  conversations; ↻ marks the resumable ones')
+    out('    agent <engine> <prompt>     start a conversation here  [--at ws --topic id]')
     out('    agent resume <id> <prompt>  pick yesterday\'s conversation back up')
-    out('    memory show [workspace]     read the feature memory')
+    out('    memory show [workspace]     read the topic memory')
     out('    memory promote <s> <text>   push a decision into the memory')
     out('')
     out(C.bold('  service'))
-    out('    daemon                      run the core in the foreground')
+    out('    daemon                      run the service in the foreground')
     out('    restart                     stop it and start it again, detached')
     out('    stop                        stop it; dev servers keep running')
     out(C.dim('    (restart after changing core code — the window will say so too)'))
@@ -1307,7 +1314,7 @@ function printSeed(proposals: SeedProposal[], remembering: boolean): void {
   }
   if (remembering && proposals.some((p) => p.source !== 'manifest' && p.manifestPath)) {
     out('')
-    out(C.dim('  this will be written into cockpit.yaml — the next feature carries it without asking'))
+    out(C.dim('  this will be written into cockpit.yaml — the next topic carries it without asking'))
     out(C.dim('  (--no-remember to decide again next time, --no-seed to carry nothing)'))
   }
   out('')

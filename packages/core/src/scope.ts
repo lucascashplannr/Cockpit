@@ -1,7 +1,7 @@
 import { join, resolve as resolvePath } from 'node:path'
 import type { AgentScope, AgentScopePath, AgentScopePreview, Workspace } from '@cockpit/shared'
 import * as registry from './registry.js'
-import * as features from './features/index.js'
+import * as topics from './topics/index.js'
 import * as leases from './leases.js'
 import { defaultBranch } from './git.js'
 
@@ -16,7 +16,7 @@ import { defaultBranch } from './git.js'
  * | Agent sur un dossier sans dépôt | 1 chemin, aucun repo  |
  *
  * Every row lands on the same thing: a list of paths. That is deliberate —
- * the lease is taken on paths and never on the scope, so a feature session and
+ * the lease is taken on paths and never on the scope, so a topic session and
  * a repo session inside it collide exactly as §7 requires, without either of
  * them having to know the other's shape.
  */
@@ -27,15 +27,15 @@ export interface ResolvedScope {
   workspaces: Workspace[]
   paths: string[]
   /** §6 — whose memory gets prepended, when there is one. */
-  featureId: string | null
+  topicId: string | null
 }
 
 export function resolveScope(scope: AgentScope): ResolvedScope {
   switch (scope.kind) {
-    case 'feature': {
-      const f = registry.getFeature(scope.featureId)
-      if (!f) throw new Error('unknown feature: ' + scope.featureId)
-      // Its worktrees, in the order the feature lists them; `group` rows are
+    case 'topic': {
+      const f = registry.getTopic(scope.topicId)
+      if (!f) throw new Error('unknown topic: ' + scope.topicId)
+      // Its worktrees, in the order the topic lists them; `group` rows are
       // folders holding the others, not places an engine can be pointed at.
       const workspaces = f.workspaceIds
         .map((id) => registry.getWorkspace(id))
@@ -45,7 +45,7 @@ export function resolveScope(scope: AgentScope): ResolvedScope {
         label: f.name,
         workspaces,
         paths: workspaces.map((w) => w.path),
-        featureId: f.id,
+        topicId: f.id,
       }
     }
 
@@ -63,13 +63,13 @@ export function resolveScope(scope: AgentScope): ResolvedScope {
         label: p.name,
         workspaces,
         paths: workspaces.map((w) => w.path),
-        featureId: null,
+        topicId: null,
       }
     }
 
     case 'workspace': {
       const w = registry.requireWorkspace(scope.workspaceId)
-      return { scope, label: w.name, workspaces: [w], paths: [w.path], featureId: w.featureId }
+      return { scope, label: w.name, workspaces: [w], paths: [w.path], topicId: w.topicId }
     }
 
     case 'folder': {
@@ -80,7 +80,7 @@ export function resolveScope(scope: AgentScope): ResolvedScope {
         label: w.name + '/' + scope.subpath,
         workspaces: [w],
         paths: [sub],
-        featureId: w.featureId,
+        topicId: w.topicId,
       }
     }
   }
@@ -139,8 +139,8 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
     label: r.label,
     paths,
     blocked,
-    preamble: r.featureId
-      ? features.preambleParts(r.featureId, r.paths)
+    preamble: r.topicId
+      ? topics.preambleParts(r.topicId, r.paths)
       : { memory: false, context: false },
   }
 }

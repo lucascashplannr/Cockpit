@@ -3,7 +3,7 @@
  * five minutes. If a field cannot be guessed from disk it belongs here; if it
  * can, it does not (§5, "défaut sain").
  */
-import type { Ceremony } from './model.js'
+import type { Setup } from './model.js'
 
 export interface RepoDecl {
   /** Relative to the manifest, or absolute. */
@@ -18,7 +18,7 @@ export interface RepoDecl {
  *
  * A worktree is a checkout of *tracked* files. Everything gitignored — `.env`,
  * `auth.json`, a local sqlite file — is simply absent, so a Laravel or Vite
- * worktree created by Cockpit boots into "no APP_KEY" and the feature is dead
+ * worktree created by Cockpit boots into "no APP_KEY" and the topic is dead
  * before anyone types anything. Carrying those files across is the missing
  * half of creating a worktree.
  *
@@ -36,8 +36,8 @@ export interface WorktreeSeed {
    * Per-file key rewrites, applied after the copy. Keyed by the copied path,
    * then by the key inside it. Values may use the placeholders below.
    *
-   * `{{slug}}`   the feature slug            `{{repo}}`  the repo folder name
-   * `{{scoped}}` repo-slug, unique per feature — what Herd and Compose key on
+   * `{{slug}}`   the topic slug            `{{repo}}`  the repo folder name
+   * `{{scoped}}` repo-slug, unique per topic — what Herd and Compose key on
    * `{{host}}`   `{{scoped}}.test`, the per-worktree hostname
    * `{{port}}`   the port §11 allocated for this workspace
    * `{{db}}`     the per-worktree database name
@@ -50,7 +50,7 @@ export interface ManifestV1 {
   version: 1
   name: string
   /** §4 — the manifest only declares the project default. */
-  ceremony?: Ceremony
+  setup?: Setup
   repos?: RepoDecl[]
   worktrees?: {
     /** §21.4 — resolved here per project rather than globally. */
@@ -80,7 +80,7 @@ export interface ParsedManifest {
   issues: ManifestIssue[]
 }
 
-const CEREMONIES = new Set(['C0', 'C1', 'C2', 'C3'])
+const SETUP_LEVELS = new Set(['none', 'branch', 'isolated', 'full'])
 
 /** Lenient on purpose: a partially wrong manifest degrades, it does not brick. */
 export function validateManifest(raw: unknown): ParsedManifest {
@@ -103,9 +103,13 @@ export function validateManifest(raw: unknown): ParsedManifest {
   if (typeof o.name !== 'string' || !o.name.trim()) {
     issues.push({ path: 'name', message: 'name is required', severity: 'error' })
   }
-  if (o.ceremony !== undefined && !CEREMONIES.has(String(o.ceremony))) {
-    issues.push({ path: 'ceremony', message: 'must be one of C0, C1, C2, C3', severity: 'warning' })
-    delete o.ceremony
+  if (o.setup !== undefined && !SETUP_LEVELS.has(String(o.setup))) {
+    issues.push({
+      path: 'setup',
+      message: 'must be one of none, branch, isolated, full',
+      severity: 'warning',
+    })
+    delete o.setup
   }
   if (o.repos !== undefined) {
     if (!Array.isArray(o.repos)) {
@@ -171,7 +175,7 @@ export const MANIFEST_TEMPLATE = [
   'name: my-project',
   '',
   '# Project default only; every action may pick its own level (§4)',
-  'ceremony: C1',
+  'setup: branch',
   '',
   '# Omit entirely for a mono-repo: the current folder is enough',
   'repos:',

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { GitBranch, Layers } from '@lucide/vue'
-import { activeProject, activeWorkspace, selectedFeatureGroup } from '../core/store.js'
+import { activeProject, activeWorkspace, selectedTopicGroup } from '../core/store.js'
 
 /**
  * What the window is currently about.
@@ -25,24 +25,31 @@ const w = computed(() => activeWorkspace.value)
 const project = computed(() => activeProject.value)
 
 /**
- * A feature is selectable in the list, and the band is what the window is
- * about: while the feature is the selection, it is the feature that is named
- * here — otherwise the verbs beside it (FeatureActions) would read as acting
- * on whichever of its worktrees happened to be the anchor.
+ * A topic is selectable in the list, and the band is what the window is
+ * about: while the topic is the selection, it is the topic that is named
+ * here — otherwise the verbs beside it (TopicActions) would read as acting
+ * on whichever of its branches happened to be the anchor.
  */
-const feature = computed(() => selectedFeatureGroup.value)
+const topic = computed(() => selectedTopicGroup.value)
+
+/** What this row *is*, in the one word the rest of the window uses for it. */
+const kindLabel = computed(() =>
+  w.value?.kind === 'worktree' ? 'branch' : w.value?.kind === 'external' ? 'folder' : '',
+)
 const showProject = computed(
   () => !!project.value && !!w.value && w.value.path !== project.value.root,
 )
 </script>
 
 <template>
-  <div v-if="feature" class="wsid">
+  <div v-if="topic" class="wsid">
     <span class="proj">{{ project?.name }}</span>
     <span class="sep">/</span>
-    <h1 class="name">{{ feature.title }}</h1>
-    <span class="chip"><Layers />feature</span>
-    <span class="chip dim">{{ feature.workspaces.length }} worktree(s)</span>
+    <h1 class="name">{{ topic.title }}</h1>
+    <span class="chip"><Layers />topic</span>
+    <span class="chip dim">
+      {{ topic.workspaces.length }} {{ topic.workspaces.length === 1 ? 'branch' : 'branches' }}
+    </span>
   </div>
 
   <div v-else-if="w" class="wsid">
@@ -51,7 +58,7 @@ const showProject = computed(
       <span class="sep">/</span>
     </template>
     <h1 class="name" :title="w.path">{{ w.name }}</h1>
-    <span v-if="w.kind !== 'main'" class="chip"><GitBranch />{{ w.kind }}</span>
+    <span v-if="kindLabel" class="chip"><GitBranch />{{ kindLabel }}</span>
     <span v-if="w.git && w.git.headState !== 'attached'" class="chip danger">
       {{ w.git.headState }}
     </span>

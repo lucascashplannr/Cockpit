@@ -130,7 +130,7 @@ export function stopWorkspace(workspaceId: string): number {
   // §13 — a process started by a PREVIOUS core is adopted at boot, so it is in
   // the table but not in `live`. Stopping only what this core spawned left it
   // running and unstoppable: the port stayed bound, health kept reporting up,
-  // and a parked feature went on holding a resource nobody could release.
+  // and a parked topic went on holding a resource nobody could release.
   const rows = getDb()
     .prepare("SELECT id FROM processes WHERE workspace_id = ? AND status = 'running'")
     .all(workspaceId) as { id: string }[]

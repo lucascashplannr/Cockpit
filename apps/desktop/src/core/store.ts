@@ -1,8 +1,8 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
-  AddRepoSource, AgentScope, AgentScopePreview, AgentSession, CockpitEvent, CockpitSettings,
+  AddRepoSource, AgentScope, AgentScopePreview, Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus,
-  DatabasePlan, Feature,
+  DatabasePlan, Topic,
   NewProjectSource, PlanPreview, Project, SeedProposal, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
@@ -66,8 +66,8 @@ export const state = reactive({
   connectionDetail: '' as string,
   projects: [] as Project[],
   workspaces: [] as Workspace[],
-  features: [] as Feature[],
-  agents: [] as AgentSession[],
+  topics: [] as Topic[],
+  agents: [] as Conversation[],
   events: [] as CockpitEvent[],
 
   status: null as CoreStatus | null,
@@ -116,8 +116,8 @@ export const state = reactive({
   suggestedDevRoot: null as string | null,
   /** The project whose settings sheet is open, by id. */
   editingProjectId: null as string | null,
-  /** §4 — the sheet that opens a feature across N repositories. */
-  featureDialogOpen: false,
+  /** §4 — the sheet that opens a topic across N repositories. */
+  topicDialogOpen: false,
   pendingPlan: null as PlanPreview | null,
   planBusy: false,
   toast: null as { kind: 'ok' | 'error' | 'info'; text: string } | null,
@@ -139,8 +139,8 @@ export const client = new CoreClient(URL, {
     state.projects = p
     ensureSelection()
   },
-  onFeatures(f) {
-    state.features = f
+  onTopics(f) {
+    state.topics = f
   },
   onWorkspaces(w) {
     state.workspaces = w
@@ -175,10 +175,10 @@ export function onTermData(termId: string, fn: (d: string) => void): () => void 
 }
 
 async function bootstrap(): Promise<void> {
-  const [projects, workspaces, features, agents, events, status, config] = await Promise.all([
+  const [projects, workspaces, topics, agents, events, status, config] = await Promise.all([
     client.call('project.list', undefined),
     client.call('workspace.list', {}),
-    client.call('feature.list', { includeArchived: true }),
+    client.call('topic.list', { includeArchived: true }),
     client.call('agent.list', undefined),
     client.call('journal.tail', { limit: 300 }),
     client.call('core.status', undefined),
@@ -189,7 +189,7 @@ async function bootstrap(): Promise<void> {
   ])
   state.projects = projects
   state.workspaces = workspaces
-  state.features = features
+  state.topics = topics
   state.agents = agents
   state.events = events
   state.status = status
@@ -275,18 +275,18 @@ export const liveSessions = computed(() =>
 )
 
 /* ── agents (§7) ────────────────────────────────────────────────────────
- * The scope is the whole idea: a session says what it is *for* — a feature,
+ * The scope is the whole idea: a session says what it is *for* — a topic,
  * a project, one checkout, one folder — and the core turns that into the paths
  * the lease is taken on. What the window has to do is offer those four and
- * never the checkbox soup that came before, where "an agent on this feature"
+ * never the checkbox soup that came before, where "an agent on this topic"
  * and "an agent on this repo" were the same control with different boxes
  * ticked, and nothing afterwards could tell you which you had run.
  */
 
 export function scopeKey(scope: AgentScope): string {
   switch (scope.kind) {
-    case 'feature':
-      return 'feature:' + scope.featureId
+    case 'topic':
+      return 'topic:' + scope.topicId
     case 'project':
       return 'project:' + scope.projectId
     case 'folder':
@@ -301,7 +301,7 @@ export function sameScope(a: AgentScope | null, b: AgentScope | null): boolean {
 }
 
 /**
- * §7 — a chat is opened *on* something: a feature row, a workspace row, the
+ * §7 — a chat is opened *on* something: a topic row, a workspace row, the
  * project. The scope is where you clicked, never a menu inside the agent —
  * picking it there meant navigating twice, once to the workspace and once
  * again to say which workspace you meant.
@@ -324,8 +324,8 @@ export function openAgentOn(scope: AgentScope): void {
 function anchorFor(scope: AgentScope): Workspace | null {
   const real = (w: Workspace) => w.kind !== 'group'
   switch (scope.kind) {
-    case 'feature':
-      return state.workspaces.find((w) => w.featureId === scope.featureId && real(w)) ?? null
+    case 'topic':
+      return state.workspaces.find((w) => w.topicId === scope.topicId && real(w)) ?? null
     case 'project':
       return (
         state.workspaces.find((w) => w.projectId === scope.projectId && w.kind === 'main') ??
@@ -337,14 +337,14 @@ function anchorFor(scope: AgentScope): Workspace | null {
   }
 }
 
-/** What to call the current scope in the chat's one line of chrome. */
+/** What to call the current scope in the agent's one line of chrome. */
 export function scopeLabel(scope: AgentScope | null): { kind: string; name: string } {
   if (!scope) return { kind: '', name: '' }
   switch (scope.kind) {
-    case 'feature':
+    case 'topic':
       return {
-        kind: 'Feature',
-        name: state.features.find((f) => f.id === scope.featureId)?.name ?? 'feature',
+        kind: 'Topic',
+        name: state.topics.find((f) => f.id === scope.topicId)?.name ?? 'topic',
       }
     case 'project':
       return {
@@ -353,11 +353,14 @@ export function scopeLabel(scope: AgentScope | null): { kind: string; name: stri
       }
     case 'folder': {
       const w = state.workspaces.find((x) => x.id === scope.workspaceId)
-      return { kind: 'Folder', name: (w?.name ?? '') + '/' + scope.subpath }
+      return { kind: 'Subfolder', name: (w?.name ?? '') + '/' + scope.subpath }
     }
     default: {
       const w = state.workspaces.find((x) => x.id === scope.workspaceId)
-      return { kind: w?.repo ? 'Repo' : 'Folder', name: w?.name ?? 'workspace' }
+      // A checkout of a branch is a branch; a repository at its default
+      // branch is the repository; anything with no git in it is just a folder.
+      const kind = !w?.repo ? 'Folder' : w.kind === 'worktree' ? 'Branch' : 'Repository'
+      return { kind, name: w?.name ?? '' }
     }
   }
 }
@@ -372,11 +375,11 @@ export const activeAgentScope = computed<AgentScope | null>(() => {
   const chosen = state.agentScope
   const w = activeWorkspace.value
   if (chosen) {
-    // A scope whose anchor is gone (feature closed, repo forgotten) would leave
+    // A scope whose anchor is gone (topic closed, repo forgotten) would leave
     // the chat pointing at nothing; fall back to where we are standing.
     const stillThere =
-      chosen.kind === 'feature'
-        ? state.features.some((f) => f.id === chosen.featureId)
+      chosen.kind === 'topic'
+        ? state.topics.some((f) => f.id === chosen.topicId)
         : chosen.kind === 'project'
           ? state.projects.some((p) => p.id === chosen.projectId)
           : state.workspaces.some((x) => x.id === chosen.workspaceId)
@@ -386,17 +389,17 @@ export const activeAgentScope = computed<AgentScope | null>(() => {
 })
 
 /**
- * §4 — the feature is a thing you can stand on, not only a header above its
+ * §4 — the topic is a thing you can stand on, not only a header above its
  * rows. Selecting it *is* selecting its scope: the chat aims at the whole
- * feature, and the verbs that act on every worktree it spans move up into the
+ * topic, and the verbs that act on every worktree it spans move up into the
  * title band, where the workspace verbs already live.
  *
  * Read from `state.agentScope` rather than `activeAgentScope`: the fallback
  * there resolves to a workspace, and the list has to know that nothing narrower
- * than the feature is selected.
+ * than the topic is selected.
  */
-export const selectedFeatureId = computed(() =>
-  state.agentScope?.kind === 'feature' ? state.agentScope.featureId : null,
+export const selectedTopicId = computed(() =>
+  state.agentScope?.kind === 'topic' ? state.agentScope.topicId : null,
 )
 
 /** §7 — what a scope would do, before it is asked to do it. */
@@ -411,7 +414,7 @@ export async function previewScope(scope: AgentScope): Promise<AgentScopePreview
 }
 
 /** Every conversation ever run against this exact scope, newest first. */
-export function sessionsForScope(scope: AgentScope | null): AgentSession[] {
+export function sessionsForScope(scope: AgentScope | null): Conversation[] {
   if (!scope) return []
   const key = scopeKey(scope)
   return state.agents.filter((s) => scopeKey(s.scope) === key)
@@ -442,47 +445,47 @@ export async function startAgentIn(
 
 
 /**
- * §12 — "La liste centrale liste des workspaces, groupés par feature quand une
- * feature existe." A bare workspace and a group of three sit side by side; the
+ * §12 — "La liste centrale liste des workspaces, groupés par topic quand une
+ * topic existe." A bare workspace and a group of three sit side by side; the
  * grouping is never forced.
  */
 export interface ListGroup {
-  featureId: string | null
+  topicId: string | null
   title: string | null
-  feature: Feature | null
+  topic: Topic | null
   workspaces: Workspace[]
 }
 
 export const workspaceGroups = computed<ListGroup[]>(() => {
   const groups: ListGroup[] = []
   const loose: Workspace[] = []
-  const byFeature = new Map<string, Workspace[]>()
+  const byTopic = new Map<string, Workspace[]>()
 
   for (const w of projectWorkspaces.value) {
     if (w.kind === 'group') continue
-    if (w.featureId) {
-      const arr = byFeature.get(w.featureId) ?? []
+    if (w.topicId) {
+      const arr = byTopic.get(w.topicId) ?? []
       arr.push(w)
-      byFeature.set(w.featureId, arr)
+      byTopic.set(w.topicId, arr)
     } else {
       loose.push(w)
     }
   }
 
-  for (const [fid, ws] of byFeature) {
-    const feature = state.features.find((f) => f.id === fid) ?? null
-    groups.push({ featureId: fid, title: feature?.name ?? ws[0]?.name ?? '', feature, workspaces: ws })
+  for (const [fid, ws] of byTopic) {
+    const topic = state.topics.find((f) => f.id === fid) ?? null
+    groups.push({ topicId: fid, title: topic?.name ?? ws[0]?.name ?? '', topic, workspaces: ws })
   }
   groups.sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''))
 
-  if (loose.length) groups.push({ featureId: null, title: null, feature: null, workspaces: loose })
+  if (loose.length) groups.push({ topicId: null, title: null, topic: null, workspaces: loose })
   return groups
 })
 
-/** The feature standing selected, with the rows it spans — null unless one is. */
-export const selectedFeatureGroup = computed<ListGroup | null>(() => {
-  const id = selectedFeatureId.value
-  return id ? (workspaceGroups.value.find((g) => g.featureId === id) ?? null) : null
+/** The topic standing selected, with the rows it spans — null unless one is. */
+export const selectedTopicGroup = computed<ListGroup | null>(() => {
+  const id = selectedTopicId.value
+  return id ? (workspaceGroups.value.find((g) => g.topicId === id) ?? null) : null
 })
 
 /** §5 — asking whether a capability exists is how the UI decides to render
@@ -702,11 +705,11 @@ async function refreshProjects(): Promise<void> {
 export function selectWorkspace(id: string): void {
   state.activeWorkspaceId = id
   // Clicking a row is saying "this one", so a scope wider than the row — the
-  // feature it sits under, the project — stops being the answer. Dropping it
+  // topic it sits under, the project — stops being the answer. Dropping it
   // lets activeAgentScope fall back to this workspace; a folder scope inside
   // it is narrower than the click, and survives.
   const scope = state.agentScope
-  if (scope && (scope.kind === 'feature' || scope.kind === 'project')) state.agentScope = null
+  if (scope && (scope.kind === 'topic' || scope.kind === 'project')) state.agentScope = null
   const w = state.workspaces.find((x) => x.id === id)
   if (w && w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
   remember(id)
@@ -787,9 +790,9 @@ export async function applyPendingPlan(): Promise<void> {
   state.planBusy = false
   state.pendingPlan = null
   if (!res) return
-  // The feature row is written by the plan's own apply hook, so the list is
+  // The topic row is written by the plan's own apply hook, so the list is
   // only true again once that has run.
-  await refreshFeatures()
+  await refreshTopics()
 
   // §3.7 — a conflict is where the plan stopped, not how it failed. Selecting
   // the repository that stopped is the whole handover: the conflict panel is
@@ -814,17 +817,17 @@ export async function applyPendingPlan(): Promise<void> {
 /* ── commit and land ─────────────────────────────────────────────────────
  * §16 — "revue humaine du diff avant tout commit". The review is the Diff
  * tab, so the commit lives there too; and §4 — landing is one act across
- * every repository the feature spans, like opening and rebasing it.
+ * every repository the topic spans, like opening and rebasing it.
  */
 
 export async function commitPreview(
-  featureId: string | null,
+  topicId: string | null,
   workspaceId: string,
   all: boolean,
 ): Promise<CommitPreview[]> {
   try {
     return await client.call('git.commitPreview', {
-      ...(featureId ? { featureId } : { workspaceIds: [workspaceId] }),
+      ...(topicId ? { topicId } : { workspaceIds: [workspaceId] }),
       all,
     })
   } catch {
@@ -835,14 +838,14 @@ export async function commitPreview(
 }
 
 export async function commit(
-  featureId: string | null,
+  topicId: string | null,
   workspaceId: string,
   message: string,
   all: boolean,
 ): Promise<boolean> {
   const res = await guard(() =>
     client.call('git.commit', {
-      ...(featureId ? { featureId } : { workspaceIds: [workspaceId] }),
+      ...(topicId ? { topicId } : { workspaceIds: [workspaceId] }),
       message,
       all,
     }),
@@ -857,11 +860,11 @@ export async function commit(
 }
 
 /**
- * §4 — the step the lifecycle was missing. The feature branch goes onto the
+ * §4 — the step the lifecycle was missing. The topic branch goes onto the
  * base in each repository's main checkout, as one `--no-ff` merge.
  */
-export async function landFeature(featureId: string, push: boolean): Promise<void> {
-  const res = await guard(() => client.call('feature.land', { featureId, push }))
+export async function mergeTopic(topicId: string, push: boolean): Promise<void> {
+  const res = await guard(() => client.call('topic.merge', { topicId, push }))
   if (!res) return
   if (!res.ok || !res.plan) {
     toast('error', res.detail)
@@ -879,7 +882,7 @@ export async function landFeature(featureId: string, push: boolean): Promise<voi
 
 export const activeConflict = computed(() => activeWorkspace.value?.git?.operation ?? null)
 
-/** Every workspace mid-operation, so a feature-wide rebase can be picked up
+/** Every workspace mid-operation, so a topic-wide rebase can be picked up
  *  from whichever repository the user is looking at. */
 export const conflictedWorkspaces = computed(() =>
   state.workspaces.filter((w) => w.projectId === state.activeProjectId && w.git?.operation),
@@ -915,13 +918,13 @@ export async function openConflictFile(path: string): Promise<void> {
 }
 
 /**
- * §4 — catching a feature up is one act across every repository it spans.
+ * §4 — catching a topic up is one act across every repository it spans.
  * It stops at the first conflict and keeps what already replayed; running it
  * again after resolving picks up the rest, because a branch already rebased
  * costs only a fetch.
  */
-export async function rebaseFeature(featureId: string): Promise<void> {
-  const res = await guard(() => client.call('feature.rebase', { featureId }))
+export async function rebaseTopic(topicId: string): Promise<void> {
+  const res = await guard(() => client.call('topic.rebase', { topicId }))
   if (!res) return
   if (!res.ok || !res.plan) {
     toast('error', res.detail)
@@ -930,56 +933,56 @@ export async function rebaseFeature(featureId: string): Promise<void> {
   state.pendingPlan = res.plan
 }
 
-/* ── features ────────────────────────────────────────────────────────────
+/* ── topics ────────────────────────────────────────────────────────────
  * §4 — the durable unit of work. Everything here is a thin call: the core
  * decides what is possible, the window only asks.
  */
 
-export async function refreshFeatures(): Promise<void> {
-  const [features, workspaces] = await Promise.all([
+export async function refreshTopics(): Promise<void> {
+  const [topics, workspaces] = await Promise.all([
     // Closed ones included: you cannot reopen or delete what is not listed.
-    client.call('feature.list', { includeArchived: true }),
+    client.call('topic.list', { includeArchived: true }),
     client.call('workspace.list', {}),
   ])
-  state.features = features
+  state.topics = topics
   state.workspaces = workspaces
   ensureSelection()
 }
 
-export const projectFeatures = computed(() =>
-  state.features.filter((f) => f.projectId === state.activeProjectId && f.state !== 'archived'),
+export const projectTopics = computed(() =>
+  state.topics.filter((f) => f.projectId === state.activeProjectId && f.state !== 'closed'),
 )
 
-export const liveFeature = computed(() => projectFeatures.value.find((f) => f.state === 'live') ?? null)
+export const liveTopic = computed(() => projectTopics.value.find((f) => f.state === 'running') ?? null)
 
 /** Closed, but still on record — reopenable, and deletable. */
-export const archivedFeatures = computed(() =>
-  state.features.filter((f) => f.projectId === state.activeProjectId && f.state === 'archived'),
+export const archivedTopics = computed(() =>
+  state.topics.filter((f) => f.projectId === state.activeProjectId && f.state === 'closed'),
 )
 
-export async function reopenFeature(featureId: string): Promise<void> {
-  const res = await guard(() => client.call('feature.reopen', { featureId }))
+export async function reopenTopic(topicId: string): Promise<void> {
+  const res = await guard(() => client.call('topic.reopen', { topicId }))
   if (!res) return
   if (!res.ok) {
     toast('error', res.detail)
     return
   }
-  await refreshFeatures()
+  await refreshTopics()
   toast('ok', res.detail)
 }
 
 /**
  * §16 — every refusal below is a refusal to lose work, so the confirmations
- * are not ceremony. Unmerged commits are the only thing `force` unlocks,
+ * are not setup. Unmerged commits are the only thing `force` unlocks,
  * because they are the only thing nothing can bring back.
  */
-export async function deleteFeature(
-  featureId: string,
+export async function deleteTopic(
+  topicId: string,
   opts: { removeWorktrees: boolean; deleteBranches: boolean },
 ): Promise<void> {
-  const f = state.features.find((x) => x.id === featureId)
+  const f = state.topics.find((x) => x.id === topicId)
   const run = (force: boolean) =>
-    guard(() => client.call('feature.delete', { featureId, ...opts, force }))
+    guard(() => client.call('topic.delete', { topicId, ...opts, force }))
 
   let res = await run(false)
   if (!res) return
@@ -1001,7 +1004,7 @@ export async function deleteFeature(
 
   if (res.plan) {
     const lines = [
-      'Delete "' + (f?.name ?? 'this feature') + '" for good?',
+      'Delete "' + (f?.name ?? 'this topic') + '" for good?',
       '',
       ...res.warnings.map((w) => '• ' + w),
     ]
@@ -1009,7 +1012,7 @@ export async function deleteFeature(
     state.pendingPlan = res.plan
     return
   }
-  await refreshFeatures()
+  await refreshTopics()
   toast('ok', res.detail)
 }
 
@@ -1017,7 +1020,7 @@ export async function deleteFeature(
  * §7 — what a new worktree will be missing, before it is created.
  *
  * Tolerated on its own: a core older than this window answers `unknown_method`,
- * and losing the whole feature sheet over the seed section would be worse than
+ * and losing the whole topic sheet over the seed section would be worse than
  * showing it without one.
  */
 export async function previewSeed(
@@ -1053,10 +1056,10 @@ export async function previewDatabase(
   }
 }
 
-/** §3.7 — opening a feature is a plan like any other: previewed, then applied. */
-export async function openFeature(input: {
+/** §3.7 — opening a topic is a plan like any other: previewed, then applied. */
+export async function openTopic(input: {
   name: string
-  ceremony: 'C1' | 'C2' | 'C3'
+  setup: 'branch' | 'isolated' | 'full'
   repoWorkspaceIds?: string[]
   base?: string
   seed?: SeedProposal[]
@@ -1065,10 +1068,10 @@ export async function openFeature(input: {
 }): Promise<void> {
   if (!state.activeProjectId) return
   const res = await guard(() =>
-    client.call('feature.open', { projectId: state.activeProjectId!, ...input }),
+    client.call('topic.open', { projectId: state.activeProjectId!, ...input }),
   )
   if (!res) return
-  state.featureDialogOpen = false
+  state.topicDialogOpen = false
   state.pendingPlan = res.plan
 }
 
@@ -1076,8 +1079,8 @@ export async function openFeature(input: {
  * §8 — an exclusive runtime held elsewhere is a refusal, not a failure. The
  * second call is the user answering "yes, park the other one".
  */
-export async function activateFeature(featureId: string): Promise<void> {
-  const res = await guard(() => client.call('feature.activate', { featureId, force: false }))
+export async function startTopic(topicId: string): Promise<void> {
+  const res = await guard(() => client.call('topic.start', { topicId, force: false }))
   if (!res) return
   if (!res.ok) {
     if (!res.conflicts.length) {
@@ -1086,26 +1089,26 @@ export async function activateFeature(featureId: string): Promise<void> {
     }
     const ok = window.confirm(res.conflicts.join('\n') + '\n\nPark it and continue?')
     if (!ok) return
-    const forced = await guard(() => client.call('feature.activate', { featureId, force: true }))
+    const forced = await guard(() => client.call('topic.start', { topicId, force: true }))
     if (!forced?.ok) return
-    await refreshFeatures()
-    toast('ok', forced.parked.length ? 'live — parked ' + forced.parked.join(', ') : 'live')
+    await refreshTopics()
+    toast('ok', forced.stoppedTopics.length ? 'started — stopped ' + forced.stoppedTopics.join(', ') : 'started')
     return
   }
-  await refreshFeatures()
-  toast('ok', 'live')
+  await refreshTopics()
+  toast('ok', 'started')
 }
 
-export async function parkFeature(featureId: string): Promise<void> {
-  const res = await guard(() => client.call('feature.park', { featureId }))
+export async function stopTopic(topicId: string): Promise<void> {
+  const res = await guard(() => client.call('topic.stop', { topicId }))
   if (!res) return
-  await refreshFeatures()
-  toast('ok', 'parked — the worktrees stay exactly where they are')
+  await refreshTopics()
+  toast('ok', 'stopped — the branches stay exactly where they are')
 }
 
 /** §16 — refuses over unpushed work; removing the checkouts is its own plan. */
-export async function closeFeature(featureId: string, removeWorktrees: boolean): Promise<void> {
-  const res = await guard(() => client.call('feature.close', { featureId, removeWorktrees }))
+export async function closeTopic(topicId: string, removeWorktrees: boolean): Promise<void> {
+  const res = await guard(() => client.call('topic.close', { topicId, removeWorktrees }))
   if (!res) return
   if (!res.ok) {
     toast('error', res.detail)
@@ -1115,7 +1118,7 @@ export async function closeFeature(featureId: string, removeWorktrees: boolean):
     state.pendingPlan = res.plan
     return
   }
-  await refreshFeatures()
+  await refreshTopics()
   toast('ok', res.detail)
 }
 
@@ -1126,10 +1129,10 @@ export async function closeFeature(featureId: string, removeWorktrees: boolean):
  */
 export async function restartCore(): Promise<void> {
   if (!host?.restartCore) {
-    toast('info', 'run `cockpit restart` in a terminal — this window cannot spawn a core')
+    toast('info', 'run `cockpit restart` in a terminal — this window cannot start the service')
     return
   }
-  toast('info', 'stopping the core…')
+  toast('info', 'stopping the service…')
   try {
     await client.call('core.shutdown', undefined)
   } catch {
@@ -1137,11 +1140,11 @@ export async function restartCore(): Promise<void> {
   }
   const ok = await host.restartCore()
   if (!ok) {
-    toast('error', 'the core did not come back — run `cockpit daemon` to see why')
+    toast('error', 'the service did not come back — run `cockpit daemon` to see why')
     return
   }
   client.reconnectNow()
-  toast('ok', 'core restarted')
+  toast('ok', 'service restarted')
 }
 
 /** §6 — the conversation is still there; the memory has moved on since. */

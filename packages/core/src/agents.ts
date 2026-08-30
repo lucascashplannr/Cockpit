@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
 import { newId } from '@cockpit/shared'
-import type { AgentScope, AgentSession, AgentTurn } from '@cockpit/shared'
+import type { AgentScope, Conversation, AgentTurn } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { append, recordTouch } from './journal.js'
 import { which } from './exec.js'
@@ -11,7 +11,7 @@ import * as leases from './leases.js'
 
 /**
  * §7 — a session is a list of PATHS + an engine + a mode + a lease.
- * Never "a feature". That is what makes it work identically in C0 and C3.
+ * Never "a topic". That is what makes it work identically in C0 and C3.
  *
  * §16 — scope confined, command allow-list, never a push, never the main
  * branch, human diff review before any commit.
@@ -193,7 +193,7 @@ export async function engines(): Promise<{ id: string; available: boolean; bin: 
 }
 
 interface Live {
-  session: AgentSession
+  session: Conversation
   child: ChildProcess
   buffer: string
 }
@@ -211,10 +211,10 @@ const live = new Map<string, Live>()
 export const agentBus = new EventEmitter<{ changed: [] }>()
 agentBus.setMaxListeners(50)
 
-function persist(s: AgentSession): void {
+function persist(s: Conversation): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, feature_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title)
+      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, topic_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET status=excluded.status, ended_at=excluded.ended_at,
          turns=excluded.turns, last_message=excluded.last_message,
@@ -232,7 +232,7 @@ function persist(s: AgentSession): void {
       s.turns,
       s.leaseId,
       s.lastMessage,
-      s.featureId,
+      s.topicId,
       s.engineSessionId,
       s.prompt,
       s.scope.kind,
@@ -245,8 +245,8 @@ function persist(s: AgentSession): void {
 
 function scopeId(scope: AgentScope): string {
   switch (scope.kind) {
-    case 'feature':
-      return scope.featureId
+    case 'topic':
+      return scope.topicId
     case 'project':
       return scope.projectId
     default:
@@ -257,8 +257,8 @@ function scopeId(scope: AgentScope): string {
 function readScope(r: Record<string, unknown>): AgentScope {
   const id = String(r.scope_id ?? '')
   switch (String(r.scope_kind ?? 'workspace')) {
-    case 'feature':
-      return { kind: 'feature', featureId: id }
+    case 'topic':
+      return { kind: 'topic', topicId: id }
     case 'project':
       return { kind: 'project', projectId: id }
     case 'folder':
@@ -315,9 +315,9 @@ function closeTurn(sessionId: string, status: AgentTurn['status']): void {
     .run(Date.now(), status, row.id)
 }
 
-function hydrate(r: Record<string, unknown>): AgentSession {
+function hydrate(r: Record<string, unknown>): Conversation {
   const engineSessionId = r.engine_session_id == null ? null : String(r.engine_session_id)
-  const status = String(r.status) as AgentSession['status']
+  const status = String(r.status) as Conversation['status']
   return {
     id: String(r.id),
     engine: String(r.engine),
@@ -329,7 +329,7 @@ function hydrate(r: Record<string, unknown>): AgentSession {
     turns: Number(r.turns),
     leaseId: r.lease_id === null ? null : String(r.lease_id),
     lastMessage: r.last_message === null ? null : String(r.last_message),
-    featureId: r.feature_id == null ? null : String(r.feature_id),
+    topicId: r.topic_id == null ? null : String(r.topic_id),
     engineSessionId,
     // §6 — an ended session is not a dead one. As long as the engine still
     // holds the conversation, picking it back up tomorrow is one click.
@@ -341,29 +341,29 @@ function hydrate(r: Record<string, unknown>): AgentSession {
   }
 }
 
-export function list(): AgentSession[] {
+export function list(): Conversation[] {
   const rows = getDb()
     .prepare('SELECT * FROM agent_sessions ORDER BY started_at DESC LIMIT 100')
     .all() as Record<string, unknown>[]
   return rows.map(hydrate)
 }
 
-export function get(sessionId: string): AgentSession | null {
+export function get(sessionId: string): Conversation | null {
   const row = getDb().prepare('SELECT * FROM agent_sessions WHERE id = ?').get(sessionId) as
     | Record<string, unknown>
     | undefined
   return row ? hydrate(row) : null
 }
 
-/** §7 — cost per feature, so it stays visible where the work accumulates. */
-export function listForFeature(featureId: string): AgentSession[] {
+/** §7 — cost per topic, so it stays visible where the work accumulates. */
+export function listForTopic(topicId: string): Conversation[] {
   const rows = getDb()
-    .prepare('SELECT * FROM agent_sessions WHERE feature_id = ? ORDER BY started_at DESC')
-    .all(featureId) as Record<string, unknown>[]
+    .prepare('SELECT * FROM agent_sessions WHERE topic_id = ? ORDER BY started_at DESC')
+    .all(topicId) as Record<string, unknown>[]
   return rows.map(hydrate)
 }
 
-export function sessionsTouching(path: string): AgentSession[] {
+export function sessionsTouching(path: string): Conversation[] {
   const p = resolve(path)
   return list().filter(
     (s) =>
@@ -380,10 +380,10 @@ export interface StartAgentInput {
   workspaceIds: string[]
   paths: string[]
   prompt: string
-  /** §4 — the feature this session belongs to, when it belongs to one. */
-  featureId?: string | null
+  /** §4 — the topic this session belongs to, when it belongs to one. */
+  topicId?: string | null
   /**
-   * §7 — the feature memory and cross-repo context, prepended to the prompt.
+   * §7 — the topic memory and cross-repo context, prepended to the prompt.
    * Kept out of `prompt` so the list shows what the user actually asked.
    */
   preamble?: string
@@ -406,7 +406,7 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
   const spec = ENGINES[input.engine]
   if (!spec) return { denied: true, reason: 'unknown engine: ' + input.engine }
 
-  const session: AgentSession = {
+  const session: Conversation = {
     id: newId('agent_'),
     engine: input.engine,
     workspaceIds: input.workspaceIds,
@@ -417,7 +417,7 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
     turns: 0,
     leaseId: null,
     lastMessage: null,
-    featureId: input.featureId ?? null,
+    topicId: input.topicId ?? null,
     engineSessionId: null,
     resumable: false,
     prompt: input.prompt,
@@ -449,7 +449,7 @@ export function resumeAgent(
         'this session predates resume support, or the engine never announced an id — start a fresh one against the same memory instead',
     }
   }
-  if (live.has(sessionId)) return { denied: true, reason: 'that session is already running' }
+  if (live.has(sessionId)) return { denied: true, reason: 'that conversation is already running' }
 
   const spec = ENGINES[prev.engine]
   if (!spec) return { denied: true, reason: 'unknown engine: ' + prev.engine }
@@ -457,7 +457,7 @@ export function resumeAgent(
   // `prompt` is the turn in flight; `title` is turn 1 and never moves. Before
   // turns existed this line was the whole bug: it overwrote the only record of
   // what the conversation had originally been asked to do.
-  const session: AgentSession = {
+  const session: Conversation = {
     ...prev,
     status: 'starting',
     endedAt: null,
@@ -469,14 +469,14 @@ export function resumeAgent(
 }
 
 function launch(
-  session: AgentSession,
+  session: Conversation,
   spec: EngineSpec,
   fullPrompt: string,
   resuming: boolean,
   allow?: string[],
 ): StartAgentResult {
   // §7 — the lease is what makes two overlapping agents impossible. It is taken
-  // on paths, so a feature-wide session and a repo session inside it collide
+  // on paths, so a topic-wide session and a repo session inside it collide
   // exactly as they should.
   const lease = leases.acquire({
     holder: 'agent:' + session.engine,
@@ -528,7 +528,7 @@ function launch(
     payload: {
       engine: session.engine,
       paths: session.paths,
-      featureId: session.featureId,
+      topicId: session.topicId,
       prompt: session.prompt.slice(0, 500),
       ...(resuming ? { engineSessionId: session.engineSessionId } : {}),
     },

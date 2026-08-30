@@ -15,7 +15,7 @@ import * as plans from './plans.js'
 import * as memory from './memory.js'
 import * as leases from './leases.js'
 import * as agents from './agents.js'
-import * as features from './features/index.js'
+import * as topics from './topics/index.js'
 import * as conflict from './conflict.js'
 import * as seed from './seed.js'
 import * as database from './database.js'
@@ -84,15 +84,15 @@ export function pushProjects(): void {
   broadcast({ t: 'projects', projects: registry.allProjects() })
 }
 
-export function pushFeatures(): void {
-  broadcast({ t: 'features', features: registry.allFeatures() })
+export function pushTopics(): void {
+  broadcast({ t: 'topics', topics: registry.allTopics() })
 }
 
 /** Everything derived from the registry, after a change that could move any of it. */
 function pushAll(): void {
   pushProjects()
   pushWorkspaces()
-  pushFeatures()
+  pushTopics()
 }
 
 export function pushAgents(): void {
@@ -227,45 +227,45 @@ const handlers: Record<string, Handler> = {
   'workspace.openIn': (p: { workspaceId: string; target: string; path?: string }) =>
     openIn(p.workspaceId, p.target, p.path),
 
-  'feature.list': (p: { projectId?: string; includeArchived?: boolean }) =>
-    registry.allFeatures(p?.projectId, p?.includeArchived ?? false),
-  'feature.get': (p: { featureId: string }) => registry.getFeature(p.featureId),
+  'topic.list': (p: { projectId?: string; includeArchived?: boolean }) =>
+    registry.allTopics(p?.projectId, p?.includeArchived ?? false),
+  'topic.get': (p: { topicId: string }) => registry.getTopic(p.topicId),
   /** §3.7 — one plan across every repository, applied through `git.apply`. */
-  'feature.open': (p: Parameters<typeof features.openPlan>[0]) => features.openPlan(p),
-  'feature.activate': async (p: { featureId: string; force?: boolean }) => {
-    const res = await features.activate(p.featureId, p.force ?? false)
+  'topic.open': (p: Parameters<typeof topics.openPlan>[0]) => topics.openPlan(p),
+  'topic.start': async (p: { topicId: string; force?: boolean }) => {
+    const res = await topics.start(p.topicId, p.force ?? false)
     pushWorkspaces()
-    pushFeatures()
+    pushTopics()
     return res
   },
-  'feature.park': async (p: { featureId: string }) => {
-    const res = await features.park(p.featureId)
+  'topic.stop': async (p: { topicId: string }) => {
+    const res = await topics.stop(p.topicId)
     pushWorkspaces()
-    pushFeatures()
+    pushTopics()
     return res
   },
-  'feature.rename': async (p: { featureId: string; name: string }) => {
-    features.rename(p.featureId, p.name)
-    const f = registry.getFeature(p.featureId)
+  'topic.rename': async (p: { topicId: string; name: string }) => {
+    topics.rename(p.topicId, p.name)
+    const f = registry.getTopic(p.topicId)
     await registry.reconcile(f?.projectId)
     pushWorkspaces()
-    return registry.getFeature(p.featureId)
+    return registry.getTopic(p.topicId)
   },
-  'feature.reopen': async (p: { featureId: string }) => {
-    const res = features.reopen(p.featureId)
-    const f = registry.getFeature(p.featureId)
+  'topic.reopen': async (p: { topicId: string }) => {
+    const res = topics.reopen(p.topicId)
+    const f = registry.getTopic(p.topicId)
     await registry.reconcile(f?.projectId)
     pushAll()
     return res
   },
-  'feature.delete': async (p: Parameters<typeof features.deletePlan>[0]) => {
-    const res = await features.deletePlan(p)
+  'topic.delete': async (p: Parameters<typeof topics.deletePlan>[0]) => {
+    const res = await topics.deletePlan(p)
     if (!res.plan) pushAll()
     return res
   },
   /**
    * §7 — what `git worktree add` will not carry, shown before it is carried.
-   * Cheap enough to call on every keystroke of the feature name: it stats a
+   * Cheap enough to call on every keystroke of the topic name: it stats a
    * handful of root-level files and asks git which of them it tracks.
    */
   'worktree.seedPreview': async (p: {
@@ -317,16 +317,16 @@ const handlers: Record<string, Handler> = {
     return out
   },
 
-  /** §4 — the feature is the unit of work, so catching up is one act. */
-  'feature.rebase': (p: { featureId: string; base?: string }) =>
-    features.rebasePlan(p.featureId, p.base),
+  /** §4 — the topic is the unit of work, so catching up is one act. */
+  'topic.rebase': (p: { topicId: string; base?: string }) =>
+    topics.rebasePlan(p.topicId, p.base),
   /** §4 — and landing it is the act that makes the work count. */
-  'feature.land': (p: { featureId: string; push?: boolean; base?: string }) =>
-    features.landPlan(p.featureId, { push: p.push, base: p.base }),
-  'feature.close': async (p: { featureId: string; removeWorktrees: boolean }) => {
-    const res = await features.closePlan(p.featureId, p.removeWorktrees)
+  'topic.merge': (p: { topicId: string; push?: boolean; base?: string }) =>
+    topics.mergePlan(p.topicId, { push: p.push, base: p.base }),
+  'topic.close': async (p: { topicId: string; removeWorktrees: boolean }) => {
+    const res = await topics.closePlan(p.topicId, p.removeWorktrees)
     if (!res.plan) {
-      const f = registry.getFeature(p.featureId)
+      const f = registry.getTopic(p.topicId)
       await registry.reconcile(f?.projectId)
       pushWorkspaces()
     }
@@ -413,7 +413,7 @@ const handlers: Record<string, Handler> = {
     scope?: AgentScope
     workspaceIds?: string[]
     prompt: string
-    featureId?: string
+    topicId?: string
   }) => {
     // §7 — the scope says what this is for. A caller that only knows where it
     // is standing may still pass workspaces, and that reads as a workspace
@@ -421,8 +421,8 @@ const handlers: Record<string, Handler> = {
     // the first and the rest come along as paths under it.
     const requested: AgentScope =
       p.scope ??
-      (p.featureId
-        ? { kind: 'feature', featureId: p.featureId }
+      (p.topicId
+        ? { kind: 'topic', topicId: p.topicId }
         : { kind: 'workspace', workspaceId: p.workspaceIds?.[0] ?? '' })
     const r = scope.resolveScope(requested)
     if (!r.paths.length) {
@@ -445,8 +445,8 @@ const handlers: Record<string, Handler> = {
       workspaceIds: r.workspaces.map((w) => w.id),
       paths: r.paths,
       prompt: p.prompt,
-      featureId: r.featureId,
-      preamble: r.featureId ? features.promptPreamble(r.featureId, r.paths) : '',
+      topicId: r.topicId,
+      preamble: r.topicId ? topics.promptPreamble(r.topicId, r.paths) : '',
       // §5 + §16 — the manifest already has a place to widen the allow-list;
       // absent, the built-in one applies.
       allow: allowFor(r.workspaces[0]?.projectId),
@@ -463,7 +463,7 @@ const handlers: Record<string, Handler> = {
       p.prompt,
       // The memory has moved on since; the conversation has not. Re-reading it
       // is what keeps a resumed session from acting on a stale understanding.
-      prev.featureId ? features.promptPreamble(prev.featureId, prev.paths) : '',
+      prev.topicId ? topics.promptPreamble(prev.topicId, prev.paths) : '',
       allowFor(registry.getWorkspace(prev.workspaceIds[0] ?? '')?.projectId),
     )
     pushAgents()
@@ -528,7 +528,7 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
     ws.send(JSON.stringify(hello))
     ws.send(JSON.stringify({ t: 'projects', projects: registry.allProjects() } satisfies ServerPush))
     ws.send(JSON.stringify({ t: 'workspaces', workspaces: registry.allWorkspaces() } satisfies ServerPush))
-    ws.send(JSON.stringify({ t: 'features', features: registry.allFeatures() } satisfies ServerPush))
+    ws.send(JSON.stringify({ t: 'topics', topics: registry.allTopics() } satisfies ServerPush))
 
     ws.on('message', async (raw) => {
       let req: RpcRequest

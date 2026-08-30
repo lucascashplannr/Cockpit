@@ -49,8 +49,8 @@ cockpit restart      # stops it over its own socket, starts a fresh one detached
 cockpit stop         # just stops it; dev servers and their ports keep running
 ```
 
-The window says so too: a core older than the renderer raises a banner with a
-**Restart the core** button, rather than failing one command at a time with
+The window says so too: a service older than the renderer raises a banner with a
+**Restart the service** button, rather than failing one command at a time with
 `unknown_method`.
 
 Or use it with no app at all:
@@ -71,37 +71,37 @@ cockpit conflict show  # what it left behind, and which files still block
 cockpit conflict continue   # stages what you resolved, then carries on
 cockpit conflict abort      # back to the start; the autostash comes with it
 
-# features — the durable unit of work (§4)
-cockpit feature open "Two-factor auth"   # one plan, a worktree per repo
-cockpit feature open "2FA" --clone-db     # ...and its own database (§10)
+# topics — the durable unit of work (§4)
+cockpit topic open "Two-factor auth"   # one plan, one branch per repository
+cockpit topic open "2FA" --clone-db     # ...and its own database (§10)
 cockpit commit "Add the QR step"         # stage + commit, every repo at once
-cockpit feature rebase two-factor-auth   # every repo onto its base, one plan
-cockpit feature land two-factor-auth --push   # merge it ONTO the base, then push
-cockpit feature ls                       # every feature, live or parked
+cockpit topic rebase two-factor-auth   # every repo onto its base, one plan
+cockpit topic merge two-factor-auth --push   # merge it ONTO the base, then push
+cockpit topic ls                       # every topic, running or stopped
 
-# what a worktree would be missing, before it exists
+# what a branch would be missing, before it is checked out
 cockpit seed two-factor-auth             # the gitignored config it needs
 cockpit db two-factor-auth               # the database it would get
-cockpit feature live two-factor-auth     # servers up; refuses if something exclusive blocks it
-cockpit feature park two-factor-auth     # servers down, worktrees kept
-cockpit feature close two-factor-auth --remove   # archive it; reversible
-cockpit feature reopen two-factor-auth          # bring a closed one back
-cockpit feature delete two-factor-auth          # drop the record for good
-cockpit feature ls --all                        # closed ones included
+cockpit topic start two-factor-auth     # servers up; refuses if something exclusive blocks it
+cockpit topic stop two-factor-auth     # servers down; the branches stay
+cockpit topic close two-factor-auth --remove   # close it; reversible
+cockpit topic reopen two-factor-auth          # bring a closed one back
+cockpit topic delete two-factor-auth          # drop the record for good
+cockpit topic ls --all                        # closed ones included
 
-# sessions are disposable; the conversation is not
+# conversations are disposable; the memory is not
 cockpit agent list                       # ↻ marks the resumable ones
 cockpit agent resume <id> "what next"
 ```
 
-## Features, sessions, and the difference
+## Topics, conversations, and the difference
 
-A **feature** is the durable thing: a name, a branch of that name in every repository
-it spans, one folder holding them all, a memory, and a live/parked state. It survives
+A **topic** is the durable thing: a name, a branch of that name in every repository
+it spans, one folder holding them all, a memory, and a started/stopped state. It survives
 the daemon, the window and the week — that is the whole reason it has a table.
 
-A **session** is the disposable thing: a list of paths, an engine, a lease. Clearing one
-costs nothing because the understanding lives in the feature's memory, not in the
+A **conversation** is the disposable thing: a list of paths, an engine, a lease. Clearing one
+costs nothing because the understanding lives in the topic's memory, not in the
 conversation (§6). Resuming one is the same idea from the other side: `agent resume`
 hands the engine back its own conversation *and* re-reads the memory first, so it
 continues from what is true now rather than from what was true on Tuesday.
@@ -109,14 +109,14 @@ continues from what is true now rather than from what was true on Tuesday.
 **Close and delete are different verbs on purpose.** Close archives: the record, the
 branches and the memory all survive, and `reopen` undoes it — so it is the safe default.
 Delete drops the record for good. It refuses over uncommitted or unpushed work, an open
-agent session or a live runtime; and `--branches` refuses again over commits not merged
-into the base, because that is the one thing nothing can bring back. The feature folder
+running conversation or servers that are still up; and `--branches` refuses again over commits not merged
+into the base, because that is the one thing nothing can bring back. The topic folder
 goes to the Trash, never `rm -rf` (§16).
 
-## The whole life of a feature
+## The whole life of a topic
 
 ```
-open  →  work  →  commit  →  rebase  →  land  →  close
+open  →  work  →  commit  →  rebase  →  merge  →  close
 ```
 
 **Commit** lives in the Diff tab, against the review it is a review of (§16). One message,
@@ -125,17 +125,17 @@ A repo with nothing staged is skipped rather than made to carry an empty commit,
 sitting on its protected branch is skipped too: the rule that stops agents committing to
 `main` is not waived because a human clicked the button.
 
-**Land** is the step that used to be missing, and its absence was the hole in the middle of
-the product: a feature could be opened, worked in, rebased and closed, and nothing ever put
+**Merge** is the step that used to be missing, and its absence was the hole in the middle of
+the product: a topic could be opened, worked in, rebased and closed, and nothing ever put
 it back on `main`. `merge` goes the other way — it brings the base *into* the branch to catch
-it up. Landing runs in each repository's **main checkout**, never in the worktree: git will
+it up. Merging runs in each repository itself, never in the branch's own folder: git will
 not hold one branch in two checkouts, and the main checkout is already sitting on the base,
 which is exactly what the layout buys you.
 
-It fetches, fast-forwards the base, merges the feature branch `--no-ff` so the feature stays
+It fetches, fast-forwards the base, merges the topic branch `--no-ff` so the topic stays
 one identifiable merge in the history, and pushes if you ask. It **halts on the first
-conflict and keeps what already merged** — those repositories are genuinely landed — and the
-conflict lands in the same panel a rebase conflict does. Resolve, then run it again.
+conflict and keeps what already merged** — those repositories are genuinely done — and the
+conflict arrives in the same panel a rebase conflict does. Resolve, then run it again.
 
 **Close** then refuses over uncommitted changes, unpushed commits, an open agent session or a
 running runtime, archives the record, and removes the checkouts while keeping the branches.
@@ -149,7 +149,7 @@ them across verbatim is no better: three worktrees whose `.env` all say
 `APP_URL=https://cp.test` and `DB_DATABASE=app` are three checkouts fighting over one hostname
 and one database.
 
-So opening a feature carries that config over and **rescopes the values that cannot be
+So opening a topic carries that config over and **rescopes the values that cannot be
 shared** — the hostname, the database name, any port the app listens on. Cockpit reads what to
 change out of the file rather than guessing from key names: a value pointing at the hostname
 the main checkout serves on is the strongest signal there is. `DB_PORT` and `REDIS_PORT` are
@@ -169,7 +169,7 @@ worktrees:
           VITE_PORT: "{{port:vite}}"
 ```
 
-Every feature after that carries it without asking. `cockpit seed <slug>` shows what would
+Every topic after that carries it without asking. `cockpit seed <slug>` shows what would
 happen without creating anything.
 
 **The database is the third global thing**, after the port and the hostname, and folder
@@ -220,16 +220,16 @@ to remember `git add`. The panel updates itself as you edit, because the core re
 every file change; a rebase advanced by hand in the terminal tab looks exactly like one
 advanced by the button.
 
-`cockpit feature rebase` does this across every repository a feature spans. It stops at the
+`cockpit topic rebase` does this across every repository a topic spans. It stops at the
 first conflict and **keeps** what already replayed rather than rolling it back — those
 repositories are genuinely done. Run it again once you have resolved: a branch already rebased
 answers "up to date" and costs a fetch.
 
-**Live vs parked** is what lets several features exist at once. Parked means the
-worktrees are on disk and agents may still run in them; live means the servers are up.
+**Started vs stopped** is what lets several topics exist at once. Stopped means the
+branches are on disk and agents may still run in them; started means the servers are up.
 Ports are global and deterministic (§11), so portable runtimes coexist for free —
-Compose and devcontainer are marked `exclusive`, and a second live feature wanting one
-is refused with the offer to park the other, rather than failing deep inside Docker.
+Compose and devcontainer are marked `exclusive`, and a second started topic wanting one
+is refused with the offer to stop the other, rather than failing deep inside Docker.
 
 `cockpit help` lists the rest.
 
@@ -240,14 +240,14 @@ is refused with the offer to park the other, rather than failing deep inside Doc
 | 3.3 | Single append-only journal, everything derives from it | done |
 | 3.4 | Probe, never remember — SQLite holds journal + cache only | done |
 | 3.7 | Plan shown before every git operation, undo via restore point | done |
-| 16 | Commit from the review surface, one message across every repo of a feature | done |
-| 4 | Landing: the feature branch onto the base, one `--no-ff` merge per repo | done |
+| 16 | Commit from the review surface, one message across every repo of a topic | done |
+| 4 | Merging: the topic branch onto the base, one `--no-ff` merge per repo | done |
 | 3.7 | A conflicted rebase is a state, not a failure: continue / skip / abort | done |
 | 3.7 | Multi-repo plans choose: all-or-nothing, or halt and keep what worked | done |
 | 3.9 | Absent capability ⇒ invisible, never greyed out | done |
-| 4 | Workspace as the primitive; feature as a decoration | done |
-| 4 | Feature as a durable object: multi-repo, multi-day, live / parked | done |
-| 4 | One rebase across every repository a feature spans | done |
+| 4 | Workspace as the primitive; topic as a decoration | done |
+| 4 | Topic as a durable object: multi-repo, multi-day, started / stopped | done |
+| 4 | One rebase across every repository a topic spans | done |
 | 7 | Gitignored local config carried into a new worktree, values rescoped | done |
 | 10 | One database per worktree: cloned on open, dropped on delete | done |
 | 5 | Capability model with detection fallback (no manifest required) | done |
@@ -258,13 +258,13 @@ is refused with the offer to park the other, rather than failing deep inside Doc
 | 16 | Agent command allow-list: edits and read-only git, never a commit or push | done |
 | 7 | Cross-repo `CONTEXT.md` generated and fed to any multi-repo session | done |
 | 8 | Runtime contract (`provision`/`up`/`preview`/`health`/`down`), `portable` + `exclusive` | done |
-| 8 | Exclusive runtimes arbitrated: a second live feature is refused, not broken | done |
+| 8 | Exclusive runtimes arbitrated: a second started topic is refused, not broken | done |
 | 11 | Global, deterministic port allocation across all projects | done |
 | 12 | Three-column shell, ⌘K palette, diff split by author | done |
 | 13 | Core as a standalone service, version handshake, orphan reaping, log rotation | done |
 | 13 | Schema versioning: a foreign/legacy database is moved aside, never deleted | done |
 | 16 | Path leases, per-repo git queue, mtime check before writes | done |
-| 21.4 | Worktree layout decided: grouped per feature (`worktrees/<feature>/<repo>`) | done |
+| 21.4 | Worktree layout decided: grouped per topic (`worktrees/<topic>/<repo>`) | done |
 
 Runtimes shipped: `node`, `expo`, `compose`, `herd`, `devcontainer`.
 Agent engines shipped: `claude`, `codex` — normalised into one event stream (§7).
@@ -275,9 +275,9 @@ Agent engines shipped: `claude`, `codex` — normalised into one event stream (�
   Jira yet; there is no token handling. `§16` requires the system keychain for that, and it
   has not been built.
 - **CI badges** — the capability is detected, the status is not polled.
-- **Session comparison** (§6, "sessions comparables") — sessions are listed, not diffed.
+- **Conversation comparison** (§6, "sessions comparables") — they are listed, not diffed.
 - **Documentation capability** (§9) — detected, not indexed or rendered.
-- **Feature creation at C3** creates the worktrees, the memory, the cross-repo context and the
+- **Topic creation at the full setup level** creates the branch folders, the memory, the cross-repo context and the
   local config each worktree needs (§7); `--clone-db` also gives each one its own database
   (§10). It does not create the ticket — that needs the keychain first.
 - **Database engines** — MySQL/MariaDB and Postgres are implemented; sqlite needs nothing,
@@ -328,8 +328,8 @@ ripgrep, node-pty + xterm, SQLite, chokidar, git and agents as subprocesses, YAM
 §21 is unresolved and the code takes the narrowest defensible default in each case:
 
 1. **Name** — `cockpit` everywhere, `~/.cockpit` for local state.
-2. **Memory without a feature** — any workspace may hold `.cockpit/memory.md`, including a C0
-   main checkout. Cheap to keep, expensive to retrofit.
+2. **Memory without a topic** — any checkout may hold `.cockpit/memory.md`, a repository as
+   readily as a branch of it. Cheap to keep, expensive to retrofit.
 3. **Manifest composition** — single file per project. Composition is not implemented.
 4. **Tree strategy** — `worktrees/<repo>/<branch>` beside the checkout, overridable per project
    via `worktrees.root`.

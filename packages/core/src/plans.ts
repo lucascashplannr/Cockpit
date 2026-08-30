@@ -29,7 +29,7 @@ interface StoredPlan extends PlanPreview {
   /** §16 — secrets for the steps that need them. Never sent, never journaled. */
   env?: Record<string, string>
   /**
-   * Run once every step succeeded. This is what keeps a feature from being
+   * Run once every step succeeded. This is what keeps a topic from being
    * recorded before its worktrees actually exist on disk (§3.4: never remember
    * what can be probed, and never remember something that is not there).
    */
@@ -70,7 +70,7 @@ function ownersFor(steps: PlanStep[], workspaceIds: string[]): (string | null)[]
 }
 
 /**
- * Stores a preview built elsewhere — a feature spans several repositories, so
+ * Stores a preview built elsewhere — a topic spans several repositories, so
  * its plan cannot be produced by a function keyed on a single workspace.
  */
 export function register(preview: PlanPreview, opts: RegisterOptions): PlanPreview {
@@ -153,7 +153,7 @@ export async function plan(
       if (existsSync(target)) warnings.push('Target folder already exists: ' + target)
       steps.push({ title: 'Fetch origin', command: 'git fetch origin', cwd: ws.path, destructive: false })
       steps.push({
-        title: 'Create worktree ' + name,
+        title: 'Check out ' + name + ' in its own folder',
         command: 'git worktree add -b ' + name + ' ' + target + ' origin/' + base,
         cwd: ws.path,
         destructive: false,
@@ -211,7 +211,7 @@ export async function plan(
 }
 
 /**
- * The one rebase step, shared by the single-repo plan and the feature-wide one
+ * The one rebase step, shared by the single-repo plan and the topic-wide one
  * so both get `--autostash`.
  *
  * `--autostash` rather than a stash push before and a pop after: those were two
@@ -234,12 +234,12 @@ export function rebaseStep(cwd: string, branch: string, base: string): PlanStep[
 export interface WorktreeRootOptions {
   override?: string
   /**
-   * §21.4, now decided: when a feature slug is given the layout is GROUPED —
-   * `worktrees/<feature>/<repo>` — because one folder per feature is the only
+   * §21.4, now decided: when a topic slug is given the layout is GROUPED —
+   * `worktrees/<topic>/<repo>` — because one folder per topic is the only
    * place a cross-repo CONTEXT.md and a shared memory can live (§7). Without a
    * slug the old per-repo layout stands, which is right for a C2 one-off.
    */
-  featureSlug?: string
+  topicSlug?: string
 }
 
 export function worktreeRoot(repoPath: string, opts: WorktreeRootOptions = {}): string {
@@ -251,19 +251,19 @@ export function worktreeRoot(repoPath: string, opts: WorktreeRootOptions = {}): 
     ? resolve(dirname(manifestPath!), manifest.worktrees.root)
     : resolve(dirname(repoPath), 'worktrees')
 
-  if (opts.featureSlug) return join(base, opts.featureSlug)
+  if (opts.topicSlug) return join(base, opts.topicSlug)
   if (manifest?.worktrees?.strategy === 'flat') return base
   return join(base, basename(repoPath))
 }
 
-/** Where a given repo's worktree lands inside a feature (§21.4, grouped). */
-export function featureWorktreePath(repoPath: string, featureSlug: string, override?: string): string {
-  return join(worktreeRoot(repoPath, { featureSlug, override }), basename(repoPath))
+/** Where a given repo's worktree lands inside a topic (§21.4, grouped). */
+export function topicWorktreePath(repoPath: string, topicSlug: string, override?: string): string {
+  return join(worktreeRoot(repoPath, { topicSlug, override }), basename(repoPath))
 }
 
-/** The feature's own folder — parent of every repo worktree it owns. */
-export function featureRootPath(repoPath: string, featureSlug: string, override?: string): string {
-  return worktreeRoot(repoPath, { featureSlug, override })
+/** The topic's own folder — parent of every repo worktree it owns. */
+export function topicRootPath(repoPath: string, topicSlug: string, override?: string): string {
+  return worktreeRoot(repoPath, { topicSlug, override })
 }
 
 export async function apply(planId: string): Promise<ApplyResult> {
@@ -341,7 +341,7 @@ export async function apply(planId: string): Promise<ApplyResult> {
       lines.push('[cockpit] stopped at "' + step.title + '" (exit ' + r.code + ').')
 
       // §3.7 — a plan spanning several repositories is all-or-nothing. Leaving
-      // two of three worktrees behind is worse than not starting: the feature
+      // two of three worktrees behind is worse than not starting: the topic
       // would look opened and be unusable. A plan that says `halt` has opted
       // out: what already succeeded there is worth keeping.
       if ((stored.onFailure ?? 'rollback') === 'rollback') {

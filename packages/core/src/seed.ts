@@ -15,7 +15,7 @@ import * as plans from './plans.js'
  * `git worktree add` checks out *tracked* files. Everything git ignores is
  * absent: `.env`, `auth.json`, a local sqlite file. So a worktree Cockpit
  * created for a Laravel or Vite app boots into "no application key" and the
- * feature is unusable before anyone opens it — which made the worktree feature
+ * topic is unusable before anyone opens it — which made the worktree topic
  * decorative rather than useful.
  *
  * Copying is only half of it. Three worktrees whose `.env` all say
@@ -25,7 +25,7 @@ import * as plans from './plans.js'
  *
  * §5's rule decides the shape: detection covers what is guessable, the
  * manifest covers what is not. Cockpit proposes, the user approves once, and
- * the approved answer is written into `cockpit.yaml` so the second feature
+ * the approved answer is written into `cockpit.yaml` so the second topic
  * needs no approval at all.
  */
 
@@ -151,7 +151,7 @@ function escapeRe(s: string): string {
 
 /**
  * What in this file is per-worktree. Returns templates, not values: the
- * template is what goes in the manifest and stays true for the next feature.
+ * template is what goes in the manifest and stays true for the next topic.
  */
 function changesFor(rel: string, text: string, repoFolder: string, tld: string): SeedRule[] {
   if (!isEnvShaped(rel)) return []
@@ -168,7 +168,7 @@ function changesFor(rel: string, text: string, repoFolder: string, tld: string):
         key,
         from: value,
         template: value.replace(new RegExp(escapeRe(host), 'g'), '{{host}}'),
-        reason: 'points at ' + host + ', which is the main checkout — every worktree needs its own',
+        reason: 'points at ' + host + ', which is the repository itself — every branch needs its own',
       })
       continue
     }
@@ -179,7 +179,7 @@ function changesFor(rel: string, text: string, repoFolder: string, tld: string):
         key,
         from: value,
         template: '{{db}}',
-        reason: 'one database per worktree, or a migration in one breaks the others',
+        reason: 'one database per branch, or a migration in one breaks the others',
       })
       continue
     }
@@ -196,7 +196,7 @@ function changesFor(rel: string, text: string, repoFolder: string, tld: string):
         key,
         from: value,
         template: '{{port:' + service + '}}',
-        reason: 'a port this worktree listens on; §11 allocates one per service so two features can run at once',
+        reason: 'a port this branch listens on; one per service, so two topics can run at once',
       })
       continue
     }
@@ -253,7 +253,7 @@ export async function contextFor(input: {
   override?: string
 }): Promise<SeedContext> {
   const repo = basename(input.repoPath)
-  const target = plans.featureWorktreePath(input.repoPath, input.slug, input.override)
+  const target = plans.topicWorktreePath(input.repoPath, input.slug, input.override)
   const scoped = scopedName(repo, input.slug)
   // The workspace id is derived from the path, so the port allocated here —
   // before the worktree exists — is the same one the runtime binds later.
@@ -387,7 +387,7 @@ export async function propose(input: ProposeInput): Promise<SeedProposal> {
     // A file git tracks is already in the worktree; copying it over would
     // silently replace the branch's own version with the main checkout's.
     if (!absent.has(rel)) {
-      skipped.push({ path: rel, reason: 'tracked by git — the worktree checks it out already' })
+      skipped.push({ path: rel, reason: 'tracked by git — the branch checks it out already' })
       continue
     }
 
@@ -415,7 +415,7 @@ export async function propose(input: ProposeInput): Promise<SeedProposal> {
     files.push({
       path: rel,
       bytes: size,
-      reason: 'git ignores it, so the worktree would not have it',
+      reason: 'git ignores it, so the branch would not have it',
       changes: changes.map((c) => ({ ...c, to: resolveTemplate(c.template, ctx) })),
     })
   }

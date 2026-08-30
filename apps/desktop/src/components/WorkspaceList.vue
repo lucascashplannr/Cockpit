@@ -3,38 +3,41 @@ import { computed } from 'vue'
 import { ArrowUp, FolderPlus, Layers, Plus, RefreshCw, Sparkles } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activeProject, addRepoTo, client, guard, openAgentOn, selectedFeatureId, state,
+  activeProject, addRepoTo, client, guard, openAgentOn, selectedTopicId, state,
   workspaceGroups,
 } from '../core/store.js'
 
 /**
- * §12 — "La liste centrale liste des workspaces, groupés par feature quand une
- * feature existe. Un workspace nu et un groupe de trois cohabitent
- * naturellement." The feature header only appears when there is a feature.
+ * §12 — "La liste centrale liste des workspaces, groupés par topic quand un
+ * topic existe. Un workspace nu et un groupe de trois cohabitent
+ * naturellement." The topic header only appears when there is a topic.
+ *
+ * Two kinds of row, and the vocabulary is theirs: a repository on its default
+ * branch, and a branch checked out in its own folder.
  */
 
 const groups = computed(() => workspaceGroups.value)
 
 const hasProjects = computed(() => state.projects.length > 0)
 
-function featureSummary(ws: { git: { ahead: number } | null; runtime: { status: string } | null }[]) {
+function topicSummary(ws: { git: { ahead: number } | null; runtime: { status: string } | null }[]) {
   const ahead = ws.reduce((n, w) => n + (w.git?.ahead ?? 0), 0)
   const up = ws.filter((w) => w.runtime?.status === 'up').length
   return { ahead, up, total: ws.length }
 }
 
-async function rescan() {
-  await guard(() => client.call('core.reconcile', {}), 'rescanned')
+async function refresh() {
+  await guard(() => client.call('core.reconcile', {}), 'refreshed')
 }
 
 /**
- * §4 — the feature is the unit of work, so it is something you select, exactly
- * as you select one of its rows. Selecting it aims the chat at the whole
- * feature; its verbs — land, rebase, park — are then in the title band, where
- * the verbs of the selected thing belong (FeatureActions).
+ * §4 — the topic is the unit of work, so it is something you select, exactly
+ * as you select one of its rows. Selecting it aims the agent at the whole
+ * topic; its verbs — merge, rebase, start — are then in the title band, where
+ * the verbs of the selected thing belong (TopicActions).
  */
-function selectFeature(featureId: string) {
-  openAgentOn({ kind: 'feature', featureId })
+function selectTopic(topicId: string) {
+  openAgentOn({ kind: 'topic', topicId })
 }
 </script>
 
@@ -45,33 +48,33 @@ function selectFeature(featureId: string) {
         <FolderPlus />
         <strong>No project yet</strong>
         <span>
-          Add a folder with <span class="kbd">+</span> in the rail, or run
+          Add one with <span class="kbd">+</span> in the rail, or run
           <code class="mono">cockpit add .</code> in any repository.
         </span>
       </div>
 
       <template v-else>
-        <div v-for="(g, i) in groups" :key="g.featureId ?? 'loose-' + i" class="group">
-          <!-- A feature is a decoration (§4): no feature, no header. And a
+        <div v-for="(g, i) in groups" :key="g.topicId ?? 'loose-' + i" class="group">
+          <!-- A topic is a decoration (§4): no topic, no header. And a
                header you can stand on: selecting it is selecting its scope. -->
           <button
             v-if="g.title"
             class="group-head"
-            :class="{ live: g.feature?.state === 'live', selected: g.featureId === selectedFeatureId }"
-            :disabled="!g.featureId"
-            @click="g.featureId && selectFeature(g.featureId)"
+            :class="{ running: g.topic?.state === 'running', selected: g.topicId === selectedTopicId }"
+            :disabled="!g.topicId"
+            @click="g.topicId && selectTopic(g.topicId)"
           >
             <Layers class="sm gi" />
             <span class="title">{{ g.title }}</span>
             <span class="summary num">
-              <span v-if="featureSummary(g.workspaces).ahead" class="up">
-                <ArrowUp class="sm" />{{ featureSummary(g.workspaces).ahead }}
+              <span v-if="topicSummary(g.workspaces).ahead" class="up">
+                <ArrowUp class="sm" />{{ topicSummary(g.workspaces).ahead }}
               </span>
-              <span class="dim">{{ featureSummary(g.workspaces).total }}</span>
+              <span class="dim">{{ topicSummary(g.workspaces).total }}</span>
             </span>
           </button>
           <div v-else-if="groups.length > 1 && i > 0" class="divider">
-            <span class="section-label">other workspaces</span>
+            <span class="section-label">not in a topic</span>
           </div>
 
           <WorkspaceRow v-for="w in g.workspaces" :key="w.id" :workspace="w" :compact="!!g.title" />
@@ -85,29 +88,29 @@ function selectFeature(featureId: string) {
            repository in the project, at its main checkout. -->
       <button
         class="icon-btn small go"
-        title="Chat on the whole project — every repository, on main"
+        title="Ask the agent across the whole project — every repository, on its default branch"
         @click="openAgentOn({ kind: 'project', projectId: activeProject.id })"
       >
         <Sparkles class="sm" />
       </button>
       <button
         class="icon-btn small"
-        title="Open a feature - a branch per repository, one plan"
-        @click="state.featureDialogOpen = true"
+        title="Open a topic — one named branch across every repository it touches"
+        @click="state.topicDialogOpen = true"
       >
         <Plus class="sm" />
       </button>
       <!-- §7 - one folder per repository, inside the project folder. Beside
-           the feature button because it is the same kind of act: adding
+           the topic button because it is the same kind of act: adding
            something to the project rather than looking at what is in it. -->
       <button
         class="icon-btn small"
-        title="Add a repository - a new one, a clone, or a folder moved in"
+        title="Add a repository — a new one, a clone, or a folder moved in"
         @click="addRepoTo(activeProject.id)"
       >
         <FolderPlus class="sm" />
       </button>
-      <button class="icon-btn small" title="Re-probe everything" @click="rescan">
+      <button class="icon-btn small" title="Refresh everything" @click="refresh">
         <RefreshCw class="sm" />
       </button>
     </footer>
@@ -183,7 +186,7 @@ function selectFeature(featureId: string) {
 .summary .dim { color: var(--text-dim); }
 
 /* Live reads as a state of the header, not as a badge to hunt for. */
-.group-head.live .gi { color: var(--ok); }
+.group-head.running .gi { color: var(--ok); }
 
 .divider { padding: 16px 11px 6px; }
 

@@ -6,7 +6,7 @@ import { append } from './journal.js'
 
 /**
  * §7 — "Une session prend un bail sur un ensemble de sous-arbres."
- * The lock is on PATHS, never on features, so it behaves identically in a
+ * The lock is on PATHS, never on topics, so it behaves identically in a
  * structured C3 and in a C0 yolo on the main checkout.
  */
 

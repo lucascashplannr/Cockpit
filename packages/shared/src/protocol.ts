@@ -6,10 +6,10 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentScope, AgentSession, AgentSessionFile, CockpitSettings, CommitPreview,
+  AddRepoSource, AgentScope, Conversation, TranscriptFile, CockpitSettings, CommitPreview,
   CoreStatus,
   DatabasePlan,
-  DiffFile, Feature,
+  DiffFile, Topic,
   FileDiff, GitOperation, MemoryDoc, NewProjectSource, Project, SearchHit, SeedProposal,
   Workspace,
 } from './model.js'
@@ -43,7 +43,7 @@ export interface AgentScopePreview {
   paths: AgentScopePath[]
   /** Non-empty when a lease already covers part of the scope: start will refuse. */
   blocked: string[]
-  /** Whether a feature memory / cross-repo CONTEXT.md will be prepended (§6). */
+  /** Whether a topic memory / cross-repo CONTEXT.md will be prepended (§6). */
   preamble: { memory: boolean; context: boolean }
 }
 
@@ -244,18 +244,18 @@ export interface Rpc {
     result: { ok: boolean; detail?: string }
   }
 
-  'feature.list': { params: { projectId?: string; includeArchived?: boolean }; result: Feature[] }
-  'feature.get': { params: { featureId: string }; result: Feature | null }
+  'topic.list': { params: { projectId?: string; includeArchived?: boolean }; result: Topic[] }
+  'topic.get': { params: { topicId: string }; result: Topic | null }
   /**
-   * §4 — opening a feature is one plan across N repositories, previewed before
+   * §4 — opening a topic is one plan across N repositories, previewed before
    * anything is created and rolled back as a unit if any repo fails. The
-   * feature is only recorded once that plan applies.
+   * topic is only recorded once that plan applies.
    */
-  'feature.open': {
+  'topic.open': {
     params: {
       projectId: string
       name: string
-      ceremony: 'C1' | 'C2' | 'C3'
+      setup: 'branch' | 'isolated' | 'full'
       /** Workspace ids of the main checkouts to span. Empty means all of them. */
       repoWorkspaceIds?: string[]
       /** Branch to fork from; defaults to each repo's own default branch. */
@@ -276,7 +276,7 @@ export interface Rpc {
        */
       cloneDatabase?: boolean
     }
-    result: { plan: PlanPreview; featureId: string }
+    result: { plan: PlanPreview; topicId: string }
   }
   /**
    * §7 — what a new worktree would be missing, per repository, and the values
@@ -297,49 +297,49 @@ export interface Rpc {
     result: DatabasePlan[]
   }
   /** Bring its runtimes up. Refuses when an exclusive runtime is held elsewhere. */
-  'feature.activate': {
-    params: { featureId: string; force?: boolean }
-    result: { ok: boolean; detail: string; parked: string[]; conflicts: string[] }
+  'topic.start': {
+    params: { topicId: string; force?: boolean }
+    result: { ok: boolean; detail: string; stoppedTopics: string[]; conflicts: string[] }
   }
   /** Take its runtimes down and free the exclusive resources. Worktrees stay. */
-  'feature.park': { params: { featureId: string }; result: { ok: boolean; detail: string } }
-  'feature.rename': { params: { featureId: string; name: string }; result: Feature }
+  'topic.stop': { params: { topicId: string }; result: { ok: boolean; detail: string } }
+  'topic.rename': { params: { topicId: string; name: string }; result: Topic }
   /**
    * §16 — closing refuses over unpushed commits and live work; removing the
    * worktrees is a plan of its own, never a silent `rm -rf`.
    */
-  'feature.close': {
-    params: { featureId: string; removeWorktrees: boolean }
+  'topic.close': {
+    params: { topicId: string; removeWorktrees: boolean }
     result: { ok: boolean; detail: string; plan: PlanPreview | null }
   }
   /**
-   * §4 — one plan that replays every repository the feature spans onto its
+   * §4 — one plan that replays every repository the topic spans onto its
    * base. It stops at the first conflict and keeps what already replayed;
    * running it again after resolving picks up the rest.
    */
-  'feature.rebase': {
-    params: { featureId: string; base?: string }
+  'topic.rebase': {
+    params: { topicId: string; base?: string }
     result: { ok: boolean; detail: string; plan: PlanPreview | null }
   }
   /**
-   * §4 — the step the lifecycle was missing: the feature branch goes onto the
+   * §4 — the step the lifecycle was missing: the topic branch goes onto the
    * base, in each repository's MAIN checkout, as one identifiable `--no-ff`
    * merge. Halts on the first conflict and keeps what already merged.
    */
-  'feature.land': {
-    params: { featureId: string; push?: boolean; base?: string }
+  'topic.merge': {
+    params: { topicId: string; push?: boolean; base?: string }
     result: { ok: boolean; detail: string; plan: PlanPreview | null }
   }
-  /** Archiving is not a one-way door; this is how a closed feature comes back. */
-  'feature.reopen': { params: { featureId: string }; result: { ok: boolean; detail: string } }
+  /** Archiving is not a one-way door; this is how a closed topic comes back. */
+  'topic.reopen': { params: { topicId: string }; result: { ok: boolean; detail: string } }
   /**
    * §16 — the record goes for good. Refuses over anything that would lose work;
    * deleting a branch with unmerged commits is the one thing `force` unlocks,
    * because it is the one thing nothing can undo.
    */
-  'feature.delete': {
+  'topic.delete': {
     params: {
-      featureId: string
+      topicId: string
       removeWorktrees: boolean
       deleteBranches: boolean
       /** §10 — drop the per-worktree databases. There is no Trash for those. */
@@ -370,15 +370,15 @@ export interface Rpc {
 
   /**
    * §16 — "revue humaine du diff avant tout commit". The review existed and
-   * the commit did not, which left `feature.close` refusing over a state
+   * the commit did not, which left `topic.close` refusing over a state
    * nothing in the app could clear. One message, one commit per repository.
    */
   'git.commitPreview': {
-    params: { featureId?: string; workspaceIds?: string[]; all: boolean }
+    params: { topicId?: string; workspaceIds?: string[]; all: boolean }
     result: CommitPreview[]
   }
   'git.commit': {
-    params: { featureId?: string; workspaceIds?: string[]; message: string; all: boolean }
+    params: { topicId?: string; workspaceIds?: string[]; message: string; all: boolean }
     result: { ok: boolean; detail: string; plan: PlanPreview | null; preview: CommitPreview[] }
   }
 
@@ -430,9 +430,9 @@ export interface Rpc {
       /** Legacy form: one or more workspaces, read as `{ kind: 'workspace' }`. */
       workspaceIds?: string[]
       prompt: string
-      ceremony?: string
-      /** Scopes the session to a feature: its memory and CONTEXT.md are prepended. */
-      featureId?: string
+      setup?: string
+      /** Scopes the session to a topic: its memory and CONTEXT.md are prepended. */
+      topicId?: string
     }
     result: AgentStartResult
   }
@@ -455,7 +455,7 @@ export interface Rpc {
     params: { sessionId: string; prompt: string }
     result: AgentStartResult
   }
-  'agent.list': { params: void; result: AgentSession[] }
+  'agent.list': { params: void; result: Conversation[] }
   'agent.stop': { params: { sessionId: string }; result: { ok: true } }
   /**
    * Both engines run one-shot with the prompt as an argument and their stdin
@@ -467,7 +467,7 @@ export interface Rpc {
   'memory.read': { params: { workspaceId: string }; result: MemoryDoc | null }
   'memory.write': { params: { workspaceId: string; content: string }; result: { ok: true } }
   'memory.promote': { params: { workspaceId: string; section: string; text: string }; result: { ok: true } }
-  'memory.sessions': { params: { workspaceId: string }; result: AgentSessionFile[] }
+  'memory.sessions': { params: { workspaceId: string }; result: TranscriptFile[] }
 
   'journal.tail': {
     params: { workspaceId?: string; projectId?: string; limit?: number; types?: string[] }
@@ -509,8 +509,8 @@ export type ServerPush =
   /** Pushed on every project mutation, so every window's rail stays true. */
   | { t: 'projects'; projects: Project[] }
   | { t: 'workspaces'; workspaces: Workspace[] }
-  | { t: 'features'; features: Feature[] }
-  | { t: 'agents'; sessions: AgentSession[] }
+  | { t: 'topics'; topics: Topic[] }
+  | { t: 'agents'; sessions: Conversation[] }
   | { t: 'term'; termId: string; data: string }
   | { t: 'term-exit'; termId: string; code: number }
 

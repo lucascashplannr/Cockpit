@@ -13,7 +13,7 @@ import { activeWorkspace, goTo, state } from '../core/store.js'
  * rewritten):
  *
  *   1. navigate — the rail and the list to the left, and the scope bar the
- *                 Agent carries: project, feature, repo, folder.
+ *                 Agent carries: project, topic, repository, branch.
  *   2. agent    — this column. Permanently. It is what the window is for.
  *   3. review   — Diff / Code / Journal / Terminal, in a fourth column that
  *                 opens on demand and is closed by default.
@@ -39,7 +39,9 @@ const changed = computed(() => {
       <Wordmark :height="48" class="wm" />
       <p class="tag">Everything in flight, in one window.</p>
       <div class="hints">
-        <span class="hint"><span class="kbd">⌘K</span> jump to a workspace or run anything</span>
+        <span class="hint">
+          <span class="kbd">⌘K</span> jump to a repository or branch, or run anything
+        </span>
         <span class="hint"><MousePointerClick class="sm" /> or pick one on the left</span>
       </div>
     </div>
@@ -79,7 +81,11 @@ const changed = computed(() => {
           </span>
 
           <!-- §8 — a non-portable runtime says so, rather than failing later. -->
-          <span v-if="w.runtime && !w.runtime.portable" class="chip" title="This runtime is machine-local (§8)">
+          <span
+            v-if="w.runtime && !w.runtime.portable"
+            class="chip"
+            title="These servers are set up on this machine only — they do not follow the repository"
+          >
             local only
           </span>
 
@@ -89,7 +95,7 @@ const changed = computed(() => {
             <span class="v">:{{ p.port }}</span>
           </span>
 
-          <span v-if="w.lease" class="chip warn" :title="w.lease.reason">leased</span>
+          <span v-if="w.lease" class="chip warn" :title="w.lease.reason">locked</span>
 
           <span class="grow" />
 

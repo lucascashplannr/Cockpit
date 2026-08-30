@@ -3,22 +3,22 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { ArrowRight, Database, FileKey, GitBranch, Layers, Loader, TriangleAlert, X } from '@lucide/vue'
 import { slugify } from '@cockpit/shared'
 import type { DatabasePlan, SeedProposal } from '@cockpit/shared'
-import { openFeature, previewDatabase, previewSeed, state } from '../core/store.js'
+import { openTopic, previewDatabase, previewSeed, state } from '../core/store.js'
 
 /**
- * §4 — opening a feature. One name, the repositories it spans, and the level
- * of ceremony; everything else is derived. What comes back is a plan (§3.7),
+ * §4 — opening a topic. One name, the repositories it spans, and the level
+ * of setup; everything else is derived. What comes back is a plan (§3.7),
  * so this sheet never creates anything itself — it hands off to PlanDialog.
  */
 
 const name = ref('')
 const base = ref('')
-const ceremony = ref<'C1' | 'C2' | 'C3'>('C3')
+const setup = ref<'branch' | 'isolated' | 'full'>('full')
 const selected = ref<string[]>([])
 const busy = ref(false)
 const nameInput = ref<HTMLInputElement | null>(null)
 
-/** Only main checkouts: a feature forks from them, it does not nest in one. */
+/** Only main checkouts: a topic forks from them, it does not nest in one. */
 const repos = computed(() =>
   state.workspaces.filter((w) => w.projectId === state.activeProjectId && w.kind === 'main' && w.repo),
 )
@@ -28,7 +28,7 @@ const repos = computed(() =>
 const slug = computed(() => slugify(name.value))
 
 const taken = computed(() =>
-  state.features.some((f) => f.projectId === state.activeProjectId && f.slug === slug.value && f.state !== 'archived'),
+  state.topics.some((f) => f.projectId === state.activeProjectId && f.slug === slug.value && f.state !== 'closed'),
 )
 
 const canOpen = computed(() => !!name.value.trim() && selected.value.length > 0 && !taken.value)
@@ -60,7 +60,7 @@ function toggle(k: string) {
 }
 
 /** C1 branches in place, so there is no new checkout to carry anything into. */
-const seedApplies = computed(() => ceremony.value !== 'C1')
+const seedApplies = computed(() => setup.value !== 'branch')
 
 const seedCount = computed(() =>
   seed.value.reduce(
@@ -69,7 +69,7 @@ const seedCount = computed(() =>
   ),
 )
 
-/** Debounced: this runs while the feature name is being typed. */
+/** Debounced: this runs while the topic name is being typed. */
 async function refreshSeed() {
   if (!seedApplies.value || !name.value.trim() || !selected.value.length) {
     seed.value = []
@@ -89,7 +89,7 @@ async function refreshSeed() {
 }
 
 let debounce: ReturnType<typeof setTimeout> | null = null
-watch([slug, selected, ceremony], () => {
+watch([slug, selected, setup], () => {
   if (debounce) clearTimeout(debounce)
   debounce = setTimeout(() => void refreshSeed(), 250)
 })
@@ -128,12 +128,12 @@ function approvedSeed(): SeedProposal[] {
 }
 
 watch(
-  () => state.featureDialogOpen,
+  () => state.topicDialogOpen,
   (open) => {
     if (!open) return
     name.value = ''
     base.value = ''
-    ceremony.value = repos.value.length > 1 ? 'C3' : 'C2'
+    setup.value = repos.value.length > 1 ? 'full' : 'isolated'
     selected.value = repos.value.map((r) => r.id)
     busy.value = false
     seed.value = []
@@ -146,16 +146,16 @@ watch(
 )
 
 function close() {
-  if (!busy.value) state.featureDialogOpen = false
+  if (!busy.value) state.topicDialogOpen = false
 }
 
 async function submit() {
   if (!canOpen.value || busy.value) return
   busy.value = true
   const approved = seedApplies.value ? approvedSeed() : []
-  await openFeature({
+  await openTopic({
     name: name.value.trim(),
-    ceremony: ceremony.value,
+    setup: setup.value,
     repoWorkspaceIds: selected.value,
     ...(base.value.trim() ? { base: base.value.trim() } : {}),
     ...(approved.length ? { seed: approved, rememberSeed: remember.value } : {}),
@@ -166,11 +166,11 @@ async function submit() {
 </script>
 
 <template>
-  <div v-if="state.featureDialogOpen" class="scrim" @mousedown.self="close" @keydown.esc="close">
-    <div class="dlg" role="dialog" aria-label="Open a feature">
+  <div v-if="state.topicDialogOpen" class="scrim" @mousedown.self="close" @keydown.esc="close">
+    <div class="dlg" role="dialog" aria-label="Open a topic">
       <header class="head">
         <Layers class="sm gi" />
-        <h2>Open a feature</h2>
+        <h2>Open a topic</h2>
         <span class="grow" />
         <button class="icon-btn" title="Close (esc)" @click="close"><X class="sm" /></button>
       </header>
@@ -188,7 +188,7 @@ async function submit() {
           <span class="hint">
             <GitBranch class="sm" />
             <code class="mono">{{ slug }}</code>
-            <span v-if="taken" class="bad">— already in use by an open feature</span>
+            <span v-if="taken" class="bad">— already in use by an open topic</span>
             <span v-else>— the branch created in every repository below</span>
           </span>
         </label>
@@ -202,22 +202,22 @@ async function submit() {
           </label>
           <p v-if="!repos.length" class="none">No repository in this project.</p>
           <p v-else-if="selected.length > 1" class="note">
-            A <code class="mono">CONTEXT.md</code> will be created at the feature root. Fill it in
+            A <code class="mono">CONTEXT.md</code> will be created at the topic root. Fill it in
             before letting an agent span more than one of these.
           </p>
         </div>
 
         <div class="field">
-          <span class="lbl">Ceremony</span>
+          <span class="lbl">Setup</span>
           <div class="segs">
-            <button class="seg" :class="{ on: ceremony === 'C1' }" @click="ceremony = 'C1'">
-              <strong>C1</strong><span>branch in place</span>
+            <button class="seg" :class="{ on: setup === 'branch' }" @click="setup = 'branch'">
+              <strong>Here</strong><span>a branch in each repository</span>
             </button>
-            <button class="seg" :class="{ on: ceremony === 'C2' }" @click="ceremony = 'C2'">
-              <strong>C2</strong><span>isolated worktree</span>
+            <button class="seg" :class="{ on: setup === 'isolated' }" @click="setup = 'isolated'">
+              <strong>Separate</strong><span>each branch in its own folder</span>
             </button>
-            <button class="seg" :class="{ on: ceremony === 'C3' }" @click="ceremony = 'C3'">
-              <strong>C3</strong><span>worktrees + memory</span>
+            <button class="seg" :class="{ on: setup === 'full' }" @click="setup = 'full'">
+              <strong>Separate + memory</strong><span>and a memory of its own</span>
             </button>
           </div>
           <span class="hint">
@@ -249,7 +249,7 @@ async function submit() {
               <span v-if="p.source === 'manifest'" class="src">declared in cockpit.yaml</span>
             </div>
             <p v-if="!p.files.length" class="none">
-              Nothing to carry — this worktree checks out everything it needs.
+              Nothing to carry — this branch checks out everything it needs.
             </p>
 
             <div v-for="f in p.files" :key="f.path" class="seedfile">
@@ -297,12 +297,12 @@ async function submit() {
           <label v-if="seedCount && seed.some((p) => p.source !== 'manifest')" class="check remember">
             <input v-model="remember" type="checkbox" />
             <span>Remember this in <code class="mono">cockpit.yaml</code></span>
-            <span class="opt">— the next feature carries it without asking</span>
+            <span class="opt">— the next topic carries it without asking</span>
           </label>
         </div>
 
         <!-- §10 — the third thing that is global. Ports and hostnames are
-             already scoped per feature; the database is not, and folder
+             already scoped per topic; the database is not, and folder
              isolation cannot fix it. -->
         <div v-if="seedApplies && dbs.length" class="field">
           <span class="lbl">Database <span class="opt">— shared until it is not</span></span>
@@ -310,7 +310,7 @@ async function submit() {
           <label v-if="dbClonable.length" class="check remember">
             <input v-model="cloneDb" type="checkbox" :disabled="dbMissingTools.length > 0" />
             <Database class="sm fi" />
-            <span>Give each worktree its own copy</span>
+            <span>Give each branch its own copy</span>
           </label>
 
           <div v-for="d in dbs" :key="d.repo" class="dbrow">
@@ -328,17 +328,17 @@ async function submit() {
             <TriangleAlert class="sm" />
             <span>
               {{ dbMissingTools.join(', ') }} not on PATH — Cockpit cannot copy a database
-              without the client. The worktree still gets its own name in
+              without the client. The branch still gets its own name in
               <code class="mono">.env</code>; create the database yourself.
             </span>
           </p>
           <p v-else-if="cloneDb" class="why">
-            A full copy per worktree: slow for a large database, and the same disk again.
-            Dropping them is part of deleting the feature — and unlike the folder, a database
+            A full copy per branch: slow for a large database, and the same disk again.
+            Dropping them is part of deleting the topic — and unlike the folder, a database
             has no Trash.
           </p>
           <p v-else-if="dbClonable.length" class="why">
-            Without this every worktree points at
+            Without this every branch points at
             <code class="mono">{{ dbClonable[0]!.from }}</code>, so a migration run in one
             reaches the others.
           </p>

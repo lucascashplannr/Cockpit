@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import type { AgentScopePreview, AgentSession, AgentTurn, CockpitEvent, Workspace } from '@cockpit/shared'
+import type { AgentScopePreview, Conversation, AgentTurn, CockpitEvent, Workspace } from '@cockpit/shared'
 import {
   BookMarked, CircleStop, CornerDownLeft, History, Lock, RotateCcw, ShieldCheck, Sparkles,
   Wrench, X,
@@ -12,15 +12,15 @@ import {
 } from '../../core/store.js'
 
 /**
- * Layer 2 — the chat, and nothing else.
+ * Layer 2 — the agent, and nothing else.
  *
- * It used to open with a row of scope buttons: Project / Feature / This repo /
+ * It used to open with a row of scope buttons: Project / Topic / This repo /
  * Folder. That was navigating twice — once to the workspace in the list, then
- * again inside the agent to say which workspace you meant. A chat is opened
- * *on* something now (a feature row, a workspace row, the project), and this
+ * again inside the agent to say what you meant. A conversation is opened
+ * *on* something now (a topic row, a workspace row, the project), and this
  * surface only says what it is on.
  *
- * The conversation list and the memory are both instruments of the chat rather
+ * The conversation list and the memory are both instruments of the agent rather
  * than neighbours of it: they open over it and close back to it.
  */
 
@@ -66,7 +66,7 @@ watch(conversations, (list) => {
   if (selectedId.value && !list.some((c) => c.id === selectedId.value)) selectedId.value = null
 })
 
-const isLive = (s: AgentSession) => s.status !== 'ended' && s.status !== 'failed'
+const isLive = (s: Conversation) => s.status !== 'ended' && s.status !== 'failed'
 
 /**
  * §3.3 — the transcript is the journal filtered, never a second copy. Split by
@@ -128,7 +128,7 @@ async function send(): Promise<void> {
 }
 
 async function stop(id: string): Promise<void> {
-  await guard(() => client.call('agent.stop', { sessionId: id }), 'session stopped')
+  await guard(() => client.call('agent.stop', { sessionId: id }), 'conversation stopped')
 }
 
 // New output should not have to be scrolled to.
@@ -166,7 +166,7 @@ function ago(ts: number): string {
   return h < 24 ? h + 'h ago' : Math.floor(h / 24) + 'd ago'
 }
 
-function dotClass(s: AgentSession): string {
+function dotClass(s: Conversation): string {
   if (s.status === 'ended') return 'down'
   if (s.status === 'failed') return 'unhealthy'
   if (s.status === 'starting') return 'starting'
@@ -176,20 +176,21 @@ function dotClass(s: AgentSession): string {
 
 <template>
   <div class="agent">
-    <!-- One line of chrome: what this chat is on, and its two instruments. -->
+    <!-- One line of chrome: what this conversation is on, and its two
+         instruments. -->
     <header class="chrome">
       <span class="scope" :title="paths.map((p) => p.path).join('\n')">
         <span class="k">{{ label.kind }}</span>
         <span class="n">{{ label.name }}</span>
       </span>
-      <span v-if="paths.length > 1" class="spread">{{ paths.length }} repos</span>
+      <span v-if="paths.length > 1" class="spread">{{ paths.length }} repositories</span>
 
       <span class="grow" />
 
       <button
         class="chip-btn"
         :class="{ on: state.historyOpen }"
-        title="Every conversation on this scope"
+        title="Earlier conversations here"
         @click="state.historyOpen = !state.historyOpen"
       >
         <History class="sm" />
@@ -200,7 +201,7 @@ function dotClass(s: AgentSession): string {
       <button
         class="chip-btn"
         :class="{ on: state.memoryOpen }"
-        title="The durable memory this run reads (§6)"
+        title="The durable memory this conversation reads on the way in"
         @click="state.memoryOpen = !state.memoryOpen"
       >
         <BookMarked class="sm" />
@@ -209,28 +210,28 @@ function dotClass(s: AgentSession): string {
     </header>
 
     <p v-if="blocked.length" class="note danger">
-      <Lock class="sm" /> {{ blocked.join(' · ') }} — §7 refuses two agents on one subtree.
+      <Lock class="sm" /> {{ blocked.join(' · ') }} — locked; two agents never share a folder.
     </p>
     <p v-else-if="onMain.length" class="note">
       <ShieldCheck class="sm" />
-      {{ onMain.map((p) => p.name).join(', ') }} on the main branch — a restore point is captured
-      before the first write.
+      {{ onMain.map((p) => p.name).join(', ') }} on the default branch — a restore point is
+      captured before the first write.
     </p>
 
-    <!-- §6 — over the chat, never beside it: it is read while writing. -->
+    <!-- §6 — over the conversation, never beside it: it is read while writing. -->
     <section v-if="state.memoryOpen" class="over">
       <header class="ohead">
         <BookMarked class="sm mk" />
         <span class="ttl">Memory</span>
         <span class="grow" />
-        <button class="icon-btn" title="Back to the chat (Esc)" @click="state.memoryOpen = false">
+        <button class="icon-btn" title="Back to the conversation (Esc)" @click="state.memoryOpen = false">
           <X class="sm" />
         </button>
       </header>
       <div class="obody"><MemoryTab :workspace="props.workspace" /></div>
     </section>
 
-    <!-- Every conversation on this scope. Also over the chat: it is a way back
+    <!-- Every conversation here. Also over the conversation: it is a way back
          into one, not a column to keep open. -->
     <section v-else-if="state.historyOpen" class="over">
       <header class="ohead">
@@ -243,7 +244,7 @@ function dotClass(s: AgentSession): string {
       </header>
       <div class="obody convos">
         <p v-if="!conversations.length" class="none">
-          Nothing has been run on this scope yet.
+          Nothing has run here yet.
         </p>
         <button
           v-for="c in conversations"
@@ -264,7 +265,7 @@ function dotClass(s: AgentSession): string {
       </div>
     </section>
 
-    <!-- The chat. Nothing yet: the composer is the page, the way a new chat is
+    <!-- The conversation. Nothing yet: the composer is the page, the way a new one is
          a question and a box under it. -->
     <div v-else-if="!selected" class="hero">
       <div class="heroinner">
@@ -325,12 +326,12 @@ function dotClass(s: AgentSession): string {
           <button
             v-if="isLive(selected)"
             class="icon-btn"
-            title="Stop this session"
+            title="Stop this conversation"
             @click="stop(selected.id)"
           >
             <CircleStop class="sm" />
           </button>
-          <button class="icon-btn" title="New conversation on this scope" @click="selectedId = null">
+          <button class="icon-btn" title="Start a new conversation here" @click="selectedId = null">
             <X class="sm" />
           </button>
         </div>
@@ -439,7 +440,7 @@ function dotClass(s: AgentSession): string {
 .note .lucide { flex: none; margin-top: 1px; }
 .note.danger { color: var(--danger); background: var(--danger-soft); }
 
-/* ── memory / history, over the chat ─────────────────────────────────── */
+/* ── memory / history, over the conversation ─────────────────────────── */
 .over { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .ohead {
   flex: none;
@@ -480,7 +481,7 @@ function dotClass(s: AgentSession): string {
   overflow: hidden;
 }
 
-/* ── the empty chat: the question is the page ────────────────────────── */
+/* ── the empty conversation: the question is the page ────────────────── */
 .hero { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .heroinner { width: 100%; max-width: 620px; }
 .ask {

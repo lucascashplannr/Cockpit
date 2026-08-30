@@ -1,5 +1,5 @@
 /**
- * §4 — Concepts. Workspace is the primitive; Feature is a decoration.
+ * §4 — Concepts. Workspace is the primitive; Topic is a decoration.
  */
 
 export type WorkspaceKind = 'main' | 'worktree' | 'group' | 'external'
@@ -24,8 +24,8 @@ export interface Capability {
   detail?: Record<string, unknown>
 }
 
-/** §4 — ceremony levels. */
-export type Ceremony = 'C0' | 'C1' | 'C2' | 'C3'
+/** §4 — setup levels. */
+export type Setup = 'none' | 'branch' | 'isolated' | 'full'
 
 /**
  * §3.7 — a conflicted rebase is a state to work in, not an error to report.
@@ -76,7 +76,7 @@ export interface SeedContext {
   slug: string
   /** The repository's folder name. */
   repo: string
-  /** `repo-slug` — unique across features, which is what Herd and Compose key on. */
+  /** `repo-slug` — unique across topics, which is what Herd and Compose key on. */
   scoped: string
   /** `scoped.test`, the hostname this worktree answers on. */
   host: string
@@ -211,7 +211,7 @@ export interface Workspace {
   git: GitState | null
   runtime: RuntimeState | null
   /** Null is the normal case, not the exception (§4). */
-  featureId: string | null
+  topicId: string | null
   capabilities: Capability[]
   /** Active agent sessions whose scope covers this path. */
   agentSessions: string[]
@@ -225,18 +225,18 @@ export interface Workspace {
 /**
  * §4 — a name + a set of workspaces, plus optional decorations.
  *
- * Durable on purpose: a feature outlives the daemon, the window and the day,
+ * Durable on purpose: a topic outlives the daemon, the window and the day,
  * because that is the granularity at which work is actually picked up and put
  * down. Sessions inside it stay disposable (§6) — that separation is the point.
  */
-export type FeatureState =
+export type TopicState =
   /** Worktrees on disk, agents may run, no server is bound. */
-  | 'parked'
+  | 'stopped'
   /** Runtime up, ports bound, preview reachable. */
-  | 'live'
-  | 'archived'
+  | 'running'
+  | 'closed'
 
-export interface Feature {
+export interface Topic {
   id: string
   projectId: string
   /** Human name, e.g. "Two-factor auth". */
@@ -245,15 +245,15 @@ export interface Feature {
   slug: string
   /**
    * §7 — the folder holding `.cockpit/memory.md` and the cross-repo
-   * `CONTEXT.md`. Null for a feature merely inferred from branch names, which
+   * `CONTEXT.md`. Null for a topic merely inferred from branch names, which
    * has nowhere to keep either.
    */
   rootPath: string | null
   workspaceIds: string[]
-  state: FeatureState
+  state: TopicState
   ticket: TicketRef | null
   review: ReviewRef | null
-  ceremony: Ceremony
+  setup: Setup
   /** Inferred from matching branch names rather than opened deliberately. */
   derived: boolean
   createdAt: number
@@ -285,12 +285,12 @@ export interface Project {
   /** Null when running manifest-less on detection alone (§5). */
   manifestPath: string | null
   capabilities: Capability[]
-  defaultCeremony: Ceremony
+  defaultSetup: Setup
   workspaceIds: string[]
-  featureIds: string[]
+  topicIds: string[]
 }
 
-/** §7 — a lease is taken on a set of subtrees, never on a feature. */
+/** §7 — a lease is taken on a set of subtrees, never on a topic. */
 export interface LeaseInfo {
   id: string
   holder: string
@@ -304,18 +304,18 @@ export interface LeaseInfo {
  * §7 — what a session is *for*.
  *
  * The doc's scope table is four rows, and until now the code had none of them:
- * a session was a bag of `workspaceIds` with a `featureId` bolted on the side,
- * so "an agent on this feature" and "an agent on this repo" were the same call
+ * a session was a bag of `workspaceIds` with a `topicId` bolted on the side,
+ * so "an agent on this topic" and "an agent on this repo" were the same call
  * with different checkboxes ticked, and nothing downstream could tell them
  * apart. The scope is what the window, the journal and the preamble read.
  *
  * The **lease is still taken on paths and never on this** (§7: "le verrou porte
- * sur des chemins, jamais sur des features"), which is what makes a feature
+ * sur des chemins, jamais sur des topics"), which is what makes a topic
  * agent and a repo agent inside it collide exactly as they should.
  */
 export type AgentScope =
-  /** Every worktree the feature spans, with its memory and CONTEXT.md (§6). */
-  | { kind: 'feature'; featureId: string }
+  /** Every worktree the topic spans, with its memory and CONTEXT.md (§6). */
+  | { kind: 'topic'; topicId: string }
   /** Every repository in the project, at its main checkout (§7, C0). */
   | { kind: 'project'; projectId: string }
   /** One checkout — a worktree, or a main, or a folder with no repo at all. */
@@ -341,7 +341,7 @@ export interface AgentTurn {
   status: 'running' | 'done' | 'failed'
 }
 
-export interface AgentSession {
+export interface Conversation {
   id: string
   engine: string
   workspaceIds: string[]
@@ -352,8 +352,8 @@ export interface AgentSession {
   turns: number
   leaseId: string | null
   lastMessage: string | null
-  /** Which feature it was run under, when it was run under one (§4). */
-  featureId: string | null
+  /** Which topic it was run under, when it was run under one (§4). */
+  topicId: string | null
   /**
    * The engine's own resume handle (`claude --resume`, `codex exec resume`).
    * Without it a session dies with the daemon, and multi-day work is a fiction.
@@ -410,7 +410,7 @@ export interface MemoryDoc {
   updatedAt: number | null
 }
 
-export interface AgentSessionFile {
+export interface TranscriptFile {
   id: string
   path: string
   startedAt: number

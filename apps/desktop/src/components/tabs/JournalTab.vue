@@ -20,7 +20,7 @@ const KINDS = [
   { id: 'all', label: 'all', icon: ScrollText },
   { id: 'git', label: 'git', icon: GitBranch },
   { id: 'agent', label: 'agent', icon: Sparkles },
-  { id: 'runtime', label: 'runtime', icon: Server },
+  { id: 'runtime', label: 'servers', icon: Server },
 ] as const
 
 const rows = computed(() => {
@@ -58,7 +58,7 @@ function summarize(p: unknown): string {
   <div class="journal">
     <div class="bar">
       <div class="seg">
-        <button :class="{ on: scope === 'workspace' }" @click="scope = 'workspace'">this workspace</button>
+        <button :class="{ on: scope === 'workspace' }" @click="scope = 'workspace'">here</button>
         <button :class="{ on: scope === 'all' }" @click="scope = 'all'">everything</button>
       </div>
       <div class="seg">

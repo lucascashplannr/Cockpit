@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   // Boot hygiene, all four consequences of running permanently (§13).
   const reaped = supervisor.reapOrphans()
   agents.reapSessions()
-  const staleLeases = leases.releaseAll('core restart')
+  const staleLeases = leases.releaseAll('service restart')
   const pruned = pruneJournal(cfg.journalRetentionDays)
 
   append({

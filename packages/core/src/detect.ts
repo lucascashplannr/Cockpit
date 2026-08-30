@@ -20,12 +20,28 @@ export function findManifest(root: string): string | null {
 
 export function readManifest(path: string): { manifest: ManifestV1 | null; issues: string[] } {
   try {
-    const raw = parseYaml(readFileSync(path, 'utf8')) as unknown
+    const raw = migrateVocabulary(parseYaml(readFileSync(path, 'utf8')) as unknown)
     const { manifest, issues } = validateManifest(raw)
     return { manifest, issues: issues.map((i) => (i.path ? i.path + ': ' : '') + i.message) }
   } catch (e) {
     return { manifest: null, issues: ['could not parse: ' + String(e)] }
   }
+}
+
+/**
+ * A manifest is a file the user wrote and versioned, so the vocabulary pass
+ * cannot simply stop reading the old words: `ceremony: C2` still means
+ * `setup: isolated`, and silently ignoring it would change what a project does
+ * without saying so. Accepted on the way in; never written back.
+ */
+const SETUP_ALIASES: Record<string, string> = { C0: 'none', C1: 'branch', C2: 'isolated', C3: 'full' }
+
+function migrateVocabulary(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+  const o = raw as Record<string, unknown>
+  if (o.setup === undefined && typeof o.ceremony === 'string') o.setup = o.ceremony
+  if (typeof o.setup === 'string' && SETUP_ALIASES[o.setup]) o.setup = SETUP_ALIASES[o.setup]
+  return o
 }
 
 function readJson(path: string): Record<string, unknown> | null {

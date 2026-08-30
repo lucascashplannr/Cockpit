@@ -1,5 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, shell, nativeTheme } = require('electron')
-const { spawn } = require('node:child_process')
+const { execFileSync, spawn } = require('node:child_process')
 const { join, resolve } = require('node:path')
 const { existsSync } = require('node:fs')
 const { createConnection } = require('node:net')
@@ -104,9 +104,44 @@ ipcMain.handle('core:restart', async () => {
     if (!(await probeCore(CORE_PORT))) break
     await new Promise((r) => setTimeout(r, 250))
   }
+  // Still bound: the graceful ask never landed. That is precisely the case
+  // this button exists for — a core the window refuses to talk to (protocol
+  // mismatch) cannot be asked to stop over the socket it just hung up, and a
+  // restart that adopts the very process it was meant to replace is not a
+  // restart. Fall back to the port's owner.
+  if (await probeCore(CORE_PORT)) killPort(CORE_PORT)
+  for (let i = 0; i < 20; i++) {
+    if (!(await probeCore(CORE_PORT))) break
+    await new Promise((r) => setTimeout(r, 250))
+  }
   await ensureCore()
   return probeCore(CORE_PORT)
 })
+
+/**
+ * Whatever is listening on the core's port, stopped. Deliberately narrow: one
+ * port, ours, and SIGTERM first so the core runs its own shutdown. Best
+ * effort — no lsof, no permission, nothing happens and `ensureCore` reports
+ * the port still bound.
+ */
+function killPort(port) {
+  let pids = []
+  try {
+    pids = execFileSync('lsof', ['-nP', '-iTCP:' + port, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
+      .split('\n')
+      .map((l) => Number(l.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0 && n !== process.pid)
+  } catch {
+    return
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      /* already gone */
+    }
+  }
+}
 
 function createWindow() {
   const win = new BrowserWindow({

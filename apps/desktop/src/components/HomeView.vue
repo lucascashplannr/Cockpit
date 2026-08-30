@@ -16,7 +16,7 @@ import {
 
 /**
  * §12 — the start page. The app opens on a search field rather than on the
- * workspace that happened to be selected last session, because "where do I go
+ * row that happened to be selected last time, because "where do I go
  * now" is a different question from "what was I doing".
  *
  * It is the palette's slower sibling on purpose: same matching, but it also
@@ -119,22 +119,26 @@ const rows = computed<Row[]>(() => {
 })
 
 const heading = computed(() =>
-  query.value.trim() ? 'Results' : recentWorkspaces.value.length ? 'Recent' : 'Workspaces',
+  query.value.trim() ? 'Results' : recentWorkspaces.value.length ? 'Recent' : 'Everything open',
 )
 
 const parts = (r: Row) => highlight(r.label, r.positions)
 
 const dirty = (w: Workspace) => (w.git ? w.git.staged + w.git.unstaged + w.git.untracked : 0)
 
-const workspaceCount = computed(() => openable.value.length)
+/* Two counts rather than one umbrella noun: the window has no word that
+   covers both a repository and a branch of it, and it does not need one. */
+const repoCount = computed(() => openable.value.filter((w) => w.kind !== 'worktree').length)
+const branchCount = computed(() => openable.value.filter((w) => w.kind === 'worktree').length)
 
 /* One tip per visit. Fixed set, so nothing here can ever describe a control
    that does not exist. */
 const TIPS = [
   'Press ⌘K anywhere to run a command without leaving the keyboard.',
-  'Type / in the palette to jump to a file, # to grep every repo at once.',
+  'Type / in the palette to jump to a file, # to search every repository at once.',
   'r rebases and p pushes — both show you the plan before anything runs.',
-  '⌘1 through ⌘6 move between Code, Diff, Agent, Memory, Journal and Terminal.',
+  '⌘1 is the agent; ⌘2 and up are the review tools beside it.',
+  'A topic is one named branch across every repository it touches.',
 ]
 const tip = TIPS[Math.floor(Math.random() * TIPS.length)]
 
@@ -189,7 +193,7 @@ onMounted(() => void nextTick(() => input.value?.focus()))
       <button class="icon-btn" title="Settings" @click="state.settingsOpen = true">
         <SlidersHorizontal class="sm" />
       </button>
-      <button v-if="canLeaveHome" class="icon-btn" title="Back to the workspace (esc)" @click="closeHome">
+      <button v-if="canLeaveHome" class="icon-btn" title="Back to where you were (esc)" @click="closeHome">
         <X class="sm" />
       </button>
     </div>
@@ -209,7 +213,7 @@ onMounted(() => void nextTick(() => input.value?.focus()))
           type="text"
           spellcheck="false"
           autocomplete="off"
-          placeholder="Search a workspace…"
+          placeholder="Search a repository, a branch, or a command…"
           @keydown="onKey"
         />
         <span class="kbd">⌘K</span>
@@ -217,20 +221,24 @@ onMounted(() => void nextTick(() => input.value?.focus()))
 
       <p class="meta">
         <span :class="{ off: state.connection !== 'connected' }">
-          core {{ state.connection === 'connected' ? 'connected' : state.connection }}
+          {{ state.connection === 'connected' ? 'connected' : state.connection }}
         </span>
         <span class="sep">·</span>
         <span>{{ state.projects.length }} {{ state.projects.length === 1 ? 'project' : 'projects' }}</span>
         <span class="sep">·</span>
-        <span>{{ workspaceCount }} {{ workspaceCount === 1 ? 'workspace' : 'workspaces' }}</span>
+        <span>{{ repoCount }} {{ repoCount === 1 ? 'repository' : 'repositories' }}</span>
+        <span v-if="branchCount" class="sep">·</span>
+        <span v-if="branchCount">
+          {{ branchCount }} {{ branchCount === 1 ? 'branch' : 'branches' }}
+        </span>
       </p>
 
       <!-- Nothing registered yet is the only state with a single answer. -->
       <div v-if="!state.projects.length" class="virgin">
         <p>
-          No project yet. However it starts, it lands the same way —
-          <code class="mono">Dev/Project/repo</code> — with the project folder left free so a
-          second repository can join the first.
+          No project yet. However it starts, it ends up the same way —
+          <code class="mono">Dev/Project/repository</code> — with the project folder left free so
+          a second repository can join the first.
         </p>
         <NewProjectSources @pick="newProject" />
       </div>

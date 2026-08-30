@@ -2,16 +2,16 @@
 import { computed } from 'vue'
 import { ArrowDown, ArrowUp, GitBranch, Lock, Sparkles, SquareDot, TriangleAlert } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
-import { openAgentOn, selectedFeatureId, selectWorkspace, state } from '../core/store.js'
+import { openAgentOn, selectedTopicId, selectWorkspace, state } from '../core/store.js'
 
 const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
 
 const w = computed(() => props.workspace)
-// Selecting a feature anchors the panel on one of its rows, so the row id
+// Selecting a topic anchors the panel on one of its rows, so the row id
 // alone would light two things at once. The narrower selection wins: while the
-// feature is what is selected, none of its rows is.
+// topic is what is selected, none of its rows is.
 const selected = computed(
-  () => w.value.id === state.activeWorkspaceId && !selectedFeatureId.value,
+  () => w.value.id === state.activeWorkspaceId && !selectedTopicId.value,
 )
 
 const dirty = computed(() => {
@@ -19,8 +19,20 @@ const dirty = computed(() => {
   return g ? g.staged + g.unstaged + g.untracked : 0
 })
 
+/**
+ * Two things live in this list and the icon is what tells them apart: a
+ * repository sitting on its default branch, and a branch checked out in a
+ * folder of its own. "Worktree" is how git does the second one; it is not
+ * what the row is.
+ */
 const kindLabel = computed(() =>
-  w.value.kind === 'main' ? 'main checkout' : w.value.kind === 'worktree' ? 'worktree' : w.value.kind,
+  w.value.kind === 'main'
+    ? 'repository'
+    : w.value.kind === 'worktree'
+      ? 'branch'
+      : w.value.kind === 'external'
+        ? 'folder'
+        : w.value.kind,
 )
 </script>
 
@@ -31,7 +43,7 @@ const kindLabel = computed(() =>
       <component :is="w.kind === 'worktree' ? GitBranch : SquareDot" class="sm" />
     </span>
 
-    <!-- §12 — the branch is the identity; the repo name is context. -->
+    <!-- §12 — the branch is the identity; the repository name is context. -->
     <span class="name">{{ w.name }}</span>
 
     <span class="meta num">
@@ -56,19 +68,25 @@ const kindLabel = computed(() =>
         v-if="w.runtime"
         class="dot"
         :class="w.runtime.status"
-        :title="'runtime ' + w.runtime.status"
+        :title="'servers ' + w.runtime.status"
       />
-      <span v-if="w.agentSessions.length" class="c agent" title="agent session active">
+      <span
+        v-if="w.agentSessions.length"
+        class="c agent"
+        :title="w.agentSessions.length + ' conversation(s) running here'"
+      >
         <Sparkles class="sm" />{{ w.agentSessions.length }}
       </span>
-      <span v-if="w.lease" class="lease" title="path lease held"><Lock class="sm" /></span>
+      <span v-if="w.lease" class="lease" title="locked — an agent is working here">
+        <Lock class="sm" />
+      </span>
 
-      <!-- §7 — the chat is opened *on* this checkout. The scope is where you
-           clicked; there is no second menu asking which workspace you meant. -->
+      <!-- §7 — the agent is aimed *here* by clicking here. The scope is where
+           you clicked; there is no second menu asking what you meant. -->
       <span
         class="go"
         role="button"
-        :title="'Chat on ' + w.name"
+        :title="'Ask the agent on ' + w.name"
         @click.stop="openAgentOn({ kind: 'workspace', workspaceId: w.id })"
       >
         <Sparkles class="sm" />

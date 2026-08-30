@@ -33,7 +33,7 @@ Le coût n'est pas dans les outils. Il est dans le **switch** entre eux, et dans
 | IDE | Voir, naviguer, corriger : oui. Complétion, navigation sémantique, débogueur : non. Le cockpit ouvre l'IDE au bon endroit. |
 | client Git complet | Il expose les opérations quotidiennes avec un filet de sécurité, en gardant le vocabulaire de Git. Il ne cache pas Git. |
 | gestionnaire de tickets | Lire, changer un statut, lier une PR. Rien de plus. |
-| navigateur | Il ouvre l'aperçu de la feature. Il ne remplace ni les devtools ni le profil connecté. |
+| navigateur | Il ouvre l'aperçu de la topic. Il ne remplace ni les devtools ni le profil connecté. |
 | terminal | Il en embarque un, indispensable comme porte de sortie. Il ne remplace pas le shell configuré. |
 | générateur de projets | Voir §11 — c'est un autre produit. |
 | plateforme d'environnements éphémères | Voir §10, ligne rouge L5. |
@@ -47,7 +47,7 @@ La formule qui tranche les arbitrages : **le cockpit supprime la navigation, pas
 3. **Tout est un événement.** Un journal unique dont dérivent l'affichage, les logs, les automations et l'historique. Structurant, très difficile à rajouter après coup.
 4. **On sonde, on ne se souvient pas.** Rien de ce que Git, Docker ou le système savent déjà n'est stocké. Sinon la première suppression manuelle rend tout l'affichage mensonger.
 5. **Le cockpit lit l'organisation, il ne la dicte pas.** Chaque projet déclare sa stratégie ; le cockpit s'adapte.
-6. **Une seule action à la fois sur un même sous-arbre.** Verrouillage par chemin, pas par feature (§7).
+6. **Une seule action à la fois sur un même sous-arbre.** Verrouillage par chemin, pas par topic (§7).
 7. **Toute opération affiche son plan avant de s'exécuter** et laisse une trace annulable.
 8. **Rien ne se décide à la place du développeur.** Pas de merge auto, pas de push auto, pas de commit d'agent sans revue.
 9. **Absent = invisible, jamais grisé.** Une capacité non configurée ne laisse aucune trace dans l'interface.
@@ -67,35 +67,37 @@ La formule qui tranche les arbitrages : **le cockpit supprime la navigation, pas
 
 Le checkout principal est un workspace **de plein droit**, pas un cas dégradé. C'est là que la majorité du travail se passe réellement.
 
-### Feature — une décoration, pas un conteneur
+### Topic — une décoration, pas un conteneur
 
 **Un nom + un ensemble de workspaces**, plus éventuellement un ticket, une PR, un environnement, une mémoire.
 
-Elle peut regrouper zéro, un ou N workspaces. Et surtout : **un workspace peut n'appartenir à aucune feature.** C'est le cas normal, pas l'exception.
+Il peut regrouper zéro, un ou N workspaces. Et surtout : **un workspace peut n'appartenir à aucun topic.** C'est le cas normal, pas l'exception.
 
 ```
 Workspace ────┐   le primitif
               │
- Feature ─────┤
+ Topic ───────┤
  Ticket ──────┤   décorent un ou N workspaces
  Runtime ─────┤
  Agent ───────┘
 ```
 
-### Niveaux de cérémonie
+### Niveaux de setup
 
 Chaque action choisit son niveau. Le manifest ne déclare que le **défaut** du projet.
+Les codes C0–C3 du premier jet ont été remplacés par les noms que l'interface affiche :
+`none`, `branch`, `isolated`, `full`.
 
 | | Niveau | Ce qui est créé |
 |---|---|---|
-| **C0** | *yolo* | rien — on pointe un dossier et on lance |
-| **C1** | branche | une branche dans le checkout existant |
-| **C2** | isolé | un worktree |
-| **C3** | feature | worktrees + environnement + base + ticket + mémoire |
+| **none** | *ici* | rien — on pointe un dossier et on lance |
+| **branch** | branche | une branche dans le checkout existant |
+| **isolated** | séparé | chaque branche dans son propre dossier |
+| **full** | topic | dossiers séparés + environnement + base + ticket + mémoire |
 
-Un mono-repo simple tournera en C0/C1 en permanence. Un projet multi-repo en C3 pour le travail planifié, en C0 pour « je regarde ce bug vite fait ».
+Un mono-repo simple tournera en `none`/`branch` en permanence. Un projet multi-repo en `full` pour le travail planifié, en `none` pour « je regarde ce bug vite fait ».
 
-**Le cockpit doit rendre C0 aussi rapide qu'un terminal**, sinon il ne sera pas utilisé dans l'urgence — et c'est précisément là qu'un filet de sécurité sert le plus.
+**Le cockpit doit rendre `none` aussi rapide qu'un terminal**, sinon il ne sera pas utilisé dans l'urgence — et c'est précisément là qu'un filet de sécurité sert le plus.
 
 On peut toujours **monter** de niveau après coup : « ce yolo devient sérieux » → un bouton crée la branche, puis le worktree, puis l'environnement, sans perdre le travail en cours. On ne descend jamais.
 
@@ -106,7 +108,7 @@ Le mode yolo relâche la *structure*, jamais la *traçabilité* :
 1. **Le journal enregistre** — quel agent, où, quand, combien.
 2. **Le diff reste visible et marqué humain / agent.**
 3. **Le verrou existe** — deux agents sur le même sous-arbre, jamais.
-4. **Un point de restauration est capturé** avant toute écriture d'agent. En C0 on est sur le checkout principal : c'est là qu'on a le plus à perdre.
+4. **Un point de restauration est capturé** avant toute écriture d'agent. Sans branche on est sur le checkout principal : c'est là qu'on a le plus à perdre.
 
 **Un yolo tracé** — c'est la valeur ajoutée par rapport à un terminal nu.
 
@@ -116,7 +118,37 @@ Le mode yolo relâche la *structure*, jamais la *traçabilité* :
 **Capacité** — un module optionnel qui s'enregistre auprès du noyau (§5).
 **Manifest** — fichier versionné décrivant le projet. Source de vérité de l'état désiré.
 **Journal** — le flux d'événements, append-only.
-**Mémoire** — la compréhension durable d'une feature, séparée des sessions (§6).
+**Mémoire** — la compréhension durable d'un topic, séparée des conversations (§6).
+
+### Le lexique de l'interface
+
+`Workspace`, `worktree` et `runtime` sont des mots du **modèle**, pas de la fenêtre. Un
+mot par concept, et jamais deux — c'est ce qui empêche l'interface de redevenir un
+vocabulaire à réapprendre à chaque écran.
+
+| Concept | Le mot affiché | Jamais |
+|---|---|---|
+| un dossier de `Dev/` contenant un ou N repos | **Project** | — |
+| un dépôt git dans un projet | **Repository** | repo, folder |
+| une branche sortie dans son propre dossier | **Branch** | worktree, checkout, workspace |
+| un repo sur sa branche par défaut | le nom du repo | main checkout |
+| un nom + une branche par repo + env + mémoire | **Topic** | feature |
+| le panneau de l'agent | **Agent** | chat |
+| un fil avec l'agent | **Conversation** | session, chat |
+| ce que l'agent a le droit de toucher | **Scope** | — |
+| les serveurs de dev | **Servers** | runtime |
+| la revendication exclusive sur des chemins | **Locked** | lease, leased |
+| le démon permanent | **the service** | core, daemon |
+| un enregistrement du fil d'un moteur | **Transcript** | session file |
+
+| Action | Le verbe | Jamais |
+|---|---|---|
+| monter / descendre les serveurs | **Start / Stop** | make live, park, activate |
+| fusionner sur la base | **Merge** | land |
+| relire l'état depuis le disque | **Refresh** | probe, re-probe, rescan, reconcile |
+| archiver un topic | **Close / Reopen** | archive, park |
+| revenir en arrière | **Undo** | roll back |
+| git | **Rebase / Push / Sync / Commit** | (inchangé — §2 : on ne cache pas git) |
 
 ## 5. Le modèle de capacités
 
@@ -135,21 +167,21 @@ Le noyau connaît trois choses : un **workspace**, un **événement**, une **cap
 | `docs` | rien | dossier local, repo séparé |
 | `memory` | pas d'onglet mémoire | fichiers dans le workspace |
 
-**Règle d'interface non négociable : absent = invisible.** Un projet mono-repo sans tickets, sans agents, en C0 doit ressembler à un outil simple — pas à un outil complexe avec huit boutons désactivés. C'est la différence entre *flexible* et *usine à gaz configurable*.
+**Règle d'interface non négociable : absent = invisible.** Un projet mono-repo sans tickets, sans agents, sans branche doit ressembler à un outil simple — pas à un outil complexe avec huit boutons désactivés. C'est la différence entre *flexible* et *usine à gaz configurable*.
 
 **Défaut sain : sans manifest, le cockpit fonctionne quand même.** Il détecte ce qu'il peut (`.git`, `compose.yaml`, `app.json`, un dossier `docs/`) et propose. Le manifest ne sert qu'à ce qui n'est pas devinable.
 
 **Test à appliquer à toute idée future :** *puis-je l'exprimer comme une capacité que le noyau ignore ?* Si non, on alourdit le noyau — et c'est là que ce genre de projet meurt.
 
-## 6. La mémoire de feature
+## 6. La mémoire de topic
 
 Le manque le plus important, et celui qu'aucun outil ne traite. Trois couches **distinctes** — les confondre est l'erreur à éviter.
 
 | Couche | Contenu | Durée de vie | Écrite par |
 |---|---|---|---|
-| **Mémoire** | décisions, compréhension, contraintes, pistes écartées | toute la feature | l'humain + les agents, explicitement |
+| **Mémoire** | décisions, compréhension, contraintes, pistes écartées | toute la topic | l'humain + les agents, explicitement |
 | **Sessions** | historique de conversation d'un agent | jetable, à volonté | le moteur d'agent |
-| **Journal** | ce qui s'est passé (commandes, diffs, événements) | toute la feature | le cockpit, automatiquement |
+| **Journal** | ce qui s'est passé (commandes, diffs, événements) | toute la topic | le cockpit, automatiquement |
 
 **Pourquoi c'est capital.** Aujourd'hui, vider une session détruit la compréhension. Donc on ne le fait pas. Donc le contexte se dégrade, l'agent dérive, et la qualité du code chute — le mécanisme exact qui produit une masse de code médiocre.
 
@@ -158,7 +190,7 @@ Avec la séparation, **vider devient gratuit** : la conversation part, la mémoi
 ### Organisation
 
 ```
-<workspace ou feature>/.cockpit/
+<workspace ou topic>/.cockpit/
   memory.md       ← durable, éditable à la main, lue par les agents
   journal.jsonl   ← automatique, append-only
   sessions/       ← jetables, listables, comparables
@@ -183,11 +215,11 @@ La section **Écarté** est celle que personne n'écrit et qui vaut le plus : sa
 
 ### Sortie de cycle
 
-À la clôture d'une feature, la mémoire ne meurt pas : le cockpit propose de **promouvoir vers la documentation** (§9). Les décisions durables quittent le cycle de vie de la feature et deviennent de la connaissance projet.
+À la clôture d'une topic, la mémoire ne meurt pas : le cockpit propose de **promouvoir vers la documentation** (§9). Les décisions durables quittent le cycle de vie de la topic et deviennent de la connaissance projet.
 
 ## 7. Les agents
 
-Une session d'agent = **une liste de chemins** + un moteur + un mode + un bail. Pas « une feature ».
+Une session d'agent = **une liste de chemins** + un moteur + un mode + un bail. Pas « une topic ».
 
 | Besoin | Portée |
 |---|---|
@@ -201,7 +233,7 @@ Une session d'agent = **une liste de chemins** + un moteur + un mode + un bail. 
 
 Une session prend un **bail** sur un ensemble de sous-arbres. Le cockpit refuse toute session dont la portée chevauche un bail actif. Un agent projet et un agent repo sur le même sujet ne peuvent pas coexister — ils s'écraseraient, et la corruption serait silencieuse.
 
-Le verrou porte sur des **chemins**, jamais sur des features : ça fonctionne identiquement en C3 structuré et en C0 yolo.
+Le verrou porte sur des **chemins**, jamais sur des topics : ça fonctionne identiquement en `full` structuré et en `none` yolo.
 
 ### Contexte pour l'agent projet
 
@@ -240,7 +272,7 @@ Le manifest déclare le runtime et un bloc de configuration **propre à ce runti
 runtime: herd
 herd:
   tld: test
-  db: { engine: mysql, strategy: clone-per-feature }
+  db: { engine: mysql, strategy: clone-per-topic }
 ```
 
 ## 9. Documentation et connaissance
@@ -250,7 +282,7 @@ Capacité `docs` : un chemin (dossier dans le repo ou repo séparé), indexé en
 Son intérêt réel est le **couplage avec la mémoire** :
 
 - **En entrée** — les agents lisent la documentation pertinente. Contexte réutilisable au lieu d'être réexpliqué à chaque session.
-- **En sortie** — à la clôture d'une feature, promotion de la mémoire vers la documentation.
+- **En sortie** — à la clôture d'une topic, promotion de la mémoire vers la documentation.
 
 C'est ce qui fait qu'un wiki reste vivant. Un wiki alimenté séparément meurt en trois mois, toujours. Un wiki alimenté par le résidu naturel du travail survit.
 
@@ -282,7 +314,7 @@ Trois axes indépendants, souvent confondus, aux coûts très différents.
 | L2 | projets containerisés | par projet | n'importe quel OS, n'importe quel collègue |
 | L3 | interface ↔ noyau découplés | ~2 jours **si fait dès le départ** | l'exécution distante devient possible |
 | L4 | exécution sur serveur de dev | 2 à 4 semaines | machine locale déchargée, environnements partageables |
-| L5 | environnements éphémères par feature sur serveur | ∞ | **ligne rouge — c'est de la plateforme, un autre métier** |
+| L5 | environnements éphémères par topic sur serveur | ∞ | **ligne rouge — c'est de la plateforme, un autre métier** |
 
 **Ordre : L3 dès maintenant, L1 dans la foulée, L2 au fil de l'eau, L4 contre une raison précise uniquement.**
 
@@ -346,7 +378,7 @@ Hypothèse posée : le mobile signifiera **Expo / React Native**, pas du Swift o
   projets      workspaces                    contexte
 ```
 
-La liste centrale liste des **workspaces**, groupés par feature *quand* une feature existe. Un workspace nu et un groupe de trois cohabitent naturellement.
+La liste centrale liste des **workspaces**, groupés par topic *quand* une topic existe. Un workspace nu et un groupe de trois cohabitent naturellement.
 
 ### Onglet Diff — la revue
 
@@ -374,7 +406,7 @@ La distinction **humain / agent** est le garde-fou principal : elle rend visible
 │ → Aller à 583-integrations              │
 │ ⚡ Démarrer les serveurs                 │
 │ ⌥ Rebase sur master                     │
-│ 🤖 Agent ici          ← C0, deux touches│
+│ 🤖 Agent ici          ← ici, deux touches│
 │ 📋 CP-583 · Intégrations comptables     │
 │ ⌨  Terminal dans worktrees/v2/583       │
 └─────────────────────────────────────────┘
@@ -389,7 +421,7 @@ Périmètre assumé : voir, naviguer, éditer manuellement. Pas de complétion, 
 Ce qui remplace, et qui suffit :
 
 - **Ouverture floue de fichier** sur les fichiers suivis par Git.
-- **Recherche plein texte** — avec un atout qu'aucun IDE ne donne facilement : **recherche simultanée dans tous les repos d'une feature**. Chercher un nom de route dans le backend et deux fronts en une requête.
+- **Recherche plein texte** — avec un atout qu'aucun IDE ne donne facilement : **recherche simultanée dans tous les repos d'une topic**. Chercher un nom de route dans le backend et deux fronts en une requête.
 - **Références par convention** — cliquer sur un symbole lance une recherche de ce symbole. Approximatif, rapide, sans indexation.
 
 Conséquence de design : **l'arbre de fichiers n'est pas la navigation principale.** Il sert à l'exploration occasionnelle ; le clavier fait le reste.
@@ -400,7 +432,7 @@ Conséquence de design : **l'arbre de fichiers n'est pas la navigation principal
 |---|---|
 | Passer d'un projet à un workspace, tout démarré | 1 |
 | Voir le diff complet | 1 |
-| Lancer un agent sur le workspace courant (C0) | 1 |
+| Lancer un agent sur le workspace courant (sans setup) | 1 |
 | Rebase | 2 (bouton → confirmation du plan) |
 | Résoudre un conflit | 3 par fichier |
 
@@ -467,9 +499,9 @@ Une seule règle, appliquée en permanence : **si un deuxième développeur en a
 | Les instructions d'agents | État de l'interface, préférences |
 | Le noyau CLI | Le journal local |
 | La documentation | |
-| **La mémoire de feature** | |
+| **La mémoire de topic** | |
 
-La mémoire est versionnée : c'est ce qui permet à un collègue de reprendre une feature en comprenant les décisions déjà prises.
+La mémoire est versionnée : c'est ce qui permet à un collègue de reprendre une topic en comprenant les décisions déjà prises.
 
 **Conséquence principale : le noyau CLI doit être utilisable sans l'application.** Un collègue clone le repo, lance une commande, obtient un environnement complet — sans installer le cockpit. L'interface devient un confort personnel plutôt qu'une dépendance imposée.
 
@@ -496,9 +528,9 @@ Chaque palier doit être utilisable seul, et s'arrêter là doit rester acceptab
 | | Palier | Contenu | Gain |
 |---|---|---|---|
 | 1 | **Voir** | workspaces, état, lecture seule | savoir où on en est sans rien ouvrir — le gros du bénéfice |
-| 2 | **Lancer** | IDE, terminal, aperçu, serveurs, agents C0 | les onglets de terminal disparaissent |
+| 2 | **Lancer** | IDE, terminal, aperçu, serveurs, agents sans setup | les onglets de terminal disparaissent |
 | 3 | **Mémoire** | mémoire, sessions, journal, diff humain/agent | vider une session devient gratuit |
-| 4 | **Agir** | Git, features, cérémonies C2/C3, avec plan et annulation | le switch de contexte tombe à zéro |
+| 4 | **Agir** | Git, topics, setup `isolated`/`full`, avec plan et annulation | le switch de contexte tombe à zéro |
 | 5 | **Enchaîner** | automations, documentation, promotion | le travail répétitif s'efface |
 
 Le palier 1 est atteignable en une semaine. **Le palier 3 est placé avant le palier 4 volontairement** : la mémoire apporte plus de valeur immédiate que l'automatisation de Git, et coûte beaucoup moins cher à rendre fiable.
@@ -542,7 +574,7 @@ Le critère d'abandon se décide **maintenant**, à froid, pour un soi futur tro
 
 **Règle permanente : ne rien automatiser avant de l'avoir fait trois fois manuellement.**
 
-**Geler n'est pas échouer.** Un cockpit figé au palier 3, qui montre l'état, lance les serveurs et tient la mémoire des features, et qu'on ne touche plus — c'est une réussite complète. La plupart des outils internes meurent d'avoir continué, pas de s'être arrêtés.
+**Geler n'est pas échouer.** Un cockpit figé au palier 3, qui montre l'état, lance les serveurs et tient la mémoire des topics, et qu'on ne touche plus — c'est une réussite complète. La plupart des outils internes meurent d'avoir continué, pas de s'être arrêtés.
 
 ## 20. Décisions tranchées
 
@@ -559,11 +591,11 @@ Le critère d'abandon se décide **maintenant**, à froid, pour un soi futur tro
 ## 21. Décisions ouvertes
 
 1. **Nom du projet.**
-2. **Où vit la mémoire quand il n'y a pas de feature ?** Un workspace C0 a-t-il droit à une mémoire persistante, ou seulement à un journal ?
+2. **Où vit la mémoire quand il n'y a pas de topic ?** Un workspace sans branche a-t-il droit à une mémoire persistante, ou seulement à un journal ?
 3. **Le manifest est-il unique par projet, ou peut-il être composé** (un fichier racine + des fichiers par repo) ?
-4. ~~**Stratégie d'arborescence par défaut** pour un nouveau projet multi-repo : groupée par feature, ou plate par repo ?~~
-   **Tranchée : groupée pour C3, plate disponible pour un C2 ponctuel.** `worktrees/<feature>/<repo>` —
-   un dossier par feature, parce que c'est le seul endroit où peuvent vivre la mémoire partagée et le
-   fichier d'instructions inter-repos qu'exige §7. Une disposition plate par repo éparpille une feature
+4. ~~**Stratégie d'arborescence par défaut** pour un nouveau projet multi-repo : groupée par topic, ou plate par repo ?~~
+   **Tranchée : groupée pour `full`, plate disponible pour un `isolated` ponctuel.** `worktrees/<topic>/<repo>` —
+   un dossier par topic, parce que c'est le seul endroit où peuvent vivre la mémoire partagée et le
+   fichier d'instructions inter-repos qu'exige §7. Une disposition plate par repo éparpille une topic
    entre trois parents et ne laisse nulle part où mettre son cerveau.
 5. **Politique de rétention** des sessions et journaux.

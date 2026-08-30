@@ -4,8 +4,8 @@ import { getWorkspace } from './registry.js'
 
 /**
  * §12 — "Recherche plein texte … recherche simultanée dans tous les repos
- * d'une feature." That cross-repo query is the thing no IDE gives easily, and
- * it is why search counts as navigation here rather than as a feature.
+ * d'une topic." That cross-repo query is the thing no IDE gives easily, and
+ * it is why search counts as navigation here rather than as a topic.
  */
 
 let engine: 'rg' | 'git-grep' | null = null

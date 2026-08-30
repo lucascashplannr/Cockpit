@@ -1,7 +1,7 @@
 import { PROTOCOL_VERSION, coreIsBehind, protocolCompatible } from '@cockpit/shared'
 import type {
-  CockpitEvent, Feature, Project, RpcMethod, RpcParams, RpcResult, ServerMessage, Workspace,
-  AgentSession,
+  CockpitEvent, Topic, Project, RpcMethod, RpcParams, RpcResult, ServerMessage, Workspace,
+  Conversation,
 } from '@cockpit/shared'
 
 /**
@@ -21,9 +21,9 @@ export type ConnectionState =
 
 interface Handlers {
   onProjects(p: Project[]): void
-  onFeatures(f: Feature[]): void
+  onTopics(f: Topic[]): void
   onWorkspaces(w: Workspace[]): void
-  onAgents(s: AgentSession[]): void
+  onAgents(s: Conversation[]): void
   onEvent(e: CockpitEvent): void
   onTerm(termId: string, data: string): void
   onTermExit(termId: string, code: number): void
@@ -37,6 +37,14 @@ export class CoreClient {
   private retry = 0
   private timer: number | null = null
   private closed = false
+  /**
+   * Why the last socket was hung up, when it was us who hung it up. A major
+   * mismatch closes the socket on purpose, and `onclose` would otherwise
+   * overwrite that verdict with "unreachable" a millisecond later — telling
+   * you to check whether the service is running when it is running fine and
+   * the actual instruction is "restart it".
+   */
+  private rejected: string | null = null
 
   constructor(
     private url: string,
@@ -63,16 +71,18 @@ export class CoreClient {
           // §13 — the version handshake. A major mismatch is a hard stop, not
           // a best-effort degrade: mis-decoding the core is worse than no core.
           if (!protocolCompatible(msg.protocol, PROTOCOL_VERSION)) {
-            this.h.onState(
-              'incompatible',
-              'core speaks protocol v' + msg.protocol.major + ', this window speaks v' + PROTOCOL_VERSION.major,
-            )
+            this.rejected =
+              'the service speaks protocol v' + msg.protocol.major +
+              ', this window speaks v' + PROTOCOL_VERSION.major +
+              '. Restart the service — it is running an older build.'
+            this.h.onState('incompatible', this.rejected)
             ws.close()
             return
           }
+          this.rejected = null
           this.retry = 0
           // Compatible but incomplete. Saying so here is the difference between
-          // "restart your daemon" and hunting a phantom bug in a new feature.
+          // "restart your daemon" and hunting a phantom bug in a new topic.
           if (coreIsBehind(msg.protocol, PROTOCOL_VERSION)) {
             this.h.onState(
               'outdated',
@@ -96,8 +106,8 @@ export class CoreClient {
         case 'projects':
           this.h.onProjects(msg.projects)
           break
-        case 'features':
-          this.h.onFeatures(msg.features)
+        case 'topics':
+          this.h.onTopics(msg.topics)
           break
         case 'workspaces':
           this.h.onWorkspaces(msg.workspaces)
@@ -121,6 +131,14 @@ export class CoreClient {
       for (const p of this.pending.values()) p.reject(new Error('core disconnected'))
       this.pending.clear()
       if (this.closed) return
+      // A socket we closed ourselves keeps its verdict: the banner has to say
+      // "restart it", not "it is unreachable". Still retried, but slowly — a
+      // restarted service should be picked up without a click.
+      if (this.rejected) {
+        this.h.onState('incompatible', this.rejected)
+        this.timer = window.setTimeout(() => this.connect(), 3000)
+        return
+      }
       this.h.onState('disconnected')
       // §13 — "état « noyau injoignable » visible dans l'interface avec relance".
       const delay = Math.min(500 * 2 ** this.retry++, 8000)
@@ -136,6 +154,7 @@ export class CoreClient {
   reconnectNow(): void {
     if (this.timer) window.clearTimeout(this.timer)
     this.retry = 0
+    this.rejected = null
     try {
       this.ws?.close()
     } catch {

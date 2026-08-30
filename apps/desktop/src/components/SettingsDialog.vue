@@ -106,7 +106,7 @@ function onKey(e: KeyboardEvent) {
           <span class="lbl">Editor command</span>
           <input v-model="ide" class="input mono" spellcheck="false" placeholder="code" />
           <span class="help">
-            Run with a folder as its argument when a workspace is opened in an editor
+            Run with a folder as its argument when something is opened in an editor
             (<span class="kbd">o</span>).
           </span>
         </label>

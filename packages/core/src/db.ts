@@ -17,7 +17,7 @@ export type Db = Database.Database
  * indexes, which is exactly the kind of opaque breakage §13 rule 3 exists to
  * avoid.
  */
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 
 export type SchemaOutcome =
   | { kind: 'fresh' }
@@ -110,6 +110,18 @@ function inspect(d: Db): Decision {
 }
 
 function migrate(d: Db): void {
+  // v3 → v4, and it has to run before the CREATE TABLEs below: those would
+  // otherwise make an empty `topics` beside the populated `features` and
+  // orphan every record in it. The rename is the vocabulary pass — a feature
+  // is a topic, its ceremony is its setup, and its three states say what they
+  // mean — so nothing here changes shape, only names.
+  renameTable(d, 'features', 'topics')
+  renameColumn(d, 'topics', 'ceremony', 'setup')
+  renameColumn(d, 'agent_sessions', 'feature_id', 'topic_id')
+  // The index follows the table through a rename, under its old name; the
+  // CREATE below would then make a second one over the same column.
+  d.exec('DROP INDEX IF EXISTS features_project')
+
   d.exec(`
     CREATE TABLE IF NOT EXISTS events (
       seq         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,7 +158,7 @@ function migrate(d: Db): void {
       exit_code   INTEGER
     );
 
-    -- §7 — leases are on paths, never on features.
+    -- §7 — leases are on paths, never on topics.
     CREATE TABLE IF NOT EXISTS leases (
       id          TEXT PRIMARY KEY,
       holder      TEXT NOT NULL,
@@ -197,34 +209,34 @@ function migrate(d: Db): void {
     -- §4 — the durable half of the model. Worktrees, branches and running
     -- processes are all probed; what cannot be probed is the intent that
     -- grouped them, and that is the only thing this table holds.
-    CREATE TABLE IF NOT EXISTS features (
+    CREATE TABLE IF NOT EXISTS topics (
       id           TEXT PRIMARY KEY,
       project_id   TEXT NOT NULL,
       name         TEXT NOT NULL,
       slug         TEXT NOT NULL,
       root_path    TEXT,
       state        TEXT NOT NULL,
-      ceremony     TEXT NOT NULL,
+      setup     TEXT NOT NULL,
       ticket       TEXT,
       review       TEXT,
       created_at   INTEGER NOT NULL,
       updated_at   INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS features_project ON features(project_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS topics_project ON topics(project_id, updated_at DESC);
   `)
 
   // Added in v2. `CREATE TABLE IF NOT EXISTS` cannot add a column to a table
   // that already exists, and an adopted v1 database has agent_sessions in it.
-  addColumn(d, 'agent_sessions', 'feature_id', 'TEXT')
+  addColumn(d, 'agent_sessions', 'topic_id', 'TEXT')
   addColumn(d, 'agent_sessions', 'engine_session_id', 'TEXT')
   addColumn(d, 'agent_sessions', 'prompt', "TEXT NOT NULL DEFAULT ''")
 
   // Added in v3 — §7's scope, and §6's conversation.
   //
   // `scope_kind` defaults to 'workspace' because that is what every v2 session
-  // actually was: a set of paths under one checkout, or a feature's worktrees
-  // with `feature_id` set. `backfillScopes` below reads the latter back into a
-  // feature scope rather than leaving old sessions mislabelled.
+  // actually was: a set of paths under one checkout, or a topic's worktrees
+  // with `topic_id` set. `backfillScopes` below reads the latter back into a
+  // topic scope rather than leaving old sessions mislabelled.
   addColumn(d, 'agent_sessions', 'scope_kind', "TEXT NOT NULL DEFAULT 'workspace'")
   addColumn(d, 'agent_sessions', 'scope_id', "TEXT NOT NULL DEFAULT ''")
   addColumn(d, 'agent_sessions', 'scope_subpath', 'TEXT')
@@ -246,18 +258,65 @@ function migrate(d: Db): void {
     CREATE INDEX IF NOT EXISTS agent_turn_session ON agent_turns(session_id, seq);
   `)
 
+  remapVocabulary(d)
   backfillScopes(d)
+}
+
+/**
+ * v3 → v4 — the same rename, carried into the values. A topic that was `live`
+ * is `running`, one that was `parked` is `stopped`, one that was `archived` is
+ * `closed`; the setup levels drop the C-codes for what they actually do.
+ *
+ * Idempotent, because every one of these is a no-op once it has run.
+ */
+function remapVocabulary(d: Db): void {
+  if (!hasTable(d, 'topics')) return
+  const state = d.prepare('UPDATE topics SET state = ? WHERE state = ?')
+  state.run('running', 'live')
+  state.run('stopped', 'parked')
+  state.run('closed', 'archived')
+
+  const setup = d.prepare('UPDATE topics SET setup = ? WHERE setup = ?')
+  setup.run('none', 'C0')
+  setup.run('branch', 'C1')
+  setup.run('isolated', 'C2')
+  setup.run('full', 'C3')
+
+  if (hasColumn(d, 'agent_sessions', 'scope_kind')) {
+    d.prepare("UPDATE agent_sessions SET scope_kind = 'topic' WHERE scope_kind = 'feature'").run()
+  }
+}
+
+function hasTable(d: Db, table: string): boolean {
+  return !!d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(table)
+}
+
+function hasColumn(d: Db, table: string, column: string): boolean {
+  if (!hasTable(d, table)) return false
+  const cols = d.prepare('PRAGMA table_info(' + table + ')').all() as { name: string }[]
+  return cols.some((c) => c.name === column)
+}
+
+/** Idempotent rename: absent source, or a target already there, is a no-op. */
+function renameTable(d: Db, from: string, to: string): void {
+  if (!hasTable(d, from) || hasTable(d, to)) return
+  d.exec('ALTER TABLE ' + from + ' RENAME TO ' + to)
+}
+
+function renameColumn(d: Db, table: string, from: string, to: string): void {
+  if (!hasColumn(d, table, from) || hasColumn(d, table, to)) return
+  d.exec('ALTER TABLE ' + table + ' RENAME COLUMN ' + from + ' TO ' + to)
 }
 
 /**
  * v2 → v3. Every existing session becomes a conversation with one turn, so the
  * history view is not empty for work that predates it, and a session that ran
- * under a feature is labelled as a feature scope rather than as a workspace
+ * under a topic is labelled as a topic scope rather than as a workspace
  * one. Idempotent: `scope_id` is only empty before this has run.
  */
 function backfillScopes(d: Db): void {
   const rows = d
-    .prepare("SELECT id, feature_id, workspace_ids, prompt, started_at, ended_at, cost_usd, status FROM agent_sessions WHERE scope_id = ''")
+    .prepare("SELECT id, topic_id, workspace_ids, prompt, started_at, ended_at, cost_usd, status FROM agent_sessions WHERE scope_id = ''")
     .all() as Record<string, unknown>[]
   if (!rows.length) return
 
@@ -268,15 +327,15 @@ function backfillScopes(d: Db): void {
   const tx = d.transaction(() => {
     for (const r of rows) {
       const id = String(r.id)
-      const featureId = r.feature_id == null ? '' : String(r.feature_id)
+      const topicId = r.topic_id == null ? '' : String(r.topic_id)
       let wsId = ''
       try {
         wsId = (JSON.parse(String(r.workspace_ids)) as string[])[0] ?? ''
       } catch {
         wsId = ''
       }
-      const kind = featureId ? 'feature' : 'workspace'
-      const scopeId = featureId || wsId
+      const kind = topicId ? 'topic' : 'workspace'
+      const scopeId = topicId || wsId
       // A session whose only workspace is gone has nothing to point at; it
       // keeps its journal and its cost, and reads as scopeless in the list.
       const prompt = r.prompt == null ? '' : String(r.prompt)

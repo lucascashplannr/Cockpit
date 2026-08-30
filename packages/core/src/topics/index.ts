@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { newId, stableId } from '@cockpit/shared'
 import type {
-  Ceremony, DatabasePlan, Feature, PlanPreview, PlanStep, SeedProposal, Workspace,
+  Setup, DatabasePlan, Topic, PlanPreview, PlanStep, SeedProposal, Workspace,
 } from '@cockpit/shared'
 import { append } from '../journal.js'
 import { defaultBranch, git } from '../git.js'
@@ -17,18 +17,18 @@ import * as store from './store.js'
 export * from './store.js'
 
 /**
- * §4 — the feature, promoted from an inference to an object.
+ * §4 — the topic, promoted from an inference to an object.
  *
  * The rule it must not break: a session is still "a list of paths + an engine
- * + a lease", never "a feature" (§7). The feature decides *where* the paths
+ * + a lease", never "a topic" (§7). The topic decides *where* the paths
  * are and *what the agent should know*; the lease still does the locking, so
  * C0 and C3 behave identically.
  */
 
-export interface OpenFeatureInput {
+export interface OpenTopicInput {
   projectId: string
   name: string
-  ceremony: Ceremony
+  setup: Setup
   /** Main checkouts to span. Empty means every repository in the project. */
   repoWorkspaceIds?: string[]
   base?: string
@@ -56,36 +56,36 @@ function mains(projectId: string, only?: string[]): Workspace[] {
 }
 
 /**
- * §3.7 — one plan for the whole feature, previewed before anything exists.
- * The feature row is written by `onApplied`, so a plan the user cancels, or one
+ * §3.7 — one plan for the whole topic, previewed before anything exists.
+ * The topic row is written by `onApplied`, so a plan the user cancels, or one
  * that fails on the third repository, leaves nothing behind to clean up.
  */
 export async function openPlan(
-  input: OpenFeatureInput,
-): Promise<{ plan: PlanPreview; featureId: string }> {
+  input: OpenTopicInput,
+): Promise<{ plan: PlanPreview; topicId: string }> {
   const project = registry.allProjects().find((p) => p.id === input.projectId)
   if (!project) throw new Error('unknown project: ' + input.projectId)
 
   const name = input.name.trim()
-  if (!name) throw new Error('a feature needs a name')
+  if (!name) throw new Error('a topic needs a name')
   const slug = store.slugify(name)
 
   const existing = store.bySlug(project.id, slug)
-  if (existing && existing.state !== 'archived') {
+  if (existing && existing.state !== 'closed') {
     throw new Error('"' + existing.name + '" already occupies the branch ' + slug)
   }
 
   const repos = mains(project.id, input.repoWorkspaceIds)
   if (!repos.length) throw new Error('no repository in this project')
 
-  const featureId = stableId('feat', project.id, slug)
+  const topicId = stableId('feat', project.id, slug)
   const steps: PlanStep[] = []
   const warnings: string[] = []
 
   // §21.4, decided: grouped. Every repo's worktree lands under one folder, and
   // that folder is what holds the memory and the cross-repo CONTEXT.md (§7).
   const rootPath =
-    input.ceremony === 'C1' ? null : plans.featureRootPath(repos[0]!.path, slug)
+    input.setup === 'branch' ? null : plans.topicRootPath(repos[0]!.path, slug)
 
   for (const repo of repos) {
     const base = input.base ?? (await defaultBranch(repo.path))
@@ -101,7 +101,7 @@ export async function openPlan(
       destructive: false,
     })
 
-    if (input.ceremony === 'C1') {
+    if (input.setup === 'branch') {
       // A branch in the existing checkout. Switching back is the only honest
       // undo: deleting the branch could take a commit the agent already made.
       steps.push({
@@ -136,17 +136,17 @@ export async function openPlan(
       cwd: repo.path,
       destructive: false,
       undo: [
-        { title: repo.name + ': remove worktree', command: 'git worktree remove --force ' + target, cwd: repo.path },
+        { title: repo.name + ': remove the branch folder', command: 'git worktree remove --force ' + target, cwd: repo.path },
         { title: repo.name + ': prune', command: 'git worktree prune', cwd: repo.path },
       ],
     })
   }
 
   // §10 — the third global thing. Ports and hostnames are already scoped per
-  // feature; without this the worktrees still share one database, so a
+  // topic; without this the worktrees still share one database, so a
   // migration run by an agent in one breaks the other two.
   const dbEnv: Record<string, string> = {}
-  if (input.cloneDatabase && input.ceremony !== 'C1') {
+  if (input.cloneDatabase && input.setup !== 'branch') {
     for (const repo of repos) {
       const conn = database.connectionOf(repo.path)
       if (!conn || conn.engine === 'sqlite') continue
@@ -176,24 +176,24 @@ export async function openPlan(
     }
   }
 
-  if (input.ceremony !== 'C1') {
+  if (input.setup !== 'branch') {
     warnings.push(
       repos.length +
         ' worktree(s) under ' +
         rootPath +
-        '. Disk cost is real and accumulates silently (§16) — close the feature when it merges.',
+        '. Disk cost is real and accumulates silently (§16) — close the topic when it merges.',
     )
   }
   if (repos.length > 1) {
     warnings.push(
-      'A CONTEXT.md describing how these repositories relate will be created at the feature root. ' +
+      'A CONTEXT.md describing how these repositories relate will be created at the topic root. ' +
         'Fill it in before letting an agent span more than one of them (§7).',
     )
   }
 
   const preview: PlanPreview = {
     planId: newId('plan_'),
-    operation: 'feature.open',
+    operation: 'topic.open',
     steps,
     warnings,
     capturesRestorePoint: false,
@@ -207,13 +207,13 @@ export async function openPlan(
     ...(Object.keys(dbEnv).length ? { env: dbEnv } : {}),
     async onApplied() {
       store.save({
-        id: featureId,
+        id: topicId,
         projectId: project.id,
         name,
         slug,
         rootPath,
-        state: 'parked',
-        ceremony: input.ceremony,
+        state: 'stopped',
+        setup: input.setup,
         ticket: input.ticketUrl
           ? { provider: 'url', key: slug, title: name, status: 'open', url: input.ticketUrl }
           : null,
@@ -224,20 +224,20 @@ export async function openPlan(
       if (rootPath) scaffold(rootPath, name, slug, repos)
 
       // §7 — only now do the worktrees exist to be seeded. Before this point
-      // there is nowhere to put a `.env`; after it, the feature is bootable
+      // there is nowhere to put a `.env`; after it, the topic is bootable
       // rather than a checkout missing every file git refuses to track.
-      if (input.ceremony !== 'C1') await runSeed(input, repos, slug, project.id)
+      if (input.setup !== 'branch') await runSeed(input, repos, slug, project.id)
 
       append({
-        type: 'feature.opened',
+        type: 'topic.opened',
         projectId: project.id,
-        payload: { featureId, name, slug, ceremony: input.ceremony, repos: repos.map((r) => r.name), rootPath },
+        payload: { topicId, name, slug, setup: input.setup, repos: repos.map((r) => r.name), rootPath },
       })
       await registry.reconcile(project.id)
     },
   })
 
-  return { plan: preview, featureId }
+  return { plan: preview, topicId }
 }
 
 /**
@@ -246,7 +246,7 @@ export async function openPlan(
  * detection nobody has seen must not write into someone's `.env`.
  */
 async function runSeed(
-  input: OpenFeatureInput,
+  input: OpenTopicInput,
   repos: Workspace[],
   slug: string,
   projectId: string,
@@ -269,7 +269,7 @@ async function runSeed(
 
     const res = seed.applySeed(proposal)
     if (res.errors.length) {
-      // Not fatal: a feature with three of four files carried is workable and
+      // Not fatal: a topic with three of four files carried is workable and
       // fixable, while unwinding three worktrees over one unreadable `.env`
       // is not. The journal has the detail either way.
       append({
@@ -296,7 +296,7 @@ async function hasBranch(repoPath: string, branch: string): Promise<boolean> {
 }
 
 /**
- * §6 + §7 — the two files that make a multi-day, multi-repo feature workable:
+ * §6 + §7 — the two files that make a multi-day, multi-repo topic workable:
  * a memory that survives clearing every session, and the instruction file
  * without which "un agent multi-repo est plus dangereux qu'utile".
  */
@@ -340,7 +340,7 @@ function scaffold(rootPath: string, name: string, slug: string, repos: Workspace
         'Until it says something true, an agent spanning them is more dangerous than',
         'useful (§7) — so fill it in before widening a session past one repo.',
         '',
-        '## Repositories in this feature',
+        '## Repositories in this topic',
         '',
         ...repos.map((r) => '- `' + basename(r.path) + '/` — _(what it is, what it owns)_'),
         '',
@@ -365,63 +365,63 @@ function scaffold(rootPath: string, name: string, slug: string, repos: Workspace
   }
 }
 
-/* ── live / parked ───────────────────────────────────────────────────────
- * The part that decides whether several features can actually be tested at
+/* ── started / stopped ───────────────────────────────────────────────────────
+ * The part that decides whether several topics can actually be tested at
  * once. Ports are already global and deterministic (§11), so portable
  * runtimes coexist for free. Everything else is arbitrated here.
  */
 
-export interface ActivateResult {
+export interface StartResult {
   ok: boolean
   detail: string
-  /** Features taken down to make room. */
-  parked: string[]
+  /** Topics taken down to make room. */
+  stoppedTopics: string[]
   /** Why it refused, when it did. */
   conflicts: string[]
 }
 
-function workspacesOf(featureId: string): Workspace[] {
-  return registry.allWorkspaces().filter((w) => w.featureId === featureId)
+function workspacesOf(topicId: string): Workspace[] {
+  return registry.allWorkspaces().filter((w) => w.topicId === topicId)
 }
 
 /**
  * §8 — `exclusive` is the flag that says "only one of these at a time on this
- * machine". Two live features sharing an exclusive runtime is not a feature to
+ * machine". Two live topics sharing an exclusive runtime is not a topic to
  * build, it is a state to refuse — with the offer to park the other one.
  */
-function exclusiveConflicts(featureId: string, targets: Workspace[]): { ws: Workspace; holder: Feature | null }[] {
-  const out: { ws: Workspace; holder: Feature | null }[] = []
+function exclusiveConflicts(topicId: string, targets: Workspace[]): { ws: Workspace; holder: Topic | null }[] {
+  const out: { ws: Workspace; holder: Topic | null }[] = []
   const impls = new Set(targets.filter((w) => w.runtime?.exclusive).map((w) => w.runtime!.impl))
   if (!impls.size) return out
 
   for (const w of registry.allWorkspaces()) {
-    if (w.featureId === featureId) continue
+    if (w.topicId === topicId) continue
     if (!w.runtime?.exclusive || !impls.has(w.runtime.impl)) continue
     if (w.runtime.status !== 'up' && w.runtime.status !== 'starting') continue
-    out.push({ ws: w, holder: registry.allFeatures().find((f) => f.id === w.featureId) ?? null })
+    out.push({ ws: w, holder: registry.allTopics().find((f) => f.id === w.topicId) ?? null })
   }
   return out
 }
 
-export async function activate(featureId: string, force = false): Promise<ActivateResult> {
-  const f = store.get(featureId)
-  if (!f) throw new Error('unknown feature: ' + featureId)
-  if (f.state === 'archived') {
-    return { ok: false, detail: 'this feature is closed; re-open it before running it', parked: [], conflicts: [] }
+export async function start(topicId: string, force = false): Promise<StartResult> {
+  const f = store.get(topicId)
+  if (!f) throw new Error('unknown topic: ' + topicId)
+  if (f.state === 'closed') {
+    return { ok: false, detail: 'this topic is closed; re-open it before starting it', stoppedTopics: [], conflicts: [] }
   }
 
-  const targets = workspacesOf(featureId).filter((w) => w.runtime)
+  const targets = workspacesOf(topicId).filter((w) => w.runtime)
   if (!targets.length) {
-    store.patch(featureId, (x) => {
-      x.state = 'live'
+    store.patch(topicId, (x) => {
+      x.state = 'running'
     })
-    return { ok: true, detail: 'no runtime in this feature; nothing to start', parked: [], conflicts: [] }
+    return { ok: true, detail: 'nothing to start in this topic', stoppedTopics: [], conflicts: [] }
   }
 
-  const clashes = exclusiveConflicts(featureId, targets)
+  const clashes = exclusiveConflicts(topicId, targets)
   if (clashes.length && !force) {
     // One line per holder, not per workspace: three worktrees of the same
-    // feature holding the same runtime is one problem, not three.
+    // topic holding the same runtime is one problem, not three.
     const seen = new Set<string>()
     const conflicts: string[] = []
     for (const c of clashes) {
@@ -434,24 +434,24 @@ export async function activate(featureId: string, force = false): Promise<Activa
     }
     return {
       ok: false,
-      parked: [],
+      stoppedTopics: [],
       conflicts,
-      detail: 'park it first, or activate with force to have Cockpit park it for you',
+      detail: 'stop it first, or start with force to have Cockpit stop it for you',
     }
   }
 
-  const parked: string[] = []
+  const stoppedTopics: string[] = []
   for (const c of clashes) {
     await runtime.down(c.ws)
     await registry.probeWorkspace(c.ws.id)
     const label = c.holder?.name ?? c.ws.name
-    if (c.holder && c.holder.state !== 'parked') {
+    if (c.holder && c.holder.state !== 'stopped') {
       store.patch(c.holder.id, (x) => {
-        x.state = 'parked'
+        x.state = 'stopped'
       })
-      append({ type: 'feature.parked', payload: { featureId: c.holder.id, reason: 'made room for ' + f.name } })
+      append({ type: 'topic.stopped', payload: { topicId: c.holder.id, reason: 'made room for ' + f.name } })
     }
-    if (!parked.includes(label)) parked.push(label)
+    if (!stoppedTopics.includes(label)) stoppedTopics.push(label)
   }
 
   const details: string[] = []
@@ -464,37 +464,37 @@ export async function activate(featureId: string, force = false): Promise<Activa
     await registry.probeWorkspace(w.id)
   }
 
-  store.patch(featureId, (x) => {
-    x.state = 'live'
+  store.patch(topicId, (x) => {
+    x.state = 'running'
   })
-  append({ type: 'feature.activated', projectId: f.projectId, payload: { featureId, workspaces: targets.length, parked } })
-  return { ok: true, detail: details.join('\n'), parked, conflicts: [] }
+  append({ type: 'topic.started', projectId: f.projectId, payload: { topicId, workspaces: targets.length, stoppedTopics } })
+  return { ok: true, detail: details.join('\n'), stoppedTopics, conflicts: [] }
 }
 
 /** Servers down, ports freed, worktrees untouched. Picking it back up is one click. */
-export async function park(featureId: string): Promise<{ ok: boolean; detail: string }> {
-  const f = store.get(featureId)
-  if (!f) throw new Error('unknown feature: ' + featureId)
+export async function stop(topicId: string): Promise<{ ok: boolean; detail: string }> {
+  const f = store.get(topicId)
+  if (!f) throw new Error('unknown topic: ' + topicId)
 
   const details: string[] = []
-  for (const w of workspacesOf(featureId).filter((x) => x.runtime)) {
+  for (const w of workspacesOf(topicId).filter((x) => x.runtime)) {
     const res = await runtime.down(w)
     details.push(w.name + ': ' + res.detail)
     await registry.probeWorkspace(w.id)
   }
-  store.patch(featureId, (x) => {
-    x.state = 'parked'
+  store.patch(topicId, (x) => {
+    x.state = 'stopped'
   })
-  append({ type: 'feature.parked', projectId: f.projectId, payload: { featureId } })
+  append({ type: 'topic.stopped', projectId: f.projectId, payload: { topicId } })
   return { ok: true, detail: details.join('\n') || 'nothing was running' }
 }
 
 /**
- * §4 + §3.7 — the feature is the unit of work, so bringing it up to date is
+ * §4 + §3.7 — the topic is the unit of work, so bringing it up to date is
  * one act, not one per repository.
  *
  * `onFailure: 'halt'` is the whole difference from every other multi-repo plan
- * here. Opening a feature is all-or-nothing because a half-created feature is
+ * here. Opening a topic is all-or-nothing because a half-created topic is
  * unusable; a half-rebased one is not — the repositories that replayed cleanly
  * are genuinely done, and rolling them back to "recover" from a conflict in
  * the third would be throwing away good work to tidy up.
@@ -503,15 +503,15 @@ export async function park(featureId: string): Promise<{ ok: boolean; detail: st
  * already replayed answers "up to date" and costs a fetch.
  */
 export async function rebasePlan(
-  featureId: string,
+  topicId: string,
   base?: string,
 ): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
-  const f = store.get(featureId)
-  if (!f) throw new Error('unknown feature: ' + featureId)
-  if (f.state === 'archived') return { ok: false, detail: 'this feature is closed; re-open it first', plan: null }
+  const f = store.get(topicId)
+  if (!f) throw new Error('unknown topic: ' + topicId)
+  if (f.state === 'closed') return { ok: false, detail: 'this topic is closed; re-open it first', plan: null }
 
-  const repos = workspacesOf(featureId).filter((w) => w.repo)
-  if (!repos.length) return { ok: false, detail: 'no repository in this feature', plan: null }
+  const repos = workspacesOf(topicId).filter((w) => w.repo)
+  if (!repos.length) return { ok: false, detail: 'no repository in this topic', plan: null }
 
   // A repository mid-conflict cannot take another rebase, and saying so up
   // front beats a plan whose second step is guaranteed to fail.
@@ -560,7 +560,7 @@ export async function rebasePlan(
 
   const preview: PlanPreview = {
     planId: newId('plan_'),
-    operation: 'feature.rebase',
+    operation: 'topic.rebase',
     steps,
     warnings,
     capturesRestorePoint: true,
@@ -575,27 +575,27 @@ export async function rebasePlan(
 /**
  * §4 — the verb the lifecycle was missing.
  *
- * A feature could be opened, worked in, rebased and closed, and nothing in
+ * A topic could be opened, worked in, rebased and closed, and nothing in
  * Cockpit ever put it back on the main branch. `merge` goes the other way —
  * it brings the base *into* the branch to catch it up — so the last step,
  * the one that makes the work count, was "go to a terminal". This is that
- * step: for every repository the feature spans, take its main checkout to the
- * base branch, fast-forward it, and merge the feature branch into it.
+ * step: for every repository the topic spans, take its main checkout to the
+ * base branch, fast-forward it, and merge the topic branch into it.
  *
  * It runs in the MAIN checkout, never in the worktree. Git will not have one
  * branch checked out twice, and the main checkout is already sitting on the
  * base — which is precisely what the worktree layout buys.
  */
-export async function landPlan(
-  featureId: string,
+export async function mergePlan(
+  topicId: string,
   opts: { push?: boolean; base?: string } = {},
 ): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
-  const f = store.get(featureId)
-  if (!f) throw new Error('unknown feature: ' + featureId)
-  if (f.state === 'archived') return { ok: false, detail: 'this feature is closed; re-open it first', plan: null }
+  const f = store.get(topicId)
+  if (!f) throw new Error('unknown topic: ' + topicId)
+  if (f.state === 'closed') return { ok: false, detail: 'this topic is closed; re-open it first', plan: null }
 
-  const trees = workspacesOf(featureId).filter((w) => w.repo && w.kind !== 'group')
-  if (!trees.length) return { ok: false, detail: 'no repository in this feature', plan: null }
+  const trees = workspacesOf(topicId).filter((w) => w.repo && w.kind !== 'group')
+  if (!trees.length) return { ok: false, detail: 'no repository in this topic', plan: null }
 
   const mains = registry.allWorkspaces(f.projectId).filter((w) => w.kind === 'main' && w.repo)
   const steps: PlanStep[] = []
@@ -605,7 +605,7 @@ export async function landPlan(
 
   for (const tree of trees) {
     // A worktree's own main checkout is the one with the same folder name; for
-    // a C1 feature the "tree" IS the main checkout and the two coincide.
+    // a C1 topic the "tree" IS the main checkout and the two coincide.
     const main = mains.find((m) => basename(m.path) === basename(tree.path)) ?? null
     if (!main) {
       blockers.push(tree.name + ': cannot find its main checkout')
@@ -679,7 +679,7 @@ export async function landPlan(
   }
 
   warnings.push(
-    '--no-ff, so the feature stays one identifiable merge in the history of ' +
+    '--no-ff, so the topic stays one identifiable merge in the history of ' +
       (opts.base ?? 'the base branch') + ' rather than a scatter of commits.',
   )
   warnings.push(
@@ -691,12 +691,12 @@ export async function landPlan(
 
   const preview: PlanPreview = {
     planId: newId('plan_'),
-    operation: 'feature.land',
+    operation: 'topic.merge',
     steps,
     warnings,
     capturesRestorePoint: true,
     repos: names,
-    // A half-landed feature is two repositories genuinely merged and one
+    // A half-landed topic is two repositories genuinely merged and one
     // conflicted, which is a state to finish — not one to undo.
     onFailure: 'halt',
   }
@@ -704,16 +704,16 @@ export async function landPlan(
   return { ok: true, detail: 'plan ready', plan: preview }
 }
 
-export function rename(featureId: string, name: string): void {
+export function rename(topicId: string, name: string): void {
   const trimmed = name.trim()
-  if (!trimmed) throw new Error('a feature needs a name')
-  const f = store.patch(featureId, (x) => {
+  if (!trimmed) throw new Error('a topic needs a name')
+  const f = store.patch(topicId, (x) => {
     // The slug is the branch name in N repositories; renaming the display name
     // must not try to rename branches behind the user's back.
     x.name = trimmed
   })
-  if (!f) throw new Error('unknown feature: ' + featureId)
-  append({ type: 'feature.renamed', projectId: f.projectId, payload: { featureId, name: trimmed } })
+  if (!f) throw new Error('unknown topic: ' + topicId)
+  append({ type: 'topic.renamed', projectId: f.projectId, payload: { topicId, name: trimmed } })
 }
 
 /**
@@ -721,13 +721,13 @@ export function rename(featureId: string, name: string): void {
  * worktrees is a plan of its own. Nothing here ever runs `rm -rf`.
  */
 export async function closePlan(
-  featureId: string,
+  topicId: string,
   removeWorktrees: boolean,
 ): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
-  const f = store.get(featureId)
-  if (!f) throw new Error('unknown feature: ' + featureId)
+  const f = store.get(topicId)
+  if (!f) throw new Error('unknown topic: ' + topicId)
 
-  const wss = workspacesOf(featureId)
+  const wss = workspacesOf(topicId)
   const blockers: string[] = []
   for (const w of wss) {
     if (w.git?.hasUnpushedWork) blockers.push(w.name + ': unpushed commits')
@@ -740,11 +740,11 @@ export async function closePlan(
   }
 
   if (!removeWorktrees) {
-    store.patch(featureId, (x) => {
-      x.state = 'archived'
+    store.patch(topicId, (x) => {
+      x.state = 'closed'
     })
-    append({ type: 'feature.closed', projectId: f.projectId, payload: { featureId, removedWorktrees: false } })
-    return { ok: true, detail: 'archived; the worktrees are still on disk', plan: null }
+    append({ type: 'topic.closed', projectId: f.projectId, payload: { topicId, removedWorktrees: false } })
+    return { ok: true, detail: 'closed; the branch folders are still on disk', plan: null }
   }
 
   const steps: PlanStep[] = []
@@ -754,7 +754,7 @@ export async function closePlan(
       .find((m) => m.kind === 'main' && m.repo && basename(m.path) === basename(w.path))
     const cwd = owner?.path ?? w.path
     steps.push({
-      title: 'Remove worktree ' + w.name,
+      title: 'Remove the folder holding ' + w.name,
       command: 'git worktree remove --force ' + w.path,
       cwd,
       destructive: true,
@@ -762,15 +762,15 @@ export async function closePlan(
     steps.push({ title: 'Prune ' + basename(cwd), command: 'git worktree prune', cwd, destructive: false })
   }
   if (!steps.length) {
-    store.patch(featureId, (x) => {
-      x.state = 'archived'
+    store.patch(topicId, (x) => {
+      x.state = 'closed'
     })
-    return { ok: true, detail: 'archived; there was no worktree to remove', plan: null }
+    return { ok: true, detail: 'closed; there was no branch folder to remove', plan: null }
   }
 
   const preview: PlanPreview = {
     planId: newId('plan_'),
-    operation: 'feature.close',
+    operation: 'topic.close',
     steps,
     warnings: [
       'The branches stay: only the checkouts go. Anything not committed is already refused above.',
@@ -783,10 +783,10 @@ export async function closePlan(
   plans.register(preview, {
     workspaceIds: wss.map((w) => w.id),
     async onApplied() {
-      store.patch(featureId, (x) => {
-        x.state = 'archived'
+      store.patch(topicId, (x) => {
+        x.state = 'closed'
       })
-      append({ type: 'feature.closed', projectId: f.projectId, payload: { featureId, removedWorktrees: true } })
+      append({ type: 'topic.closed', projectId: f.projectId, payload: { topicId, removedWorktrees: true } })
       await registry.reconcile(f.projectId)
     },
   })
@@ -803,13 +803,13 @@ export async function closePlan(
  */
 /**
  * What `promptPreamble` would find, without building it — so the composer can
- * say "this run carries the feature memory" before the run starts (§7).
+ * say "this run carries the topic memory" before the run starts (§7).
  */
 export function preambleParts(
-  featureId: string,
+  topicId: string,
   scopePaths: string[],
 ): { memory: boolean; context: boolean } {
-  const f = store.get(featureId)
+  const f = store.get(topicId)
   if (!f?.rootPath) return { memory: false, context: false }
   return {
     memory: !!readIfPresent(join(f.rootPath, '.cockpit', 'memory.md')),
@@ -817,8 +817,8 @@ export function preambleParts(
   }
 }
 
-export function promptPreamble(featureId: string, scopePaths: string[]): string {
-  const f = store.get(featureId)
+export function promptPreamble(topicId: string, scopePaths: string[]): string {
+  const f = store.get(topicId)
   if (!f?.rootPath) return ''
 
   const parts: string[] = []
@@ -827,7 +827,7 @@ export function promptPreamble(featureId: string, scopePaths: string[]): string 
 
   if (memory) {
     parts.push(
-      '# Feature memory — ' + f.name,
+      '# Topic memory — ' + f.name,
       'Durable understanding of this work. The "Écarté" section lists solutions',
       'already rejected for a reason: do not re-propose them.',
       '',
@@ -854,28 +854,28 @@ function readIfPresent(path: string): string | null {
 }
 
 /**
- * §4 — "on peut toujours monter de niveau" has a counterpart: a feature closed
+ * §4 — "on peut toujours monter de niveau" has a counterpart: a topic closed
  * by mistake, or one picked back up in December, must be reopenable. Archiving
  * is not a one-way door, which is what makes it a safe default for `close`.
  */
-export function reopen(featureId: string): { ok: boolean; detail: string } {
-  const f = store.get(featureId)
-  if (!f) throw new Error('unknown feature: ' + featureId)
-  if (f.state !== 'archived') return { ok: true, detail: 'it was never closed' }
+export function reopen(topicId: string): { ok: boolean; detail: string } {
+  const f = store.get(topicId)
+  if (!f) throw new Error('unknown topic: ' + topicId)
+  if (f.state !== 'closed') return { ok: true, detail: 'it was never closed' }
 
   const clash = store.bySlug(f.projectId, f.slug)
-  if (clash && clash.id !== f.id && clash.state !== 'archived') {
+  if (clash && clash.id !== f.id && clash.state !== 'closed') {
     return { ok: false, detail: '"' + clash.name + '" has taken the branch ' + f.slug + ' since' }
   }
-  store.patch(featureId, (x) => {
-    x.state = 'parked'
+  store.patch(topicId, (x) => {
+    x.state = 'stopped'
   })
-  append({ type: 'feature.opened', projectId: f.projectId, payload: { featureId, reopened: true } })
+  append({ type: 'topic.opened', projectId: f.projectId, payload: { topicId, reopened: true } })
   return {
     ok: true,
     detail: f.rootPath
-      ? 'reopened, parked. Its worktrees may no longer exist — reconcile will say'
-      : 'reopened, parked',
+      ? 'reopened, stopped. Its branch folders may no longer exist — a refresh will say'
+      : 'reopened, stopped',
   }
 }
 
@@ -893,8 +893,8 @@ async function isMerged(repoPath: string, branch: string, base: string): Promise
   return false
 }
 
-export interface DeleteFeatureInput {
-  featureId: string
+export interface DeleteTopicInput {
+  topicId: string
   /** Remove the checkouts. The folder goes to the Trash, never `rm -rf`. */
   removeWorktrees: boolean
   /** Delete the branch in every repository. This is the irreversible half. */
@@ -915,12 +915,12 @@ export interface DeleteFeatureInput {
  * branch holding unmerged commits — needs `force` said out loud.
  */
 export async function deletePlan(
-  input: DeleteFeatureInput,
+  input: DeleteTopicInput,
 ): Promise<{ ok: boolean; detail: string; warnings: string[]; plan: PlanPreview | null }> {
-  const f = store.get(input.featureId)
-  if (!f) throw new Error('unknown feature: ' + input.featureId)
+  const f = store.get(input.topicId)
+  if (!f) throw new Error('unknown topic: ' + input.topicId)
 
-  const wss = workspacesOf(input.featureId)
+  const wss = workspacesOf(input.topicId)
   const warnings: string[] = []
   const blockers: string[] = []
 
@@ -940,7 +940,7 @@ export async function deletePlan(
       const owner = repos.find((m) => basename(m.path) === basename(w.path)) ?? null
       const cwd = owner?.path ?? w.path
       steps.push({
-        title: 'Remove worktree ' + w.name,
+        title: 'Remove the folder holding ' + w.name,
         command: 'git worktree remove --force ' + w.path,
         cwd,
         destructive: true,
@@ -981,7 +981,7 @@ export async function deletePlan(
     }
   }
 
-  // §10 — a database left behind after the feature is gone is the silent
+  // §10 — a database left behind after the topic is gone is the silent
   // accumulation §16 warns about: nothing lists it and nobody remembers it.
   const dbEnv: Record<string, string> = {}
   if (input.dropDatabases) {
@@ -1010,7 +1010,7 @@ export async function deletePlan(
 
   if (input.removeWorktrees && f.rootPath) {
     warnings.push(
-      'The feature folder goes to the Trash, including its memory at .cockpit/memory.md — ' +
+      'The topic folder goes to the Trash, including its memory at .cockpit/memory.md — ' +
         'promote what is worth keeping to the docs first (§9).',
     )
   }
@@ -1020,12 +1020,12 @@ export async function deletePlan(
 
   const finish = async () => {
     if (input.removeWorktrees && f.rootPath) await moveToTrash(f.rootPath)
-    store.remove(input.featureId)
+    store.remove(input.topicId)
     append({
-      type: 'feature.deleted',
+      type: 'topic.deleted',
       projectId: f.projectId,
       payload: {
-        featureId: input.featureId,
+        topicId: input.topicId,
         name: f.name,
         slug: f.slug,
         removedWorktrees: input.removeWorktrees,
@@ -1043,7 +1043,7 @@ export async function deletePlan(
 
   const preview: PlanPreview = {
     planId: newId('plan_'),
-    operation: 'feature.delete',
+    operation: 'topic.delete',
     steps,
     warnings,
     capturesRestorePoint: false,

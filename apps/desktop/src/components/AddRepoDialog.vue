@@ -284,7 +284,7 @@ function onKey(e: KeyboardEvent) {
           </div>
           <span v-if="folderInfo?.exists && !folderInfo.isRepo" class="help">
             Not a repository yet — <code class="mono">git init</code> runs on arrival, with one
-            commit, so every ceremony above C0 can reach it.
+            commit, so a topic has something to branch from.
           </span>
           <span v-else class="help">It moves into the project folder; nothing is copied.</span>
         </div>
@@ -297,16 +297,16 @@ function onKey(e: KeyboardEvent) {
             <span>
               <strong>{{ project.name }} is itself a repository.</strong>
               There is nowhere beside it for a second one, so it moves down a level first. Nothing
-              is lost — the folder keeps its contents, its history and its branches, and its
-              worktrees are repaired to point at where it went.
+              is lost — the folder keeps its contents, its history and its branches, and every
+              branch checked out elsewhere is repaired to point at where it went.
             </span>
           </p>
           <label class="field">
             <span class="lbl">It moves into</span>
             <input v-model="wrapAs" class="input mono" spellcheck="false" :placeholder="base(project.root)" />
             <span class="help">
-              Stop the servers and agent sessions inside it first — a folder is not moved out from
-              under something running in it.
+              Stop the servers and any running conversation inside it first — a folder is not
+              moved out from under something running in it.
             </span>
           </label>
         </div>

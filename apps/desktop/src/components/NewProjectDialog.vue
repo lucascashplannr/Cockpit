@@ -359,8 +359,9 @@ function onKey(e: KeyboardEvent) {
 
           <p v-if="folderInfo?.isWorktree" class="note warn">
             <TriangleAlert class="sm" />
-            This is a git worktree. It belongs to the repository that created it, so it cannot be
-            moved out on its own — register it as it is, or add the repository that owns it.
+            This folder is a branch checked out from another repository. It belongs to that one,
+            so it cannot be moved out on its own — register it as it is, or add the repository
+            that owns it.
           </p>
         </div>
 

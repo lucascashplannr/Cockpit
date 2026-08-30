@@ -67,7 +67,7 @@ async function select(path: string) {
 /* ── §16 — "revue humaine du diff avant tout commit" ──────────────────────
  *
  * The review was here and the commit was not, so the only way out of a dirty
- * worktree was a terminal — and `feature.close` refuses over uncommitted
+ * worktree was a terminal — and `topic.close` refuses over uncommitted
  * changes, which meant Cockpit blocked you on a state it could not clear.
  * It belongs next to the diff it is a review of, not in a menu.
  */
@@ -77,11 +77,11 @@ const stageAll = ref(true)
 const committing = ref(false)
 const rows = ref<CommitPreview[]>([])
 
-/** A feature commits across every repository it spans; a bare workspace does not. */
-const featureId = computed(() => props.workspace.featureId)
+/** A topic commits across every repository it spans; a lone branch does not. */
+const topicId = computed(() => props.workspace.topicId)
 
 async function refreshCommit() {
-  rows.value = await commitPreview(featureId.value, props.workspace.id, stageAll.value)
+  rows.value = await commitPreview(topicId.value, props.workspace.id, stageAll.value)
 }
 
 const willCommit = computed(() => rows.value.filter((r) => r.willCommit))
@@ -96,7 +96,7 @@ const canCommit = computed(
 async function doCommit() {
   if (!canCommit.value) return
   committing.value = true
-  const ok = await commit(featureId.value, props.workspace.id, message.value.trim(), stageAll.value)
+  const ok = await commit(topicId.value, props.workspace.id, message.value.trim(), stageAll.value)
   committing.value = false
   // The plan dialog takes it from here; clearing on success keeps the field
   // from re-offering a message that has already been used.
@@ -168,7 +168,7 @@ const mark: Record<string, Component> = {
         <div v-if="!files.length && !loading" class="empty">
           <FileCode />
           <strong>Clean</strong>
-          <span>No uncommitted change in this workspace.</span>
+          <span>Nothing uncommitted here.</span>
         </div>
       </div>
 
@@ -200,7 +200,7 @@ const mark: Record<string, Component> = {
       </div>
 
       <!-- §16 — the commit lives against the review, and commits every
-           repository of the feature at once because that is the unit the work
+           repository of the topic at once because that is the unit the work
            was done in. -->
       <div class="commitbar">
         <div v-if="blocked.length" class="cblock">

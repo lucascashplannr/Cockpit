@@ -11,7 +11,7 @@ import {
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  activateFeature, activeProject, activeWorkspace, addRepoTo, archivedFeatures, client, closeFeature, deleteFeature, goTo, guard, landFeature, markResolved, newProject, parkFeature, projectFeatures, rebaseFeature, reopenFeature, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
+  startTopic, activeProject, activeWorkspace, addRepoTo, archivedTopics, client, closeTopic, deleteTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { TabId } from '../core/store.js'
 
@@ -85,9 +85,9 @@ const commands = computed<Item[]>(() => {
   // no way to pick up new core code short of hunting the pid.
   out.push({
     id: 'core:restart',
-    label: 'Restart the core',
-    hint: 'dev servers keep running; agent sessions end but stay resumable',
-    group: 'Core',
+    label: 'Restart the service',
+    hint: 'servers keep running; conversations end but stay resumable',
+    group: 'Cockpit',
     icon: RefreshCw,
     run: act(() => restartCore()),
   })
@@ -96,13 +96,13 @@ const commands = computed<Item[]>(() => {
   // before anything workspace-scoped: it is the level the day is organised at.
   if (activeProject.value) {
     out.push({
-      id: 'feature:open',
-      label: 'Open a feature',
-      hint: 'a branch per repository, one plan',
-      group: 'Feature',
+      id: 'topic:open',
+      label: 'Open a topic',
+      hint: 'one named branch across every repository it touches',
+      group: 'Topic',
       icon: Layers,
       run: act(() => {
-        state.featureDialogOpen = true
+        state.topicDialogOpen = true
       }),
     })
   }
@@ -119,57 +119,57 @@ const commands = computed<Item[]>(() => {
       run: act(() => addRepoTo(activeProject.value!.id)),
     })
   }
-  for (const f of projectFeatures.value) {
+  for (const f of projectTopics.value) {
     if (f.derived) continue
-    const isLive = f.state === 'live'
+    const isLive = f.state === 'running'
     out.push({
-      id: 'feature:land:' + f.id,
-      label: 'Land ' + f.name,
-      hint: 'merge it onto the base branch in every repository — the plan is shown first',
-      group: 'Feature',
+      id: 'topic:land:' + f.id,
+      label: 'Merge ' + f.name,
+      hint: 'onto the base branch in every repository — the plan is shown first',
+      group: 'Topic',
       icon: GitMerge,
-      run: act(() => landFeature(f.id, false)),
+      run: act(() => mergeTopic(f.id, false)),
     })
     out.push({
-      id: 'feature:landpush:' + f.id,
-      label: 'Land and push ' + f.name,
+      id: 'topic:landpush:' + f.id,
+      label: 'Merge and push ' + f.name,
       hint: 'the same, then pushes the base branch',
-      group: 'Feature',
+      group: 'Topic',
       icon: GitMerge,
-      run: act(() => landFeature(f.id, true)),
+      run: act(() => mergeTopic(f.id, true)),
     })
     out.push({
-      id: 'feature:rebase:' + f.id,
+      id: 'topic:rebase:' + f.id,
       label: 'Rebase ' + f.name,
       hint: 'every repository it spans, one plan — stops at the first conflict',
-      group: 'Feature',
+      group: 'Topic',
       icon: GitCompareArrows,
-      run: act(() => rebaseFeature(f.id)),
+      run: act(() => rebaseTopic(f.id)),
     })
     out.push({
-      id: 'feature:toggle:' + f.id,
-      label: (isLive ? 'Park ' : 'Make live ') + f.name,
-      hint: isLive ? 'servers down, worktrees kept' : 'bring its runtimes up',
-      group: 'Feature',
+      id: 'topic:toggle:' + f.id,
+      label: (isLive ? 'Stop ' : 'Start ') + f.name,
+      hint: isLive ? 'its servers go down; the branches stay' : 'bring its servers up',
+      group: 'Topic',
       icon: isLive ? Pause : Play,
-      run: act(() => (isLive ? parkFeature(f.id) : activateFeature(f.id))),
+      run: act(() => (isLive ? stopTopic(f.id) : startTopic(f.id))),
     })
     out.push({
-      id: 'feature:close:' + f.id,
+      id: 'topic:close:' + f.id,
       label: 'Close ' + f.name,
-      hint: 'archives it — reversible, worktrees removed by their own plan',
-      group: 'Feature',
+      hint: 'reversible — the branches are removed by their own plan',
+      group: 'Topic',
       icon: Archive,
-      run: act(() => closeFeature(f.id, true)),
+      run: act(() => closeTopic(f.id, true)),
     })
     out.push({
-      id: 'feature:delete:' + f.id,
+      id: 'topic:delete:' + f.id,
       label: 'Delete ' + f.name + '…',
       hint: 'drops the record for good; refuses over anything unmerged',
-      group: 'Feature',
+      group: 'Topic',
       icon: Trash2,
       run: act(() =>
-        deleteFeature(f.id, {
+        deleteTopic(f.id, {
           removeWorktrees: true,
           deleteBranches: window.confirm(
             'Delete the branch "' + f.slug + '" in every repository too?\n\n' +
@@ -179,23 +179,23 @@ const commands = computed<Item[]>(() => {
       ),
     })
   }
-  // §3.9 — a closed feature is listed only where it can be acted on.
-  for (const f of archivedFeatures.value) {
+  // §3.9 — a closed topic is listed only where it can be acted on.
+  for (const f of archivedTopics.value) {
     out.push({
-      id: 'feature:reopen:' + f.id,
+      id: 'topic:reopen:' + f.id,
       label: 'Reopen ' + f.name,
       hint: 'closed ' + new Date(f.updatedAt).toLocaleDateString(),
-      group: 'Feature',
+      group: 'Topic',
       icon: RotateCcw,
-      run: act(() => reopenFeature(f.id)),
+      run: act(() => reopenTopic(f.id)),
     })
     out.push({
-      id: 'feature:delete:' + f.id,
+      id: 'topic:delete:' + f.id,
       label: 'Delete ' + f.name + '…',
       hint: 'closed — remove it from the record for good',
-      group: 'Feature',
+      group: 'Topic',
       icon: Trash2,
-      run: act(() => deleteFeature(f.id, { removeWorktrees: true, deleteBranches: false })),
+      run: act(() => deleteTopic(f.id, { removeWorktrees: true, deleteBranches: false })),
     })
   }
 
@@ -239,7 +239,7 @@ const commands = computed<Item[]>(() => {
         id: 'rt',
         label: w.runtime.status === 'up' ? 'Stop the servers' : 'Start the servers',
         hint: w.runtime.impl,
-        group: 'Runtime',
+        group: 'Servers',
         icon: Zap,
         run: act(() =>
           guard(() =>
@@ -252,7 +252,7 @@ const commands = computed<Item[]>(() => {
           id: 'prev',
           label: 'Open the preview',
           hint: w.runtime.preview.value,
-          group: 'Runtime',
+          group: 'Servers',
           icon: AppWindow,
           run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'browser' }))),
         })
@@ -322,29 +322,29 @@ const commands = computed<Item[]>(() => {
       out.push({
         id: 'git:branch',
         label: 'Create a branch here',
-        hint: 'C1',
+        hint: 'in this checkout — nothing new on disk',
         group: 'Git',
         icon: GitBranch,
         run: act(() => {
-          const name = window.prompt('Branch name')
+          const name = window.prompt('Name for the new branch')
           if (name) void requestPlan(w.id, 'branch', { name })
         }),
       })
       out.push({
         id: 'git:worktree',
-        label: 'Create an isolated worktree',
-        hint: 'C2 — promotes this work without losing it',
+        label: 'Create a branch in its own folder',
+        hint: 'a separate checkout, so this one keeps what is in it',
         group: 'Git',
         icon: GitBranch,
         run: act(() => {
-          const name = window.prompt('Branch name for the worktree')
+          const name = window.prompt('Name for the new branch')
           if (name) void requestPlan(w.id, 'worktree', { name })
         }),
       })
       out.push({
         id: 'git:undo',
         label: 'Undo the last operation',
-        hint: 'restore point',
+        hint: 'back to the last restore point',
         group: 'Git',
         icon: Undo2,
         run: act(() => guard(() => client.call('git.undo', { workspaceId: w.id }))),
@@ -354,8 +354,8 @@ const commands = computed<Item[]>(() => {
     // §12 — "Agent ici ← C0, deux touches". The cheapest possible path.
     out.push({
       id: 'agent:here',
-      label: 'Agent here',
-      hint: 'C0 · traced, leased, restore point captured',
+      label: 'Ask the agent here',
+      hint: 'logged, locked, restore point captured first',
       group: 'Agent',
       icon: Sparkles,
       run: act(() => {
@@ -381,10 +381,10 @@ const commands = computed<Item[]>(() => {
 
   out.push({
     id: 'rescan',
-    label: 'Re-probe everything',
-    group: 'Core',
+    label: 'Refresh everything',
+    group: 'Cockpit',
     icon: RefreshCw,
-    run: act(() => guard(() => client.call('core.reconcile', {}), 'rescanned')),
+    run: act(() => guard(() => client.call('core.reconcile', {}), 'refreshed')),
   })
   // Three rows rather than one: "which of the three" is the only question the
   // sheet asks that the palette can answer first, and typing "clone" should
@@ -393,7 +393,7 @@ const commands = computed<Item[]>(() => {
     id: 'newproj',
     label: 'New project from scratch…',
     hint: 'an empty project, ready for its first repository',
-    group: 'Core',
+    group: 'Cockpit',
     icon: FolderPlus,
     run: act(() => newProject('scratch')),
   })
@@ -401,7 +401,7 @@ const commands = computed<Item[]>(() => {
     id: 'newproj:folder',
     label: 'New project from a folder…',
     hint: 'something already on this machine',
-    group: 'Core',
+    group: 'Cockpit',
     icon: FolderOpen,
     run: act(() => newProject('folder')),
   })
@@ -409,7 +409,7 @@ const commands = computed<Item[]>(() => {
     id: 'newproj:clone',
     label: 'New project from a repository…',
     hint: 'clone from GitHub or any git remote',
-    group: 'Core',
+    group: 'Cockpit',
     icon: CloudDownload,
     run: act(() => newProject('clone')),
   })
@@ -417,7 +417,7 @@ const commands = computed<Item[]>(() => {
     id: 'settings',
     label: 'Settings…',
     hint: 'the Dev folder, the editor',
-    group: 'Core',
+    group: 'Cockpit',
     icon: SlidersHorizontal,
     run: act(() => {
       state.settingsOpen = true
@@ -437,7 +437,9 @@ const workspaceItems = computed<Item[]>(() =>
         (state.projects.find((p) => p.id === w.projectId)?.name ?? '') +
         (w.git ? ' · ↑' + w.git.ahead + ' ↓' + w.git.behind : '') +
         (w.runtime?.status === 'up' ? ' · running' : ''),
-      group: 'Workspaces',
+      // Two groups, because they are two things: a repository sitting on its
+      // default branch, and a branch checked out in its own folder.
+      group: w.kind === 'worktree' ? 'Branches' : 'Repositories',
       icon: w.kind === 'worktree' ? GitBranch : SquareDot,
       run: act(() => selectWorkspace(w.id)),
     })),
@@ -562,7 +564,7 @@ onMounted(() => {
           v-model="query"
           class="q"
           spellcheck="false"
-          placeholder="Jump to a workspace, or type > for commands, / for files, # to search"
+          placeholder="Jump to a repository or branch, or type &gt; for commands, / for files, # to search"
           @keydown.down.prevent="move(1)"
           @keydown.up.prevent="move(-1)"
           @keydown.enter.prevent="choose"
@@ -605,7 +607,7 @@ onMounted(() => {
         <span><span class="kbd">⏎</span> run</span>
         <span><span class="kbd">esc</span> close</span>
         <span class="grow" />
-        <span class="dimhint">&gt; commands · / files · # search all repos</span>
+        <span class="dimhint">&gt; commands · / files · # search every repository</span>
       </footer>
     </div>
   </div>

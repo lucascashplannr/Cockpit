@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { AgentSessionFile, MemoryDoc } from '@cockpit/shared'
-import { getFeature, requireWorkspace } from './registry.js'
+import type { TranscriptFile, MemoryDoc } from '@cockpit/shared'
+import { getTopic, requireWorkspace } from './registry.js'
 import { append } from './journal.js'
 
 /**
@@ -11,7 +11,7 @@ import { append } from './journal.js'
  *   sessions/    disposable, listable, comparable
  *
  * The point of the separation: clearing a session becomes free.
- * §15 — memory is versioned, so a colleague can pick up a feature and
+ * §15 — memory is versioned, so a colleague can pick up a topic and
  * understand the decisions already made.
  */
 
@@ -39,24 +39,24 @@ function cockpitDir(wsPath: string): string {
 }
 
 /**
- * §6 is titled "la mémoire **de feature**", and that is the whole point: the
+ * §6 is titled "la mémoire **de topic**", and that is the whole point: the
  * understanding belongs to the work, not to one of the checkouts the work
- * happens to span. So a workspace inside a feature reads and writes the
- * feature's memory, at the feature root — the same file `promptPreamble`
+ * happens to span. So a workspace inside a topic reads and writes the
+ * topic's memory, at the topic root — the same file `promptPreamble`
  * prepends to every run.
  *
  * This used to resolve to `ws.path` unconditionally, which meant the Memory
  * tool edited `<worktree>/.cockpit/memory.md` while the agent read
- * `<feature-root>/.cockpit/memory.md`. Two files, one name, and anything
- * promoted from a feature worktree was never seen by the agent running on it.
+ * `<topic-root>/.cockpit/memory.md`. Two files, one name, and anything
+ * promoted from a topic worktree was never seen by the agent running on it.
  *
- * Outside a feature — a bare repo, a scratch folder — the workspace is the
+ * Outside a topic — a bare repo, a scratch folder — the workspace is the
  * unit of work and its own path is the right answer.
  */
 function memoryRoot(workspaceId: string): string {
   const ws = requireWorkspace(workspaceId)
-  if (!ws.featureId) return ws.path
-  return getFeature(ws.featureId)?.rootPath ?? ws.path
+  if (!ws.topicId) return ws.path
+  return getTopic(ws.topicId)?.rootPath ?? ws.path
 }
 
 export function memoryPath(wsPath: string): string {
@@ -148,7 +148,7 @@ function escapeRe(s: string): string {
 }
 
 /** §6 — sessions are disposable, listable, comparable. */
-export function sessions(workspaceId: string): AgentSessionFile[] {
+export function sessions(workspaceId: string): TranscriptFile[] {
   const ws = requireWorkspace(workspaceId)
   const dir = sessionsDir(ws.path)
   if (!existsSync(dir)) return []

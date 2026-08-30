@@ -6,7 +6,7 @@ import { run } from '../exec.js'
 import { allocate, portKey } from '../ports.js'
 import { append } from '../journal.js'
 import * as sup from '../supervisor.js'
-import * as featureStore from '../features/store.js'
+import * as topicStore from '../topics/store.js'
 
 /**
  * §8 — "Il unifie les questions qu'il pose, pas les réponses."
@@ -31,17 +31,17 @@ function runtimeDetail(ws: Workspace): Record<string, unknown> {
 }
 
 /**
- * A name unique across features, for runtimes that key on the folder name.
+ * A name unique across topics, for runtimes that key on the folder name.
  *
- * This is the collision that breaks running two features at once, and it is
+ * This is the collision that breaks running two topics at once, and it is
  * silent: `worktrees/2fa/api` and `worktrees/search/api` are both `api`, so
- * Docker Compose adopts the other feature's containers and Herd serves one
- * feature's code at the other's hostname. The disambiguator is the feature.
+ * Docker Compose adopts the other topic's containers and Herd serves one
+ * topic's code at the other's hostname. The disambiguator is the topic.
  */
 function scopedName(ws: Workspace): string {
   const base = basename(ws.path)
-  if (!ws.featureId) return base
-  const slug = featureStore.get(ws.featureId)?.slug ?? ws.git?.branch ?? null
+  if (!ws.topicId) return base
+  const slug = topicStore.get(ws.topicId)?.slug ?? ws.git?.branch ?? null
   // The same function the seed uses to write this hostname into `.env`. Two
   // implementations of it would be one bug: Herd serving `api-2fa.test` while
   // the app inside it believes it is `api-two-fa.test`.
@@ -152,7 +152,7 @@ const expoRuntime: Runtime = {
 }
 
 /** Every invocation carries the project namespace; forgetting one on `down`
- *  would tear down the default project instead of this feature's. */
+ *  would tear down the default project instead of this topic's. */
 function composeArgs(ws: Workspace, rest: string[]): string[] {
   return ['compose', '-p', 'cockpit-' + scopedName(ws), ...rest]
 }
@@ -161,7 +161,7 @@ const composeRuntime: Runtime = {
   id: 'compose',
   portable: true,
   /**
-   * §8 — host ports published in a compose file are literals, so two features
+   * §8 — host ports published in a compose file are literals, so two topics
    * running the same file want the same port and the second one fails deep
    * inside Docker. Cockpit refuses up front and offers to park the other (§11
    * only allocates the ports it owns; it cannot rewrite someone's compose.yaml).
@@ -214,7 +214,7 @@ const herdRuntime: Runtime = {
   },
   async up(ws) {
     // Herd serves linked folders permanently; "up" means link + ensure served.
-    // The link name carries the feature, or two features fight over one host.
+    // The link name carries the topic, or two topics fight over one host.
     const r = await run('herd', ['link', scopedName(ws)], { cwd: ws.path, timeoutMs: 30_000 })
     return { ok: r.ok, detail: r.ok ? 'linked as ' + scopedName(ws) : 'herd CLI unavailable' }
   },

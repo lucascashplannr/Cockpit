@@ -1,19 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { AgentSessionFile, MemoryDoc, Workspace } from '@cockpit/shared'
+import type { TranscriptFile, MemoryDoc, Workspace } from '@cockpit/shared'
 import { BookMarked, Pencil, Plus } from '@lucide/vue'
 import { client, guard, toast } from '../../core/store.js'
 
 /**
  * §6 — the layer nobody else builds. Three distinct things live here:
- * the durable memory, the disposable sessions, and (in the Journal tab) the
+ * the durable memory, the disposable transcripts, and (in the Journal) the
  * automatic log. The whole point: "vider devient gratuit".
  */
 
 const props = defineProps<{ workspace: Workspace }>()
 
 const doc = ref<MemoryDoc | null>(null)
-const sessions = ref<AgentSessionFile[]>([])
+const sessions = ref<TranscriptFile[]>([])
 const draft = ref('')
 const editing = ref(false)
 const promoteText = ref('')
@@ -80,7 +80,7 @@ watch(() => props.workspace.id, load, { immediate: true })
         <BookMarked />
         <strong>No memory yet</strong>
         <span>
-          The memory outlives every agent session — it is what makes clearing one free (§6).
+          The memory outlives every conversation — that is what makes clearing one free.
         </span>
         <button class="btn primary" @click="editing = true; draft = ''">Start a memory</button>
       </div>
@@ -91,7 +91,7 @@ watch(() => props.workspace.id, load, { immediate: true })
             <h3>
               {{ s.title }}
               <!-- §6 — "la section la plus précieuse". Say so in the interface. -->
-              <span v-if="s.title === 'Écarté'" class="hint">the one that stops a fresh session
+              <span v-if="s.title === 'Écarté'" class="hint">the one that stops a new conversation
                 re-proposing what you already rejected</span>
             </h3>
             <pre v-if="bodyPreview(s.body)" class="body selectable">{{ bodyPreview(s.body) }}</pre>
@@ -138,7 +138,7 @@ watch(() => props.workspace.id, load, { immediate: true })
       </div>
 
       <div class="block">
-        <span class="section-label">sessions ({{ sessions.length }})</span>
+        <span class="section-label">transcripts ({{ sessions.length }})</span>
         <p class="note">
           Disposable by design. The understanding lives in the memory, so clearing these costs
           nothing.
@@ -147,7 +147,7 @@ watch(() => props.workspace.id, load, { immediate: true })
           <span class="sname mono">{{ s.id }}</span>
           <span class="sbytes num">{{ Math.round(s.bytes / 1024) }}k</span>
         </div>
-        <p v-if="!sessions.length" class="none">No stored session.</p>
+        <p v-if="!sessions.length" class="none">No stored transcript.</p>
       </div>
     </aside>
   </div>

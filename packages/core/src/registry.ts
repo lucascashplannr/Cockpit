@@ -1,8 +1,8 @@
 import { basename, dirname, join, resolve } from 'node:path'
 import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { stableId } from '@cockpit/shared'
-import type { Capability, Ceremony, Feature, Project, Workspace } from '@cockpit/shared'
-import * as featureStore from './features/store.js'
+import type { Capability, Setup, Topic, Project, Workspace } from '@cockpit/shared'
+import * as topicStore from './topics/store.js'
 import { loadConfig, updateConfig } from './config.js'
 import { childRepos, detectCapabilities, findManifest, projectNameFor, readManifest } from './detect.js'
 import { isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
@@ -20,7 +20,7 @@ import { sessionsTouching } from './agents.js'
 
 const projects = new Map<string, Project>()
 const workspaces = new Map<string, Workspace>()
-const features = new Map<string, Feature>()
+const topics = new Map<string, Topic>()
 
 export function allProjects(): Project[] {
   return [...projects.values()].sort((a, b) => a.name.localeCompare(b.name))
@@ -38,18 +38,18 @@ export function allWorkspaces(projectId?: string): Workspace[] {
 }
 
 /**
- * §4 — persisted features first, inferred ones after. A feature Cockpit merely
+ * §4 — persisted topics first, inferred ones after. A topic Cockpit merely
  * guessed from matching branch names is real enough to display, but it is
  * never allowed to shadow one the user actually opened.
  */
-export function allFeatures(projectId?: string, includeArchived = false): Feature[] {
-  const list = [...features.values()].map(withRecord)
-  // An archived feature has no workspaces left to derive it from, so it never
+export function allTopics(projectId?: string, includeArchived = false): Topic[] {
+  const list = [...topics.values()].map(withRecord)
+  // An archived topic has no workspaces left to derive it from, so it never
   // enters the map. Without this it was a row nobody could see, reopen or
   // remove — invisible state, which §3.4 exists to prevent.
   if (includeArchived) {
-    for (const rec of featureStore.list(projectId)) {
-      if (rec.state !== 'archived' || list.some((f) => f.id === rec.id)) continue
+    for (const rec of topicStore.list(projectId)) {
+      if (rec.state !== 'closed' || list.some((f) => f.id === rec.id)) continue
       list.push({
         id: rec.id,
         projectId: rec.projectId,
@@ -57,10 +57,10 @@ export function allFeatures(projectId?: string, includeArchived = false): Featur
         slug: rec.slug,
         rootPath: rec.rootPath,
         workspaceIds: [],
-        state: 'archived',
+        state: 'closed',
         ticket: rec.ticket,
         review: rec.review,
-        ceremony: rec.ceremony,
+        setup: rec.setup,
         derived: false,
         createdAt: rec.createdAt,
         updatedAt: rec.updatedAt,
@@ -69,27 +69,27 @@ export function allFeatures(projectId?: string, includeArchived = false): Featur
   }
   const filtered = projectId ? list.filter((f) => f.projectId === projectId) : list
   return filtered.sort((a, b) => {
-    if ((a.state === 'archived') !== (b.state === 'archived')) return a.state === 'archived' ? 1 : -1
+    if ((a.state === 'closed') !== (b.state === 'closed')) return a.state === 'closed' ? 1 : -1
     if (a.derived !== b.derived) return a.derived ? 1 : -1
     return b.updatedAt - a.updatedAt
   })
 }
 
-export function getFeature(id: string): Feature | null {
-  const f = features.get(id)
+export function getTopic(id: string): Topic | null {
+  const f = topics.get(id)
   if (f) return withRecord(f)
-  return allFeatures(undefined, true).find((x) => x.id === id) ?? null
+  return allTopics(undefined, true).find((x) => x.id === id) ?? null
 }
 
 /**
- * §3.4 applied to the feature itself: membership is probed and cached in the
+ * §3.4 applied to the topic itself: membership is probed and cached in the
  * map, but the mutable half — its name, its live/parked state, what it has
  * cost — lives in the table and is read back on every call. Activating a
- * feature must not have to trigger a full reconcile to become true.
+ * topic must not have to trigger a full reconcile to become true.
  */
-function withRecord(f: Feature): Feature {
+function withRecord(f: Topic): Topic {
   if (f.derived) return f
-  const rec = featureStore.get(f.id)
+  const rec = topicStore.get(f.id)
   if (!rec) return f
   return {
     ...f,
@@ -149,7 +149,7 @@ function requireProject(projectId: string): Project {
 /** Forget everything derived from a root, so it can be rebuilt from scratch. */
 function dropProject(p: Project): void {
   for (const wid of p.workspaceIds) workspaces.delete(wid)
-  for (const fid of p.featureIds) features.delete(fid)
+  for (const fid of p.topicIds) topics.delete(fid)
   projects.delete(p.id)
 }
 
@@ -294,7 +294,7 @@ export function forgetProject(projectId: string): void {
     c.projects = c.projects.filter((x) => x.root !== p.root)
   })
   for (const wid of p.workspaceIds) workspaces.delete(wid)
-  for (const fid of p.featureIds) features.delete(fid)
+  for (const fid of p.topicIds) topics.delete(fid)
   projects.delete(projectId)
   append({ type: 'workspace.forgotten', projectId, payload: { root: p.root } })
 }
@@ -310,7 +310,7 @@ function buildProject(root: string): Project {
   const manifest = parsed.manifest
 
   const name = configNameFor(root) ?? projectNameFor(root, manifest)
-  const defaultCeremony = (manifest?.ceremony ?? 'C1') as Ceremony
+  const defaultSetup = (manifest?.setup ?? 'branch') as Setup
   const caps = detectCapabilities(root, manifest)
 
   // Which folders hold repos: declared, or discovered one level down, or the
@@ -330,9 +330,9 @@ function buildProject(root: string): Project {
     root,
     manifestPath,
     capabilities: caps,
-    defaultCeremony,
+    defaultSetup,
     workspaceIds: [],
-    featureIds: [],
+    topicIds: [],
   }
 
   const seen = new Set<string>()
@@ -352,7 +352,7 @@ function buildProject(root: string): Project {
       repo: isRepo(path) ? path : null,
       git: prev?.git ?? null,
       runtime: prev?.runtime ?? null,
-      featureId: prev?.featureId ?? null,
+      topicId: prev?.topicId ?? null,
       capabilities: wsCaps,
       agentSessions: [],
       lease: null,
@@ -409,7 +409,7 @@ async function discoverWorktrees(project: Project): Promise<void> {
         repo: entry.path,
         git: null,
         runtime: null,
-        featureId: null,
+        topicId: null,
         capabilities: detectCapabilities(entry.path, null),
         agentSessions: [],
         lease: null,
@@ -430,32 +430,32 @@ async function discoverWorktrees(project: Project): Promise<void> {
 }
 
 /**
- * §4 — a feature is a decoration over workspaces, and it comes from two places.
+ * §4 — a topic is a decoration over workspaces, and it comes from two places.
  *
  * Persisted: the user opened it, so its identity, name and live/parked state
  * outlive the daemon (that is the whole point of the table). Its membership is
  * still probed — matched by branch — because a worktree deleted by hand must
- * drop out of the feature rather than linger in a list.
+ * drop out of the topic rather than linger in a list.
  *
  * Inferred: several worktrees happen to share a branch name. Nothing is
- * invented when there is no match, and an inferred feature has no root folder,
+ * invented when there is no match, and an inferred topic has no root folder,
  * so it can hold neither a memory nor a cross-repo context.
  */
-function deriveFeatures(project: Project): void {
-  // Keyed on the project, not on the previous `featureIds`: buildProject hands
+function deriveTopics(project: Project): void {
+  // Keyed on the project, not on the previous `topicIds`: buildProject hands
   // back a fresh Project whose list is already empty, so trusting it left every
-  // stale feature — an archived one above all — in the map for good.
-  for (const [fid, f] of [...features]) {
-    if (f.projectId === project.id) features.delete(fid)
+  // stale topic — an archived one above all — in the map for good.
+  for (const [fid, f] of [...topics]) {
+    if (f.projectId === project.id) topics.delete(fid)
   }
-  project.featureIds = []
+  project.topicIds = []
 
   const claimed = new Set<string>()
   const byBranch = new Map<string, Workspace[]>()
   for (const id of project.workspaceIds) {
     const w = workspaces.get(id)
     if (!w || w.kind !== 'worktree') continue
-    w.featureId = null
+    w.topicId = null
     const branch = w.git?.branch ?? w.name
     if (!branch) continue
     const arr = byBranch.get(branch) ?? []
@@ -463,15 +463,15 @@ function deriveFeatures(project: Project): void {
     byBranch.set(branch, arr)
   }
 
-  for (const rec of featureStore.list(project.id)) {
-    if (rec.state === 'archived') continue
+  for (const rec of topicStore.list(project.id)) {
+    if (rec.state === 'closed') continue
 
     // Membership is probed, never stored: the worktrees on that branch, plus
-    // the feature's own root folder when it has one.
+    // the topic's own root folder when it has one.
     const group = byBranch.get(rec.slug) ?? []
     const rootWs = rec.rootPath ? workspaces.get(stableId('ws', rec.rootPath)) : undefined
 
-    const feature: Feature = {
+    const topic: Topic = {
       id: rec.id,
       projectId: project.id,
       name: rec.name,
@@ -481,77 +481,77 @@ function deriveFeatures(project: Project): void {
       state: rec.state,
       ticket: rec.ticket,
       review: rec.review,
-      ceremony: rec.ceremony,
+      setup: rec.setup,
       derived: false,
       createdAt: rec.createdAt,
       updatedAt: rec.updatedAt,
     }
-    features.set(feature.id, feature)
-    project.featureIds.push(feature.id)
+    topics.set(topic.id, topic)
+    project.topicIds.push(topic.id)
     for (const w of group) {
-      w.featureId = feature.id
-      // Inside a feature every worktree is on the same branch by construction,
+      w.topicId = topic.id
+      // Inside a topic every worktree is on the same branch by construction,
       // so the branch name distinguishes nothing. The repository does.
       w.name = basename(w.path)
       claimed.add(w.id)
     }
     if (rootWs) {
-      rootWs.featureId = feature.id
+      rootWs.topicId = topic.id
       claimed.add(rootWs.id)
     }
-    if (rec.state === 'live' && !group.length) {
-      // The worktrees are gone from under it; a live feature with nothing in it
+    if (rec.state === 'running' && !group.length) {
+      // The worktrees are gone from under it; a live topic with nothing in it
       // is a lie, and parking it is the honest reading.
-      featureStore.patch(rec.id, (x) => {
-        x.state = 'parked'
+      topicStore.patch(rec.id, (x) => {
+        x.state = 'stopped'
       })
-      feature.state = 'parked'
+      topic.state = 'stopped'
     }
   }
 
   // Branches a persisted record already owns — including a closed one, whose
   // worktrees may still be on disk. Without this the leftovers of a closed
-  // feature are re-derived as an "inferred" feature under the same stable id,
+  // topic are re-derived as an "inferred" topic under the same stable id,
   // which resurrects it under its branch name and hides the real record.
-  const owned = new Set(featureStore.list(project.id).map((r) => r.slug))
+  const owned = new Set(topicStore.list(project.id).map((r) => r.slug))
 
   for (const [branch, group] of byBranch) {
     if (owned.has(branch)) continue
     if (group.every((w) => claimed.has(w.id))) continue
     const rest = group.filter((w) => !claimed.has(w.id))
     const id = stableId('feat', project.id, branch)
-    if (features.has(id)) continue
-    const existing = features.get(id)
-    const feature: Feature = {
+    if (topics.has(id)) continue
+    const existing = topics.get(id)
+    const topic: Topic = {
       id,
       projectId: project.id,
       name: branch,
       slug: branch,
       rootPath: null,
       workspaceIds: rest.map((w) => w.id),
-      state: 'parked',
+      state: 'stopped',
       ticket: existing?.ticket ?? null,
       review: existing?.review ?? null,
-      ceremony: rest.length > 1 ? 'C3' : 'C2',
+      setup: rest.length > 1 ? 'full' : 'isolated',
       derived: true,
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now(),
     }
-    features.set(id, feature)
-    project.featureIds.push(id)
-    for (const w of rest) w.featureId = id
+    topics.set(id, topic)
+    project.topicIds.push(id)
+    for (const w of rest) w.topicId = id
   }
 }
 
 /**
- * A feature's folder sits in `worktrees/<slug>/`, outside the project root, so
+ * A topic's folder sits in `worktrees/<slug>/`, outside the project root, so
  * no amount of scanning finds it. It is registered explicitly: it is the group
  * workspace that holds the memory and the cross-repo CONTEXT.md (§7), and an
  * agent can be scoped to it to reach every repository at once.
  */
-function addFeatureRoots(project: Project): void {
-  for (const rec of featureStore.list(project.id)) {
-    if (rec.state === 'archived' || !rec.rootPath || !existsSync(rec.rootPath)) continue
+function addTopicRoots(project: Project): void {
+  for (const rec of topicStore.list(project.id)) {
+    if (rec.state === 'closed' || !rec.rootPath || !existsSync(rec.rootPath)) continue
     const id = stableId('ws', rec.rootPath)
     if (workspaces.has(id)) {
       if (!project.workspaceIds.includes(id)) project.workspaceIds.push(id)
@@ -566,7 +566,7 @@ function addFeatureRoots(project: Project): void {
       repo: null,
       git: null,
       runtime: null,
-      featureId: rec.id,
+      topicId: rec.id,
       capabilities: detectCapabilities(rec.rootPath, null),
       agentSessions: [],
       lease: null,
@@ -580,7 +580,7 @@ function addFeatureRoots(project: Project): void {
       type: 'workspace.discovered',
       projectId: project.id,
       workspaceId: id,
-      payload: { path: rec.rootPath, kind: 'group', featureId: rec.id },
+      payload: { path: rec.rootPath, kind: 'group', topicId: rec.id },
     })
   }
 }
@@ -592,9 +592,9 @@ export async function probeWorkspace(id: string): Promise<Workspace> {
   ws.runtime = await runtimeStateFor(ws)
   ws.lease = leaseCovering(ws.path)
   ws.agentSessions = sessionsTouching(ws.path).map((s) => s.id)
-  // §6 — the feature's memory when there is one, so this agrees with what
+  // §6 — the topic's memory when there is one, so this agrees with what
   // `memory.read` returns and what the agent is actually handed.
-  const memRoot = ws.featureId ? (getFeature(ws.featureId)?.rootPath ?? ws.path) : ws.path
+  const memRoot = ws.topicId ? (getTopic(ws.topicId)?.rootPath ?? ws.path) : ws.path
   ws.hasMemory = existsSync(join(memRoot, '.cockpit', 'memory.md'))
   ws.lastProbedAt = Date.now()
   workspaces.set(id, ws)
@@ -627,13 +627,13 @@ export async function reconcile(projectId?: string): Promise<number> {
     for (const root of roots) {
       if (!existsSync(root)) continue
       const project = buildProject(root)
-      addFeatureRoots(project)
+      addTopicRoots(project)
       await discoverWorktrees(project)
       for (const wid of project.workspaceIds) {
         await probeWorkspace(wid)
         changed++
       }
-      deriveFeatures(project)
+      deriveTopics(project)
     }
     append({ type: 'core.reconciled', payload: { projects: roots.length, workspaces: changed } })
     return changed

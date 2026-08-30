@@ -16,24 +16,27 @@ import { client, restartCore, state } from '../core/store.js'
     <TriangleAlert v-else-if="state.connection === 'outdated'" class="sm" />
     <Unplug v-else class="sm" />
     <span class="txt">
-      <template v-if="state.connection === 'connecting'">Connecting to the core…</template>
+      <template v-if="state.connection === 'connecting'">Connecting to the service…</template>
       <template v-else-if="state.connection === 'incompatible'">
-        Version mismatch — {{ state.connectionDetail }}
+        {{ state.connectionDetail }}
       </template>
       <template v-else-if="state.connection === 'outdated'">
         {{ state.connectionDetail }}
       </template>
       <template v-else>
-        Core unreachable. Servers and agents keep running; this window is showing stale state.
+        The service is unreachable. Servers and agents keep running; this window is showing stale
+      state.
       </template>
     </span>
-    <!-- A stale core has one fix, and it is not "retry". -->
+    <!-- A stale service has one fix, and it is not "retry". A version
+         mismatch is the same case, and worse: the window has hung up on it,
+         so Retry is a button that cannot ever succeed. -->
     <button
-      v-if="state.connection === 'outdated'"
+      v-if="state.connection === 'outdated' || state.connection === 'incompatible'"
       class="btn primary small"
       @click="restartCore()"
     >
-      <RefreshCw />Restart the core
+      <RefreshCw />Restart the service
     </button>
     <button
       v-else-if="state.connection !== 'connecting'"

@@ -9,18 +9,18 @@ import * as registry from './registry.js'
  * §16 — "revue humaine du diff avant tout commit."
  *
  * The review was built and the commit was not, which left the loop open at
- * exactly the point it mattered: `feature.close` refuses over uncommitted
+ * exactly the point it mattered: `topic.close` refuses over uncommitted
  * changes, so Cockpit blocked you on a state it gave you no way to leave. You
  * had to go to a terminal, which is the one thing this window exists to avoid.
  *
- * A feature spans repositories, so committing is one act across all of them
+ * A topic spans repositories, so committing is one act across all of them
  * with one message — the same shape as opening it and rebasing it. Repos with
  * nothing staged are skipped rather than made to carry an empty commit.
  */
 
 export interface CommitInput {
-  /** Commit in every repository of this feature. */
-  featureId?: string
+  /** Commit in every repository of this topic. */
+  topicId?: string
   /** Or in exactly these workspaces. One of the two is required. */
   workspaceIds?: string[]
   message: string
@@ -66,12 +66,12 @@ function resolveTargets(input: CommitInput) {
   if (input.workspaceIds?.length) {
     return input.workspaceIds.map((id) => registry.requireWorkspace(id)).filter((w) => w.repo)
   }
-  if (!input.featureId) throw new Error('commit needs a feature or a set of workspaces')
-  const f = registry.getFeature(input.featureId)
-  if (!f) throw new Error('unknown feature: ' + input.featureId)
+  if (!input.topicId) throw new Error('commit needs a topic or a set of workspaces')
+  const f = registry.getTopic(input.topicId)
+  if (!f) throw new Error('unknown topic: ' + input.topicId)
   return registry
     .allWorkspaces(f.projectId)
-    .filter((w) => w.featureId === input.featureId && w.repo && w.kind !== 'group')
+    .filter((w) => w.topicId === input.topicId && w.repo && w.kind !== 'group')
 }
 
 /**

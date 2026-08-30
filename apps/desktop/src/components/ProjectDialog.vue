@@ -40,10 +40,13 @@ const nameChanged = computed(() => !!p.value && name.value.trim() !== p.value.na
 const rootChanged = computed(() => !!p.value && root.value.trim() !== p.value.root)
 const dirty = computed(() => nameChanged.value || rootChanged.value)
 
-/** A project holds its workspaces; the count is what makes the danger real. */
+/** A project holds repositories and branches of them; the count is what makes
+ *  the danger real. */
 const workspaces = computed(() =>
   p.value ? state.workspaces.filter((w) => w.projectId === p.value!.id && w.kind !== 'group') : [],
 )
+const repoCount = computed(() => workspaces.value.filter((w) => w.kind !== 'worktree').length)
+const branchCount = computed(() => workspaces.value.filter((w) => w.kind === 'worktree').length)
 const unpushed = computed(() => workspaces.value.filter((w) => w.git?.hasUnpushedWork))
 const running = computed(() => workspaces.value.filter((w) => w.runtime?.status === 'up'))
 
@@ -113,7 +116,10 @@ function onKey(e: KeyboardEvent) {
         <h2>{{ p.name }}</h2>
         <span class="grow" />
         <span class="count num">
-          {{ workspaces.length }} {{ workspaces.length === 1 ? 'workspace' : 'workspaces' }}
+          {{ repoCount }} {{ repoCount === 1 ? 'repository' : 'repositories' }}
+          <template v-if="branchCount">
+            · {{ branchCount }} {{ branchCount === 1 ? 'branch' : 'branches' }}
+          </template>
         </span>
         <button class="icon-btn" title="Close (esc)" @click="close"><X class="sm" /></button>
       </header>
@@ -159,8 +165,8 @@ function onKey(e: KeyboardEvent) {
         <!-- §16 — a move pulls the ground out from under anything still running. -->
         <p v-if="rootChanged && running.length" class="note warn">
           <TriangleAlert class="sm" />
-          {{ running.length }} runtime{{ running.length === 1 ? '' : 's' }} still up — moving will
-          be refused until {{ running.length === 1 ? 'it is' : 'they are' }} stopped.
+          Servers still up in {{ running.length }} of them — moving will be refused until
+          {{ running.length === 1 ? 'it is' : 'they are' }} stopped.
         </p>
       </div>
 
@@ -208,12 +214,12 @@ function onKey(e: KeyboardEvent) {
           <p v-if="unpushed.length" class="note bad">
             <TriangleAlert class="sm" />
             Unpushed commits in {{ unpushed.map((w) => w.name).join(', ') }}. Push or drop them
-            first — the core will refuse.
+            first; the move will be refused.
           </p>
           <p v-if="running.length" class="note bad">
             <TriangleAlert class="sm" />
-            {{ running.length }} runtime{{ running.length === 1 ? '' : 's' }} still up. Stop
-            {{ running.length === 1 ? 'it' : 'them' }} first — the core will refuse.
+            Servers still up in {{ running.length }} of them. Stop
+            {{ running.length === 1 ? 'it' : 'them' }} first; the move will be refused.
           </p>
           <p class="prose">
             Type <strong>{{ p.name }}</strong> to confirm. This moves

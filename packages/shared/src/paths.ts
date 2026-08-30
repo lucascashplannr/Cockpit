@@ -127,7 +127,7 @@ export function starterManifest(name: string, repoFolder?: string | null): strin
     '# repos:',
     '#   - path: ./' + (repoFolder || folderSafe(name) || 'repo'),
     '',
-    '# ceremony: C1',
+    '# setup: C1',
     '# runtime: compose',
     '# tickets: { provider: github, repo: owner/name }',
     '',
@@ -135,7 +135,7 @@ export function starterManifest(name: string, repoFolder?: string | null): strin
 }
 
 /**
- * §4 — the branch- and folder-safe form of a feature name.
+ * §4 — the branch- and folder-safe form of a topic name.
  *
  * It lives here, beside the other pure path work, because it is no longer just
  * a branch name: it is the branch in every repository, the folder under
@@ -153,24 +153,24 @@ export function slugify(name: string): string {
     .replace(/-{2,}/g, '-')
     .slice(0, 60)
     .replace(/-+$/, '')
-  return s || 'feature'
+  return s || 'topic'
 }
 
 /**
- * §8 + §11 — a name unique across features, for every tool that keys on the
+ * §8 + §11 — a name unique across topics, for every tool that keys on the
  * folder name rather than the path.
  *
- * This is the collision that silently breaks running two features at once:
+ * This is the collision that silently breaks running two topics at once:
  * `worktrees/2fa/api` and `worktrees/search/api` are both `api`, so Herd serves
- * one feature's code at the other's hostname and Compose adopts the other
- * feature's containers. The feature slug is the disambiguator.
+ * one topic's code at the other's hostname and Compose adopts the other
+ * topic's containers. The topic slug is the disambiguator.
  *
  * Shared by the runtime that links the site and the seed that writes the
  * hostname into `.env` — those two disagreeing is the same bug in two hats.
  */
-export function scopedName(repoFolder: string, featureSlug: string | null): string {
-  if (!featureSlug) return repoFolder
-  const clean = slugify(featureSlug)
+export function scopedName(repoFolder: string, topicSlug: string | null): string {
+  if (!topicSlug) return repoFolder
+  const clean = slugify(topicSlug)
   if (repoFolder === clean) return repoFolder
   return repoFolder + '-' + clean
 }

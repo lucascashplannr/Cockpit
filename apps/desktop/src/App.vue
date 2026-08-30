@@ -9,19 +9,19 @@ import ProjectDialog from './components/ProjectDialog.vue'
 import NewProjectDialog from './components/NewProjectDialog.vue'
 import AddRepoDialog from './components/AddRepoDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
-import FeatureDialog from './components/FeatureDialog.vue'
+import TopicDialog from './components/TopicDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import HomeView from './components/HomeView.vue'
 import ReviewTools from './components/ReviewTools.vue'
 import WorkspaceActions from './components/WorkspaceActions.vue'
-import FeatureActions from './components/FeatureActions.vue'
+import TopicActions from './components/TopicActions.vue'
 import WorkspaceTitle from './components/WorkspaceTitle.vue'
 import GlobalSearch from './components/GlobalSearch.vue'
 import TrafficLights from './components/TrafficLights.vue'
 import {
   activeWorkspace, canLeaveHome, client, state, goTo, guard, keyTargets, requestPlan,
-  selectedFeatureGroup,
+  selectedTopicGroup,
 } from './core/store.js'
 
 /**
@@ -124,9 +124,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
            it searches everything, and it sits in the window's own chrome. -->
       <GlobalSearch />
       <span class="grow" />
-      <!-- The verbs of whatever is selected. A feature is selectable too, and
+      <!-- The verbs of whatever is selected. A topic is selectable too, and
            when it is the one selected, these are its verbs (§4). -->
-      <FeatureActions v-if="selectedFeatureGroup" :group="selectedFeatureGroup" />
+      <TopicActions v-if="selectedTopicGroup" :group="selectedTopicGroup" />
       <WorkspaceActions v-else />
     </header>
 
@@ -147,7 +147,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <NewProjectDialog />
     <AddRepoDialog />
     <SettingsDialog />
-    <FeatureDialog />
+    <TopicDialog />
     <ConnectionBanner />
     <Toast />
 

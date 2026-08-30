@@ -47,13 +47,13 @@ export type EventType =
   | 'project.renamed'
   | 'project.moved'
   | 'project.trashed'
-  // features — the durable unit of work (§4)
-  | 'feature.opened'
-  | 'feature.activated'
-  | 'feature.parked'
-  | 'feature.renamed'
-  | 'feature.closed'
-  | 'feature.deleted'
+  // topics — the durable unit of work (§4)
+  | 'topic.opened'
+  | 'topic.started'
+  | 'topic.stopped'
+  | 'topic.renamed'
+  | 'topic.closed'
+  | 'topic.deleted'
   // git
   | 'git.plan'
   | 'git.applied'
