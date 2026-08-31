@@ -32,34 +32,51 @@ export interface LaunchContext {
    * see exactly one of its repositories.
    */
   extraDirs: string[]
-  /** The command allow-list. Anything outside it is refused, never silently run. */
-  allow: string[]
-}
-
-export interface EngineSpec {
-  id: string
-  bin: string
-  /** Non-interactive mode with structured output (§7, multi-moteurs). */
-  buildArgs(prompt: string, ctx: LaunchContext): string[]
   /**
-   * §6 — the same conversation, picked back up. Without this a session cannot
-   * outlive the daemon, and "work on it over several days" is a fiction: every
-   * morning would start from an empty context against a stale memory.
+   * §16 — "périmètre confiné", in the only form the engine actually enforces.
+   *
+   * This was an allow-list, and an allow-list does not confine: the flag it
+   * was passed to is additive, so naming four tools left every other one
+   * exactly as available as before. A session meant to read could still shell
+   * out. Naming the set *outright* is what holds — the tools left out are not
+   * refused at the call, they are absent from the list the model is given, and
+   * it never reaches for them.
    */
-  buildResumeArgs(prompt: string, engineSessionId: string, ctx: LaunchContext): string[]
-  parse(line: string): NormalizedEvent | null
+  tools: string[]
+  /**
+   * §16 — "jamais de push", and no commit before a person has seen the diff.
+   *
+   * Command-level, and genuinely enforced: a call matching one of these is
+   * refused as it is made and reported on the turn. This is the guard-rail
+   * that has to hold even when the tool itself is allowed, because `Bash` is
+   * one tool and `git push` is one command.
+   */
+  deny: string[]
+  /**
+   * Which model, and how hard it is asked to think. Both are the engine's own
+   * flags; neither is persisted on the conversation, because the window is
+   * where the choice is made and remembered — passing it on resume as well
+   * keeps a thread on the model it was started with without a schema change.
+   */
+  model?: string
+  effort?: string
+  /**
+   * §3.7 — "toute opération affiche son plan avant de s'exécuter", applied to
+   * the agent itself: plan mode reads and proposes, and writes nothing.
+   */
+  plan?: boolean
 }
 
 /**
- * What an agent may do without being asked, when the project does not say.
+ * What an agent can reach when the project does not say otherwise.
  *
- * Edits and searches, yes — that is the job. Shell, only the git commands that
- * read: `status`, `diff`, `log`, `show`. Not `commit`, because §16 wants the
- * diff seen by a human first; not `push`, because §16 forbids it outright; not
- * a package manager, because an install is a change to the machine and not to
- * the branch. A project widens this in `cockpit.yaml` under `agents.allow`.
+ * Editing, searching, and running commands — the job. `Bash` is in the set
+ * because an agent that cannot run the test suite is a worse tool than the
+ * terminal it replaces; what keeps it inside §16 is `DEFAULT_DENY`, not its
+ * absence. A project narrows or widens this in `cockpit.yaml` under
+ * `agents.allow`.
  */
-export const DEFAULT_ALLOW = [
+export const DEFAULT_TOOLS = [
   'Read',
   'Edit',
   'Write',
@@ -67,23 +84,76 @@ export const DEFAULT_ALLOW = [
   'Grep',
   'NotebookEdit',
   'TodoWrite',
-  'Bash(git status:*)',
-  'Bash(git diff:*)',
-  'Bash(git log:*)',
-  'Bash(git show:*)',
+  'Bash',
 ]
 
+/**
+ * §16's red lines. Push, because the doc forbids it outright. Commit, because
+ * §7 requires the diff to be seen by a person first, and an agent that commits
+ * its own work has taken that decision away.
+ *
+ * Refused at the call rather than hidden from the model: it is told no, and
+ * the turn carries what it asked for, so the thread can say which line was
+ * crossed instead of merely that something was.
+ */
+export const DEFAULT_DENY = ['Bash(git push:*)', 'Bash(git commit:*)']
+
+/**
+ * The historical name. `agents.allow` in a manifest is read as the tool set,
+ * because that is what it was always meant to be — it simply could not be
+ * enforced as one.
+ */
+export const DEFAULT_ALLOW = DEFAULT_TOOLS
+
 export interface NormalizedEvent {
-  kind: 'text' | 'tool' | 'end' | 'error'
+  kind: 'ready' | 'message_start' | 'delta' | 'text' | 'tool' | 'tool_result' | 'end' | 'error'
+  /** `delta` / `text`: what was written. `end`: the closing message. */
   text?: string
+  /** Which message this belongs to, so two in flight cannot be merged (§3.3). */
+  messageId?: string
+  /** `tool` / `tool_result`: what pairs a call with what it did. */
+  toolUseId?: string
   tool?: string
+  /** The tool's own arguments, whole. */
+  input?: Record<string, unknown>
   paths?: string[]
-  /**
-   * §16 — on `end` only: the tools the allow-list refused during this turn.
-   * The engine reports them and stops, so a turn that carries any of these
-   * asked for something it was not given and is waiting on a person.
-   */
+  stdout?: string
+  stderr?: string
+  isError?: boolean
+  interrupted?: boolean
+  /** `end` only: the invocations §16 refused during this turn. */
   denials?: string[]
+}
+
+export interface EngineSpec {
+  id: string
+  bin: string
+  /**
+   * §6 — whether one process serves the whole conversation.
+   *
+   * A one-shot engine is spawned per turn with the prompt as an argument and
+   * its stdin closed, so nothing can be said to it until it has finished. A
+   * streaming engine is spawned once and holds its stdin open; every later
+   * turn is a line written into it. That is what makes queueing the next
+   * question — and watching the answer form — possible at all.
+   */
+  streaming: boolean
+  /**
+   * The process's arguments. For a streaming engine the prompt is *not* among
+   * them: it goes over stdin through `encodeTurn`. It is still passed here so
+   * that a one-shot engine can keep the same signature.
+   */
+  buildArgs(prompt: string, ctx: LaunchContext): string[]
+  /**
+   * §6 — the same conversation, picked back up. Without this a session cannot
+   * outlive the daemon, and "work on it over several days" is a fiction: every
+   * morning would start from an empty context against a stale memory.
+   */
+  buildResumeArgs(prompt: string, engineSessionId: string, ctx: LaunchContext): string[]
+  /** Streaming engines: one turn, as the line to write on stdin. */
+  encodeTurn?(prompt: string): string
+  /** One line of output, as the zero or more things that happened in it. */
+  parse(line: string): NormalizedEvent[]
 }
 
 /**
@@ -110,18 +180,38 @@ function safeJson(line: string): Record<string, unknown> | null {
   }
 }
 
+/** The files a call names, for §12's human/agent attribution on the diff. */
+function pathsIn(input: Record<string, unknown>): string[] {
+  const out: string[] = []
+  for (const key of ['file_path', 'path', 'notebook_path']) {
+    const v = input[key]
+    if (typeof v === 'string' && v) out.push(v)
+  }
+  return out
+}
+
 /** Shared by start and resume, so the two cannot drift apart on permissions. */
 function claudeCommon(ctx: LaunchContext): string[] {
   return [
     '--output-format', 'stream-json',
     '--verbose',
-    // Without this every Edit waits for an approval that cannot arrive: `-p`
-    // has no prompt to answer on, so the write is declined and the session
-    // ends having done nothing but explain that it could not.
-    '--permission-mode', 'acceptEdits',
-    // Comma-joined into one argument on purpose. The flag is variadic, so
-    // space-separated values would swallow the flag that follows them.
-    '--allowedTools', ctx.allow.join(','),
+    // The turn is watched as it is written rather than reported once it is
+    // over. Without this a three-minute turn is a spinner followed by a wall
+    // of text, which is the whole of what made this feel like a batch job.
+    '--include-partial-messages',
+    // §16 — the tool set, replaced rather than added to. Comma-joined into one
+    // argument on purpose: the flag is variadic, so space-separated values
+    // would swallow the flag that follows them.
+    '--tools', ctx.tools.join(','),
+    ...(ctx.deny.length ? ['--disallowedTools', ctx.deny.join(',')] : []),
+    // Edits do not wait for an approval that has nowhere to arrive: print mode
+    // has no prompt to answer on. What keeps that honest is that the tool set
+    // above is now a boundary rather than a suggestion.
+    // §3.7 — plan mode reads and proposes without writing, which is the one
+    // posture where an agent on the main checkout costs nothing to be wrong.
+    '--permission-mode', ctx.plan ? 'plan' : 'acceptEdits',
+    ...(ctx.model ? ['--model', ctx.model] : []),
+    ...(ctx.effort ? ['--effort', ctx.effort] : []),
     ...ctx.extraDirs.flatMap((d) => ['--add-dir', d]),
   ]
 }
@@ -129,77 +219,139 @@ function claudeCommon(ctx: LaunchContext): string[] {
 const claudeEngine: EngineSpec = {
   id: 'claude',
   bin: 'claude',
-  buildArgs: (prompt, ctx) => ['-p', prompt, ...claudeCommon(ctx)],
-  buildResumeArgs: (prompt, id, ctx) => ['-p', prompt, ...claudeCommon(ctx), '--resume', id],
+  streaming: true,
+  buildArgs: (_prompt, ctx) => ['-p', '--input-format', 'stream-json', ...claudeCommon(ctx)],
+  buildResumeArgs: (_prompt, id, ctx) => [
+    '-p', '--input-format', 'stream-json', ...claudeCommon(ctx), '--resume', id,
+  ],
+  encodeTurn: (prompt) =>
+    JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }),
   parse(line) {
     const o = safeJson(line)
-    if (!o) return null
+    if (!o) return []
     const type = String(o.type ?? '')
+
+    if (type === 'system' && o.subtype === 'init') return [{ kind: 'ready' }]
+
+    if (type === 'stream_event') {
+      const ev = o.event as
+        | { type?: string; message?: { id?: string }; delta?: { type?: string; text?: string } }
+        | undefined
+      // A delta carries no message id of its own, so the one opened here is
+      // what the driver hangs the next run of tokens on.
+      if (ev?.type === 'message_start')
+        return [{ kind: 'message_start', messageId: String(ev.message?.id ?? '') }]
+      if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text)
+        return [{ kind: 'delta', text: ev.delta.text }]
+      return []
+    }
+
     if (type === 'assistant') {
-      const msg = o.message as { content?: { type: string; text?: string; name?: string; input?: unknown }[] }
-      const parts = msg?.content ?? []
-      const text = parts
-        .filter((p) => p.type === 'text')
-        .map((p) => p.text ?? '')
-        .join('')
-      const tool = parts.find((p) => p.type === 'tool_use')
-      if (tool) {
-        const input = (tool.input ?? {}) as Record<string, unknown>
-        const p = typeof input.file_path === 'string' ? [input.file_path] : []
-        return { kind: 'tool', tool: tool.name ?? 'tool', paths: p, text }
+      const msg = o.message as
+        | { id?: string; content?: { type: string; text?: string; id?: string; name?: string; input?: unknown }[] }
+        | undefined
+      const messageId = String(msg?.id ?? '')
+      const out: NormalizedEvent[] = []
+      // Every block, not the first one that matches: an assistant message
+      // routinely carries a sentence and two calls, and returning one of them
+      // is how a transcript loses half of what happened.
+      for (const p of msg?.content ?? []) {
+        if (p.type === 'text' && p.text) out.push({ kind: 'text', text: p.text, messageId })
+        else if (p.type === 'tool_use') {
+          const input = (p.input ?? {}) as Record<string, unknown>
+          out.push({
+            kind: 'tool',
+            toolUseId: String(p.id ?? ''),
+            tool: p.name ?? 'tool',
+            input,
+            paths: pathsIn(input),
+          })
+        }
       }
-      return text ? { kind: 'text', text } : null
+      return out
     }
+
+    // A tool's outcome comes back as a user message carrying the result
+    // blocks, with the raw stdout and stderr beside them.
+    if (type === 'user') {
+      const content = (o.message as { content?: unknown })?.content
+      if (!Array.isArray(content)) return []
+      const r = o.tool_use_result as
+        | { stdout?: string; stderr?: string; interrupted?: boolean }
+        | undefined
+      const out: NormalizedEvent[] = []
+      for (const b of content as { type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }[]) {
+        if (b?.type !== 'tool_result') continue
+        out.push({
+          kind: 'tool_result',
+          toolUseId: String(b.tool_use_id ?? ''),
+          stdout: String(r?.stdout ?? (typeof b.content === 'string' ? b.content : '')),
+          stderr: String(r?.stderr ?? ''),
+          isError: !!b.is_error,
+          interrupted: !!r?.interrupted,
+        })
+      }
+      return out
+    }
+
+    // In a streaming session this fires at the end of every *turn*, not of the
+    // process — which is exactly the boundary a turn should be closed on.
     if (type === 'result') {
-      return { kind: 'end', text: String(o.result ?? ''), denials: denialsIn(o) }
+      return [{ kind: 'end', text: String(o.result ?? ''), denials: denialsIn(o) }]
     }
-    return null
+    return []
   },
 }
 
 /**
- * `claude` reports every refused tool call on its result event, as
+ * `claude` reports every refused call on its result event, as
  * `permission_denials: [{ tool_name, tool_use_id, tool_input }]`. Read
  * defensively: an engine that does not send the field is not an error, it
  * simply has nothing to say about permission.
+ *
+ * The command is kept, not just the tool name. "Bash was refused" says nothing
+ * a person can act on; "git push" says exactly which of §16's lines it crossed.
  */
 function denialsIn(o: Record<string, unknown>): string[] {
   const raw = o.permission_denials
   if (!Array.isArray(raw)) return []
   const names = raw.map((d) => {
-    const e = d as { tool_name?: unknown; name?: unknown }
-    return String(e?.tool_name ?? e?.name ?? 'tool')
+    const e = d as { tool_name?: unknown; name?: unknown; tool_input?: Record<string, unknown> }
+    const tool = String(e?.tool_name ?? e?.name ?? 'tool')
+    const cmd = e?.tool_input?.command
+    return typeof cmd === 'string' && cmd ? tool + '(' + cmd.slice(0, 120) + ')' : tool
   })
   return [...new Set(names)]
 }
 
 /**
- * Codex takes no allow-list here. Its approval flags were not verified against
- * a real binary — it is not installed on the machine this was written on — and
+ * Codex takes no tool set here. Its approval flags were not verified against a
+ * real binary — it is not installed on the machine this was written on — and
  * guessing a permission flag is how an agent ends up either blocked or
  * unsandboxed. `extraDirs` is likewise unhandled: `codex exec` is given one
- * directory. Both are marked rather than faked.
+ * directory. Both are marked rather than faked, and it stays one-shot: writing
+ * turns into the stdin of a process that does not read it would hang the
+ * conversation rather than fail it.
  */
 const codexEngine: EngineSpec = {
   id: 'codex',
   bin: 'codex',
+  streaming: false,
   buildArgs: (prompt) => ['exec', '--json', prompt],
   buildResumeArgs: (prompt, id) => ['exec', 'resume', id, '--json', prompt],
   parse(line) {
     const o = safeJson(line)
-    if (!o) return null
+    if (!o) return []
     const type = String(o.type ?? o.msg ?? '')
     if (type.includes('message') || type === 'agent_message') {
       const text = String((o.message as string) ?? (o.text as string) ?? '')
-      return text ? { kind: 'text', text } : null
+      return text ? [{ kind: 'text', text }] : []
     }
     if (type.includes('tool') || type.includes('exec')) {
-      return { kind: 'tool', tool: String(o.name ?? 'exec') }
+      return [{ kind: 'tool', tool: String(o.name ?? 'exec'), input: {}, paths: [] }]
     }
-    if (type.includes('complete') || type === 'task_complete') {
-      return { kind: 'end' }
-    }
-    return null
+    if (type.includes('complete') || type === 'task_complete') return [{ kind: 'end' }]
+    return []
   },
 }
 
@@ -216,8 +368,56 @@ export async function engines(): Promise<{ id: string; available: boolean; bin: 
 
 interface Live {
   session: Conversation
+  spec: EngineSpec
   child: ChildProcess
   buffer: string
+  /** Where the tokens arriving right now belong (§3.3). */
+  streamingId: string | null
+  /**
+   * §6 — the questions asked while it was still answering the last one.
+   *
+   * Typing the next thing before the current turn lands is the normal way to
+   * work; refusing it was the reason the composer had to grey itself out. A
+   * streaming engine reads one turn at a time, so they wait here and go in as
+   * each turn closes.
+   */
+  queue: string[]
+  /** A turn is in flight: the next one queues instead of being written. */
+  busy: boolean
+  /** What a tool was called with, kept until its result comes back. */
+  calls: Map<string, { tool: string; input: Record<string, unknown> }>
+  /** §6 — the countdown to letting the process go. See `armIdleTimer`. */
+  idle: NodeJS.Timeout | null
+}
+
+/**
+ * §6 — "la session est jetable, la conversation ne l'est pas."
+ *
+ * A streaming engine only exits when its stdin closes, so left alone it would
+ * hold a process and — far worse — a §7 lease on its paths for as long as the
+ * core is up. One conversation answered and walked away from would lock its
+ * repository against every other session indefinitely.
+ *
+ * So an idle conversation is let go: stdin closes, the process exits, the lease
+ * is released. Nothing is lost, because the engine's own session id is
+ * persisted — the next turn is a `--resume` and reads as the same thread. What
+ * is disposable is the process; the conversation outlives it.
+ */
+const IDLE_MS = 5 * 60_000
+
+function armIdleTimer(l: Live): void {
+  clearIdleTimer(l)
+  l.idle = setTimeout(() => {
+    if (l.busy || l.queue.length) return
+    l.child.stdin?.end()
+  }, IDLE_MS)
+  // Never a reason to hold the core open by itself.
+  l.idle.unref?.()
+}
+
+function clearIdleTimer(l: Live): void {
+  if (l.idle) clearTimeout(l.idle)
+  l.idle = null
 }
 
 const live = new Map<string, Live>()
@@ -230,7 +430,16 @@ const live = new Map<string, Live>()
  * happened to refresh it. An emitter rather than a direct call because
  * `server.ts` already imports this module.
  */
-export const agentBus = new EventEmitter<{ changed: [] }>()
+export const agentBus = new EventEmitter<{
+  changed: []
+  /**
+   * §3.3 — beside the journal, never in it. A token is not something that
+   * happened; the message it ends up in is. Carried as
+   * `(sessionId, messageId, text)` so the window can hang a run of tokens on
+   * the right message and throw the lot away when the real one arrives.
+   */
+  delta: [sessionId: string, messageId: string, text: string]
+}>()
 agentBus.setMaxListeners(50)
 
 function persist(s: Conversation): void {
@@ -426,8 +635,10 @@ export interface StartAgentInput {
    * Kept out of `prompt` so the list shows what the user actually asked.
    */
   preamble?: string
-  /** §16 — the project's own allow-list, from `agents.allow`. Defaults apply. */
+  /** §16 — the project's own tool set, from `agents.allow`. Defaults apply. */
   allow?: string[]
+  /** Model, effort and plan mode, as chosen in the composer. */
+  options?: EngineOptions
 }
 
 export type StartAgentResult = { sessionId: string } | { denied: true; reason: string }
@@ -466,7 +677,7 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
     denials: [],
   }
 
-  return launch(session, spec, (input.preamble ?? '') + input.prompt, false, input.allow)
+  return launch(session, spec, (input.preamble ?? '') + input.prompt, false, input.allow, input.options)
 }
 
 /**
@@ -479,6 +690,7 @@ export function resumeAgent(
   prompt: string,
   preamble = '',
   allow?: string[],
+  opts?: EngineOptions,
 ): StartAgentResult {
   const prev = get(sessionId)
   if (!prev) return { denied: true, reason: 'unknown session: ' + sessionId }
@@ -489,7 +701,18 @@ export function resumeAgent(
         'this session predates resume support, or the engine never announced an id — start a fresh one against the same memory instead',
     }
   }
-  if (live.has(sessionId)) return { denied: true, reason: 'that conversation is already running' }
+  // §6 — a live streaming conversation is not something to relaunch: the
+  // process is right there with its stdin open, and the next question is a
+  // line written into it. Relaunching would fork the conversation in two and
+  // collide with its own lease.
+  const running = live.get(sessionId)
+  if (running) {
+    if (running.spec.streaming && running.spec.encodeTurn) {
+      const r = send(sessionId, prompt)
+      return r.ok ? { sessionId } : { denied: true, reason: r.reason }
+    }
+    return { denied: true, reason: 'that conversation is already running' }
+  }
 
   const spec = ENGINES[prev.engine]
   if (!spec) return { denied: true, reason: 'unknown engine: ' + prev.engine }
@@ -509,7 +732,14 @@ export function resumeAgent(
     // already been given.
     denials: [],
   }
-  return launch(session, spec, preamble + prompt, true, allow)
+  return launch(session, spec, preamble + prompt, true, allow, opts)
+}
+
+/** How the engine is asked to run, chosen per conversation by the window. */
+export interface EngineOptions {
+  model?: string
+  effort?: string
+  plan?: boolean
 }
 
 function launch(
@@ -518,6 +748,7 @@ function launch(
   fullPrompt: string,
   resuming: boolean,
   allow?: string[],
+  opts?: EngineOptions,
 ): StartAgentResult {
   // §7 — the lease is what makes two overlapping agents impossible. It is taken
   // on paths, so a topic-wide session and a repo session inside it collide
@@ -548,7 +779,11 @@ function launch(
   // explicitly, or a two-repo scope reaches exactly one repository.
   const ctx: LaunchContext = {
     extraDirs: session.paths.slice(1),
-    allow: allow?.length ? allow : DEFAULT_ALLOW,
+    tools: allow?.length ? allow : DEFAULT_TOOLS,
+    deny: DEFAULT_DENY,
+    model: opts?.model,
+    effort: opts?.effort,
+    plan: opts?.plan,
   }
   const args = resuming
     ? spec.buildResumeArgs(fullPrompt, session.engineSessionId!, ctx)
@@ -558,10 +793,30 @@ function launch(
     env: { ...process.env },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
-  // Both engines are one-shot: the prompt is an argument, and neither reads
-  // stdin. Leaving it open costs `claude -p` a three-second wait and a warning
-  // on every single launch while it hopes for piped input that never comes.
-  child.stdin?.end()
+
+  const l: Live = {
+    session,
+    spec,
+    child,
+    buffer: '',
+    streamingId: null,
+    queue: [],
+    busy: true,
+    calls: new Map(),
+    idle: null,
+  }
+  live.set(session.id, l)
+
+  if (spec.streaming && spec.encodeTurn) {
+    // The process serves the whole conversation, so its stdin stays open: it
+    // is the channel every later turn arrives on.
+    child.stdin?.write(spec.encodeTurn(fullPrompt) + '\n')
+  } else {
+    // One-shot: the prompt was an argument. Leaving stdin open costs `claude
+    // -p` a three-second wait and a warning on every launch while it hopes for
+    // piped input that never comes.
+    child.stdin?.end()
+  }
 
   const actor = { kind: 'agent' as const, engine: session.engine, sessionId: session.id }
   const workspaceId = session.workspaceIds[0] ?? null
@@ -578,14 +833,12 @@ function launch(
     },
   })
 
-  const l: Live = { session, child, buffer: '' }
-  live.set(session.id, l)
   session.status = 'thinking'
   persist(session)
 
   const handleLine = (line: string) => {
-    // Captured before parsing: the id arrives on an init event neither parser
-    // cares about, and without it the session dies with this process.
+    // Captured before parsing: the id arrives on an init event no parser cares
+    // about, and without it the session dies with this process.
     if (!session.engineSessionId) {
       const eid = engineSessionIdIn(line)
       if (eid) {
@@ -594,38 +847,118 @@ function launch(
       }
     }
 
-    const ev = spec.parse(line)
-    if (!ev) return
-    if (ev.kind === 'text' && ev.text) {
-      session.turns++
-      session.lastMessage = ev.text.slice(0, 400)
-      append({ type: 'agent.output', actor, workspaceId, payload: { text: ev.text } })
-    } else if (ev.kind === 'tool') {
-      append({
-        type: 'agent.tool_use',
-        actor,
-        workspaceId,
-        payload: { tool: ev.tool, paths: ev.paths ?? [] },
-      })
-      // §12 — attribution: this is what makes the diff splittable later.
-      for (const p of ev.paths ?? []) {
-        for (const wsId of session.workspaceIds) recordTouch(wsId, relativeTo(cwd, p), actor, session.id)
-      }
-    } else if (ev.kind === 'end') {
-      session.status = 'idle'
-      session.denials = ev.denials ?? []
-      if (session.denials.length) {
-        append({
-          type: 'agent.denied',
-          level: 'warn',
-          actor,
-          workspaceId,
-          payload: { tools: session.denials },
-        })
+    let changed = false
+    for (const ev of spec.parse(line)) {
+      switch (ev.kind) {
+        case 'message_start':
+          l.streamingId = ev.messageId ?? null
+          break
+
+        // §3.3 — a token is not a journal entry. Deltas go beside the journal,
+        // and the window drops them the moment the finished message lands.
+        case 'delta':
+          if (ev.text && l.streamingId) {
+            agentBus.emit('delta', session.id, l.streamingId, ev.text)
+          }
+          break
+
+        case 'text':
+          if (!ev.text) break
+          session.turns++
+          session.lastMessage = ev.text.slice(0, 400)
+          append({
+            type: 'agent.output',
+            actor,
+            workspaceId,
+            payload: { text: ev.text, messageId: ev.messageId ?? null },
+          })
+          changed = true
+          break
+
+        case 'tool': {
+          const id = ev.toolUseId ?? ''
+          const input = ev.input ?? {}
+          l.calls.set(id, { tool: ev.tool ?? 'tool', input })
+          append({
+            type: 'agent.tool_use',
+            actor,
+            workspaceId,
+            payload: {
+              toolUseId: id,
+              tool: ev.tool ?? 'tool',
+              input,
+              paths: (ev.paths ?? []).map((x) => relativeTo(cwd, x)),
+            },
+          })
+          // §12 — attribution: this is what makes the diff splittable later.
+          for (const path of ev.paths ?? []) {
+            for (const wsId of session.workspaceIds)
+              recordTouch(wsId, relativeTo(cwd, path), actor, session.id)
+          }
+          changed = true
+          break
+        }
+
+        case 'tool_result': {
+          const id = ev.toolUseId ?? ''
+          const call = l.calls.get(id)
+          l.calls.delete(id)
+          append({
+            type: 'agent.tool_result',
+            level: ev.isError ? 'warn' : 'info',
+            actor,
+            workspaceId,
+            payload: {
+              toolUseId: id,
+              tool: call?.tool ?? 'tool',
+              // Capped here rather than in the window: the journal is durable,
+              // and a `find /` belongs in a terminal, not in it.
+              stdout: (ev.stdout ?? '').slice(0, 4000),
+              stderr: (ev.stderr ?? '').slice(0, 2000),
+              isError: !!ev.isError,
+              interrupted: !!ev.interrupted,
+            },
+          })
+          changed = true
+          break
+        }
+
+        case 'end': {
+          session.denials = ev.denials ?? []
+          if (session.denials.length) {
+            append({
+              type: 'agent.denied',
+              level: 'warn',
+              actor,
+              workspaceId,
+              payload: { tools: session.denials },
+            })
+          }
+          // A streaming engine ends a *turn* here, not the process. Closing the
+          // turn and letting the next one in is what the queue is waiting for.
+          closeTurn(session.id, 'done')
+          l.streamingId = null
+          l.busy = false
+          session.status = 'idle'
+          changed = true
+          if (spec.streaming) {
+            flushQueue(l)
+            // Only when nothing followed it in: a conversation being worked
+            // through is not idle between two of its own turns.
+            if (!l.busy) armIdleTimer(l)
+          }
+          break
+        }
+
+        default:
+          break
       }
     }
-    persist(session)
-    agentBus.emit('changed')
+
+    if (changed) {
+      persist(session)
+      agentBus.emit('changed')
+    }
   }
 
   const onData = (chunk: Buffer) => {
@@ -641,26 +974,47 @@ function launch(
   })
 
   child.on('close', (code) => {
+    clearIdleTimer(l)
     live.delete(session.id)
     session.status = code === 0 ? 'ended' : 'failed'
     session.endedAt = Date.now()
     persist(session)
+    // Only a turn still open needs closing: a streaming conversation has been
+    // closing its own on every `end`, and marking the last one failed because
+    // the process was later shut down would be a lie about the work.
     closeTurn(session.id, code === 0 ? 'done' : 'failed')
     if (session.leaseId) leases.release(session.leaseId)
     append({
       type: 'agent.session_ended',
       level: code === 0 ? 'info' : 'error',
       actor,
-      payload: {
-        code,
-        turns: session.turns,
-        resumable: !!session.engineSessionId,
-      },
+      payload: { code, turns: session.turns, resumable: !!session.engineSessionId },
     })
     agentBus.emit('changed')
   })
 
   return { sessionId: session.id }
+}
+
+/**
+ * §6 — the next queued question, once the engine is free to read it.
+ *
+ * One at a time and in order: writing two turns into stdin at once would have
+ * the engine answer them as a single muddled question, which is exactly the
+ * failure a queue exists to prevent.
+ */
+function flushQueue(l: Live): void {
+  if (l.busy || !l.queue.length) return
+  clearIdleTimer(l)
+  const prompt = l.queue.shift()!
+  const encode = l.spec.encodeTurn
+  if (!encode) return
+  l.busy = true
+  l.session.status = 'thinking'
+  openTurn(l.session.id, prompt)
+  persist(l.session)
+  l.child.stdin?.write(encode(prompt) + '\n')
+  agentBus.emit('changed')
 }
 
 function relativeTo(root: string, p: string): string {
@@ -681,18 +1035,45 @@ export function stop(sessionId: string): void {
 }
 
 /**
- * Both engines are invoked one-shot, with the prompt as an argument, and their
- * stdin is closed at launch. There is no running conversation to write into —
- * the way to say something more is `resumeAgent`, which is what §6 means by
- * the session being disposable and the conversation not.
+ * §6 — another turn in a conversation that is already open.
+ *
+ * A streaming engine holds its stdin for the life of the conversation, so this
+ * is a line written into a running process rather than a new one spawned. Said
+ * while it is still working, the turn is *queued*: that is the normal way to
+ * work, and refusing it is what forced the composer to grey itself out between
+ * question and answer.
+ *
+ * A one-shot engine has nothing to write into and says so, pointing at the
+ * `agent.resume` that does work for it.
  */
-export function send(sessionId: string): { ok: false; reason: string } {
-  return {
-    ok: false,
-    reason: live.has(sessionId)
-      ? 'this engine is running one-shot and does not read stdin; wait for it to finish and resume the session'
-      : 'no such live session',
+export function send(sessionId: string, prompt: string): { ok: true; queued: boolean } | { ok: false; reason: string } {
+  const l = live.get(sessionId)
+  if (!l) return { ok: false, reason: 'no such live session — resume it instead' }
+  if (!l.spec.streaming || !l.spec.encodeTurn) {
+    return {
+      ok: false,
+      reason:
+        l.session.engine +
+        ' runs one-shot and does not read stdin; wait for it to finish and resume the conversation',
+    }
   }
+  const text = prompt.trim()
+  if (!text) return { ok: false, reason: 'nothing to say' }
+
+  if (l.busy) {
+    l.queue.push(text)
+    agentBus.emit('changed')
+    return { ok: true, queued: true }
+  }
+  clearIdleTimer(l)
+  l.queue.push(text)
+  flushQueue(l)
+  return { ok: true, queued: false }
+}
+
+/** What is waiting to be asked, for a window that has to show it. */
+export function queuedIn(sessionId: string): string[] {
+  return [...(live.get(sessionId)?.queue ?? [])]
 }
 
 /**

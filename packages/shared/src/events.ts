@@ -80,6 +80,12 @@ export type EventType =
   | 'agent.session_resumed'
   | 'agent.output'
   | 'agent.tool_use'
+  /**
+   * What a tool call actually did. Split from `agent.tool_use` because the two
+   * are separated by however long the command takes, and a transcript that
+   * shows only the call reads as though every one of them succeeded.
+   */
+  | 'agent.tool_result'
   /** §16 — the allow-list refused a tool, so the turn stopped short of its job. */
   | 'agent.denied'
   | 'agent.session_ended'
@@ -95,6 +101,31 @@ export type EventType =
   | 'terminal.closed'
   // catch-all for capability-defined events
   | 'capability.event'
+
+/**
+ * §12 — attribution is what makes the diff splittable later, and "which tool"
+ * was never enough to judge a turn by. The whole call is carried: the command
+ * for a Bash, the path and the edit for a write.
+ */
+export interface AgentToolUsePayload {
+  /** The engine's id for this call — what pairs it with its result. */
+  toolUseId: string
+  tool: string
+  /** The tool's own arguments, as the engine reported them. */
+  input: Record<string, unknown>
+  /** Files this call names, already relative to the workspace. */
+  paths: string[]
+}
+
+export interface AgentToolResultPayload {
+  toolUseId: string
+  tool: string
+  stdout: string
+  stderr: string
+  isError: boolean
+  /** Stopped by a person rather than by finishing. */
+  interrupted: boolean
+}
 
 export interface RestorePointPayload {
   /** git reflog / stash reference we can roll back to. */

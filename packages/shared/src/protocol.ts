@@ -18,6 +18,21 @@ import type {
  * §7 — starting is allowed to refuse, and a refusal that does not say what to
  * do instead is a dead end. `remedy` is the offer the window can act on.
  */
+/**
+ * How the engine is asked to run: chosen in the composer, remembered by the
+ * window, and passed again on resume so a thread stays on the model it was
+ * started with. Not persisted core-side — that would be a schema change for
+ * something the window is the source of truth for anyway.
+ */
+export interface EngineOptions {
+  /** An alias the engine understands: `opus`, `sonnet`, `haiku`. */
+  model?: string
+  /** `low` | `medium` | `high` | `xhigh` | `max`. */
+  effort?: string
+  /** §3.7 — reads and proposes, writes nothing. */
+  plan?: boolean
+}
+
 export type AgentStartResult =
   | { sessionId: string; restorePoints: { workspaceId: string; head: string }[] }
   | { denied: true; reason: string; remedy?: { kind: 'branch'; workspaceIds: string[] } }
@@ -433,6 +448,7 @@ export interface Rpc {
       setup?: string
       /** Scopes the session to a topic: its memory and CONTEXT.md are prepended. */
       topicId?: string
+      options?: EngineOptions
     }
     result: AgentStartResult
   }
@@ -452,17 +468,27 @@ export interface Rpc {
    * is the other half of the same idea.
    */
   'agent.resume': {
-    params: { sessionId: string; prompt: string }
+    params: { sessionId: string; prompt: string; options?: EngineOptions }
     result: AgentStartResult
   }
   'agent.list': { params: void; result: Conversation[] }
   'agent.stop': { params: { sessionId: string }; result: { ok: true } }
   /**
-   * Both engines run one-shot with the prompt as an argument and their stdin
-   * closed, so there is no live conversation to write into. This always
-   * refuses, and says which way round it is: finish, then `agent.resume`.
+   * §6 — a turn written into a conversation that is already open.
+   *
+   * A streaming engine holds one process for the whole conversation with its
+   * stdin open, so this is how the second question reaches the first session
+   * rather than starting a new one. Sent while the engine is still working it
+   * is *queued*, not refused: typing the next thing before the current turn
+   * lands is the normal way to work, and making it an error was the reason the
+   * composer had to be disabled.
+   *
+   * A one-shot engine has no stdin to write into and refuses with a reason.
    */
-  'agent.send': { params: { sessionId: string }; result: { ok: false; reason: string } }
+  'agent.send': {
+    params: { sessionId: string; prompt: string }
+    result: { ok: true; queued: boolean } | { ok: false; reason: string }
+  }
 
   'memory.read': { params: { workspaceId: string }; result: MemoryDoc | null }
   'memory.write': { params: { workspaceId: string; content: string }; result: { ok: true } }
@@ -511,6 +537,16 @@ export type ServerPush =
   | { t: 'workspaces'; workspaces: Workspace[] }
   | { t: 'topics'; topics: Topic[] }
   | { t: 'agents'; sessions: Conversation[] }
+  /**
+   * §3.3 — the journal is what the transcript derives from, and a token is not
+   * a journal entry. Deltas are pushed beside the journal, never into it: the
+   * window paints them as the sentence forms and drops them the moment the
+   * durable `agent.output` event arrives with the finished message.
+   *
+   * `messageId` is the engine's own id for the message being written, so a
+   * delta cannot be appended to the wrong one when two arrive interleaved.
+   */
+  | { t: 'agent-delta'; sessionId: string; messageId: string; text: string }
   | { t: 'term'; termId: string; data: string }
   | { t: 'term-exit'; termId: string; code: number }
 

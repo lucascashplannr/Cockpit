@@ -137,7 +137,13 @@ async function openIn(workspaceId: string, target: string, path?: string) {
   return { ok: true, detail: '' }
 }
 
-/** §5 — `agents.allow` in the manifest, or the built-in list when it is absent. */
+/**
+ * §5 — `agents.allow` in the manifest, or the built-in set when it is absent.
+ *
+ * Read as the *tool set* the session is confined to, which is what it always
+ * meant — it simply could not be enforced as one until the engine was given a
+ * replacement list rather than an addition to its own (§16).
+ */
 function allowFor(projectId?: string): string[] | undefined {
   if (!projectId) return undefined
   const project = registry.allProjects().find((x) => x.id === projectId)
@@ -427,6 +433,7 @@ const handlers: Record<string, Handler> = {
     workspaceIds?: string[]
     prompt: string
     topicId?: string
+    options?: agents.EngineOptions
   }) => {
     // §7 — the scope says what this is for. A caller that only knows where it
     // is standing may still pass workspaces, and that reads as a workspace
@@ -463,11 +470,12 @@ const handlers: Record<string, Handler> = {
       // §5 + §16 — the manifest already has a place to widen the allow-list;
       // absent, the built-in one applies.
       allow: allowFor(r.workspaces[0]?.projectId),
+      options: p.options,
     })
     pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints }
   },
-  'agent.resume': (p: { sessionId: string; prompt: string }) => {
+  'agent.resume': (p: { sessionId: string; prompt: string; options?: agents.EngineOptions }) => {
     const prev = agents.get(p.sessionId)
     if (!prev) throw new Error('unknown session: ' + p.sessionId)
     const res = agents.resumeAgent(
@@ -477,6 +485,7 @@ const handlers: Record<string, Handler> = {
       // is what keeps a resumed session from acting on a stale understanding.
       prev.topicId ? topics.promptPreamble(prev.topicId, prev.paths) : '',
       allowFor(registry.getWorkspace(prev.workspaceIds[0] ?? '')?.projectId),
+      p.options,
     )
     pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints: [] }
@@ -487,7 +496,11 @@ const handlers: Record<string, Handler> = {
     pushAgentActivity()
     return { ok: true }
   },
-  'agent.send': (p: { sessionId: string }) => agents.send(p.sessionId),
+  'agent.send': (p: { sessionId: string; prompt: string }) => {
+    const r = agents.send(p.sessionId, p.prompt)
+    if (r.ok) pushAgentActivity()
+    return r
+  },
 
   'memory.read': (p: { workspaceId: string }) => memory.read(p.workspaceId),
   'memory.write': (p: { workspaceId: string; content: string }) => {
@@ -595,6 +608,14 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
   // §3.3 — a session that ends on its own has to reach the window; nothing
   // else was going to call this until the user happened to click something.
   agents.agentBus.on('changed', () => pushAgentActivity())
+  /**
+   * §3.3 — deltas are pushed, not journalled, and they are pushed *raw*: a
+   * refresh of the whole session list per token would cost more than the text
+   * it carries, and would still arrive after it.
+   */
+  agents.agentBus.on('delta', (sessionId, messageId, text) => {
+    broadcast({ t: 'agent-delta', sessionId, messageId, text })
+  })
   termBus.on('data', ({ termId, data }) => broadcast({ t: 'term', termId, data }))
   termBus.on('exit', ({ termId, code }) => broadcast({ t: 'term-exit', termId, code }))
 

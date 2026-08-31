@@ -24,6 +24,7 @@ interface Handlers {
   onTopics(f: Topic[]): void
   onWorkspaces(w: Workspace[]): void
   onAgents(s: Conversation[]): void
+  onAgentDelta(sessionId: string, messageId: string, text: string): void
   onEvent(e: CockpitEvent): void
   onTerm(termId: string, data: string): void
   onTermExit(termId: string, code: number): void
@@ -114,6 +115,9 @@ export class CoreClient {
           break
         case 'agents':
           this.h.onAgents(msg.sessions)
+          break
+        case 'agent-delta':
+          this.h.onAgentDelta(msg.sessionId, msg.messageId, msg.text)
           break
         case 'event':
           this.h.onEvent(msg.event)

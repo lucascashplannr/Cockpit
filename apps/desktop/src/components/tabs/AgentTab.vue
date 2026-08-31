@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import type { AgentScopePreview, Conversation, AgentTurn, CockpitEvent, Workspace } from '@cockpit/shared'
+import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
 import {
-  BookMarked, CircleAlert, CircleStop, CornerDownLeft, Hand, History, Lock, RotateCcw,
-  ShieldCheck, Sparkles, Wrench, X,
+  BookMarked, CircleAlert, CircleStop, Hand, History, Lock, ShieldCheck, Sparkles, X,
 } from '@lucide/vue'
 import MemoryTab from './MemoryTab.vue'
+import AgentMarkdown from '../agent/AgentMarkdown.vue'
+import ToolCall from '../agent/ToolCall.vue'
+import Composer from '../agent/Composer.vue'
 import {
   activeAgentScope, attentionOf, client, closeThread, guard, isRunning, markThreadRead,
-  openThreadFor, pinThread, previewScope, resumeSession, scopeLabel, sessionsForScope,
+  openThreadFor, pinThread, previewScope, scopeLabel, sendTurn, sessionsForScope,
   startAgentIn, state,
 } from '../../core/store.js'
 import type { Attention } from '../../core/store.js'
@@ -108,47 +110,140 @@ const ATTENTION_TEXT: Record<Attention, string> = {
  * §3.3 — the transcript is the journal filtered, never a second copy. Split by
  * turn so the thread reads as the exchange it was: each question, then what
  * the engine did before the next one.
+ *
+ * A call and its outcome arrive as two events separated by however long the
+ * command took, and are shown as one thing: a transcript listing only the
+ * calls reads as though every one of them succeeded.
  */
+type Item =
+  | { kind: 'text'; id: string; text: string }
+  | {
+      kind: 'tool'
+      id: string
+      tool: string
+      input: Record<string, unknown>
+      result: { stdout: string; stderr: string; isError: boolean; interrupted: boolean } | null
+      denied: boolean
+    }
+
 interface Exchange {
   turn: AgentTurn
-  events: CockpitEvent[]
+  items: Item[]
+}
+
+/**
+ * §16 — a refusal, told apart from a failure.
+ *
+ * The engine says so in the result itself, which is better than matching the
+ * conversation's `denials` back onto a call: the same command can be run twice
+ * in one turn, and only one of the two refused.
+ */
+const DENIED = /has been denied/i
+
+function itemsBetween(sessionId: string, from: number, to: number | null): Item[] {
+  const items: Item[] = []
+  const byCall = new Map<string, Extract<Item, { kind: 'tool' }>>()
+
+  for (const e of state.events) {
+    if (e.actor.kind !== 'agent' || e.actor.sessionId !== sessionId) continue
+    if (e.ts < from || (to !== null && e.ts >= to)) continue
+
+    if (e.type === 'agent.output') {
+      const text = (e.payload as { text?: string })?.text ?? ''
+      if (text.trim()) items.push({ kind: 'text', id: e.id, text })
+      continue
+    }
+    if (e.type === 'agent.tool_use') {
+      const p = e.payload as { toolUseId?: string; tool?: string; input?: Record<string, unknown> }
+      const item: Extract<Item, { kind: 'tool' }> = {
+        kind: 'tool',
+        id: e.id,
+        tool: p?.tool ?? 'tool',
+        input: p?.input ?? {},
+        result: null,
+        denied: false,
+      }
+      if (p?.toolUseId) byCall.set(p.toolUseId, item)
+      items.push(item)
+      continue
+    }
+    if (e.type === 'agent.tool_result') {
+      const p = e.payload as {
+        toolUseId?: string
+        stdout?: string
+        stderr?: string
+        isError?: boolean
+        interrupted?: boolean
+      }
+      const call = p?.toolUseId ? byCall.get(p.toolUseId) : undefined
+      // A result whose call fell off the end of the kept journal is dropped
+      // rather than shown alone: an outcome with nothing to be the outcome of
+      // is noise.
+      if (!call) continue
+      const stdout = p?.stdout ?? ''
+      call.result = {
+        stdout,
+        stderr: p?.stderr ?? '',
+        isError: !!p?.isError,
+        interrupted: !!p?.interrupted,
+      }
+      call.denied = !!p?.isError && DENIED.test(stdout)
+    }
+  }
+  return items
 }
 
 const exchanges = computed<Exchange[]>(() => {
   const s = selected.value
   if (!s) return []
-  const mine = state.events.filter(
-    (e) =>
-      e.actor.kind === 'agent' &&
-      e.actor.sessionId === s.id &&
-      (e.type === 'agent.output' || e.type === 'agent.tool_use'),
-  )
-  return s.history.map((turn, i) => {
-    const next = s.history[i + 1]
-    return {
-      turn,
-      events: mine.filter((e) => e.ts >= turn.startedAt && (!next || e.ts < next.startedAt)),
-    }
-  })
+  return s.history.map((turn, i) => ({
+    turn,
+    items: itemsBetween(s.id, turn.startedAt, s.history[i + 1]?.startedAt ?? null),
+  }))
+})
+
+/**
+ * §3.3 — the sentence being written right now, which is not in the journal and
+ * must not be: it is a draft of the `agent.output` event that will replace it.
+ * Painted under the last exchange, where the finished message will appear.
+ */
+const streaming = computed(() => {
+  const s = selected.value
+  if (!s) return ''
+  return state.deltas[s.id]?.text ?? ''
 })
 
 /* ── the composer ──────────────────────────────────────────────────────── */
 
 /** With a thread open it adds a turn; with none it opens one. The label says. */
-const continuing = computed(() => !!selected.value?.resumable)
+const continuing = computed(() => {
+  const s = selected.value
+  return !!s && (isRunning(s) || s.resumable)
+})
+
+/**
+ * §6 — a running conversation is no longer a closed door.
+ *
+ * The composer used to grey itself out for the whole of a turn, so the thought
+ * you had while reading the answer had to be held until the engine finished.
+ * A turn said now is queued and goes in when this one lands; the only thing
+ * that still refuses is a scope another session holds.
+ */
 const canSend = computed(() => {
   if (!state.agentDraft.trim() || busy.value) return false
-  if (selected.value && isRunning(selected.value)) return false
   if (blocked.value.length) return false
   return continuing.value || !!scope.value
 })
+
+/** Said, but not started yet: it goes in when the engine finishes this turn. */
+const queueing = computed(() => !!selected.value && isRunning(selected.value))
 
 async function send(): Promise<void> {
   if (!canSend.value) return
   const text = state.agentDraft.trim()
   busy.value = true
   if (continuing.value && selected.value) {
-    const ok = await resumeSession(selected.value.id, text)
+    const ok = await sendTurn(selected.value.id, text)
     if (ok) state.agentDraft = ''
   } else if (scope.value) {
     // `startAgentIn` opens the new thread on this scope; nothing to do here.
@@ -163,7 +258,7 @@ async function stop(id: string): Promise<void> {
 
 // New output should not have to be scrolled to.
 watch(
-  exchanges,
+  [exchanges, streaming],
   async () => {
     await nextTick()
     const el = scrollEl.value
@@ -180,13 +275,6 @@ onMounted(async () => {
 })
 
 /* ── presentation ──────────────────────────────────────────────────────── */
-
-function payloadText(p: unknown): string {
-  const o = p as { text?: string; tool?: string; paths?: string[] }
-  if (o?.text) return o.text
-  if (o?.tool) return o.tool + (o.paths?.length ? ' → ' + o.paths.join(', ') : '')
-  return JSON.stringify(p).slice(0, 200)
-}
 
 function ago(ts: number): string {
   const m = Math.floor((Date.now() - ts) / 60000)
@@ -314,43 +402,25 @@ function dotClass(s: Conversation): string {
           do?
         </h1>
 
-        <div class="composer big">
-          <textarea
-            v-model="state.agentDraft"
-            class="input prompt selectable"
-            rows="3"
-            placeholder="Describe the change. ⌘⏎ to start."
-            @keydown.meta.enter="send"
-          />
-          <div class="crow2">
-            <div class="engines">
-              <button
-                v-for="e in engines"
-                :key="e.id"
-                class="eng"
-                :class="{ on: engine === e.id, off: !e.available }"
-                :disabled="!e.available"
-                :title="e.available ? e.bin : e.id + ' is not on PATH'"
-                @click="engine = e.id"
-              >
-                {{ e.id }}
-              </button>
-            </div>
-            <span class="grow" />
-            <button
-              v-if="conversations.length"
-              class="btn ghost"
-              @click="state.historyOpen = true"
-            >
-              <History class="sm" /> {{ conversations.length }} earlier
-            </button>
-            <button class="btn primary" :disabled="!canSend" @click="send">
-              <CornerDownLeft class="sm" /> Start <span class="kbd">⌘⏎</span>
-            </button>
-          </div>
-        </div>
+        <Composer
+          big
+          mode="start"
+          :disabled="!canSend"
+          :workspace-id="props.workspace.id"
+          :engines="engines"
+          :engine="engine"
+          placeholder="Describe the change. @ for a file, ⌘⏎ to start."
+          @update:engine="engine = $event"
+          @send="send"
+        />
 
-        <p class="guard">Never pushes · diff reviewed before any commit · restore point first</p>
+        <p class="guard">
+          {{
+            state.engineOptions.plan
+              ? 'Plan mode — it reads and proposes, and writes nothing'
+              : 'Never pushes · diff reviewed before any commit · restore point first'
+          }}
+        </p>
       </div>
     </div>
 
@@ -384,37 +454,58 @@ function dotClass(s: Conversation): string {
           </button>
         </div>
 
-        <div v-for="x in exchanges" :key="x.turn.id" class="ex">
+        <div v-for="(x, i) in exchanges" :key="x.turn.id" class="ex">
           <div class="said selectable">{{ x.turn.prompt }}</div>
-          <div v-if="x.turn.status === 'running' && !x.events.length" class="thinking">working…</div>
-          <div v-for="e in x.events" :key="e.id" class="ln">
-            <span class="badge" :class="e.type === 'agent.tool_use' ? 'tool' : 'text'">
-              <component :is="e.type === 'agent.tool_use' ? Wrench : Sparkles" class="sm" />
-            </span>
-            <span class="txt selectable" :class="{ tool: e.type === 'agent.tool_use' }">
-              {{ payloadText(e.payload) }}
+          <div
+            v-if="x.turn.status === 'running' && !x.items.length && !streaming"
+            class="thinking"
+          >
+            working…
+          </div>
+          <template v-for="it in x.items" :key="it.id">
+            <div v-if="it.kind === 'text'" class="ln">
+              <span class="badge text"><Sparkles class="sm" /></span>
+              <AgentMarkdown class="txt" :text="it.text" />
+            </div>
+            <!-- Full width, and out of the badge column: a card is a thing the
+                 agent did, not a thing it said. -->
+            <ToolCall
+              v-else
+              class="call"
+              :tool="it.tool"
+              :input="it.input"
+              :result="it.result"
+              :denied="it.denied"
+            />
+          </template>
+
+          <!-- The sentence as it is being written. Same shape as a finished
+               message on purpose: it *is* that message, a moment early, and the
+               durable event replaces it in place without anything moving. -->
+          <div v-if="streaming && i === exchanges.length - 1" class="ln">
+            <span class="badge text"><Sparkles class="sm" /></span>
+            <span class="txt">
+              <AgentMarkdown :text="streaming" />
+              <span class="caret" />
             </span>
           </div>
         </div>
       </div>
 
-      <footer class="composer foot">
-        <textarea
-          v-model="state.agentDraft"
-          class="input prompt selectable"
-          rows="2"
+      <footer class="foot">
+        <Composer
+          :mode="queueing ? 'queue' : continuing ? 'continue' : 'start'"
+          :disabled="!canSend"
+          :workspace-id="props.workspace.id"
           :placeholder="
-            continuing
-              ? 'Next turn — the memory is re-read on the way in'
-              : 'This conversation cannot be resumed; ⌘⏎ opens a new one'
+            queueing
+              ? 'Say the next thing now — it goes in when this turn lands'
+              : continuing
+                ? 'Next turn — @ for a file, the memory is re-read on the way in'
+                : 'This conversation cannot be resumed; ⌘⏎ opens a new one'
           "
-          @keydown.meta.enter="send"
+          @send="send"
         />
-        <button class="btn primary send" :disabled="!canSend" @click="send">
-          <component :is="continuing ? RotateCcw : CornerDownLeft" class="sm" />
-          {{ continuing ? 'Continue' : 'Start' }}
-          <span class="kbd">⌘⏎</span>
-        </button>
       </footer>
     </template>
   </div>
@@ -557,36 +648,6 @@ function dotClass(s: Conversation): string {
 .ask .mk { width: 24px; height: 24px; color: var(--agent); }
 .ask .target { color: var(--accent); }
 
-.composer.big {
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-lg);
-  background: var(--panel-raised);
-  padding: 10px 10px 9px;
-  box-shadow: var(--shadow-sm);
-}
-.composer.big .prompt {
-  border: none;
-  background: transparent;
-  padding: 4px 4px 8px;
-  resize: none;
-  width: 100%;
-}
-.composer.big .prompt:focus { box-shadow: none; border-color: transparent; }
-.crow2 { display: flex; align-items: center; gap: 8px; }
-
-.engines { display: flex; gap: 4px; }
-.eng {
-  height: 26px;
-  padding: 0 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  background: var(--bg);
-}
-.eng.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
-.eng.off { opacity: 0.35; }
-
 .guard { margin: 12px 2px 0; text-align: center; font-size: 10px; color: var(--text-dim); }
 
 /* ── a thread ────────────────────────────────────────────────────────── */
@@ -646,6 +707,18 @@ function dotClass(s: Conversation): string {
 }
 .thinking { color: var(--text-dim); font-size: var(--fs-xs); font-style: italic; }
 
+/* The only thing on the page that says "still writing" once text is flowing:
+   the word "working" would be redundant beside a sentence forming. */
+.caret {
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--agent);
+  animation: pulse 1.1s var(--ease-soft) infinite;
+}
+
 .ln { display: flex; gap: 11px; font-size: var(--fs-sm); line-height: 1.6; margin-bottom: 10px; }
 .badge {
   flex: none;
@@ -660,18 +733,16 @@ function dotClass(s: Conversation): string {
 }
 .badge .lucide { width: 12px; height: 12px; }
 .badge.tool { background: var(--hover); color: var(--text-dim); }
-.txt { color: var(--text-muted); white-space: pre-wrap; word-break: break-word; }
-.txt.tool { color: var(--text-dim); font-family: var(--mono); font-size: var(--fs-xs); }
+.txt { flex: 1; min-width: 0; }
 
-.composer.foot {
+/* A card is left-aligned with the badge column rather than indented under it:
+   what the agent *did* is a peer of what it said, not a footnote to it. */
+.call { margin: 0 0 10px; }
+
+.foot {
   flex: none;
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
   padding: 12px 18px 14px;
   border-top: 1px solid var(--line);
   background: var(--bg-sunken);
 }
-.composer.foot .prompt { flex: 1; resize: vertical; min-height: 46px; }
-.send { flex: none; height: 46px; }
 </style>

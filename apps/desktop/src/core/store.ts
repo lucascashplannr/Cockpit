@@ -1,7 +1,7 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
   AddRepoSource, AgentScope, AgentScopePreview, Conversation, CockpitEvent, CockpitSettings,
-  CommitPreview, CoreStatus,
+  CommitPreview, CoreStatus, EngineOptions,
   DatabasePlan, Topic,
   NewProjectSource, PlanPreview, Project, SeedProposal, Workspace,
 } from '@cockpit/shared'
@@ -70,6 +70,16 @@ export const state = reactive({
   agents: [] as Conversation[],
   events: [] as CockpitEvent[],
 
+  /**
+   * §3.3 — the sentence being written right now, per conversation.
+   *
+   * Deliberately *not* in `events`: the journal is what the transcript derives
+   * from, and a token is not something that happened. This is painted while it
+   * arrives and thrown away the instant the durable `agent.output` lands with
+   * the finished message, so the transcript never shows the same words twice.
+   */
+  deltas: {} as Record<string, { messageId: string; text: string }>,
+
   status: null as CoreStatus | null,
 
   activeProjectId: null as string | null,
@@ -96,6 +106,21 @@ export const state = reactive({
    */
   agentScope: null as AgentScope | null,
   agentDraft: '',
+
+  /**
+   * How the engine is asked to run. Remembered here rather than on the
+   * conversation: the window is where the choice is made, and passing it again
+   * on resume keeps a thread on the model it was started with without adding a
+   * column to a schema whose bump costs the user their history.
+   */
+  engineOptions: { model: 'opus', effort: 'high', plan: false } as EngineOptions & { plan: boolean },
+
+  /**
+   * §6 — what has been asked here before, newest first. `↑` in an empty
+   * composer walks it, which is the cheapest possible way to re-run a prompt
+   * with one word changed.
+   */
+  promptHistory: [] as string[],
 
   /** The start page. It owns the window on launch and whenever the mark is
    *  clicked; §12's "zero click" target starts from a search field, not from
@@ -149,9 +174,30 @@ export const client = new CoreClient(URL, {
   onAgents(s) {
     state.agents = s
   },
+  onAgentDelta(sessionId, messageId, text) {
+    const cur = state.deltas[sessionId]
+    // A new message replaces the last one rather than appending to it: two
+    // messages in one turn is ordinary, and concatenating them would read as
+    // one long garbled paragraph.
+    if (!cur || cur.messageId !== messageId) state.deltas[sessionId] = { messageId, text }
+    else cur.text += text
+  },
   onEvent(e) {
     state.events.push(e)
     if (state.events.length > 800) state.events.splice(0, state.events.length - 800)
+    // The finished message has landed, so the draft of it goes. Matching on
+    // the id rather than clearing blindly: the next message may already be
+    // streaming by the time this one is journalled.
+    if (e.actor.kind === 'agent') {
+      const sid = e.actor.sessionId
+      const cur = state.deltas[sid]
+      if (!cur) return
+      if (e.type === 'agent.session_ended') delete state.deltas[sid]
+      else if (e.type === 'agent.output') {
+        const id = (e.payload as { messageId?: string | null })?.messageId
+        if (!id || id === cur.messageId) delete state.deltas[sid]
+      }
+    }
   },
   onTerm(termId, data) {
     for (const fn of termListeners.get(termId) ?? []) fn(data)
@@ -425,13 +471,16 @@ export async function startAgentIn(
   scope: AgentScope,
   prompt: string,
 ): Promise<boolean> {
-  const res = await guard(() => client.call('agent.start', { engine, scope, prompt }))
+  const res = await guard(() =>
+    client.call('agent.start', { engine, scope, prompt, options: engineOptions() }),
+  )
   if (!res) return false
   if ('denied' in res) {
     // §7 — a refusal explains itself; a silent no is worse than a blocked run.
     toast('error', res.reason)
     return false
   }
+  rememberPrompt(prompt)
   state.agentDraft = ''
   // The thread that was just opened is the one to land in, and the panel must
   // still be on it after a detour through three other projects (§6).
@@ -499,6 +548,55 @@ function readThreads(): ThreadMemory {
 function saveThreads(): void {
   localStorage.setItem(THREADS_KEY, JSON.stringify(threads))
 }
+
+/* ── the composer's own memory ────────────────────────────────────────── */
+
+const COMPOSER_KEY = 'cockpit.composer'
+const HISTORY_MAX = 60
+
+/**
+ * The model, the effort, and the last few things asked. Restored before the
+ * first paint so the composer never flashes a default the user replaced weeks
+ * ago. Plan mode is deliberately *not* restored: it is a posture for one piece
+ * of work, and inheriting it silently is how a session that was meant to write
+ * quietly does nothing.
+ */
+function loadComposer(): void {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COMPOSER_KEY) ?? 'null') as {
+      model?: string
+      effort?: string
+      history?: string[]
+    } | null
+    if (!raw) return
+    if (raw.model) state.engineOptions.model = raw.model
+    if (raw.effort) state.engineOptions.effort = raw.effort
+    if (Array.isArray(raw.history)) state.promptHistory = raw.history.filter((x) => typeof x === 'string')
+  } catch {
+    /* a corrupt entry is a default, not a crash */
+  }
+}
+
+export function saveComposer(): void {
+  localStorage.setItem(
+    COMPOSER_KEY,
+    JSON.stringify({
+      model: state.engineOptions.model,
+      effort: state.engineOptions.effort,
+      history: state.promptHistory.slice(0, HISTORY_MAX),
+    }),
+  )
+}
+
+/** Newest first, and never the same prompt twice in a row. */
+export function rememberPrompt(text: string): void {
+  const t = text.trim()
+  if (!t) return
+  state.promptHistory = [t, ...state.promptHistory.filter((x) => x !== t)].slice(0, HISTORY_MAX)
+  saveComposer()
+}
+
+loadComposer()
 
 /** Still running, whatever it is doing — the only thing a spinner is about. */
 export function isRunning(c: Conversation): boolean {
@@ -1335,8 +1433,40 @@ export async function restartCore(): Promise<void> {
 }
 
 /** §6 — the conversation is still there; the memory has moved on since. */
+/**
+ * §6 — the next turn, whether or not the engine is still on the last one.
+ *
+ * A live conversation is written into: the process is there with its stdin
+ * open, and a turn said while it works is queued rather than refused. A
+ * conversation whose process is gone is resumed, which hands the engine back
+ * its own context. The composer does not have to know which it is.
+ */
+export async function sendTurn(sessionId: string, prompt: string): Promise<boolean> {
+  rememberPrompt(prompt)
+  const c = state.agents.find((x) => x.id === sessionId)
+  if (c && isRunning(c)) {
+    const res = await guard(() => client.call('agent.send', { sessionId, prompt }))
+    if (!res) return false
+    if (!res.ok) {
+      toast('error', res.reason)
+      return false
+    }
+    if (res.queued) toast('ok', 'queued — it is still on the last turn')
+    return true
+  }
+  return resumeSession(sessionId, prompt)
+}
+
+/** What the composer currently says, in the shape the core takes. */
+export function engineOptions(): EngineOptions {
+  const o = state.engineOptions
+  return { model: o.model, effort: o.effort, plan: o.plan }
+}
+
 export async function resumeSession(sessionId: string, prompt: string): Promise<boolean> {
-  const res = await guard(() => client.call('agent.resume', { sessionId, prompt }))
+  const res = await guard(() =>
+    client.call('agent.resume', { sessionId, prompt, options: engineOptions() }),
+  )
   if (!res) return false
   if ('denied' in res) {
     toast('error', res.reason)
