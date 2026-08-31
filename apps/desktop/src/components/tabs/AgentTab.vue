@@ -16,6 +16,7 @@ import {
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, toast, transcriptOf,
 } from '../../core/store.js'
 import type { Attention } from '../../core/store.js'
+import { usePaced } from '../../core/reveal.js'
 
 /**
  * Layer 2 — the agent, and nothing else.
@@ -320,6 +321,19 @@ const streaming = computed(() => {
 })
 
 /**
+ * The same sentence, at reading speed.
+ *
+ * The deltas arrive in whatever bursts the engine sends them — often a whole
+ * clause at once — and painting each burst the moment it lands made the answer
+ * appear in slabs. `usePaced` keeps what is on screen a prefix of what has
+ * arrived and walks it forward a few characters a frame, so the message is
+ * written rather than stamped. It never falls more than a tenth of a second
+ * behind, which is why the durable `agent.output` can still replace the draft
+ * without anything visibly snapping into place.
+ */
+const typed = usePaced(() => streaming.value)
+
+/**
  * §3.4 — a thread whose journal has been rotated out says so.
  *
  * The turns live in their own table and outlive the events by design, so an
@@ -451,7 +465,7 @@ async function toBottom(): Promise<void> {
 }
 
 watch(
-  [exchanges, streaming, queued],
+  [exchanges, typed, queued],
   async () => {
     if (!stuck.value) return
     await nextTick()
@@ -757,7 +771,7 @@ function dotClass(s: Conversation): string {
 
           <div class="said selectable">{{ x.turn.prompt }}</div>
           <div
-            v-if="x.turn.status === 'running' && !x.items.length && !streaming"
+            v-if="x.turn.status === 'running' && !x.items.length && !typed"
             class="thinking"
           >
             working…
@@ -810,12 +824,9 @@ function dotClass(s: Conversation): string {
           <!-- The sentence as it is being written. Same shape as a finished
                message on purpose: it *is* that message, a moment early, and the
                durable event replaces it in place without anything moving. -->
-          <div v-if="streaming && i === exchanges.length - 1" class="ln">
+          <div v-if="typed && i === exchanges.length - 1" class="ln">
             <span class="badge text"><Sparkles class="sm" /></span>
-            <span class="txt">
-              <AgentMarkdown :text="streaming" />
-              <span class="caret" />
-            </span>
+            <AgentMarkdown class="txt" :text="typed" live />
           </div>
         </div>
 
@@ -1226,16 +1237,6 @@ function dotClass(s: Conversation): string {
 
 /* The only thing on the page that says "still writing" once text is flowing:
    the word "working" would be redundant beside a sentence forming. */
-.caret {
-  display: inline-block;
-  width: 6px;
-  height: 1em;
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  background: var(--agent);
-  animation: pulse 1.1s var(--ease-soft) infinite;
-}
-
 .ln { display: flex; gap: 11px; font-size: var(--fs-sm); line-height: 1.6; margin-bottom: 10px; }
 .badge {
   flex: none;
