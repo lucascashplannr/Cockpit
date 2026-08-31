@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { CommitPreview, DiffFile, FileDiff, Workspace } from '@cockpit/shared'
 import type { Component } from 'vue'
 import {
-  Bot, CircleDashed, FileCode, GitBranch, GitCommitHorizontal, Sparkles, SquareArrowOutUpRight,
+  CircleDashed, FileCode, GitBranch, GitCommitHorizontal, Sparkles, SquareArrowOutUpRight,
   TriangleAlert, User, UsersRound,
 } from '@lucide/vue'
 import {
@@ -13,7 +13,8 @@ import {
 /**
  * §12 — the review surface. "La distinction humain / agent est le garde-fou
  * principal : elle rend visible, donc contrôlable, la part de code jamais
- * relue." The author filter is therefore a first-class control, not a detail.
+ * relue." Every file row is marked with its author; the distinction is carried
+ * by the mark on the row rather than by a filter over the list.
  */
 
 const props = defineProps<{ workspace: Workspace }>()
@@ -22,22 +23,6 @@ const files = ref<DiffFile[]>([])
 const current = ref<FileDiff | null>(null)
 const selected = ref<string | null>(null)
 const loading = ref(false)
-const filter = ref<'all' | 'human' | 'agent' | 'unreviewed'>('all')
-
-const counts = computed(() => {
-  const c = { human: 0, agent: 0, mixed: 0, unknown: 0 }
-  for (const f of files.value) c[f.attribution]++
-  return c
-})
-
-const visible = computed(() => {
-  if (filter.value === 'all') return files.value
-  if (filter.value === 'unreviewed') {
-    // Anything an agent wrote and a human has not since touched.
-    return files.value.filter((f) => f.attribution === 'agent')
-  }
-  return files.value.filter((f) => f.attribution === filter.value || f.attribution === 'mixed')
-})
 
 const totals = computed(() => ({
   add: files.value.reduce((n, f) => n + f.additions, 0),
@@ -125,8 +110,7 @@ watch(
   () => void load(),
 )
 
-/** One icon per author, and the icon is the same everywhere it appears —
- *  the filter rows below reuse it, so the legend needs no explaining. */
+/** One icon per author, and the icon is the same everywhere it appears. */
 const mark: Record<string, Component> = {
   human: User,
   agent: Sparkles,
@@ -148,7 +132,7 @@ const mark: Record<string, Component> = {
 
       <div class="scroll">
         <button
-          v-for="f in visible"
+          v-for="f in files"
           :key="f.path"
           class="frow"
           :class="{ on: f.path === selected }"
@@ -170,33 +154,6 @@ const mark: Record<string, Component> = {
           <strong>Clean</strong>
           <span>Nothing uncommitted here.</span>
         </div>
-      </div>
-
-      <!-- §12 — "par auteur". The number that matters is the agent one. -->
-      <div class="by-author">
-        <span class="section-label">by author</span>
-        <button class="arow" :class="{ on: filter === 'all' }" @click="filter = 'all'">
-          <span class="attr"><CircleDashed class="sm" /></span> all
-          <span class="num">{{ files.length }}</span>
-        </button>
-        <button class="arow" :class="{ on: filter === 'human' }" @click="filter = 'human'">
-          <span class="attr human"><User class="sm" /></span> human
-          <span class="num">{{ counts.human }}</span>
-        </button>
-        <button class="arow" :class="{ on: filter === 'agent' }" @click="filter = 'agent'">
-          <span class="attr agent"><Sparkles class="sm" /></span> agent
-          <span class="num">{{ counts.agent }}</span>
-        </button>
-        <button
-          v-if="counts.unknown"
-          class="arow"
-          :class="{ on: filter === 'unreviewed' }"
-          @click="filter = 'unreviewed'"
-          title="Changes the journal cannot attribute — edited outside the cockpit"
-        >
-          <span class="attr unknown"><Bot class="sm" /></span> untracked origin
-          <span class="num">{{ counts.unknown }}</span>
-        </button>
       </div>
 
       <!-- §16 — the commit lives against the review, and commits every
@@ -416,29 +373,6 @@ const mark: Record<string, Component> = {
   font-size: var(--fs-xs);
 }
 .counts { display: flex; gap: 5px; font-size: 10px; flex: none; }
-
-.by-author {
-  flex: none;
-  border-top: 1px solid var(--line);
-  padding: 10px 8px;
-  background: var(--panel);
-}
-.by-author .section-label { display: block; padding: 0 9px 6px; }
-.arow {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  height: 28px;
-  padding: 0 9px;
-  border-radius: var(--radius-sm);
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
-}
-.arow:hover { background: var(--hover); }
-.arow.on { background: var(--selected); color: var(--text); }
-.arow .num { margin-left: auto; color: var(--text-dim); font-size: var(--fs-xs); }
 
 .view { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .vhead {
