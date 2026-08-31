@@ -581,6 +581,8 @@ function hydrate(r: Record<string, unknown>): Conversation {
     title: r.title == null || String(r.title) === '' ? String(r.prompt ?? '') : String(r.title),
     history: turnsOf(String(r.id)),
     denials: readDenials(r.denials),
+    // Live only, and correctly empty for a conversation whose process is gone.
+    queued: queuedIn(String(r.id)),
   }
 }
 
@@ -675,6 +677,7 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
     title: input.prompt.slice(0, 200),
     history: [],
     denials: [],
+    queued: [],
   }
 
   return launch(session, spec, (input.preamble ?? '') + input.prompt, false, input.allow, input.options)
@@ -1074,6 +1077,24 @@ export function send(sessionId: string, prompt: string): { ok: true; queued: boo
 /** What is waiting to be asked, for a window that has to show it. */
 export function queuedIn(sessionId: string): string[] {
   return [...(live.get(sessionId)?.queue ?? [])]
+}
+
+/**
+ * Taking a queued turn back before the engine ever sees it.
+ *
+ * Matched on its text and not on its index: the queue moves on its own as
+ * turns are flushed, so an index chosen in the window can name a different
+ * question by the time it arrives. The first match goes, which is the one that
+ * was shown as first.
+ */
+export function unqueue(sessionId: string, prompt: string): { ok: boolean; reason?: string } {
+  const l = live.get(sessionId)
+  if (!l) return { ok: false, reason: 'no such live session' }
+  const i = l.queue.indexOf(prompt)
+  if (i === -1) return { ok: false, reason: 'it has already gone in' }
+  l.queue.splice(i, 1)
+  agentBus.emit('changed')
+  return { ok: true }
 }
 
 /**

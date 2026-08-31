@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  ArrowDown, ArrowUp, BookMarked, FileDiff, GitBranch, History, MousePointerClick, PanelRight,
-  Plug,
+  ArrowDown, ArrowUp, BookMarked, FileDiff, GitBranch, History, Layers, MousePointerClick,
+  PanelRight, Plug,
 } from '@lucide/vue'
 import AgentTab from './tabs/AgentTab.vue'
 import ConflictPanel from './ConflictPanel.vue'
@@ -105,6 +105,18 @@ const waiting = computed(
         <span class="scope" :title="label.name">
           <span class="k">{{ label.kind }}</span>
           <span class="n">{{ label.name }}</span>
+        </span>
+
+        <!-- How many repositories the word to the left stands for. This was a
+             whole row of its own inside the conversation, spent on one number;
+             it is a fact about the scope, so it belongs on the scope's line. -->
+        <span
+          v-if="covered.length > 1"
+          class="stat num"
+          :title="covered.length + ' repositories in this scope'"
+        >
+          <Layers class="sm si" />
+          <span class="v">{{ covered.length }}</span>
         </span>
 
         <span v-if="git || w.runtime" class="rule" />

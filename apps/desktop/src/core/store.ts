@@ -80,6 +80,18 @@ export const state = reactive({
    */
   deltas: {} as Record<string, { messageId: string; text: string }>,
 
+  /**
+   * §3.3 — one conversation's transcript, fetched whole and then kept current
+   * by the same events that update everything else.
+   *
+   * This used to be read straight out of `events`, which is a rolling buffer
+   * of the last few hundred events across every project. So yesterday's thread
+   * opened as a column of questions with no answers under them, and a busy
+   * conversation lost its own opening while it was still running — the journal
+   * had all of it, and nothing was asking for it by conversation.
+   */
+  transcripts: {} as Record<string, CockpitEvent[]>,
+
   status: null as CoreStatus | null,
 
   activeProjectId: null as string | null,
@@ -105,7 +117,14 @@ export const state = reactive({
    * what changed does not throw away a half-written prompt.
    */
   agentScope: null as AgentScope | null,
-  agentDraft: '',
+  /**
+   * What is being written, per conversation.
+   *
+   * One draft for the whole window meant a half-typed question followed you
+   * into whatever thread you opened next, and was gone from the one you left
+   * it in. A draft belongs to the thing it is being said to.
+   */
+  drafts: {} as Record<string, string>,
 
   /**
    * How the engine is asked to run. Remembered here rather than on the
@@ -185,6 +204,14 @@ export const client = new CoreClient(URL, {
   onEvent(e) {
     state.events.push(e)
     if (state.events.length > 800) state.events.splice(0, state.events.length - 800)
+    // A transcript already on screen is kept current by the same event that
+    // updated the journal, rather than by re-fetching the thread. Only the
+    // ones that have been opened: holding every conversation's would make this
+    // buffer the thing it was supposed to replace.
+    if (e.actor.kind === 'agent') {
+      const t = state.transcripts[e.actor.sessionId]
+      if (t) t.push(e)
+    }
     // The finished message has landed, so the draft of it goes. Matching on
     // the id rather than clearing blindly: the next message may already be
     // streaming by the time this one is journalled.
@@ -481,7 +508,8 @@ export async function startAgentIn(
     return false
   }
   rememberPrompt(prompt)
-  state.agentDraft = ''
+  // The box that was typed into, named before the pin moves the active one on.
+  delete state.drafts[draftKey(scope, null)]
   // The thread that was just opened is the one to land in, and the panel must
   // still be on it after a detour through three other projects (§6).
   pinThread(scope, res.sessionId)
@@ -813,6 +841,66 @@ export function closeThread(scope: AgentScope, sessionId: string): void {
   threads.closed[sessionId] = true
   saveThreads()
 }
+
+/* ── the transcript, and what is being written into it ─────────────────── */
+
+/** Fetched once per conversation; live events keep it current after that. */
+const transcriptLoading = new Set<string>()
+
+/**
+ * §3.3 — the thread as the journal has it, whole.
+ *
+ * Idempotent and cheap to call from a watcher: a conversation already loaded
+ * is left alone, because the events arriving since are already being appended.
+ */
+export async function loadTranscript(sessionId: string): Promise<void> {
+  if (state.transcripts[sessionId] || transcriptLoading.has(sessionId)) return
+  transcriptLoading.add(sessionId)
+  try {
+    const events = await guard(() => client.call('agent.transcript', { sessionId }))
+    // Only if nothing arrived while the call was in flight — an event pushed
+    // in the meantime went into `state.events` and would be lost by an
+    // assignment that overwrote it. Merging by id keeps both.
+    if (events) {
+      const seen = new Set(events.map((e) => e.id))
+      const live = state.events.filter(
+        (e) => e.actor.kind === 'agent' && e.actor.sessionId === sessionId && !seen.has(e.id),
+      )
+      state.transcripts[sessionId] = [...events, ...live]
+    }
+  } finally {
+    transcriptLoading.delete(sessionId)
+  }
+}
+
+/** What the transcript is derived from, for a thread that may not be loaded. */
+export function transcriptOf(sessionId: string): CockpitEvent[] {
+  return state.transcripts[sessionId] ?? []
+}
+
+/**
+ * Which draft the composer is currently showing.
+ *
+ * A thread has its own; a scope with no thread open has one for the question
+ * that will start one. They are different boxes and always were — the window
+ * simply had a single string behind both.
+ */
+export function draftKey(scope: AgentScope | null, sessionId?: string | null): string {
+  if (sessionId) return 'thread:' + sessionId
+  return scope ? 'new:' + scopeKey(scope) : 'new:none'
+}
+
+export const activeDraftKey = computed(() =>
+  draftKey(activeAgentScope.value, openThreadFor(activeAgentScope.value)?.id ?? null),
+)
+
+/** The box itself, wherever the window happens to be pointing. */
+export const agentDraft = computed<string>({
+  get: () => state.drafts[activeDraftKey.value] ?? '',
+  set: (v) => {
+    state.drafts[activeDraftKey.value] = v
+  },
+})
 
 /** Having it on screen is having read it; there is no second "mark as read". */
 export function markThreadRead(c: Conversation): void {

@@ -370,6 +370,16 @@ export interface Conversation {
   /** §6 — every turn, oldest first. Append-only; a resume adds, never replaces. */
   history: AgentTurn[]
   /**
+   * §6 — what has been said while it was still answering, in the order it goes
+   * in. Live only: the queue is the running process's, so a conversation whose
+   * process is gone has an empty one and nothing was lost.
+   *
+   * Carried on the conversation rather than fetched separately because the
+   * window has to *show* it — a turn typed and then invisible until the engine
+   * gets to it is indistinguishable from a turn that was dropped.
+   */
+  queued: string[]
+  /**
    * §16 — the tools the allow-list refused during the last turn, by name.
    *
    * The engine reports them on the event that ends the turn and then stops. A

@@ -137,6 +137,10 @@ function migrate(d: Db): void {
     CREATE INDEX IF NOT EXISTS events_ts       ON events(ts DESC);
     CREATE INDEX IF NOT EXISTS events_ws       ON events(workspace_id, ts DESC);
     CREATE INDEX IF NOT EXISTS events_type     ON events(type, ts DESC);
+    -- §3.3 — the transcript is the journal filtered by conversation. Without
+    -- this index that filter is a full scan of every event ever written, on
+    -- every thread the window opens.
+    CREATE INDEX IF NOT EXISTS events_session  ON events(json_extract(actor, '$.sessionId'), seq);
 
     -- Cache only. Dropping this table must never lose information (§3.4).
     CREATE TABLE IF NOT EXISTS workspace_cache (

@@ -52,12 +52,43 @@ export interface AgentScopePath {
 }
 
 /** What `agent.start` would do with this scope, before it is asked to do it. */
+/**
+ * §7 — why a scope cannot be started on, said in terms a person can act on.
+ *
+ * This was a list of sentences already joined together — "Init — held by
+ * agent:claude" — which named the internal holder string and nothing else: not
+ * which conversation, not when, not whether anything was still running behind
+ * it. A lock nobody can trace to a cause reads as the app being broken.
+ *
+ * One entry per *lease*, not per workspace: a topic-wide session holds one
+ * lease over both its repositories, and saying the same sentence twice was the
+ * loudest part of the banner.
+ */
+export interface ScopeBlock {
+  leaseId: string
+  /** Every workspace of this scope that this one lease covers, by name. */
+  names: string[]
+  /** The conversation holding it, when it is one this core still knows. */
+  sessionId: string | null
+  /** What that conversation was asked — the lease carries it already. */
+  reason: string
+  acquiredAt: number
+  /**
+   * Whether anything is actually running behind it.
+   *
+   * A lease can outlive its process — a core killed mid-turn leaves one for up
+   * to its six-hour TTL — and that is a leftover to clear, not a colleague to
+   * wait for. The two look identical until this says which.
+   */
+  live: boolean
+}
+
 export interface AgentScopePreview {
   scope: AgentScope
   label: string
   paths: AgentScopePath[]
   /** Non-empty when a lease already covers part of the scope: start will refuse. */
-  blocked: string[]
+  blocked: ScopeBlock[]
   /** Whether a topic memory / cross-repo CONTEXT.md will be prepended (§6). */
   preamble: { memory: boolean; context: boolean }
 }
@@ -489,6 +520,23 @@ export interface Rpc {
     params: { sessionId: string; prompt: string }
     result: { ok: true; queued: boolean } | { ok: false; reason: string }
   }
+  /**
+   * A queued turn taken back before the engine ever reads it. Named by its
+   * text rather than its position: the queue drains on its own, so an index is
+   * out of date by the time it crosses the socket.
+   */
+  'agent.unqueue': {
+    params: { sessionId: string; prompt: string }
+    result: { ok: boolean; reason?: string }
+  }
+  /**
+   * §3.3 — one conversation's transcript, filtered out of the journal.
+   *
+   * The window cannot derive this from the events it happens to be holding:
+   * that buffer is every workspace's, capped, and rolling. A thread opened
+   * tomorrow has to read as what was said, and this is where that comes from.
+   */
+  'agent.transcript': { params: { sessionId: string }; result: CockpitEvent[] }
 
   'memory.read': { params: { workspaceId: string }; result: MemoryDoc | null }
   'memory.write': { params: { workspaceId: string; content: string }; result: { ok: true } }

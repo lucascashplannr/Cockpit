@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { FileCode, Map as MapIcon } from '@lucide/vue'
-import { client, guard, saveComposer, state } from '../../core/store.js'
+import { agentDraft, client, guard, saveComposer, state } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
 import type { Option } from './Picker.vue'
@@ -97,7 +97,7 @@ watch(
  */
 const caret = ref(0)
 const mention = computed(() => {
-  const upto = state.agentDraft.slice(0, caret.value)
+  const upto = agentDraft.value.slice(0, caret.value)
   const m = /(^|\s)@([^\s@]*)$/.exec(upto)
   if (!m) return null
   const q = m[2] ?? ''
@@ -124,8 +124,8 @@ function track(): void {
 function accept(path: string): void {
   const m = mention.value
   if (!m) return
-  const after = state.agentDraft.slice(caret.value)
-  state.agentDraft = state.agentDraft.slice(0, m.from) + '@' + path + ' ' + after
+  const after = agentDraft.value.slice(caret.value)
+  agentDraft.value = agentDraft.value.slice(0, m.from) + '@' + path + ' ' + after
   nextTick(() => {
     const pos = m.from + path.length + 2
     box.value?.focus()
@@ -145,12 +145,12 @@ const histAt = ref(-1)
  */
 function walkHistory(step: number, ev: KeyboardEvent): void {
   const recalled = histAt.value >= 0
-  if (!recalled && (state.agentDraft !== '' || step < 0)) return
+  if (!recalled && (agentDraft.value !== '' || step < 0)) return
   const next = histAt.value + step
   if (next < -1 || next >= state.promptHistory.length) return
   ev.preventDefault()
   histAt.value = next
-  state.agentDraft = next === -1 ? '' : (state.promptHistory[next] ?? '')
+  agentDraft.value = next === -1 ? '' : (state.promptHistory[next] ?? '')
 }
 
 function onKey(ev: KeyboardEvent): void {
@@ -173,8 +173,8 @@ function onKey(ev: KeyboardEvent): void {
     if (ev.key === 'Escape') {
       ev.preventDefault()
       // Closes the list without losing the `@`: it is being typed, not undone.
-      state.agentDraft += ' '
-      caret.value = state.agentDraft.length
+      agentDraft.value += ' '
+      caret.value = agentDraft.value.length
       return
     }
   }
@@ -216,7 +216,7 @@ defineExpose({ focus: () => box.value?.focus() })
 
     <textarea
       ref="box"
-      v-model="state.agentDraft"
+      v-model="agentDraft"
       class="input prompt selectable"
       :rows="big ? 3 : 2"
       :placeholder="placeholder"

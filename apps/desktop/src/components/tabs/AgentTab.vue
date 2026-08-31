@@ -2,16 +2,18 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
 import {
-  BookMarked, CircleAlert, CircleStop, Hand, History, Layers, Lock, ShieldCheck, Sparkles, X,
+  ArrowDown, BookMarked, CircleAlert, CircleStop, Clock, Hand, History, Lock, ShieldCheck,
+  Sparkles, X,
 } from '@lucide/vue'
 import MemoryTab from './MemoryTab.vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
 import ToolCall from '../agent/ToolCall.vue'
+import ToolGroup from '../agent/ToolGroup.vue'
 import Composer from '../agent/Composer.vue'
 import {
-  activeAgentScope, attentionOf, client, closeThread, guard, isRunning, markThreadRead,
-  openThreadFor, pinThread, previewScope, scopeLabel, sendTurn, sessionsForScope,
-  startAgentIn, state,
+  activeAgentScope, agentDraft, attentionOf, client, closeThread, guard, isRunning,
+  loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel, sendTurn,
+  sessionsForScope, startAgentIn, state, toast, transcriptOf,
 } from '../../core/store.js'
 import type { Attention } from '../../core/store.js'
 
@@ -39,18 +41,37 @@ const scope = computed(() => activeAgentScope.value)
 const label = computed(() => scopeLabel(scope.value))
 const preview = ref<AgentScopePreview | null>(null)
 
+/**
+ * Re-read whenever the scope changes — or whenever a conversation on it starts
+ * or ends. It used to be fetched once per scope, so a lock taken after you
+ * arrived was invisible and a lock released while you watched stayed on screen
+ * until you navigated away and back.
+ */
 watch(
-  scope,
-  async (s) => {
-    preview.value = null
-    if (s) preview.value = await previewScope(s)
+  [scope, () => sessionsForScope(scope.value).map((c) => c.id + c.status).join()],
+  async ([s]) => {
+    if (!s) {
+      preview.value = null
+      return
+    }
+    preview.value = await previewScope(s)
   },
   { immediate: true },
 )
 
 /** §4 — allowed, and the reason a restore point is captured before any write. */
 const onMain = computed(() => preview.value?.paths.filter((p) => p.onProtectedBranch) ?? [])
-const blocked = computed(() => preview.value?.blocked ?? [])
+/**
+ * §7 — what is in the way, minus the thing you are looking at.
+ *
+ * A conversation holds a lease over its own scope for as long as it runs, so
+ * the thread on screen was reporting itself as "another conversation working
+ * here" — the one holder that is never in the way, announced in the one place
+ * it makes no sense. It is told apart by the session the lease belongs to.
+ */
+const blocked = computed(() =>
+  (preview.value?.blocked ?? []).filter((b) => b.sessionId !== selected.value?.id),
+)
 const paths = computed(() => preview.value?.paths ?? [])
 
 /* ── conversations (§6) ────────────────────────────────────────────────── */
@@ -122,9 +143,51 @@ type Item =
       denied: boolean
     }
 
+/**
+ * What a turn is actually drawn as.
+ *
+ * `items` is what happened; this is what is worth a card. A run of calls with
+ * nothing said between them is one line that can be unfolded — twenty full
+ * cards in a row is a transcript nobody reads to the end of.
+ */
+type Row =
+  | { kind: 'text'; id: string; text: string }
+  | { kind: 'call'; id: string; call: Extract<Item, { kind: 'tool' }> }
+  | { kind: 'group'; id: string; calls: Extract<Item, { kind: 'tool' }>[] }
+
+/** Two is where a fold starts earning its keep; one call folded is one click
+ *  charged for nothing. */
+const GROUP_AT = 2
+
+function rowsOf(items: Item[]): Row[] {
+  const rows: Row[] = []
+  let run: Extract<Item, { kind: 'tool' }>[] = []
+
+  const flush = (): void => {
+    if (!run.length) return
+    if (run.length < GROUP_AT) rows.push({ kind: 'call', id: run[0]!.id, call: run[0]! })
+    else rows.push({ kind: 'group', id: run[0]!.id, calls: run })
+    run = []
+  }
+
+  for (const it of items) {
+    if (it.kind === 'tool') {
+      run.push(it)
+      continue
+    }
+    // A sentence between two calls ends the run: it is the agent saying why
+    // what follows is different from what came before.
+    flush()
+    rows.push({ kind: 'text', id: it.id, text: it.text })
+  }
+  flush()
+  return rows
+}
+
 interface Exchange {
   turn: AgentTurn
   items: Item[]
+  rows: Row[]
 }
 
 /**
@@ -136,17 +199,34 @@ interface Exchange {
  */
 const DENIED = /has been denied/i
 
-function itemsBetween(sessionId: string, from: number, to: number | null): Item[] {
-  const items: Item[] = []
+/**
+ * Every event of the conversation, dealt out to the turn it happened in.
+ *
+ * One pass, not one per turn: this was a scan of the whole transcript for each
+ * turn in it, re-run whenever anything arrived — quadratic in the length of a
+ * conversation, on the hot path of a streaming answer.
+ *
+ * `byCall` spans the whole conversation rather than one turn, which also fixes
+ * the case that made a finished call look like it never returned: a command
+ * whose result landed after the next question had already been asked.
+ */
+function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
+  const buckets: Item[][] = turns.map(() => [])
+  if (!turns.length) return buckets
   const byCall = new Map<string, Extract<Item, { kind: 'tool' }>>()
+  let ti = 0
 
-  for (const e of state.events) {
+  for (const e of transcriptOf(sessionId)) {
     if (e.actor.kind !== 'agent' || e.actor.sessionId !== sessionId) continue
-    if (e.ts < from || (to !== null && e.ts >= to)) continue
+    // Events are stored in the order they happened, so the turn only ever
+    // moves forward.
+    while (ti + 1 < turns.length && e.ts >= turns[ti + 1]!.startedAt) ti++
+    if (e.ts < turns[0]!.startedAt) continue
+    const into = buckets[ti]!
 
     if (e.type === 'agent.output') {
       const text = (e.payload as { text?: string })?.text ?? ''
-      if (text.trim()) items.push({ kind: 'text', id: e.id, text })
+      if (text.trim()) into.push({ kind: 'text', id: e.id, text })
       continue
     }
     if (e.type === 'agent.tool_use') {
@@ -160,7 +240,7 @@ function itemsBetween(sessionId: string, from: number, to: number | null): Item[
         denied: false,
       }
       if (p?.toolUseId) byCall.set(p.toolUseId, item)
-      items.push(item)
+      into.push(item)
       continue
     }
     if (e.type === 'agent.tool_result') {
@@ -186,16 +266,29 @@ function itemsBetween(sessionId: string, from: number, to: number | null): Item[
       call.denied = !!p?.isError && DENIED.test(stdout)
     }
   }
-  return items
+  return buckets
 }
+
+/**
+ * The thread on screen is fetched whole, once. Everything after that arrives as
+ * events and is appended, so this fires on identity rather than on content.
+ */
+watch(
+  () => selected.value?.id,
+  (id) => {
+    if (id) void loadTranscript(id)
+  },
+  { immediate: true },
+)
 
 const exchanges = computed<Exchange[]>(() => {
   const s = selected.value
   if (!s) return []
-  return s.history.map((turn, i) => ({
-    turn,
-    items: itemsBetween(s.id, turn.startedAt, s.history[i + 1]?.startedAt ?? null),
-  }))
+  const buckets = bucketize(s.id, s.history)
+  return s.history.map((turn, i) => {
+    const items = buckets[i] ?? []
+    return { turn, items, rows: rowsOf(items) }
+  })
 })
 
 /**
@@ -207,6 +300,21 @@ const streaming = computed(() => {
   const s = selected.value
   if (!s) return ''
   return state.deltas[s.id]?.text ?? ''
+})
+
+/**
+ * §3.4 — a thread whose journal has been rotated out says so.
+ *
+ * The turns live in their own table and outlive the events by design, so an
+ * old conversation still lists everything it was asked and can show none of
+ * what it answered. Rendering that as a column of unanswered questions would
+ * be the window inventing a story; naming the reason is the whole difference.
+ */
+const rotated = computed(() => {
+  const s = selected.value
+  if (!s || !s.history.length) return false
+  if (transcriptOf(s.id).length) return false
+  return !isRunning(s)
 })
 
 /* ── the composer ──────────────────────────────────────────────────────── */
@@ -226,7 +334,7 @@ const continuing = computed(() => {
  * that still refuses is a scope another session holds.
  */
 const canSend = computed(() => {
-  if (!state.agentDraft.trim() || busy.value) return false
+  if (!agentDraft.value.trim() || busy.value) return false
   if (blocked.value.length) return false
   return continuing.value || !!scope.value
 })
@@ -236,11 +344,11 @@ const queueing = computed(() => !!selected.value && isRunning(selected.value))
 
 async function send(): Promise<void> {
   if (!canSend.value) return
-  const text = state.agentDraft.trim()
+  const text = agentDraft.value.trim()
   busy.value = true
   if (continuing.value && selected.value) {
     const ok = await sendTurn(selected.value.id, text)
-    if (ok) state.agentDraft = ''
+    if (ok) agentDraft.value = ''
   } else if (scope.value) {
     // `startAgentIn` opens the new thread on this scope; nothing to do here.
     await startAgentIn(engine.value, scope.value, text)
@@ -248,20 +356,96 @@ async function send(): Promise<void> {
   busy.value = false
 }
 
+/** "Init and Init-Backend" — a list, read the way it would be said. */
+function names(list: string[]): string {
+  if (list.length <= 1) return list[0] ?? 'this scope'
+  return list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1]
+}
+
+/**
+ * §7 — clearing a lease nothing is holding.
+ *
+ * Offered only when no session is behind it, which is the one case where this
+ * cannot interrupt work: the process that took it is gone, and the lock is
+ * simply outliving it.
+ */
+async function release(leaseId: string): Promise<void> {
+  const r = await guard(() => client.call('lease.release', { leaseId }), 'the lock is cleared')
+  if (r && scope.value) preview.value = await previewScope(scope.value)
+}
+
+/**
+ * The conversation in the way, brought back on screen.
+ *
+ * "Something else is working here" with no way to go and look at it is half an
+ * answer; the lease knows which session it belongs to, so the banner can hand
+ * it over rather than describe it.
+ */
+function reveal(sessionId: string): void {
+  if (scope.value) pinThread(scope.value, sessionId)
+  state.historyOpen = false
+}
+
 async function stop(id: string): Promise<void> {
   await guard(() => client.call('agent.stop', { sessionId: id }), 'conversation stopped')
 }
 
-// New output should not have to be scrolled to.
+/* ── what has been said and not yet asked (§6) ───────────────────────────
+ *
+ * A queued turn used to be a toast and then nothing: the box emptied, the
+ * words were gone from the screen, and whether they had been kept was a matter
+ * of faith until the engine got to them. They are shown where they will land,
+ * greyed, and can be taken back while they are still only waiting.
+ */
+const queued = computed(() => selected.value?.queued ?? [])
+
+async function unqueue(prompt: string): Promise<void> {
+  const s = selected.value
+  if (!s) return
+  const r = await guard(() => client.call('agent.unqueue', { sessionId: s.id, prompt }))
+  if (r && !r.ok) toast('error', r.reason ?? 'it has already gone in')
+}
+
+/* ── scrolling ───────────────────────────────────────────────────────────
+ *
+ * New output should not have to be scrolled to — but it must not drag the
+ * reader off what they went back to look at either. This followed the bottom
+ * unconditionally, so scrolling up to re-read a command's output during a long
+ * turn threw you back down on the next token, every token.
+ *
+ * So: it follows only while you are already at the bottom, and otherwise says
+ * there is more below and offers to go there.
+ */
+const stuck = ref(true)
+
+function onScroll(): void {
+  const el = scrollEl.value
+  if (!el) return
+  // A hair of slack: a fractional scrollHeight is normal and would otherwise
+  // read as "scrolled up" for the whole of a turn.
+  stuck.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+}
+
+async function toBottom(): Promise<void> {
+  stuck.value = true
+  await nextTick()
+  const el = scrollEl.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
 watch(
-  [exchanges, streaming],
+  [exchanges, streaming, queued],
   async () => {
+    if (!stuck.value) return
     await nextTick()
     const el = scrollEl.value
     if (el) el.scrollTop = el.scrollHeight
   },
   { deep: true },
 )
+
+// Another thread opens at its end, whatever the last one was scrolled to.
+watch(() => selected.value?.id, () => void toBottom())
 
 onMounted(async () => {
   const r = await guard(() => client.call('agent.engines', undefined))
@@ -293,13 +477,30 @@ function dotClass(s: Conversation): string {
          (ContextPanel): they said "this is what you are on", which is what
          that line already said, one row higher. What is left here is what only
          a conversation can say — the scope's own warnings. -->
-    <p v-if="paths.length > 1" class="note">
-      <Layers class="sm" /> {{ paths.length }} repositories in this scope
-    </p>
+    <!-- How many repositories the scope covers moved into the scope line above
+         (ContextPanel): it is a fact about what you are standing on, and it was
+         costing a whole row of the conversation to say a number. -->
 
-    <p v-if="blocked.length" class="note danger">
-      <Lock class="sm" /> {{ blocked.join(' · ') }} — locked; two agents never share a folder.
-    </p>
+    <!-- §7 — why this scope cannot be started on, in terms of the thing in the
+         way rather than of the lease that represents it. -->
+    <div v-if="blocked.length" class="note held">
+      <Lock class="sm" />
+      <div class="bls">
+        <p v-for="b in blocked" :key="b.leaseId" class="bl">
+          <template v-if="b.live">
+            Another conversation is working in {{ names(b.names) }}, started
+            {{ ago(b.acquiredAt) }}<template v-if="b.reason">: “{{ b.reason }}”</template> — two
+            agents never share a folder.
+            <button v-if="b.sessionId" class="link" @click="reveal(b.sessionId)">Open it</button>
+          </template>
+          <template v-else>
+            {{ names(b.names) }} {{ b.names.length > 1 ? 'are' : 'is' }} still marked in use by a
+            conversation that is no longer running — nothing is working here.
+            <button class="link" @click="release(b.leaseId)">Clear the lock</button>
+          </template>
+        </p>
+      </div>
+    </div>
     <p v-else-if="onMain.length" class="note">
       <ShieldCheck class="sm" />
       {{ onMain.map((p) => p.name).join(', ') }} on the default branch — a restore point is
@@ -396,7 +597,7 @@ function dotClass(s: Conversation): string {
 
     <!-- A thread. The exchange, then the box to continue it. -->
     <template v-else>
-      <div ref="scrollEl" class="thread">
+      <div ref="scrollEl" class="thread" @scroll.passive="onScroll">
         <div class="tbar">
           <span class="dot" :class="dotClass(selected)" />
           <span class="ttitle">{{ selected.title || 'untitled' }}</span>
@@ -424,6 +625,14 @@ function dotClass(s: Conversation): string {
           </button>
         </div>
 
+        <!-- §3.4 — what is missing, and why, rather than a thread that looks
+             like it was never answered. -->
+        <p v-if="rotated" class="rot">
+          <Clock class="sm" />
+          The journal for this conversation has been rotated out — its turns are
+          listed, what was said in them is gone.
+        </p>
+
         <div v-for="(x, i) in exchanges" :key="x.turn.id" class="ex">
           <div class="said selectable">{{ x.turn.prompt }}</div>
           <div
@@ -432,21 +641,23 @@ function dotClass(s: Conversation): string {
           >
             working…
           </div>
-          <template v-for="it in x.items" :key="it.id">
-            <div v-if="it.kind === 'text'" class="ln">
+          <template v-for="r in x.rows" :key="r.id">
+            <div v-if="r.kind === 'text'" class="ln">
               <span class="badge text"><Sparkles class="sm" /></span>
-              <AgentMarkdown class="txt" :text="it.text" />
+              <AgentMarkdown class="txt" :text="r.text" />
             </div>
             <!-- Full width, and out of the badge column: a card is a thing the
                  agent did, not a thing it said. -->
             <ToolCall
-              v-else
+              v-else-if="r.kind === 'call'"
               class="call"
-              :tool="it.tool"
-              :input="it.input"
-              :result="it.result"
-              :denied="it.denied"
+              :tool="r.call.tool"
+              :input="r.call.input"
+              :result="r.call.result"
+              :denied="r.call.denied"
+              :live="x.turn.status === 'running'"
             />
+            <ToolGroup v-else class="call" :calls="r.calls" :live="x.turn.status === 'running'" />
           </template>
 
           <!-- The sentence as it is being written. Same shape as a finished
@@ -460,7 +671,25 @@ function dotClass(s: Conversation): string {
             </span>
           </div>
         </div>
+
+        <!-- Said, and not yet asked. In the shape of a question because that
+             is what it is, and dimmed because the engine has not seen it. -->
+        <div v-for="(q, i) in queued" :key="'q' + i" class="ex">
+          <div class="said pending selectable">
+            {{ q }}
+            <button class="drop" title="Take this back before it goes in" @click="unqueue(q)">
+              <X class="sm" />
+            </button>
+          </div>
+          <p class="waits"><Clock class="sm" /> waiting for this turn to land</p>
+        </div>
       </div>
+
+      <!-- Only when it would otherwise be a surprise: while you are at the
+           bottom the thread follows on its own and this says nothing. -->
+      <button v-if="!stuck" class="jump" @click="toBottom">
+        <ArrowDown class="sm" /> Latest
+      </button>
 
       <footer class="foot">
         <Composer
@@ -482,7 +711,7 @@ function dotClass(s: Conversation): string {
 </template>
 
 <style scoped>
-.agent { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.agent { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .grow { flex: 1; }
 
 .note {
@@ -498,7 +727,19 @@ function dotClass(s: Conversation): string {
   border-bottom: 1px solid var(--line-soft);
 }
 .note .lucide { flex: none; margin-top: 1px; }
-.note.danger { color: var(--danger); background: var(--danger-soft); }
+/* A lock is a state, not a failure. It used to be painted in the colour this
+   app reserves for something having gone wrong, which is why it read as an
+   error nobody could explain. */
+.note.held { color: var(--warn); background: var(--warn-soft); align-items: flex-start; }
+.bls { display: flex; flex-direction: column; gap: 4px; }
+.bl { margin: 0; }
+.bl .link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-size: inherit;
+}
+.bl .link:hover { color: var(--text); }
 
 /* ── memory / history, over the conversation ─────────────────────────── */
 .over { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -625,6 +866,79 @@ function dotClass(s: Conversation): string {
   white-space: pre-wrap;
 }
 .thinking { color: var(--text-dim); font-size: var(--fs-xs); font-style: italic; }
+
+/* Queued: the same bubble, at the weight of something that has not happened.
+   Its ✕ only appears on hover — it is an escape hatch, not a decoration. */
+.said.pending {
+  position: relative;
+  background: var(--panel-raised);
+  border: 1px dashed var(--line-strong);
+  color: var(--text-muted);
+}
+.said.pending .drop {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-raised);
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-soft);
+}
+.said.pending:hover .drop { opacity: 1; }
+.said.pending .drop:hover { color: var(--danger); border-color: var(--danger); }
+.waits {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 5px;
+  margin: -6px 2px 0;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* §3.4 — the reason a thread is empty, where the thread would be. */
+.rot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 16px;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  background: var(--panel-raised);
+}
+.rot .lucide { flex: none; }
+
+/* Over the conversation, above the composer: it is about the thread, and it
+   must not push the box it sits over. */
+.jump {
+  position: absolute;
+  left: 50%;
+  bottom: 104px;
+  z-index: 2;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-raised);
+  box-shadow: var(--shadow-sm);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.jump:hover { color: var(--text); border-color: var(--accent); }
 
 /* The only thing on the page that says "still writing" once text is flowing:
    the word "working" would be redundant beside a sentence forming. */

@@ -20,9 +20,19 @@ import {
 const props = defineProps<{
   tool: string
   input: Record<string, unknown>
-  /** Absent while the call is still running — that is what `pending` means. */
+  /** Absent while the call is still running — or never journalled: see `live`. */
   result: { stdout: string; stderr: string; isError: boolean; interrupted: boolean } | null
   denied: boolean
+  /**
+   * Whether the turn this belongs to is still going.
+   *
+   * A missing outcome means two different things, and one animated "running"
+   * tag was claiming both: on a live turn the call is in flight, and on a turn
+   * that finished hours ago its outcome simply never reached the journal.
+   * Pulsing at the second one is the window telling a story about work that
+   * stopped before it was written.
+   */
+  live?: boolean
 }>()
 
 const open = ref(false)
@@ -38,7 +48,9 @@ const file = computed(() => {
   return p.split('/').slice(-3).join('/')
 })
 
-const pending = computed(() => !props.result)
+const pending = computed(() => !props.result && props.live !== false)
+/** No outcome, and nothing left that could produce one (§3.4). */
+const orphan = computed(() => !props.result && props.live === false)
 const failed = computed(() => props.denied || !!props.result?.isError)
 
 /** The line under the title: the one fact that names *this* call. */
@@ -150,6 +162,7 @@ const expandable = computed(
       <span class="grow" />
       <span v-if="denied" class="tag warn"><Hand class="xs" /> refused</span>
       <span v-else-if="pending" class="tag run">running</span>
+      <span v-else-if="orphan" class="tag none">no outcome recorded</span>
       <span v-else-if="failed" class="tag bad"><CircleAlert class="xs" /> failed</span>
       <ChevronRight v-if="expandable" class="xs chev" :class="{ turned: open }" />
     </button>
@@ -249,6 +262,7 @@ const expandable = computed(
 .tag.warn { color: var(--warn); }
 .tag.bad { color: var(--danger); }
 .tag.run { color: var(--agent); animation: pulse 1.6s var(--ease-soft) infinite; }
+.tag.none { color: var(--text-dim); font-style: italic; }
 .xs { width: 11px; height: 11px; }
 .chev { flex: none; color: var(--text-dim); transition: transform var(--dur-1) var(--ease-soft); }
 .chev.turned { transform: rotate(90deg); }

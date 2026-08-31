@@ -114,6 +114,31 @@ export function tail(opts: {
   return rows.map(hydrate).reverse()
 }
 
+/**
+ * §3.3 — one conversation's transcript, which is the journal filtered and
+ * never a second copy of it.
+ *
+ * The window used to derive the transcript from the rolling buffer of the last
+ * few hundred events it happened to have received — every workspace's events,
+ * all mixed together. So a thread opened the next morning rendered as its
+ * prompts and nothing else, and a busy conversation lost its own beginning
+ * while it was still running. The events were never gone; nobody was asking
+ * the right question of them.
+ *
+ * `ORDER BY seq` and not `ts`: two events written in the same millisecond are
+ * ordinary — a call and the text before it — and only the sequence says which
+ * came first.
+ */
+export function forSession(sessionId: string, limit = 5000): CockpitEvent[] {
+  const rows = getDb()
+    .prepare(
+      "SELECT * FROM (SELECT * FROM events WHERE json_extract(actor, '$.sessionId') = ?" +
+        ' ORDER BY seq DESC LIMIT ?) ORDER BY seq ASC',
+    )
+    .all(sessionId, Math.min(limit, 20_000)) as Row[]
+  return rows.map(hydrate)
+}
+
 export function countEvents(): number {
   const row = getDb().prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }
   return row.n

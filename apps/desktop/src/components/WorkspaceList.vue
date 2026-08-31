@@ -22,10 +22,14 @@ const groups = computed(() => workspaceGroups.value)
 
 const hasProjects = computed(() => state.projects.length > 0)
 
-function topicSummary(ws: { git: { ahead: number } | null; runtime: { status: string } | null }[]) {
-  const ahead = ws.reduce((n, w) => n + (w.git?.ahead ?? 0), 0)
-  const up = ws.filter((w) => w.runtime?.status === 'up').length
-  return { ahead, up, total: ws.length }
+/**
+ * The one number a folded topic still owes you: how much of its work is not
+ * pushed yet. `up` and `total` used to come back from here too — nobody was
+ * reading the first, and the second was the count in the header that said
+ * what the rows underneath already said.
+ */
+function unpushed(ws: { git: { ahead: number } | null }[]): number {
+  return ws.reduce((n, w) => n + (w.git?.ahead ?? 0), 0)
 }
 
 async function refresh() {
@@ -120,7 +124,13 @@ const ATTENTION_TEXT: Record<string, string> = {
           <div
             v-if="g.title"
             class="group-head"
-            :class="{ running: g.topic?.state === 'running', selected: g.topicId === selectedTopicId }"
+            :class="{
+              running: g.topic?.state === 'running',
+              selected: g.topicId === selectedTopicId,
+              // Folded over the row you are standing on: the header stands in
+              // for it, so it takes the tint the row would have had.
+              holding: !!g.topicId && collapsedTopics[g.topicId] && holdsSelection(g.workspaces),
+            }"
           >
             <!-- Its own control, because folding is not selecting: the header
                  is a place to stand as much as a lid to close. -->
@@ -141,12 +151,10 @@ const ATTENTION_TEXT: Record<string, string> = {
               <span class="title">{{ g.title }}</span>
             </button>
             <span class="summary num">
-              <!-- Folded, and the selection is inside: the only trace left. -->
-              <span
-                v-if="g.topicId && collapsedTopics[g.topicId] && holdsSelection(g.workspaces)"
-                class="here"
-                title="The branch this window is on is inside this topic"
-              />
+              <!-- A 5px accent dot used to sit here to say the selection was
+                   folded inside. Nobody could know that: it had a tooltip and
+                   no legend. The header takes the list's own selected tint
+                   instead — one vocabulary, already learned. -->
               <span
                 v-if="g.topicId && activityFor('topic', g.topicId).running"
                 class="agent live"
@@ -165,10 +173,12 @@ const ATTENTION_TEXT: Record<string, string> = {
                   class="sm"
                 />
               </span>
-              <span v-if="topicSummary(g.workspaces).ahead" class="up">
-                <ArrowUp class="sm" />{{ topicSummary(g.workspaces).ahead }}
+              <span v-if="unpushed(g.workspaces)" class="up">
+                <ArrowUp class="sm" />{{ unpushed(g.workspaces) }}
               </span>
-              <span class="dim">{{ topicSummary(g.workspaces).total }}</span>
+              <!-- How many branches are under it was here, folded or not. It
+                   is the least interesting true thing about a topic: open, the
+                   rows say it; folded, it is a number nobody acts on. -->
             </span>
           </div>
           <div v-else-if="groups.length > 1 && i > 0" class="divider">
@@ -272,7 +282,12 @@ const ATTENTION_TEXT: Record<string, string> = {
   transition: background var(--dur-1) var(--ease-soft);
 }
 .group-head:hover { background: var(--hover); }
-.group-head.selected { background: var(--selected); }
+/* Standing on the topic, and standing on a branch folded inside it, are the
+   same sentence from this list's point of view: your place is on this row.
+   Which of the two it is, is what the scope line at the top of the panel says
+   — `TOPIC x` or `REPOSITORY y` — and it does not need saying twice. */
+.group-head.selected,
+.group-head.holding { background: var(--selected); }
 
 /* The lid. Wider than the glyph so it is hittable, and it turns rather than
    swapping icon: the same mark pointing somewhere else reads as one control
@@ -303,13 +318,8 @@ const ATTENTION_TEXT: Record<string, string> = {
 
 /* Folded, with the selection inside. One dot, in the accent: it is the same
    statement the row's own bar makes, made in the only space left. */
-.here {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.group-head.selected .gi { color: var(--accent); }
+.group-head.selected .gi,
+.group-head.holding .gi { color: var(--accent); }
 .gi { color: var(--text-dim); }
 .title {
   flex: 1;

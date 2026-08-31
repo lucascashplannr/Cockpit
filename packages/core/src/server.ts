@@ -5,7 +5,7 @@ import type {
   AgentScope, CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse, ServerPush,
 } from '@cockpit/shared'
 import { DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
-import { bus, countEvents, tail } from './journal.js'
+import { bus, countEvents, forSession, tail } from './journal.js'
 import * as registry from './registry.js'
 import * as scaffold from './scaffold.js'
 import * as files from './files.js'
@@ -501,6 +501,19 @@ const handlers: Record<string, Handler> = {
     if (r.ok) pushAgentActivity()
     return r
   },
+  'agent.unqueue': (p: { sessionId: string; prompt: string }) => {
+    const r = agents.unqueue(p.sessionId, p.prompt)
+    if (r.ok) pushAgentActivity()
+    return r
+  },
+  /**
+   * §3.3 — the transcript, which is the journal filtered by conversation.
+   *
+   * A whole thread in one call rather than a page at a time: a conversation is
+   * read from the top, and paging one would mean deciding what "the top" is
+   * before the person has scrolled.
+   */
+  'agent.transcript': (p: { sessionId: string }) => forSession(p.sessionId),
 
   'memory.read': (p: { workspaceId: string }) => memory.read(p.workspaceId),
   'memory.write': (p: { workspaceId: string; content: string }) => {

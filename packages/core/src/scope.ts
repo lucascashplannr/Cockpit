@@ -1,8 +1,9 @@
 import { join, resolve as resolvePath } from 'node:path'
-import type { AgentScope, AgentScopePath, AgentScopePreview, Workspace } from '@cockpit/shared'
+import type { AgentScope, AgentScopePath, AgentScopePreview, ScopeBlock, Workspace } from '@cockpit/shared'
 import * as registry from './registry.js'
 import * as topics from './topics/index.js'
 import * as leases from './leases.js'
+import * as agents from './agents.js'
 import { defaultBranch } from './git.js'
 
 /**
@@ -111,7 +112,14 @@ function normaliseSubpath(root: string, subpath: string): string {
 export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
   const r = resolveScope(scope)
   const paths: AgentScopePath[] = []
-  const blocked: string[] = []
+  // Keyed by lease: one holder over two repositories is one thing in the way,
+  // and saying it once per repository was most of what made the banner shout.
+  const blocked = new Map<string, ScopeBlock>()
+  // Which leases still have a conversation behind them, by lease id. A lease
+  // outliving its session is a leftover to clear rather than a colleague to
+  // wait for — and this is read once, not once per workspace in the scope.
+  const liveByLease = new Map<string, string>()
+  for (const c of agents.liveSessions()) if (c.leaseId) liveByLease.set(c.leaseId, c.id)
 
   for (const [i, w] of r.workspaces.entries()) {
     const path = r.paths[i] ?? w.path
@@ -122,7 +130,19 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
     // Its own session's lease is not a reason to say a new one cannot start —
     // but any other holder is, and start would refuse on exactly this.
     const leasedBy = held ? held.holder : null
-    if (leasedBy) blocked.push(w.name + ' — held by ' + leasedBy)
+    if (held) {
+      const seen = blocked.get(held.id)
+      if (seen) seen.names.push(w.name)
+      else
+        blocked.set(held.id, {
+          leaseId: held.id,
+          names: [w.name],
+          sessionId: liveByLease.get(held.id) ?? null,
+          reason: held.reason,
+          acquiredAt: held.acquiredAt,
+          live: liveByLease.has(held.id),
+        })
+    }
     paths.push({
       workspaceId: w.id,
       name: w.name,
@@ -138,7 +158,7 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
     scope,
     label: r.label,
     paths,
-    blocked,
+    blocked: [...blocked.values()],
     preamble: r.topicId
       ? topics.preambleParts(r.topicId, r.paths)
       : { memory: false, context: false },
