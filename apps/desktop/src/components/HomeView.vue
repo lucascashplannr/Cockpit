@@ -343,11 +343,14 @@ onMounted(() => void nextTick(() => input.value?.focus()))
   top: 0;
   left: 0;
   right: 0;
-  height: var(--titlebar-h);
+  /* The start page covers the whole window, so it carries its own drag strip
+     — and the traffic lights float over it, so the strip is exactly the room
+     they need rather than the height of a band that no longer exists. */
+  height: var(--lights-h);
   -webkit-app-region: drag;
 }
 .corner {
-  /* Centred in the drag strip: (50 - 28) / 2. */
+  /* Centred in the drag strip: (44 - 28) / 2. */
   position: absolute;
   top: 11px;
   right: 12px;
@@ -369,7 +372,7 @@ onMounted(() => void nextTick(() => input.value?.focus()))
      it grows or shrinks. */
   justify-content: flex-start;
   gap: 14px;
-  padding: calc(var(--titlebar-h) + 38px) 32px 8px;
+  padding: calc(var(--lights-h) + 38px) 32px 8px;
 }
 
 .hero {

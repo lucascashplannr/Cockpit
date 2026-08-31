@@ -152,23 +152,24 @@ const kindLabel = computed(() =>
   border-radius: var(--radius-sm);
   text-align: left;
   color: var(--text-muted);
-  position: relative;
   transition:
     background var(--dur-1) var(--ease-soft),
     color var(--dur-1) var(--ease-soft);
 }
+/* Under a topic header, stepped in by the width of that header's chevron.
+   The `compact` flag has been passed down since the list first grouped rows
+   and never did anything; the gap between groups was carrying the hierarchy
+   on its own. Now that the gap is a fifth of what it was, the indent is what
+   says these rows belong to the line above them. */
+.row.compact { padding-left: 29px; }
+
 .row:hover { background: var(--hover); }
+/* The tint is the whole signal. There was an accent bar down the left edge as
+   well, which is the convention for a rail whose items are otherwise
+   undecorated — here it sat against a filled row, an icon that already turns
+   accent, and a name that already gains weight, so it was a fourth voice
+   saying a thing three others had said. */
 .row.selected { background: var(--selected); color: var(--text); }
-.row.selected::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  border-radius: 0 2px 2px 0;
-  background: var(--accent);
-}
 
 .kind { color: var(--text-dim); display: flex; flex: none; }
 .row.selected .kind { color: var(--accent); }

@@ -98,13 +98,13 @@ function key(e: KeyboardEvent): void {
    is the column's own border, and this sits over it. */
 .splitter {
   position: absolute;
-  top: var(--titlebar-h);
+  top: 0;
   bottom: 0;
   width: 7px;
   z-index: 6;
   cursor: col-resize;
-  /* The band above is the window's drag region; a splitter that inherited it
-     would move the window instead of the column. */
+  /* The window is dragged by its background now that there is no band; a
+     splitter that inherited that would move the window instead of the column. */
   -webkit-app-region: no-drag;
 }
 .hit {

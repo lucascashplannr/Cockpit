@@ -82,7 +82,7 @@
   --fs-xl: 20px;
 
   /* Geometry */
-  --row-h: 34px;
+  --row-h: 30px;
   --radius-sm: 7px;
   --radius: 10px;
   --radius-lg: 14px;
@@ -92,17 +92,11 @@
      rail is sized around them: 52 + 10 either side. Everything else in the rail
      is then centred on that width. */
   --rail-w: 72px;
-  /* The title band spans the window and carries the workspace's name and its
-     verbs. It is sized around the tallest thing in it — a 30px button — not
-     around the 12px traffic lights: at 44px the buttons cleared the band's
-     edges by 8px and the strip read as squeezed. 50px leaves them 10px, which
-     is the least that still reads as a band rather than a lid.
-     It used to be 58px, matching the status row beneath it so the window's two
-     full-width bands shared one rhythm. That symmetry cost more height than it
-     was worth at the top, where the band is pure chrome and the row below it
-     is information. Lights centre at y = (50 - 12) / 2 = 19; anything else
-     positioned against the band's edge is derived the same way. */
-  --titlebar-h: 50px;
+  /* The window's three buttons are drawn at (10, 19) and float over the
+     content (TrafficLights). This is the clearance the rail keeps under
+     them — 19 + 12 + a little air — so nothing in it starts beneath a
+     button. Only the rail owes them room: they sit inside its 72px. */
+  --lights-h: 44px;
   /* Every column starts at the same distance below the band, so the search
      field and the workspace title sit on one line. */
   --col-top: 14px;

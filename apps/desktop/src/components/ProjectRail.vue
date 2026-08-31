@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Plus, SlidersHorizontal, Sun, Moon, MonitorCog } from '@lucide/vue'
+import { MonitorCog, Moon, Plus, Search, SlidersHorizontal, Sun } from '@lucide/vue'
 import Mark from './brand/Mark.vue'
 import { activityFor, cycleTheme, newProject, openHome, selectProject, state } from '../core/store.js'
 
@@ -68,6 +68,16 @@ const themeLabel = computed(() =>
       <Mark :height="27" crisp />
     </button>
 
+    <!-- ⌘K reaches every project, so it belongs to the one column that does
+         too. It spent a moment at the head of the workspace list, which was
+         wrong for the same reason the title band was wrong for the workspace's
+         name: that column is one project's, and this search is not. -->
+    <button class="icon-btn find" title="Search or run a command  ⌘K" @click="state.paletteOpen = true">
+      <Search />
+    </button>
+
+    <!-- Under both of them: what is above the rule belongs to the app, what is
+         below belongs to your projects. -->
     <div class="rule" />
 
     <div class="tiles">
@@ -120,12 +130,32 @@ const themeLabel = computed(() =>
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: var(--col-top) 0 12px;
+  /* The window's three buttons are drawn at (10, 19) and float over whatever
+     is under them (TrafficLights). Nothing else in this column may start above
+     them, so the rail begins where they end rather than at --col-top. */
+  padding: var(--lights-h) 0 12px;
+  /* The strip the lights sit in is the window's own, so dragging it moves the
+     window; every tile below opts back out. */
+  -webkit-app-region: drag;
   background: var(--bg-sunken);
   border-right: 1px solid var(--line);
   overflow: hidden;
 }
 .grow { flex: 1; }
+
+.rail > *, .tile { -webkit-app-region: no-drag; }
+
+/* An icon, not a field: the rail is 72px wide, and what this opens is the
+   palette — the field it used to be was an affordance for a keystroke, never
+   the search itself.
+   And an `icon-btn` rather than a `tile`, which is the whole of the polish: a
+   tile is a *destination* — the mark and the projects are places you go, and
+   they are filled and 44px square to say so. Search is an act. Giving it a
+   tile made it read as a fourth project sitting above the rule, at exactly the
+   weight of the app's own mark. It belongs to the same family as the settings
+   and theme buttons at the foot: unfilled until touched. */
+.find { color: var(--text-dim); margin-top: 2px; }
+.find:hover { color: var(--text); background: var(--hover); }
 
 .tile {
   position: relative;

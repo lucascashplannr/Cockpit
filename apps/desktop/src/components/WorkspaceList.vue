@@ -67,6 +67,42 @@ const ATTENTION_TEXT: Record<string, string> = {
 
 <template>
   <section class="list">
+    <!-- The column's own header, on the height every other one uses. It names
+         the project the column is of — the one thing the rail could only say
+         with two letters — and carries the three acts that add to that project.
+         Those were all at the foot beside the path, where a row of four icons
+         made "where this is" and "what you can add to it" read as one thing. -->
+    <header v-if="activeProject" class="top">
+      <span class="pname" :title="activeProject.root">{{ activeProject.name }}</span>
+      <span class="grow" />
+      <!-- §7 — the widest scope, from the thing it is scoped to: every
+           repository in the project, at its main checkout. -->
+      <button
+        class="icon-btn small go"
+        title="Ask the agent across the whole project — every repository, on its default branch"
+        @click="openAgentOn({ kind: 'project', projectId: activeProject.id })"
+      >
+        <Sparkles class="sm" />
+      </button>
+      <button
+        class="icon-btn small"
+        title="Open a topic — one named branch across every repository it touches"
+        @click="state.topicDialogOpen = true"
+      >
+        <Plus class="sm" />
+      </button>
+      <!-- §7 — one folder per repository, inside the project folder. Beside the
+           topic button because it is the same kind of act: adding something to
+           the project rather than looking at what is in it. -->
+      <button
+        class="icon-btn small"
+        title="Add a repository — a new one, a clone, or a folder moved in"
+        @click="addRepoTo(activeProject.id)"
+      >
+        <FolderPlus class="sm" />
+      </button>
+    </header>
+
     <div class="scroll">
       <div v-if="!hasProjects" class="empty">
         <FolderPlus />
@@ -149,34 +185,10 @@ const ATTENTION_TEXT: Record<string, string> = {
       </template>
     </div>
 
+    <!-- What is left at the foot is where this is and one way to re-read it:
+         both are about the state of the column, not about adding to it. -->
     <footer v-if="activeProject" class="foot">
       <span class="root" :title="activeProject.root">{{ activeProject.root }}</span>
-      <!-- §7 — the widest scope, from the thing it is scoped to: every
-           repository in the project, at its main checkout. -->
-      <button
-        class="icon-btn small go"
-        title="Ask the agent across the whole project — every repository, on its default branch"
-        @click="openAgentOn({ kind: 'project', projectId: activeProject.id })"
-      >
-        <Sparkles class="sm" />
-      </button>
-      <button
-        class="icon-btn small"
-        title="Open a topic — one named branch across every repository it touches"
-        @click="state.topicDialogOpen = true"
-      >
-        <Plus class="sm" />
-      </button>
-      <!-- §7 - one folder per repository, inside the project folder. Beside
-           the topic button because it is the same kind of act: adding
-           something to the project rather than looking at what is in it. -->
-      <button
-        class="icon-btn small"
-        title="Add a repository — a new one, a clone, or a folder moved in"
-        @click="addRepoTo(activeProject.id)"
-      >
-        <FolderPlus class="sm" />
-      </button>
       <button class="icon-btn small" title="Refresh everything" @click="refresh">
         <RefreshCw class="sm" />
       </button>
@@ -196,29 +208,67 @@ const ATTENTION_TEXT: Record<string, string> = {
   border-right: 1px solid var(--line);
 }
 
+/* The same height and surface as the conversation's bar, so the two columns
+   are headed on one line. Also a place to pick the window up. */
+.top {
+  -webkit-app-region: drag;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* Fixed, not a minimum: nothing in this header wraps, so a height it can
+     only meet exactly is one less thing that can quietly grow. */
+  height: 52px;
+  padding: 0 8px 0 14px;
+  background: var(--panel-raised);
+  border-bottom: 1px solid var(--line);
+}
+.top button { -webkit-app-region: no-drag; }
+.pname {
+  min-width: 0;
+  line-height: 1;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.top .grow { flex: 1; }
+/* Full size in the header, where they sit beside 28px controls in the bar to
+   the right; the `.small` variant stays for the 38px foot, which is a strip
+   rather than a header. */
+.top .icon-btn { width: 28px; height: 28px; }
+/* The agent is the one act here that is not administrative. */
+.top .go:hover { color: var(--agent); background: var(--agent-soft); }
+
 .scroll {
   flex: 1;
   overflow-y: auto;
-  /* The column starts at its own top edge now that the search field has gone
-     up into the band: --col-top is the same inset the rail and the third
-     column take, so all three begin on one line. */
-  padding: var(--col-top) 10px 12px;
+  padding: 8px 10px 12px;
 }
 
-.group + .group { margin-top: 14px; }
+/* One rhythm down the whole column. This was 14px, which is a paragraph
+   break — right between two paragraphs, wrong between two rows of the same
+   list, and worst of all when both topics are folded and the gap is the only
+   thing between two headers. */
+.group + .group { margin-top: 5px; }
 
 /* Same shape as a row, one step up in weight: it is selected the same way,
-   and the rows beneath it are what it holds. */
+   and the rows beneath it are what it holds. The *same height* as one, too —
+   padding rather than a height let it drift two pixels off the rows below it,
+   and a list whose headers and rows keep different rhythms reads as loose
+   however tight either one is. */
 .group-head {
   display: flex;
   align-items: center;
   gap: 7px;
   width: 100%;
-  padding: 7px 11px;
-  margin-bottom: 2px;
+  height: var(--row-h);
+  padding: 0 11px;
+  margin-bottom: 1px;
   border-radius: var(--radius-sm);
   text-align: left;
-  position: relative;
   transition: background var(--dur-1) var(--ease-soft);
 }
 .group-head:hover { background: var(--hover); }
@@ -259,16 +309,6 @@ const ATTENTION_TEXT: Record<string, string> = {
   border-radius: 50%;
   background: var(--accent);
 }
-.group-head.selected::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 7px;
-  bottom: 7px;
-  width: 2px;
-  border-radius: 0 2px 2px 0;
-  background: var(--accent);
-}
 .group-head.selected .gi { color: var(--accent); }
 .gi { color: var(--text-dim); }
 .title {
@@ -300,7 +340,9 @@ const ATTENTION_TEXT: Record<string, string> = {
 /* Live reads as a state of the header, not as a badge to hunt for. */
 .group-head.running .gi { color: var(--ok); }
 
-.divider { padding: 16px 11px 6px; }
+/* A label, not a section break: it names what follows and gets the air of one
+   row, not of a chapter. */
+.divider { padding: 9px 11px 3px; }
 
 .foot {
   flex: none;

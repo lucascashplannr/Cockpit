@@ -14,15 +14,11 @@ import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import HomeView from './components/HomeView.vue'
 import ReviewTools from './components/ReviewTools.vue'
-import WorkspaceActions from './components/WorkspaceActions.vue'
-import TopicActions from './components/TopicActions.vue'
-import WorkspaceTitle from './components/WorkspaceTitle.vue'
-import GlobalSearch from './components/GlobalSearch.vue'
 import TrafficLights from './components/TrafficLights.vue'
 import ColumnSplitter from './components/ColumnSplitter.vue'
 import {
   LAYOUT_LIMITS, activeWorkspace, canLeaveHome, client, state, goTo, guard, keyTargets, layout,
-  requestPlan, resetColumnWidth, saveLayout, selectedTopicGroup, setColumnWidth,
+  requestPlan, resetColumnWidth, saveLayout, setColumnWidth,
 } from './core/store.js'
 
 /**
@@ -122,24 +118,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 <template>
   <div class="shell" :style="shellStyle">
-    <!-- One band across the top, the way macOS apps carry their chrome: the
-         traffic lights and the mark on a single row rather than stacked in a
-         60px-wide rail. The lights grey out when the window loses focus, and
-         the mark beside them keeps the corner from reading as empty. -->
-    <header class="titlebar">
-      <span class="lead" />
-      <div class="title"><WorkspaceTitle /></div>
-      <span class="grow" />
-      <!-- ⌘K is not about the selected workspace, so it is not in its column:
-           it searches everything, and it sits in the window's own chrome. -->
-      <GlobalSearch />
-      <span class="grow" />
-      <!-- The verbs of whatever is selected. A topic is selectable too, and
-           when it is the one selected, these are its verbs (§4). -->
-      <TopicActions v-if="selectedTopicGroup" :group="selectedTopicGroup" />
-      <WorkspaceActions v-else />
-    </header>
-
+    <!-- No title band. It held the selected thing's name and its verbs, and
+         both went down to the column they are about (ContextPanel); what was
+         left was fifty pixels of window carrying one search field. The
+         traffic lights never needed it — they are drawn, and fixed, and float
+         over whatever is beneath them (TrafficLights) — so the columns run to
+         the top of the window and the rail simply keeps its head down. -->
     <ProjectRail />
     <WorkspaceList />
     <ContextPanel />
@@ -203,7 +187,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 <style scoped>
 .shell {
   display: grid;
-  grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   background: var(--bg);
   position: relative;
@@ -215,44 +199,5 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
    a fresh install starts from, not the running values. */
 .reviewcol { border-left: 1px solid var(--line); background: var(--bg); }
 
-.titlebar {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  padding-right: 18px;
-  /* Continuous with the rail below it, so the two read as one chrome surface. */
-  background: var(--bg-sunken);
-  border-bottom: 1px solid var(--line);
-  -webkit-app-region: drag;
-}
-/* Two of them, so the search field lands in the middle of the band rather
-   than against whichever side has less in it. */
-.grow { flex: 1; min-width: 12px; }
-
-/* The rail's own width, holding nothing: macOS paints its three lights here.
-   Carrying the rail's right border up through the band means the divider the
-   eye sees beside the lights is the same line the rail draws below. */
-.lead {
-  width: var(--rail-w);
-  height: 100%;
-  flex: none;
-  border-right: 1px solid var(--line);
-}
-
-/* The title starts at x = rail + 12: the exact left edge of the search field
-   in the column below it. Beware naming rules here after a child's root class —
-   Vue stamps this component's scope id onto a child component's root node too,
-   so `.home` (HomeView) or `.brand` (Mark) would silently restyle them. */
-/* x = rail + 12: the exact left edge of the search field in the column below.
-   Beware naming a rule here after a child component's root class — Vue stamps
-   this component's scope id onto that root too, so `.home` (HomeView) or
-   `.brand` (Mark) would silently restyle the whole child. */
-.title {
-  margin-left: 12px;
-  min-width: 0;
-}
-
-/* Between the title and the verbs the band is one flex row, and every part of
-   it has to be able to give width back. */
-.titlebar > * { min-width: 0; }
+.reviewcol { border-left: 1px solid var(--line); background: var(--bg); }
 </style>

@@ -6,12 +6,12 @@ import {
 import { activeWorkspace, client, guard, requestPlan } from '../core/store.js'
 
 /**
- * The verbs for the selected workspace, living in the title band.
+ * The verbs for the selected workspace, on the bar of the column it is about.
  *
- * They used to sit in the third column's title row, which pinned them to the
- * far right of a very wide column with nothing around them. The band is
- * window-wide chrome and had an empty half; putting them there balances it
- * against the mark on the left and gives the column its title row back.
+ * They spent a while in the window's title band, which balanced that band but
+ * put them across all four columns — and dragged the workspace's *name* up
+ * there with them, purely so they would have a subject beside them. Both are
+ * back beside the thing they act on.
  *
  * §3.9 still governs what is drawn: no workspace, no verbs; no git, no rebase.
  */
@@ -54,20 +54,42 @@ async function undo() {
 
 <template>
   <div v-if="w" class="verbs">
-    <button v-if="w.runtime" class="btn ghost" @click="toggleRuntime">
+    <button
+      v-if="w.runtime"
+      class="btn ghost"
+      :title="w.runtime.status === 'up' ? 'Stop the servers' : 'Start the servers'"
+      @click="toggleRuntime"
+    >
       <component :is="w.runtime.status === 'up' ? CircleStop : CirclePlay" />
-      {{ w.runtime.status === 'up' ? 'Stop' : 'Start' }}
+      <span class="vl">{{ w.runtime.status === 'up' ? 'Stop' : 'Start' }}</span>
     </button>
-    <button v-if="preview && preview.kind === 'url'" class="btn ghost" @click="openPreview">
-      <AppWindow />Preview
+    <button
+      v-if="preview && preview.kind === 'url'"
+      class="btn ghost"
+      title="Open this workspace's preview"
+      @click="openPreview"
+    >
+      <AppWindow /><span class="vl">Preview</span>
     </button>
-    <button class="btn ghost" @click="openIde"><FileCode />IDE</button>
+    <button class="btn ghost" title="Open in the configured editor" @click="openIde">
+      <FileCode /><span class="vl">IDE</span>
+    </button>
     <span v-if="w.git" class="vrule" />
-    <button v-if="w.git && !midOperation" class="btn ghost" @click="requestPlan(w.id, 'rebase')">
-      <GitCompareArrows />Rebase
+    <button
+      v-if="w.git && !midOperation"
+      class="btn ghost"
+      title="Rebase onto the base branch"
+      @click="requestPlan(w.id, 'rebase')"
+    >
+      <GitCompareArrows /><span class="vl">Rebase</span>
     </button>
-    <button v-if="w.git && !midOperation" class="btn ghost" @click="requestPlan(w.id, 'push')">
-      <ArrowUpFromLine />Push
+    <button
+      v-if="w.git && !midOperation"
+      class="btn ghost"
+      title="Push this branch"
+      @click="requestPlan(w.id, 'push')"
+    >
+      <ArrowUpFromLine /><span class="vl">Push</span>
     </button>
     <button
       v-if="w.git && !midOperation"
@@ -86,25 +108,35 @@ async function undo() {
   align-items: center;
   gap: 3px;
   flex: none;
-  /* The band is the window's drag strip; without this it eats every click. */
-  -webkit-app-region: no-drag;
 }
-/* Only 2px shorter than a standard .btn, and on the app's normal type and icon
-   scale. The earlier 28px/12px shrink was there to fit a 44px band, and it
-   made the primary verbs of the window read as the smallest controls in it. */
+/* Sized for the column bar rather than for a 50px band: the same height as the
+   instruments beside them, so the row reads as one strip of controls and not
+   as verbs visiting from somewhere else. */
 .verbs .btn {
-  height: 30px;
-  padding: 0 11px;
+  height: 28px;
+  padding: 0 9px;
+  font-size: var(--fs-xs);
+  gap: 6px;
   border-color: transparent;
   background: transparent;
   box-shadow: none;
+  color: var(--text-muted);
 }
-.verbs .btn:hover:not(:disabled) { background: var(--hover); border-color: var(--line); }
-.verbs .icon-btn { width: 30px; height: 30px; }
+.verbs .btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.verbs .icon-btn { width: 28px; height: 28px; }
+.verbs .btn .lucide { width: 14px; height: 14px; }
 .vrule {
   width: 1px;
-  height: 18px;
-  margin: 0 7px;
+  height: 16px;
+  margin: 0 5px;
   background: var(--line);
+}
+
+/* Narrow column: the icons carry the verbs on their own. Every one of them
+   keeps its tooltip, so nothing becomes unnameable — it becomes unlabelled,
+   which is the trade a 380px column is asking for. */
+@container (max-width: 700px) {
+  .verbs .vl { display: none; }
+  .verbs .btn { padding: 0 6px; }
 }
 </style>

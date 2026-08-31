@@ -5,7 +5,7 @@ import type { ListGroup } from '../core/store.js'
 import { startTopic, mergeTopic, stopTopic, rebaseTopic } from '../core/store.js'
 
 /**
- * §4 — the verbs of the selected topic, in the title band.
+ * §4 — the verbs of the selected topic, on the bar of the column it is about.
  *
  * They used to be four icons crowded into the list's group header, which made
  * the header read as a toolbar rather than as something you could stand on.
@@ -56,7 +56,7 @@ async function toggle() {
         : 'Merge onto the base branch — one --no-ff merge per repository'"
       @click="mergeTopic(f!.id, false)"
     >
-      <GitMerge />Merge
+      <GitMerge /><span class="vl">Merge</span>
     </button>
     <!-- One plan across every repository it spans, stopping at the first
          conflict and keeping what already replayed. -->
@@ -69,7 +69,7 @@ async function toggle() {
         : 'Rebase every repository in this topic onto its base'"
       @click="rebaseTopic(f!.id)"
     >
-      <GitCompareArrows />Rebase
+      <GitCompareArrows /><span class="vl">Rebase</span>
     </button>
     <span v-if="togglable" class="vrule" />
     <button
@@ -82,37 +82,51 @@ async function toggle() {
       @click="toggle"
     >
       <component :is="f!.state === 'running' ? Pause : Play" />
-      {{ f!.state === 'running' ? 'Stop' : 'Start' }}
+      <span class="vl">{{ f!.state === 'running' ? 'Stop' : 'Start' }}</span>
     </button>
   </div>
 </template>
 
 <style scoped>
+/* Sized for the column bar rather than for the window's title band: the same
+   height as the instruments beside them, so the row reads as one strip of
+   controls and not as verbs visiting from somewhere else. */
 .verbs {
   display: flex;
   align-items: center;
   gap: 3px;
   flex: none;
-  /* The band is the window's drag strip; without this it eats every click. */
-  -webkit-app-region: no-drag;
 }
 .verbs .btn {
-  height: 30px;
-  padding: 0 11px;
+  height: 28px;
+  padding: 0 9px;
+  font-size: var(--fs-xs);
+  gap: 6px;
   border-color: transparent;
   background: transparent;
   box-shadow: none;
+  color: var(--text-muted);
 }
-.verbs .btn:hover:not(:disabled) { background: var(--hover); border-color: var(--line); }
+.verbs .btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.verbs .btn .lucide { width: 14px; height: 14px; }
+.vrule {
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: var(--line);
+}
+
+/* Narrow column: the icons carry the verbs on their own. Every one keeps its
+   tooltip, so nothing becomes unnameable — it becomes unlabelled, which is the
+   trade a 380px column is asking for. */
+@container (max-width: 700px) {
+  .verbs .vl { display: none; }
+  .verbs .btn { padding: 0 6px; }
+}
+
 /* Behind its base is the one state where rebasing is the next thing to do. */
 .nudge { color: var(--warn); }
 /* Committed and ahead: landing is the next thing, so it says so. */
 .ready { color: var(--ok); }
 .toggle.on { color: var(--ok); }
-.vrule {
-  width: 1px;
-  height: 18px;
-  margin: 0 7px;
-  background: var(--line);
-}
 </style>

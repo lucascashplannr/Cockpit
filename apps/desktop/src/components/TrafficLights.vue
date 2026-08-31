@@ -48,7 +48,8 @@ import { hostWindow } from '../core/store.js'
 
 <style scoped>
 /* The geometry the native buttons had: 10px in from the window's left edge,
-   centred in the 50px band (--titlebar-h), 12px circles 8px apart. Fixed and
+   at the offset the window was told to expect (trafficLightPosition in
+   main.cjs), 12px circles 8px apart. Fixed and
    above the start page, which covers the band the way it covers everything
    else. */
 .lights {
