@@ -549,6 +549,72 @@ function saveThreads(): void {
   localStorage.setItem(THREADS_KEY, JSON.stringify(threads))
 }
 
+/* ── how wide the columns are ─────────────────────────────────────────── */
+
+const LAYOUT_KEY = 'cockpit.layout'
+
+/**
+ * §12's three columns, with their widths handed back to the user.
+ *
+ * They were constants in `tokens.css` — the right default, the wrong final
+ * answer: how much room the list needs against the conversation is a property
+ * of the work rather than of the app. A project of twenty branches wants a
+ * wide list; reading a long diff wants a wide review; neither wants the other.
+ *
+ * The rail is not in here. It holds one column of icons and has one correct
+ * width, so a handle on it would offer a choice with no good answers.
+ */
+export const LAYOUT_LIMITS = {
+  /** Below 200 the branch names ellipsis away and the list stops being one. */
+  list: { min: 200, max: 620 },
+  /**
+   * 440 — the shipped default — is the least a side-by-side diff hunk fits in
+   * without wrapping every line. The floor is lower than that on purpose:
+   * under 620 the review stacks its list above its viewer (a container query
+   * in ReviewTools), and stacked, a narrow column is a deliberate choice
+   * rather than a broken one.
+   */
+  review: { min: 320, max: 900 },
+}
+
+/** What a fresh install starts from, and what a double-click goes back to. */
+export const LAYOUT_DEFAULTS = { list: 340, review: 440 }
+
+export const layout = reactive(readLayout())
+
+function readLayout(): { list: number; review: number } {
+  const fallback = { ...LAYOUT_DEFAULTS }
+  try {
+    const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<typeof fallback> | null
+    if (!raw) return fallback
+    return {
+      list: clampTo(raw.list ?? fallback.list, LAYOUT_LIMITS.list),
+      review: clampTo(raw.review ?? fallback.review, LAYOUT_LIMITS.review),
+    }
+  } catch {
+    return fallback
+  }
+}
+
+function clampTo(n: number, l: { min: number; max: number }): number {
+  return Number.isFinite(n) ? Math.min(l.max, Math.max(l.min, Math.round(n))) : l.min
+}
+
+/** Live during a drag; only written to disk when the pointer is let go. */
+export function setColumnWidth(which: 'list' | 'review', px: number): void {
+  layout[which] = clampTo(px, LAYOUT_LIMITS[which])
+}
+
+export function saveLayout(): void {
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout))
+}
+
+/** Double-clicking a divider: back to the width the app shipped with. */
+export function resetColumnWidth(which: 'list' | 'review'): void {
+  layout[which] = LAYOUT_DEFAULTS[which]
+  saveLayout()
+}
+
 /* ── which topics are folded away ─────────────────────────────────────── */
 
 const COLLAPSED_KEY = 'cockpit.collapsed'

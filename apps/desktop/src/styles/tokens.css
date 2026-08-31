@@ -92,10 +92,6 @@
      rail is sized around them: 52 + 10 either side. Everything else in the rail
      is then centred on that width. */
   --rail-w: 72px;
-  --list-w: 340px;
-  /* The review layer's `panel` candidate. 440px is the least a side-by-side
-     diff hunk fits in without wrapping every line. */
-  --review-w: 440px;
   /* The title band spans the window and carries the workspace's name and its
      verbs. It is sized around the tallest thing in it — a 30px button — not
      around the 12px traffic lights: at 44px the buttons cleared the band's

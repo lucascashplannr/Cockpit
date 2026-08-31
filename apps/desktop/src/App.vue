@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import ProjectRail from './components/ProjectRail.vue'
 import WorkspaceList from './components/WorkspaceList.vue'
 import ContextPanel from './components/ContextPanel.vue'
@@ -19,9 +19,10 @@ import TopicActions from './components/TopicActions.vue'
 import WorkspaceTitle from './components/WorkspaceTitle.vue'
 import GlobalSearch from './components/GlobalSearch.vue'
 import TrafficLights from './components/TrafficLights.vue'
+import ColumnSplitter from './components/ColumnSplitter.vue'
 import {
-  activeWorkspace, canLeaveHome, client, state, goTo, guard, keyTargets, requestPlan,
-  selectedTopicGroup,
+  LAYOUT_LIMITS, activeWorkspace, canLeaveHome, client, state, goTo, guard, keyTargets, layout,
+  requestPlan, resetColumnWidth, saveLayout, selectedTopicGroup, setColumnWidth,
 } from './core/store.js'
 
 /**
@@ -103,15 +104,24 @@ function onKey(e: KeyboardEvent) {
   }
 }
 
+/**
+ * The grid, from the widths the user chose. Written as an inline style rather
+ * than by re-declaring `grid-template-columns` per state: the review column
+ * appears and disappears, and one expression that knows both facts is easier
+ * to keep true than two rules that must agree.
+ */
+const shellStyle = computed(() => ({
+  gridTemplateColumns:
+    `var(--rail-w) ${layout.list}px minmax(0, 1fr)` +
+    (state.reviewOpen && activeWorkspace.value ? ` ${layout.review}px` : ''),
+}))
+
 onMounted(() => window.addEventListener('keydown', onKey))
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>
 
 <template>
-  <div
-    class="shell"
-    :class="{ withreview: state.reviewOpen && !!activeWorkspace }"
-  >
+  <div class="shell" :style="shellStyle">
     <!-- One band across the top, the way macOS apps carry their chrome: the
          traffic lights and the mark on a single row rather than stacked in a
          60px-wide rail. The lights grey out when the window loses focus, and
@@ -141,6 +151,35 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       class="reviewcol"
     />
 
+    <!-- The lines between the columns, over the borders they thicken. Placed
+         here rather than inside each column because a splitter belongs to the
+         boundary, not to either side of it. -->
+    <ColumnSplitter
+      class="sp"
+      :style="{ left: `calc(var(--rail-w) + ${layout.list}px - 3px)` }"
+      :width="layout.list"
+      :min="LAYOUT_LIMITS.list.min"
+      :max="LAYOUT_LIMITS.list.max"
+      grows="right"
+      label="Width of the workspace list"
+      @resize="setColumnWidth('list', $event)"
+      @done="saveLayout"
+      @reset="resetColumnWidth('list')"
+    />
+    <ColumnSplitter
+      v-if="state.reviewOpen && activeWorkspace"
+      class="sp"
+      :style="{ right: `${layout.review - 3}px` }"
+      :width="layout.review"
+      :min="LAYOUT_LIMITS.review.min"
+      :max="LAYOUT_LIMITS.review.max"
+      grows="left"
+      label="Width of the review column"
+      @resize="setColumnWidth('review', $event)"
+      @done="saveLayout"
+      @reset="resetColumnWidth('review')"
+    />
+
     <CommandPalette v-if="state.paletteOpen" />
     <PlanDialog v-if="state.pendingPlan" />
     <ProjectDialog />
@@ -165,17 +204,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .shell {
   display: grid;
   grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
-  grid-template-columns: var(--rail-w) var(--list-w) minmax(0, 1fr);
   height: 100vh;
   background: var(--bg);
   position: relative;
 }
 
 /* Layer 3 as a fourth column. The conversation gives up the width, not the
-   list: the list is how you got here, and it is also how a chat is opened. */
-.shell.withreview {
-  grid-template-columns: var(--rail-w) var(--list-w) minmax(0, 1fr) var(--review-w);
-}
+   list: the list is how you got here, and it is also how a chat is opened.
+   The columns themselves come from `shellStyle` — the tokens are the defaults
+   a fresh install starts from, not the running values. */
 .reviewcol { border-left: 1px solid var(--line); background: var(--bg); }
 
 .titlebar {
