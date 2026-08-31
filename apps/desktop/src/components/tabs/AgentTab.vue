@@ -2,8 +2,8 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
 import {
-  ArrowDown, BookMarked, CircleAlert, CircleStop, Clock, Hand, History, Lock, ShieldCheck,
-  Redo2, Sparkles, Undo2, X,
+  ArrowDown, BookMarked, CircleAlert, CircleStop, Clock, Gauge, Hand, History, Lock,
+  Redo2, ShieldCheck, Sparkles, Undo2, X,
 } from '@lucide/vue'
 import MemoryTab from './MemoryTab.vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -13,7 +13,7 @@ import Composer from '../agent/Composer.vue'
 import {
   activeAgentScope, agentDraft, attentionOf, client, closeThread, guard, isRunning,
   askRevert, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
-  sendTurn, sessionsForScope, startAgentIn, state, toast, transcriptOf,
+  sendTurn, sessionsForScope, startAgentIn, startFresh, state, toast, transcriptOf,
 } from '../../core/store.js'
 import type { Attention } from '../../core/store.js'
 
@@ -471,6 +471,66 @@ onMounted(async () => {
   if (firstAvailable) engine.value = firstAvailable.id
 })
 
+/* ── §16, what it cost; §6, how full it is ───────────────────────────────
+ *
+ * The numbers were on the floor: the engine reports usage and cost on every
+ * result event and the parser dropped both. §16 asks for cost outright, and
+ * §6's whole argument is that a conversation whose window is filling up is one
+ * about to drift — which nobody can act on if nothing says it.
+ */
+
+/**
+ * 15535 → "15.5k", 228_400 → "228k".
+ *
+ * The decimal is kept to 100k because that is the range a context meter lives
+ * in: rounding 15.5k to "16k" throws away precision exactly where the number
+ * is being watched change.
+ */
+function k(n: number): string {
+  if (n < 1000) return String(n)
+  const t = n / 1000
+  return (t < 100 ? t.toFixed(1) : Math.round(t)) + 'k'
+}
+
+/**
+ * Money at the precision the number deserves. A tenth of a cent rounded to
+ * "$0.00" reads as free, which is the one thing a cost display must never say.
+ */
+function money(n: number): string {
+  if (n >= 1) return '$' + n.toFixed(2)
+  if (n >= 0.01) return '$' + n.toFixed(3)
+  return n > 0 ? '$' + n.toFixed(4) : '$0'
+}
+
+function secs(from: number, to: number | null): string {
+  if (!to) return ''
+  const ms = to - from
+  if (ms < 1000) return ms + 'ms'
+  if (ms < 60_000) return (ms / 1000).toFixed(1) + 's'
+  const m = Math.floor(ms / 60_000)
+  return m + 'm ' + Math.round((ms % 60_000) / 1000) + 's'
+}
+
+/** Where the conversation stands against its own window. */
+const ctx = computed(() => {
+  const u = selected.value?.usage
+  if (!u || !u.contextWindow) return null
+  return {
+    ...u,
+    pct: Math.min(100, Math.round((u.contextTokens / u.contextWindow) * 100)),
+  }
+})
+
+/**
+ * §6 — "vider devient gratuit : la conversation part, la mémoire reste."
+ *
+ * The threshold is where a window stops being a curiosity and starts being the
+ * reason answers are getting worse. Said once, with the two things that
+ * actually help beside it, rather than as a colour nobody has been taught.
+ */
+const CROWDED = 70
+const crowded = computed(() => (ctx.value?.pct ?? 0) >= CROWDED)
+
 /* ── presentation ──────────────────────────────────────────────────────── */
 
 function ago(ts: number): string {
@@ -621,6 +681,23 @@ function dotClass(s: Conversation): string {
           <!-- Running is the one state worth a word: it is why the panel comes
                back to this thread rather than to an empty composer. -->
           <span v-if="isRunning(selected)" class="live">working</span>
+
+          <!-- §6 + §16 — how full the window is, and what the thread has cost.
+               In this bar because both are facts about the conversation, and
+               this is the conversation's own line. -->
+          <span
+            v-if="ctx"
+            class="ctx"
+            :class="{ crowded }"
+            :title="
+              k(ctx.contextTokens) + ' of ' + k(ctx.contextWindow) + ' tokens in context' +
+              (ctx.model ? ' · ' + ctx.model : '') + ' · ' + money(ctx.costUsd) + ' so far'
+            "
+          >
+            <span class="gauge"><i :style="{ width: Math.max(2, ctx.pct) + '%' }" /></span>
+            <span class="num">{{ ctx.pct }}%</span>
+            <span class="num cost">{{ money(ctx.costUsd) }}</span>
+          </span>
           <span v-else-if="selected.denials.length" class="needs blocked chip warn" :title="'refused: ' + selected.denials.join(', ')">
             <Hand class="sm" /> needs you
           </span>
@@ -718,6 +795,18 @@ function dotClass(s: Conversation): string {
             </p>
           </template>
 
+          <!-- What the turn cost, under it, at the weight of a receipt. Only
+               once it has landed: a running turn has no total yet, and a zero
+               would be a claim rather than a blank. -->
+          <p v-if="x.turn.usage" class="meter">
+            <span>{{ k(x.turn.usage.context) }} ctx</span>
+            <span>{{ k(x.turn.usage.output) }} out</span>
+            <span v-if="secs(x.turn.startedAt, x.turn.endedAt)">
+              {{ secs(x.turn.startedAt, x.turn.endedAt) }}
+            </span>
+            <span v-if="x.turn.usage.costUsd">{{ money(x.turn.usage.costUsd) }}</span>
+          </p>
+
           <!-- The sentence as it is being written. Same shape as a finished
                message on purpose: it *is* that message, a moment early, and the
                durable event replaces it in place without anything moving. -->
@@ -750,6 +839,20 @@ function dotClass(s: Conversation): string {
       </button>
 
       <footer class="foot">
+        <!-- §6 — "vider devient gratuit : la conversation part, la mémoire
+             reste". The one moment that sentence is actionable is this one, so
+             it is said here rather than in a document. -->
+        <p v-if="crowded" class="crowd">
+          <Gauge class="sm" />
+          <span>
+            The window is {{ ctx?.pct }}% full — answers get worse from here.
+            Promote what matters to the memory, then start fresh: the next
+            conversation reads it on the way in.
+          </span>
+          <button class="link" @click="state.memoryOpen = true">Memory</button>
+          <button class="link go" @click="scope && startFresh(scope)">Start fresh</button>
+        </p>
+
         <Composer
           :mode="queueing ? 'queue' : continuing ? 'continue' : 'start'"
           :disabled="!canSend"
@@ -924,6 +1027,76 @@ function dotClass(s: Conversation): string {
   white-space: pre-wrap;
 }
 .thinking { color: var(--text-dim); font-size: var(--fs-xs); font-style: italic; }
+
+/* ── §16, the receipt ─────────────────────────────────────────────────────
+ *
+ * Under the turn, at the weight of a footnote: worth being able to find, never
+ * worth reading before the answer it belongs to.
+ */
+.meter {
+  display: flex;
+  gap: 12px;
+  margin: 6px 0 0 30px;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── §6, the window ─────────────────────────────────────────────────────── */
+.ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.gauge {
+  width: 46px;
+  height: 3px;
+  flex: none;
+  border-radius: 2px;
+  background: var(--line-strong);
+  overflow: hidden;
+}
+.gauge i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--text-dim);
+  transition: width var(--dur-3) var(--ease-soft);
+}
+/* Only once it means something. A gauge coloured from 4% teaches nobody where
+   the line is. */
+.ctx.crowded { color: var(--warn); }
+.ctx.crowded .gauge i { background: var(--warn); }
+
+.crowd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--warn-soft);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--warn);
+}
+.crowd .lucide { flex: none; }
+.crowd span { flex: 1; }
+.crowd .link {
+  flex: none;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-size: inherit;
+  white-space: nowrap;
+}
+.crowd .link:hover { color: var(--text); }
+.crowd .link.go { font-weight: 650; }
 
 /* ── the undo, above the question it would take you back before ──────────
  *

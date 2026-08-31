@@ -268,6 +268,21 @@ function migrate(d: Db): void {
   // finished, and the window has no way to tell them apart without this.
   addColumn(d, 'agent_sessions', 'denials', "TEXT NOT NULL DEFAULT '[]'")
 
+  // §16 — "Coût affiché", and §6's whole argument: a conversation whose window
+  // is filling up is one about to drift, and nothing could say so. Columns
+  // rather than a table: they belong to exactly one turn and are read with it.
+  // `cost_usd` already exists on agent_turns — vestigial until now.
+  addColumn(d, 'agent_turns', 'input_tokens', 'INTEGER NOT NULL DEFAULT 0')
+  addColumn(d, 'agent_turns', 'output_tokens', 'INTEGER NOT NULL DEFAULT 0')
+  addColumn(d, 'agent_turns', 'cache_read', 'INTEGER NOT NULL DEFAULT 0')
+  addColumn(d, 'agent_turns', 'cache_creation', 'INTEGER NOT NULL DEFAULT 0')
+  // How full the window was, and how big it is. The second is engine-reported
+  // per turn rather than assumed, so a model change mid-conversation reads
+  // correctly instead of being measured against the wrong denominator.
+  addColumn(d, 'agent_turns', 'context_tokens', 'INTEGER NOT NULL DEFAULT 0')
+  addColumn(d, 'agent_turns', 'context_window', 'INTEGER NOT NULL DEFAULT 0')
+  addColumn(d, 'agent_turns', 'model', "TEXT NOT NULL DEFAULT ''")
+
   d.exec(`
     -- §6 — the conversation. Append-only: a resume adds a row, it never
     -- overwrites the question that opened the thread.

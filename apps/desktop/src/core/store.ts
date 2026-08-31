@@ -575,6 +575,14 @@ interface ThreadMemory {
   /** session id → the `endedAt` that has been read. */
   read: Record<string, number>
   /**
+   * scopeKey → composing a new conversation here.
+   *
+   * Distinct from `closed` on purpose: putting a thread away means lead with
+   * something else, and the something else is usually the conversation before
+   * it. This means show an empty box — which is what §6's "start fresh" is.
+   */
+  fresh: Record<string, true>
+  /**
    * When this window first learned to track any of the above. Every
    * conversation that ended before it counts as read — otherwise switching to
    * a build that has this would light up every project in the rail at once
@@ -586,7 +594,7 @@ interface ThreadMemory {
 export const threads = reactive<ThreadMemory>(readThreads())
 
 function readThreads(): ThreadMemory {
-  const empty: ThreadMemory = { pinned: {}, closed: {}, read: {}, since: Date.now() }
+  const empty: ThreadMemory = { pinned: {}, closed: {}, read: {}, fresh: {}, since: Date.now() }
   try {
     const raw = JSON.parse(localStorage.getItem(THREADS_KEY) ?? 'null') as Partial<ThreadMemory> | null
     if (!raw || typeof raw !== 'object') return empty
@@ -594,6 +602,7 @@ function readThreads(): ThreadMemory {
       pinned: raw.pinned ?? {},
       closed: raw.closed ?? {},
       read: raw.read ?? {},
+      fresh: raw.fresh ?? {},
       since: typeof raw.since === 'number' ? raw.since : empty.since,
     }
   } catch {
@@ -845,6 +854,10 @@ export function activityFor(kind: 'workspace' | 'topic' | 'project', id: string)
  */
 export function openThreadFor(scope: AgentScope | null): Conversation | null {
   if (!scope) return null
+  // §6 — deliberately composing a new one. Not the same as having put a thread
+  // away: `closeThread` means "lead with something else", and would happily
+  // lead with the conversation before it. This means "an empty box, here".
+  if (threads.fresh[scopeKey(scope)]) return null
   const all = [...sessionsForScope(scope)].sort((a, b) => b.startedAt - a.startedAt)
   const pinned = all.find((c) => c.id === threads.pinned[scopeKey(scope)])
   if (pinned) return pinned
@@ -856,6 +869,21 @@ export function openThreadFor(scope: AgentScope | null): Conversation | null {
 export function pinThread(scope: AgentScope, sessionId: string): void {
   threads.pinned[scopeKey(scope)] = sessionId
   delete threads.closed[sessionId]
+  // Opening a conversation is the opposite of composing a new one.
+  delete threads.fresh[scopeKey(scope)]
+  saveThreads()
+}
+
+/**
+ * §6 — "vider devient gratuit : la conversation part, la mémoire reste."
+ *
+ * An empty composer on this scope, with every existing thread left exactly
+ * where it is: nothing is closed, nothing is lost, and the history still has
+ * all of it. The next question starts a conversation that reads the memory on
+ * the way in, which is the whole of what makes clearing free.
+ */
+export function startFresh(scope: AgentScope): void {
+  threads.fresh[scopeKey(scope)] = true
   saveThreads()
 }
 

@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
 import { newId } from '@cockpit/shared'
-import type { AgentScope, Conversation, AgentTurn } from '@cockpit/shared'
+import type { AgentScope, Conversation, AgentTurn, TurnUsage } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { append, recordTouch } from './journal.js'
 import { which } from './exec.js'
@@ -107,7 +107,17 @@ export const DEFAULT_DENY = ['Bash(git push:*)', 'Bash(git commit:*)']
 export const DEFAULT_ALLOW = DEFAULT_TOOLS
 
 export interface NormalizedEvent {
-  kind: 'ready' | 'message_start' | 'delta' | 'text' | 'tool' | 'tool_result' | 'end' | 'error'
+  kind:
+    | 'ready'
+    | 'message_start'
+    | 'delta'
+    | 'text'
+    | 'tool'
+    | 'tool_result'
+    /** §16 — what the turn cost and how full the window is. Engine-reported. */
+    | 'usage'
+    | 'end'
+    | 'error'
   /** `delta` / `text`: what was written. `end`: the closing message. */
   text?: string
   /** Which message this belongs to, so two in flight cannot be merged (§3.3). */
@@ -124,6 +134,20 @@ export interface NormalizedEvent {
   interrupted?: boolean
   /** `end` only: the invocations §16 refused during this turn. */
   denials?: string[]
+  /**
+   * `usage` only. `costUsd` is the engine's *running total for its process*,
+   * not this turn's — the driver takes the delta, which is also what keeps a
+   * resumed conversation adding up instead of starting over.
+   */
+  usage?: {
+    input: number
+    output: number
+    cacheRead: number
+    cacheCreation: number
+    window: number
+    cumulativeCostUsd: number
+    model: string
+  }
 }
 
 export interface EngineSpec {
@@ -298,7 +322,13 @@ const claudeEngine: EngineSpec = {
     // In a streaming session this fires at the end of every *turn*, not of the
     // process — which is exactly the boundary a turn should be closed on.
     if (type === 'result') {
-      return [{ kind: 'end', text: String(o.result ?? ''), denials: denialsIn(o) }]
+      const u = usageIn(o)
+      // Usage before the end: the turn is closed on `end`, and a number that
+      // arrives after the row is written is a number nobody stores.
+      return [
+        ...(u ? [{ kind: 'usage' as const, usage: u }] : []),
+        { kind: 'end' as const, text: String(o.result ?? ''), denials: denialsIn(o) },
+      ]
     }
     return []
   },
@@ -313,6 +343,47 @@ const claudeEngine: EngineSpec = {
  * The command is kept, not just the tool name. "Bash was refused" says nothing
  * a person can act on; "git push" says exactly which of §16's lines it crossed.
  */
+/**
+ * §16 — the turn's tokens and money, as the engine reports them.
+ *
+ * Read from the result event rather than accumulated from the assistant
+ * messages: those repeat the same prompt figures for every message in a turn,
+ * so summing them counts the conversation once per sentence.
+ *
+ * `contextWindow` comes from `modelUsage`, which is the whole reason the meter
+ * can be honest — the engine names the window of the model it actually used,
+ * so nothing here has to keep a table of model sizes that silently goes stale.
+ */
+function usageIn(o: Record<string, unknown>): NormalizedEvent['usage'] | null {
+  const u = o.usage as Record<string, unknown> | undefined
+  if (!u) return null
+  const n = (v: unknown): number => (typeof v === 'number' && isFinite(v) ? v : 0)
+
+  // `modelUsage` is keyed by the model that answered. More than one key means
+  // a sub-agent ran on another model; the window that matters is the main
+  // conversation's, which is the largest one on offer.
+  let window = 0
+  let model = ''
+  const mu = o.modelUsage as Record<string, { contextWindow?: unknown; canonicalModel?: unknown }> | undefined
+  for (const [key, v] of Object.entries(mu ?? {})) {
+    const w = n(v?.contextWindow)
+    if (w > window) {
+      window = w
+      model = typeof v?.canonicalModel === 'string' ? v.canonicalModel : key
+    }
+  }
+
+  return {
+    input: n(u.input_tokens),
+    output: n(u.output_tokens),
+    cacheRead: n(u.cache_read_input_tokens),
+    cacheCreation: n(u.cache_creation_input_tokens),
+    window,
+    cumulativeCostUsd: n(o.total_cost_usd),
+    model,
+  }
+}
+
 function denialsIn(o: Record<string, unknown>): string[] {
   const raw = o.permission_denials
   if (!Array.isArray(raw)) return []
@@ -389,6 +460,17 @@ interface Live {
   calls: Map<string, { tool: string; input: Record<string, unknown> }>
   /** §6 — the countdown to letting the process go. See `armIdleTimer`. */
   idle: NodeJS.Timeout | null
+  /** §16 — what the turn in flight has reported, until its row is written. */
+  usage: NormalizedEvent['usage'] | null
+  /**
+   * The engine's running cost for *this process*, as of the last turn.
+   *
+   * It reports a cumulative figure, so a turn's own cost is the difference.
+   * Per process and not per conversation on purpose: a `--resume` starts a new
+   * process whose total begins again at zero, and a baseline carried across
+   * that boundary would make the first resumed turn cost a negative amount.
+   */
+  costSoFar: number
 }
 
 /**
@@ -522,11 +604,35 @@ export function turnsOf(sessionId: string): AgentTurn[] {
     startedAt: Number(r.started_at),
     endedAt: r.ended_at === null ? null : Number(r.ended_at),
     status: String(r.status) as AgentTurn['status'],
+    usage: usageOf(r),
     restorable: withCheckpoint.has(String(r.id)),
     // The undo's own snapshot is filed under a turn id derived from this one,
     // which is what lets a turn offer the way back without a second table.
     redoable: withCheckpoint.has('redo_' + String(r.id)),
   }))
+}
+
+/**
+ * A turn's numbers, or null when it has none.
+ *
+ * Null and not zeroes: a turn from before this existed, and one still in
+ * flight, both have nothing to report — and "$0.00, 0 tokens" is a claim,
+ * where an absent row is the truth.
+ */
+function usageOf(r: Record<string, unknown>): TurnUsage | null {
+  const context = Number(r.context_tokens ?? 0)
+  const output = Number(r.output_tokens ?? 0)
+  if (!context && !output) return null
+  return {
+    input: Number(r.input_tokens ?? 0),
+    output,
+    cacheRead: Number(r.cache_read ?? 0),
+    cacheCreation: Number(r.cache_creation ?? 0),
+    context,
+    window: Number(r.context_window ?? 0),
+    costUsd: Number(r.cost_usd ?? 0),
+    model: String(r.model ?? ''),
+  }
 }
 
 function openTurn(sessionId: string, prompt: string): string {
@@ -565,6 +671,46 @@ async function checkpointTurn(
     session.workspaceIds.map((id, i) => ({ workspaceId: id, path: session.paths[i] ?? session.paths[0]! })),
     reason.slice(0, 120),
   )
+}
+
+/**
+ * §16 — the turn's numbers, onto the turn that just finished.
+ *
+ * The running turn is found the same way `closeTurn` finds it, and for the
+ * same reason: the id is not carried through the driver, and the one turn in
+ * `running` state is unambiguous while a turn is in flight.
+ */
+function writeTurnUsage(
+  sessionId: string,
+  u: NonNullable<NormalizedEvent['usage']>,
+  costSoFar: number,
+): void {
+  const row = getDb()
+    .prepare("SELECT id FROM agent_turns WHERE session_id = ? AND status = 'running' ORDER BY seq DESC LIMIT 1")
+    .get(sessionId) as { id: string } | undefined
+  if (!row) return
+  // Never negative: a resumed process reports from zero, and if the baseline
+  // is ever ahead of the report the honest answer is "nothing extra", not a
+  // credit.
+  const cost = Math.max(0, u.cumulativeCostUsd - costSoFar)
+  getDb()
+    .prepare(
+      `UPDATE agent_turns SET input_tokens = ?, output_tokens = ?, cache_read = ?, cache_creation = ?,
+         context_tokens = ?, context_window = ?, model = ?, cost_usd = ? WHERE id = ?`,
+    )
+    .run(
+      u.input,
+      u.output,
+      u.cacheRead,
+      u.cacheCreation,
+      // What the model was actually sent: fresh prompt plus everything served
+      // from cache. Cached is not free of the window — it is the window.
+      u.input + u.cacheRead + u.cacheCreation,
+      u.window,
+      u.model,
+      cost,
+      row.id,
+    )
 }
 
 function closeTurn(sessionId: string, status: AgentTurn['status']): void {
@@ -611,8 +757,38 @@ function hydrate(r: Record<string, unknown>): Conversation {
     title: r.title == null || String(r.title) === '' ? String(r.prompt ?? '') : String(r.title),
     history: turnsOf(String(r.id)),
     denials: readDenials(r.denials),
+    usage: rollUp(String(r.id)),
     // Live only, and correctly empty for a conversation whose process is gone.
     queued: queuedIn(String(r.id)),
+  }
+}
+
+/**
+ * §6 + §16 — where the conversation stands, and what it has cost.
+ *
+ * The context is the last turn that reported one, because a window is a level
+ * and not a total; the cost is a sum, because a cost is. One query rather than
+ * a pass over `history`, since the list hydrates a hundred conversations on
+ * every push.
+ */
+function rollUp(sessionId: string): Conversation['usage'] {
+  const row = getDb()
+    .prepare(
+      `SELECT
+         (SELECT context_tokens FROM agent_turns WHERE session_id = ? AND context_tokens > 0 ORDER BY seq DESC LIMIT 1) AS ctx,
+         (SELECT context_window FROM agent_turns WHERE session_id = ? AND context_tokens > 0 ORDER BY seq DESC LIMIT 1) AS win,
+         (SELECT model         FROM agent_turns WHERE session_id = ? AND context_tokens > 0 ORDER BY seq DESC LIMIT 1) AS model,
+         (SELECT COALESCE(SUM(cost_usd), 0) FROM agent_turns WHERE session_id = ?) AS cost`,
+    )
+    .get(sessionId, sessionId, sessionId, sessionId) as
+    | { ctx: number | null; win: number | null; model: string | null; cost: number }
+    | undefined
+  if (!row?.ctx) return null
+  return {
+    contextTokens: row.ctx,
+    contextWindow: Number(row.win ?? 0),
+    costUsd: Number(row.cost ?? 0),
+    model: String(row.model ?? ''),
   }
 }
 
@@ -708,6 +884,7 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     history: [],
     denials: [],
     queued: [],
+    usage: null,
   }
 
   return launch(session, spec, (input.preamble ?? '') + input.prompt, false, input.allow, input.options)
@@ -837,6 +1014,8 @@ async function launch(
     buffer: '',
     streamingId: null,
     queue: [],
+    usage: null,
+    costSoFar: 0,
     busy: true,
     calls: new Map(),
     idle: null,
@@ -959,7 +1138,18 @@ async function launch(
           break
         }
 
+        // §16 — kept on the live conversation until `end` writes the row: the
+        // turn is not over, and a half-finished turn has no cost to record.
+        case 'usage':
+          if (ev.usage) l.usage = ev.usage
+          break
+
         case 'end': {
+          if (l.usage) {
+            writeTurnUsage(session.id, l.usage, l.costSoFar)
+            l.costSoFar = l.usage.cumulativeCostUsd
+            l.usage = null
+          }
           session.denials = ev.denials ?? []
           if (session.denials.length) {
             append({

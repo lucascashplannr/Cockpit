@@ -332,6 +332,40 @@ export type AgentScope =
  * ever for. Turns are append-only; the session's `title` is turn 1 and never
  * moves.
  */
+/**
+ * §16 — "Coût affiché", and §6's reason for existing: a conversation whose
+ * context is filling up is one whose quality is about to fall off, and you
+ * cannot act on that if nothing says it.
+ *
+ * Every number here is the engine's own. `window` in particular is *reported*,
+ * not assumed: `claude` names the context window of the model it actually used
+ * on its result event, which is the difference between a percentage that is
+ * true and one that is a guess baked into a table that rots.
+ */
+export interface TurnUsage {
+  /** Fresh prompt tokens — small, once a conversation is warm. */
+  input: number
+  output: number
+  cacheRead: number
+  cacheCreation: number
+  /**
+   * How full the window was for this turn: everything the model was sent,
+   * cached or not. This is the number a meter is about, and it is not the sum
+   * of the turn's tokens — it is the size of the conversation so far.
+   */
+  context: number
+  /** The engine's own figure for the model it used. 0 when it did not say. */
+  window: number
+  /**
+   * What *this* turn cost. The engine reports a running total per process, so
+   * this is the delta — which is also what makes a resumed conversation add up
+   * rather than start again from zero.
+   */
+  costUsd: number
+  /** Which model actually answered, as the engine names it. */
+  model: string
+}
+
 export interface AgentTurn {
   id: string
   seq: number
@@ -357,6 +391,8 @@ export interface AgentTurn {
    * rather than merely true.
    */
   redoable: boolean
+  /** §16 — what it cost and how full the window was. Null before it lands. */
+  usage: TurnUsage | null
 }
 
 export interface Conversation {
@@ -397,6 +433,19 @@ export interface Conversation {
    * gets to it is indistinguishable from a turn that was dropped.
    */
   queued: string[]
+  /**
+   * §6 — where the conversation stands against its own limit, and what it has
+   * cost so far.
+   *
+   * The context is the *last* turn's, not a sum: it is a level, not a total.
+   * The cost is a sum, because that is what a cost is.
+   */
+  usage: {
+    contextTokens: number
+    contextWindow: number
+    costUsd: number
+    model: string
+  } | null
   /**
    * §16 — the tools the allow-list refused during the last turn, by name.
    *
