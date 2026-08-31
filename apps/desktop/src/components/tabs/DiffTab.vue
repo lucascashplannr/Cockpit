@@ -3,8 +3,8 @@ import { computed, ref, watch } from 'vue'
 import type { CommitPreview, DiffFile, FileDiff, Workspace } from '@cockpit/shared'
 import type { Component } from 'vue'
 import {
-  Bot, CircleDashed, FileCode, GitCommitHorizontal, Sparkles, SquareArrowOutUpRight, TriangleAlert,
-  User, UsersRound,
+  Bot, CircleDashed, FileCode, GitBranch, GitCommitHorizontal, Sparkles, SquareArrowOutUpRight,
+  TriangleAlert, User, UsersRound,
 } from '@lucide/vue'
 import {
   commit, commitPreview, guard, client, state,
@@ -208,25 +208,49 @@ const mark: Record<string, Component> = {
           <span>{{ blocked.map((r) => r.repo).join(', ') }}: resolve the conflict first.</span>
         </div>
         <template v-else>
-          <input
+          <!-- §16 — what is about to be committed, named. The button counted
+               every repository of the topic while the list above it showed one,
+               so "Commit 2 files" sat under "files (1)" and read as a bug. The
+               number is never stated now without the rows that add up to it. -->
+          <div v-if="willCommit.length > 1" class="cscope">
+            <span class="section-label">will commit</span>
+            <div v-for="r in willCommit" :key="r.repo" class="crow">
+              <GitBranch class="sm" />
+              <span class="cname">{{ r.repo }}</span>
+              <span class="num">
+                {{ stageAll ? r.staged + r.unstaged : r.staged }}
+              </span>
+            </div>
+            <p class="cnote">One message, one commit each.</p>
+          </div>
+
+          <textarea
             v-model="message"
-            class="input cmsg"
-            placeholder="Commit message"
+            class="input cmsg selectable"
+            rows="2"
+            :placeholder="
+              fileCount
+                ? 'What changed, and why. ⌘⏎ to commit.'
+                : 'Nothing to commit'
+            "
             :disabled="!fileCount"
             @keydown.meta.enter="doCommit"
           />
-          <label class="call">
-            <input v-model="stageAll" type="checkbox" />
-            <span>stage everything</span>
-          </label>
-          <button class="btn primary full" :disabled="!canCommit" @click="doCommit">
-            <GitCommitHorizontal />
-            {{ committing ? 'Planning…' : 'Commit ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') }}
-          </button>
-          <p v-if="willCommit.length > 1" class="cnote">
-            {{ willCommit.map((r) => r.repo).join(' · ') }} — one message, one commit each.
-          </p>
-          <p v-else-if="!fileCount" class="cnote dim">Nothing to commit.</p>
+          <div class="cfoot">
+            <label class="call">
+              <input v-model="stageAll" type="checkbox" />
+              <span>stage everything</span>
+            </label>
+            <span class="grow" />
+            <button class="btn primary" :disabled="!canCommit" @click="doCommit">
+              <GitCommitHorizontal />
+              {{
+                committing
+                  ? 'Planning…'
+                  : 'Commit ' + fileCount + ' file' + (fileCount === 1 ? '' : 's')
+              }}
+            </button>
+          </div>
         </template>
       </div>
     </aside>
@@ -260,30 +284,56 @@ const mark: Record<string, Component> = {
 /* §16 — the commit bar. Pinned to the foot of the file list: it acts on what
    is listed above it, and a commit button that scrolls away is one nobody
    trusts they have seen the whole of. */
+/* Pinned, and it means it this time. In the narrow review column the whole
+   diff is laid out as 40%/60% rows, so a commit block merely sitting last in
+   the file list ended up halfway down a squeezed scroll region — present, but
+   never where the hand goes. Sticky to the foot of its own column keeps it
+   where §16 needs it: against the review it is the review of. */
 .commitbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   flex: none;
-  padding: 10px 12px;
+  padding: 10px 12px 12px;
   border-top: 1px solid var(--line);
   background: var(--bg-sunken);
 }
-.cmsg { width: 100%; height: 30px; }
+
+/* What the count is made of. */
+.cscope { margin: 0 0 9px; }
+.crow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 22px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.crow .lucide { width: 12px; height: 12px; color: var(--text-dim); }
+.cname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow .num { color: var(--text-dim); font-size: 11px; }
+
+/* A message is a sentence and often two, and a 30px input made writing one
+   feel like filling in a field. */
+.cmsg { width: 100%; resize: vertical; min-height: 48px; line-height: 1.5; }
+
+.cfoot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.cfoot .grow { flex: 1; }
 .call {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 7px 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
+  cursor: pointer;
 }
 .call input { accent-color: var(--accent); }
-.commitbar .btn.full { width: 100%; }
 .cnote {
-  margin: 7px 0 0;
+  margin: 5px 0 0;
   font-size: 10px;
   color: var(--text-dim);
   line-height: 1.45;
 }
-.cnote.dim { color: var(--text-dim); }
 .cblock {
   display: flex;
   align-items: flex-start;

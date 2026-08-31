@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  ArrowDown, ArrowUp, FileDiff, GitBranch, MousePointerClick, PanelRight, Plug,
+  ArrowDown, ArrowUp, BookMarked, FileDiff, GitBranch, History, MousePointerClick, PanelRight,
+  Plug,
 } from '@lucide/vue'
 import AgentTab from './tabs/AgentTab.vue'
 import ConflictPanel from './ConflictPanel.vue'
 import Wordmark from './brand/Wordmark.vue'
-import { activeWorkspace, goTo, state } from '../core/store.js'
+import {
+  activeAgentScope, activeWorkspace, attentionOf, goTo, scopeLabel, selectedTopicGroup,
+  sessionsForScope, state,
+} from '../core/store.js'
 
 /**
  * The third column, and the four roles in the order they are used (§12,
@@ -25,10 +29,54 @@ import { activeWorkspace, goTo, state } from '../core/store.js'
 
 const w = computed(() => activeWorkspace.value)
 
-const changed = computed(() => {
-  const g = w.value?.git
-  return g ? g.staged + g.unstaged + g.untracked : 0
+/**
+ * §4 — what this line is speaking for.
+ *
+ * On a topic that is every branch under it, not the one that happens to be the
+ * anchor. The bar used to read the anchor's git state whatever the scope was,
+ * so standing on a topic showed one of its branches by name and that branch's
+ * counts — a true statement about something nobody had asked about, sitting
+ * where the answer to "how does this topic stand" belongs.
+ */
+const covered = computed(() =>
+  selectedTopicGroup.value?.workspaces ?? (w.value ? [w.value] : []),
+)
+
+/**
+ * The branch is named only when there is exactly one of it. Across a topic
+ * there is no single branch to name, and picking one would be arbitrary.
+ */
+const git = computed(() => {
+  const ws = covered.value.filter((x) => x.git)
+  if (!ws.length) return null
+  return {
+    branch: ws.length === 1 ? (ws[0]!.git!.branch ?? 'detached') : null,
+    ahead: ws.reduce((n, x) => n + (x.git?.ahead ?? 0), 0),
+    behind: ws.reduce((n, x) => n + (x.git?.behind ?? 0), 0),
+  }
 })
+
+const changed = computed(() =>
+  covered.value.reduce((n, x) => {
+    const g = x.git
+    return n + (g ? g.staged + g.unstaged + g.untracked : 0)
+  }, 0),
+)
+
+/* ── what the conversation is on, and its two instruments ─────────────────
+ *
+ * These lived on a second bar of their own, directly under this one, so the
+ * column opened with two rows of chrome before the first word of the work:
+ * one saying where the branch stood, one saying what the agent was pointed at.
+ * They are the same sentence — *this is what you are on* — split across two
+ * lines, and the split cost thirty-eight pixels of every screen.
+ */
+const scope = computed(() => activeAgentScope.value)
+const label = computed(() => scopeLabel(scope.value))
+const conversations = computed(() => sessionsForScope(scope.value))
+const waiting = computed(
+  () => conversations.value.filter((c) => attentionOf(c) !== 'none').length,
+)
 
 </script>
 
@@ -47,69 +95,105 @@ const changed = computed(() => {
     </div>
 
     <template v-else>
+      <!-- One line: what this is, where it stands, and the instruments of the
+           conversation about it. Quiet on purpose — everything here is a fact
+           about the work rather than the work, so only the name it is all
+           about carries full contrast. -->
       <header class="head">
-        <!-- Layer 1's state line: where this is, what has moved, what is up.
-             The verbs that act on it are in the title band (WorkspaceActions). -->
-        <div class="status">
-          <template v-if="w.git">
-            <span class="stat">
-              <GitBranch class="sm si" />
-              <span class="v">{{ w.git.branch ?? 'detached' }}</span>
+        <span class="scope" :title="label.name">
+          <span class="k">{{ label.kind }}</span>
+          <span class="n">{{ label.name }}</span>
+        </span>
+
+        <span v-if="git || w.runtime" class="rule" />
+
+        <template v-if="git">
+          <!-- Named only when there is one to name, and not when it is already
+               the name above it: on a worktree the two are the same word, and
+               saying it twice in one line is the noise this bar was merged to
+               remove. Across a topic there is no single branch at all. -->
+          <span v-if="git.branch && git.branch !== label.name" class="stat">
+            <GitBranch class="sm si" />
+            <span class="v">{{ git.branch }}</span>
+          </span>
+          <span class="stat num">
+            <span class="v sync">
+              <span :class="{ on: git.ahead }"><ArrowUp class="sm" />{{ git.ahead }}</span>
+              <span :class="{ warn: git.behind }"><ArrowDown class="sm" />{{ git.behind }}</span>
             </span>
-            <span class="stat num">
-              <span class="v sync">
-                <span :class="{ on: w.git.ahead }"><ArrowUp class="sm" />{{ w.git.ahead }}</span>
-                <span :class="{ warn: w.git.behind }"><ArrowDown class="sm" />{{ w.git.behind }}</span>
-              </span>
-            </span>
-            <!-- The count is the way into the review layer: what changed is
-                 the reason you would open it at all. -->
-            <button
-              class="stat num act"
-              :title="changed + ' uncommitted change(s) — open the diff'"
-              @click="goTo('diff')"
-            >
-              <FileDiff class="sm si" />
-              <span class="v" :class="{ warn: changed }">{{ changed }}</span>
-            </button>
-          </template>
-
-          <span v-if="w.runtime" class="stat">
-            <i class="dot" :class="w.runtime.status" />
-            <span class="v">{{ w.runtime.impl }}</span>
-            <span class="k">{{ w.runtime.status }}</span>
           </span>
-
-          <!-- §8 — a non-portable runtime says so, rather than failing later. -->
-          <span
-            v-if="w.runtime && !w.runtime.portable"
-            class="chip"
-            title="These servers are set up on this machine only — they do not follow the repository"
-          >
-            local only
-          </span>
-
-          <span v-for="p in w.runtime?.ports ?? []" :key="p.name" class="stat num">
-            <Plug class="sm si" />
-            <span class="k">{{ p.name }}</span>
-            <span class="v">:{{ p.port }}</span>
-          </span>
-
-          <span v-if="w.lease" class="chip warn" :title="w.lease.reason">locked</span>
-
-          <span class="grow" />
-
+          <!-- The count is the way into the review layer: what changed is the
+               reason you would open it at all. -->
           <button
-            class="btn ghost rev"
-            :class="{ on: state.reviewOpen }"
-            title="Review what changed — diff, code, journal, terminal"
-            @click="state.reviewOpen = !state.reviewOpen"
+            class="stat num act"
+            :title="changed + ' uncommitted change(s) — open the diff'"
+            @click="goTo('diff')"
           >
-            <PanelRight class="sm" />
-            Review
-            <span v-if="changed" class="tbadge num">{{ changed }}</span>
+            <FileDiff class="sm si" />
+            <span class="v" :class="{ warn: changed }">{{ changed }}</span>
           </button>
-        </div>
+        </template>
+
+        <span v-if="w.runtime" class="stat">
+          <i class="dot" :class="w.runtime.status" />
+          <span class="v">{{ w.runtime.impl }}</span>
+          <span class="k">{{ w.runtime.status }}</span>
+        </span>
+
+        <!-- §8 — a non-portable runtime says so, rather than failing later. -->
+        <span
+          v-if="w.runtime && !w.runtime.portable"
+          class="stat quiet"
+          title="These servers are set up on this machine only — they do not follow the repository"
+        >
+          local only
+        </span>
+
+        <span v-for="p in w.runtime?.ports ?? []" :key="p.name" class="stat num">
+          <Plug class="sm si" />
+          <span class="k">{{ p.name }}</span>
+          <span class="v">:{{ p.port }}</span>
+        </span>
+
+        <span v-if="w.lease" class="stat warn" :title="w.lease.reason">locked</span>
+
+        <span class="grow" />
+
+        <!-- §6 — the conversation's own two instruments. They belong beside
+             what they are about, which is the scope named at the far left of
+             this same line. -->
+        <button
+          class="ib"
+          :class="{ on: state.historyOpen, waiting: waiting > 0 }"
+          title="Earlier conversations here"
+          @click="state.historyOpen = !state.historyOpen"
+        >
+          <History class="sm" />
+          <span v-if="conversations.length" class="n">{{ conversations.length }}</span>
+        </button>
+        <button
+          class="ib"
+          :class="{ on: state.memoryOpen }"
+          title="The durable memory this conversation reads on the way in"
+          @click="state.memoryOpen = !state.memoryOpen"
+        >
+          <BookMarked class="sm" />
+          <span v-if="w.hasMemory" class="pip" />
+        </button>
+
+        <span class="rule" />
+
+        <!-- One icon. The word and the badge both said what the count two
+             stats to the left already says, in a bar whose whole point is to
+             stop repeating itself. -->
+        <button
+          class="ib"
+          :class="{ on: state.reviewOpen }"
+          :title="(state.reviewOpen ? 'Close' : 'Open') + ' the review — diff, code, journal, terminal'"
+          @click="state.reviewOpen = !state.reviewOpen"
+        >
+          <PanelRight class="sm" />
+        </button>
       </header>
 
       <!-- §3.7 — above everything on purpose: while a rebase is stopped, none
@@ -163,64 +247,104 @@ const changed = computed(() => {
 }
 
 /* ── header ──────────────────────────────────────────────────────────── */
+/* One row, and quiet. It was two — the branch's state, then the agent's scope
+   — each with its own pills on its own line, so the column spent seventy-odd
+   pixels telling you where you were before showing you anything. Everything
+   here is a fact *about* the work rather than the work, so it is all one small
+   size in one dim colour, and the only thing at full contrast is the name the
+   whole line is about. */
 .head {
   flex: none;
-  padding: var(--col-top) 18px 0;
+  display: flex;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 38px;
+  padding: 0 12px 0 18px;
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
 }
 .grow { flex: 1; }
 
-.status {
-  display: flex;
-  align-items: center;
-  gap: 8px 10px;
-  /* Tall enough that the pills and the Review button sit on one line without
-     the row collapsing onto them. */
-  min-height: 34px;
-  padding: 0 0 12px;
-  min-width: 0;
+/* What the conversation is on — the one thing here that is not a detail. */
+.scope { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; margin-right: 2px; }
+.scope .k {
+  flex: none;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
 }
+.scope .n {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A hairline instead of a gap: it separates the three groups without adding
+   another shape to a row that just lost eleven of them. */
+.rule { flex: none; width: 1px; height: 14px; background: var(--line); }
+
+/* No pill, no fill. A stat is a word and a number. */
 .stat {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 9px;
-  border-radius: 999px;
-  background: var(--hover);
-  font-size: var(--fs-xs);
+  gap: 5px;
+  height: 22px;
+  padding: 0 2px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 0;
 }
-.si { color: var(--text-dim); }
+.stat.quiet { color: var(--text-dim); opacity: 0.75; }
+.stat.warn { color: var(--warn); }
+.si { color: var(--text-dim); opacity: 0.8; }
 .stat .k { color: var(--text-dim); }
-.stat .v { color: var(--text); font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
+.stat .v {
+  color: var(--text-muted);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .stat .v.warn { color: var(--warn); }
-.sync { gap: 9px; }
+.sync { gap: 8px; }
 .sync span { display: inline-flex; align-items: center; gap: 2px; color: var(--text-dim); font-weight: 500; }
 .sync .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
+/* Zero stays dim: a count of nothing is not news. */
 .sync span.on { color: var(--ok); }
 .sync span.warn { color: var(--warn); }
 
-/* ── the way into layer 3 ────────────────────────────────────────────── */
 /* The changed count is a button, because it is the reason you would open the
    review layer at all: what moved is what there is to read. */
-.stat.act { cursor: pointer; }
-.stat.act:hover { background: var(--active); }
+.stat.act { cursor: pointer; padding: 0 6px; }
+.stat.act:hover { background: var(--hover); color: var(--text); }
 
-.btn.ghost.rev { flex: none; height: 26px; padding: 0 10px; font-size: var(--fs-xs); gap: 6px; }
-.btn.ghost.rev.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.tbadge {
-  font-size: 10px;
-  padding: 0 5px;
-  height: 16px;
-  min-width: 16px;
+/* The three controls on the right, one shape. Ghosts until they are on. */
+.ib {
+  flex: none;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: var(--hover);
-  color: var(--text-muted);
+  gap: 5px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-dim);
+  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
 }
-.on .tbadge { background: var(--accent-soft); color: var(--accent); }
-
+.ib:hover { color: var(--text); background: var(--hover); }
+.ib.on { color: var(--accent); background: var(--accent-soft); }
+.ib.waiting { color: var(--warn); }
+.ib .n { font-size: 10px; color: var(--text-dim); }
+.ib.on .n, .ib.waiting .n { color: inherit; }
+.ib .pip { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); }
 
 .body { flex: 1; min-height: 0; overflow: hidden; }
 </style>

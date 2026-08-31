@@ -549,6 +549,35 @@ function saveThreads(): void {
   localStorage.setItem(THREADS_KEY, JSON.stringify(threads))
 }
 
+/* ── which topics are folded away ─────────────────────────────────────── */
+
+const COLLAPSED_KEY = 'cockpit.collapsed'
+
+/**
+ * §4 — a topic groups the branches of one piece of work, and a project with
+ * four of them in flight is four headers and a dozen rows before the one being
+ * looked for. Folding a topic away is how the list stays a list.
+ *
+ * Persisted, because a fold is a statement about what you are not working on
+ * today, and having to repeat it every launch would make it not worth making.
+ */
+export const collapsedTopics = reactive<Record<string, true>>(readCollapsed())
+
+function readCollapsed(): Record<string, true> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '{}') as Record<string, true>
+    return raw && typeof raw === 'object' ? raw : {}
+  } catch {
+    return {}
+  }
+}
+
+export function toggleTopicCollapsed(topicId: string): void {
+  if (collapsedTopics[topicId]) delete collapsedTopics[topicId]
+  else collapsedTopics[topicId] = true
+  localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsedTopics))
+}
+
 /* ── the composer's own memory ────────────────────────────────────────── */
 
 const COMPOSER_KEY = 'cockpit.composer'

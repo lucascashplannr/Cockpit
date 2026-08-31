@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowUp, CircleAlert, FolderPlus, Hand, Layers, Plus, RefreshCw, Sparkles } from '@lucide/vue'
+import {
+  ArrowUp, ChevronRight, CircleAlert, FolderPlus, Hand, Layers, Plus, RefreshCw, Sparkles,
+} from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activeProject, activityFor, addRepoTo, client, guard, openAgentOn, selectedTopicId, state,
-  workspaceGroups,
+  activeProject, activityFor, addRepoTo, client, collapsedTopics, guard, openAgentOn,
+  selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 
 /**
@@ -46,6 +48,16 @@ function selectTopic(topicId: string) {
  * topic itself lights this, and so does one opened on any single row under it:
  * from the header, both are the same answer to "is something happening here".
  */
+/**
+ * A folded topic still has to answer "is my selection in there": the third
+ * column goes on showing a branch whose row is now hidden, and a header that
+ * said nothing would leave the window pointing at something with no trace of
+ * it in the list.
+ */
+function holdsSelection(ws: { id: string }[]): boolean {
+  return ws.some((x) => x.id === state.activeWorkspaceId)
+}
+
 const ATTENTION_TEXT: Record<string, string> = {
   reply: 'an agent answered on this topic — waiting for you',
   blocked: 'an agent stopped on this topic: it was refused a tool it needed',
@@ -69,16 +81,36 @@ const ATTENTION_TEXT: Record<string, string> = {
         <div v-for="(g, i) in groups" :key="g.topicId ?? 'loose-' + i" class="group">
           <!-- A topic is a decoration (§4): no topic, no header. And a
                header you can stand on: selecting it is selecting its scope. -->
-          <button
+          <div
             v-if="g.title"
             class="group-head"
             :class="{ running: g.topic?.state === 'running', selected: g.topicId === selectedTopicId }"
-            :disabled="!g.topicId"
-            @click="g.topicId && selectTopic(g.topicId)"
           >
-            <Layers class="sm gi" />
-            <span class="title">{{ g.title }}</span>
+            <!-- Its own control, because folding is not selecting: the header
+                 is a place to stand as much as a lid to close. -->
+            <button
+              v-if="g.topicId"
+              class="twist"
+              :title="collapsedTopics[g.topicId] ? 'Show its branches' : 'Fold this topic away'"
+              @click="toggleTopicCollapsed(g.topicId)"
+            >
+              <ChevronRight class="sm" :class="{ turned: !collapsedTopics[g.topicId] }" />
+            </button>
+            <Layers v-else class="sm gi" />
+            <button
+              class="pick"
+              :disabled="!g.topicId"
+              @click="g.topicId && selectTopic(g.topicId)"
+            >
+              <span class="title">{{ g.title }}</span>
+            </button>
             <span class="summary num">
+              <!-- Folded, and the selection is inside: the only trace left. -->
+              <span
+                v-if="g.topicId && collapsedTopics[g.topicId] && holdsSelection(g.workspaces)"
+                class="here"
+                title="The branch this window is on is inside this topic"
+              />
               <span
                 v-if="g.topicId && activityFor('topic', g.topicId).running"
                 class="agent live"
@@ -102,12 +134,17 @@ const ATTENTION_TEXT: Record<string, string> = {
               </span>
               <span class="dim">{{ topicSummary(g.workspaces).total }}</span>
             </span>
-          </button>
+          </div>
           <div v-else-if="groups.length > 1 && i > 0" class="divider">
             <span class="section-label">not in a topic</span>
           </div>
 
-          <WorkspaceRow v-for="w in g.workspaces" :key="w.id" :workspace="w" :compact="!!g.title" />
+          <WorkspaceRow
+            v-for="w in (g.topicId && collapsedTopics[g.topicId] ? [] : g.workspaces)"
+            :key="w.id"
+            :workspace="w"
+            :compact="!!g.title"
+          />
         </div>
       </template>
     </div>
@@ -184,9 +221,44 @@ const ATTENTION_TEXT: Record<string, string> = {
   position: relative;
   transition: background var(--dur-1) var(--ease-soft);
 }
-.group-head:not(:disabled):hover { background: var(--hover); }
-.group-head:disabled { cursor: default; }
+.group-head:hover { background: var(--hover); }
 .group-head.selected { background: var(--selected); }
+
+/* The lid. Wider than the glyph so it is hittable, and it turns rather than
+   swapping icon: the same mark pointing somewhere else reads as one control
+   in two states, where two marks read as two controls. */
+.twist {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: -3px;
+  border-radius: 4px;
+  color: var(--text-dim);
+}
+.twist:hover { color: var(--text); background: var(--line-soft); }
+.twist .lucide { transition: transform var(--dur-1) var(--ease-soft); }
+.twist .turned { transform: rotate(90deg); }
+
+/* The name is still the place to stand: selecting the topic aims the agent at
+   it, and that must not become a second click away because folding arrived. */
+.pick {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.pick:disabled { cursor: default; }
+
+/* Folded, with the selection inside. One dot, in the accent: it is the same
+   statement the row's own bar makes, made in the only space left. */
+.here {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
 .group-head.selected::before {
   content: '';
   position: absolute;

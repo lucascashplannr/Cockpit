@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
 import {
-  BookMarked, CircleAlert, CircleStop, Hand, History, Lock, ShieldCheck, Sparkles, X,
+  BookMarked, CircleAlert, CircleStop, Hand, History, Layers, Lock, ShieldCheck, Sparkles, X,
 } from '@lucide/vue'
 import MemoryTab from './MemoryTab.vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -93,10 +93,6 @@ watch(
     if (c && !state.homeOpen) markThreadRead(c)
   },
   { immediate: true },
-)
-
-const waiting = computed(() =>
-  conversations.value.filter((c) => attentionOf(c) !== 'none').length,
 )
 
 const ATTENTION_TEXT: Record<Attention, string> = {
@@ -293,39 +289,13 @@ function dotClass(s: Conversation): string {
 
 <template>
   <div class="agent">
-    <!-- One line of chrome: what this conversation is on, and its two
-         instruments. -->
-    <header class="chrome">
-      <span class="scope" :title="paths.map((p) => p.path).join('\n')">
-        <span class="k">{{ label.kind }}</span>
-        <span class="n">{{ label.name }}</span>
-      </span>
-      <span v-if="paths.length > 1" class="spread">{{ paths.length }} repositories</span>
-
-      <span class="grow" />
-
-      <button
-        class="chip-btn"
-        :class="{ on: state.historyOpen, waiting: waiting > 0 }"
-        title="Earlier conversations here"
-        @click="state.historyOpen = !state.historyOpen"
-      >
-        <History class="sm" />
-        <span v-if="conversations.length" class="num">{{ conversations.length }}</span>
-        <span v-if="waiting" class="pip warn" />
-      </button>
-      <!-- §6 — the memory is what gets prepended to the prompt, so it belongs
-           to the thing that sends it rather than beside it as a peer. -->
-      <button
-        class="chip-btn"
-        :class="{ on: state.memoryOpen }"
-        title="The durable memory this conversation reads on the way in"
-        @click="state.memoryOpen = !state.memoryOpen"
-      >
-        <BookMarked class="sm" />
-        <span v-if="workspace.hasMemory" class="pip" />
-      </button>
-    </header>
+    <!-- The scope and the two instruments moved up into the column's own bar
+         (ContextPanel): they said "this is what you are on", which is what
+         that line already said, one row higher. What is left here is what only
+         a conversation can say — the scope's own warnings. -->
+    <p v-if="paths.length > 1" class="note">
+      <Layers class="sm" /> {{ paths.length }} repositories in this scope
+    </p>
 
     <p v-if="blocked.length" class="note danger">
       <Lock class="sm" /> {{ blocked.join(' · ') }} — locked; two agents never share a folder.
@@ -514,57 +484,6 @@ function dotClass(s: Conversation): string {
 <style scoped>
 .agent { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .grow { flex: 1; }
-
-/* ── one line of chrome ──────────────────────────────────────────────── */
-.chrome {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 40px;
-  padding: 0 14px 0 18px;
-  border-bottom: 1px solid var(--line);
-}
-.scope { display: inline-flex; align-items: baseline; gap: 7px; min-width: 0; }
-.scope .k {
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-.scope .n {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.spread {
-  font-size: 10px;
-  color: var(--text-dim);
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--hover);
-}
-
-.chip-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 9px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  transition: color var(--dur-1) var(--ease-soft), border-color var(--dur-1) var(--ease-soft);
-}
-.chip-btn:hover { color: var(--text); border-color: var(--line-strong); }
-.chip-btn.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
-.chip-btn.waiting { border-color: var(--warn); color: var(--warn); }
-.chip-btn .pip { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); }
-.chip-btn .pip.warn { background: var(--warn); }
 
 .note {
   flex: none;
