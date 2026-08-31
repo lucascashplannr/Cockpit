@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
 import {
   ArrowDown, BookMarked, CircleAlert, CircleStop, Clock, Hand, History, Lock, ShieldCheck,
-  Sparkles, X,
+  Redo2, Sparkles, Undo2, X,
 } from '@lucide/vue'
 import MemoryTab from './MemoryTab.vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -12,8 +12,8 @@ import ToolGroup from '../agent/ToolGroup.vue'
 import Composer from '../agent/Composer.vue'
 import {
   activeAgentScope, agentDraft, attentionOf, client, closeThread, guard, isRunning,
-  loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel, sendTurn,
-  sessionsForScope, startAgentIn, state, toast, transcriptOf,
+  askRevert, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
+  sendTurn, sessionsForScope, startAgentIn, state, toast, transcriptOf,
 } from '../../core/store.js'
 import type { Attention } from '../../core/store.js'
 
@@ -142,6 +142,9 @@ type Item =
       result: { stdout: string; stderr: string; isError: boolean; interrupted: boolean } | null
       denied: boolean
     }
+  /** §16 — a turn's work put back. It happened to the code, so it is in the
+   *  thread rather than only in a toast that has since gone. */
+  | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
 
 /**
  * What a turn is actually drawn as.
@@ -154,6 +157,7 @@ type Row =
   | { kind: 'text'; id: string; text: string }
   | { kind: 'call'; id: string; call: Extract<Item, { kind: 'tool' }> }
   | { kind: 'group'; id: string; calls: Extract<Item, { kind: 'tool' }>[] }
+  | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
 
 /** Two is where a fold starts earning its keep; one call folded is one click
  *  charged for nothing. */
@@ -176,9 +180,11 @@ function rowsOf(items: Item[]): Row[] {
       continue
     }
     // A sentence between two calls ends the run: it is the agent saying why
-    // what follows is different from what came before.
+    // what follows is different from what came before. So does an undo, which
+    // is the loudest possible break in what a turn did.
     flush()
-    rows.push({ kind: 'text', id: it.id, text: it.text })
+    if (it.kind === 'revert') rows.push({ ...it })
+    else rows.push({ kind: 'text', id: it.id, text: it.text })
   }
   flush()
   return rows
@@ -227,6 +233,17 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
     if (e.type === 'agent.output') {
       const text = (e.payload as { text?: string })?.text ?? ''
       if (text.trim()) into.push({ kind: 'text', id: e.id, text })
+      continue
+    }
+    if (e.type === 'agent.reverted') {
+      const p = e.payload as { files?: number; workspaces?: number; redo?: boolean }
+      into.push({
+        kind: 'revert',
+        id: e.id,
+        files: Number(p?.files ?? 0),
+        workspaces: Number(p?.workspaces ?? 0),
+        redo: !!p?.redo,
+      })
       continue
     }
     if (e.type === 'agent.tool_use') {
@@ -634,6 +651,33 @@ function dotClass(s: Conversation): string {
         </p>
 
         <div v-for="(x, i) in exchanges" :key="x.turn.id" class="ex">
+          <!-- §16 — the tree as it stood before this question was asked.
+               Quiet until the exchange is under the cursor: every turn carries
+               one, and twenty visible at once would read as decoration. -->
+          <!-- §16 — the tree as it stood before this question was asked, and
+               the way forward again once an undo has happened here. Quiet
+               until the exchange is under the cursor: every turn carries these,
+               and twenty pairs lit at once would read as a toolbar. Neither
+               does anything on its own — both open the confirmation. -->
+          <div v-if="x.turn.restorable || x.turn.redoable" class="exbar">
+            <button
+              v-if="x.turn.redoable"
+              class="revert"
+              title="Bring back what the undo discarded"
+              @click="askRevert(selected.id, x.turn, true)"
+            >
+              <Redo2 class="sm" /> Redo
+            </button>
+            <button
+              v-if="x.turn.restorable"
+              class="revert"
+              title="Put the files back to how they were before this turn"
+              @click="askRevert(selected.id, x.turn, false)"
+            >
+              <Undo2 class="sm" /> Undo from here
+            </button>
+          </div>
+
           <div class="said selectable">{{ x.turn.prompt }}</div>
           <div
             v-if="x.turn.status === 'running' && !x.items.length && !streaming"
@@ -657,7 +701,21 @@ function dotClass(s: Conversation): string {
               :denied="r.call.denied"
               :live="x.turn.status === 'running'"
             />
-            <ToolGroup v-else class="call" :calls="r.calls" :live="x.turn.status === 'running'" />
+            <ToolGroup
+              v-else-if="r.kind === 'group'"
+              class="call"
+              :calls="r.calls"
+              :live="x.turn.status === 'running'"
+            />
+            <!-- It happened to the code, so it is a line in the thread rather
+                 than a toast that has since gone. -->
+            <p v-else class="undone">
+              <component :is="r.redo ? Redo2 : Undo2" class="sm" />
+              {{ r.files }} file{{ r.files === 1 ? '' : 's' }}
+              {{ r.redo ? 'brought back to after this turn' : 'put back to before this turn' }}<template
+                v-if="r.workspaces > 1"
+              >, across {{ r.workspaces }} repositories</template>
+            </p>
           </template>
 
           <!-- The sentence as it is being written. Same shape as a finished
@@ -866,6 +924,59 @@ function dotClass(s: Conversation): string {
   white-space: pre-wrap;
 }
 .thinking { color: var(--text-dim); font-size: var(--fs-xs); font-style: italic; }
+
+/* ── the undo, above the question it would take you back before ──────────
+ *
+ * Right-aligned over the prompt bubble, and invisible until the exchange is
+ * under the cursor: it belongs to that turn, and a column of them lit at once
+ * would read as a toolbar rather than as an escape hatch.
+ */
+.exbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 20px;
+  margin-bottom: 2px;
+}
+.revert {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.revert {
+  padding: 3px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition:
+    opacity var(--dur-1) var(--ease-soft),
+    color var(--dur-1) var(--ease-soft),
+    border-color var(--dur-1) var(--ease-soft);
+}
+/* Keyboard reach as well as pointer: an escape hatch you cannot tab to is an
+   escape hatch for one kind of person. */
+.ex:hover .revert, .revert:focus-visible { opacity: 1; }
+.revert:hover {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+/* What an undo left behind, in the thread, at the weight of a fact. */
+.undone {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 10px 0;
+  padding: 5px 9px;
+  border-left: 2px solid var(--warn);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--warn-soft);
+}
+.undone .lucide { flex: none; color: var(--warn); }
 
 /* Queued: the same bubble, at the weight of something that has not happened.
    Its ✕ only appears on hover — it is an escape hatch, not a decoration. */

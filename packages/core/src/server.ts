@@ -26,6 +26,7 @@ import * as supervisor from './supervisor.js'
 import { portMap } from './ports.js'
 import { defaultBranch } from './git.js'
 import * as restore from './restore.js'
+import * as checkpoints from './checkpoints.js'
 import * as scope from './scope.js'
 import { readManifest } from './detect.js'
 import { run } from './exec.js'
@@ -459,7 +460,7 @@ const handlers: Record<string, Handler> = {
       if (rp) restorePoints.push({ workspaceId: w.id, head: rp.head })
     }
 
-    const res = agents.startAgent({
+    const res = await agents.startAgent({
       engine: p.engine,
       scope: requested,
       workspaceIds: r.workspaces.map((w) => w.id),
@@ -475,10 +476,10 @@ const handlers: Record<string, Handler> = {
     pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints }
   },
-  'agent.resume': (p: { sessionId: string; prompt: string; options?: agents.EngineOptions }) => {
+  'agent.resume': async (p: { sessionId: string; prompt: string; options?: agents.EngineOptions }) => {
     const prev = agents.get(p.sessionId)
     if (!prev) throw new Error('unknown session: ' + p.sessionId)
-    const res = agents.resumeAgent(
+    const res = await agents.resumeAgent(
       p.sessionId,
       p.prompt,
       // The memory has moved on since; the conversation has not. Re-reading it
@@ -496,8 +497,8 @@ const handlers: Record<string, Handler> = {
     pushAgentActivity()
     return { ok: true }
   },
-  'agent.send': (p: { sessionId: string; prompt: string }) => {
-    const r = agents.send(p.sessionId, p.prompt)
+  'agent.send': async (p: { sessionId: string; prompt: string }) => {
+    const r = await agents.send(p.sessionId, p.prompt)
     if (r.ok) pushAgentActivity()
     return r
   },
@@ -514,6 +515,30 @@ const handlers: Record<string, Handler> = {
    * before the person has scrolled.
    */
   'agent.transcript': (p: { sessionId: string }) => forSession(p.sessionId),
+  /**
+   * §3.7 — what reverting to a turn would throw away, before it is thrown.
+   */
+  'agent.revertPreview': (p: { sessionId: string; turnId: string }) =>
+    checkpoints.preview(
+      p.sessionId,
+      p.turnId,
+      (id) => registry.getWorkspace(id)?.name ?? id,
+    ),
+  /**
+   * §16 — the working tree as it stood before that turn, put back.
+   *
+   * Pushes both the workspaces and the conversation afterwards: the git counts
+   * in the list are now wrong by exactly the size of what was undone, and the
+   * thread has gained the snapshot that makes this reversible in turn.
+   */
+  'agent.revert': async (p: { sessionId: string; turnId: string }) => {
+    const r = await checkpoints.revert(p.sessionId, p.turnId, 'undo of a turn')
+    if (r.ok) {
+      pushWorkspaces()
+      pushAgentActivity()
+    }
+    return r
+  },
 
   'memory.read': (p: { workspaceId: string }) => memory.read(p.workspaceId),
   'memory.write': (p: { workspaceId: string; content: string }) => {

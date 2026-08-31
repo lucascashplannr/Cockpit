@@ -339,6 +339,24 @@ export interface AgentTurn {
   startedAt: number
   endedAt: number | null
   status: 'running' | 'done' | 'failed'
+  /**
+   * §16 — whether the tree as it stood before this turn was captured, and can
+   * therefore be put back.
+   *
+   * Not every turn has one: a folder that has since been deleted, a snapshot
+   * store that failed to initialise, and every turn taken before checkpoints
+   * existed all answer no. The window offers the button only where there is
+   * something behind it — an undo that might work is not an undo.
+   */
+  restorable: boolean
+  /**
+   * §16 — whether the state this turn's undo discarded is still there.
+   *
+   * An undo snapshots what it is about to throw away before throwing it, so
+   * pressing it is not a one-way door. This is what makes that reachable
+   * rather than merely true.
+   */
+  redoable: boolean
 }
 
 export interface Conversation {

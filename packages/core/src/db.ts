@@ -200,6 +200,23 @@ function migrate(d: Db): void {
     );
     CREATE INDEX IF NOT EXISTS restore_ws ON restore_points(workspace_id, created_at DESC);
 
+    -- §16 — the working tree before each agent turn, so undo is undo and not a
+    -- reset that refuses whenever there is something to undo. The trees live
+    -- in a git object store per workspace under COCKPIT_HOME/checkpoints; this
+    -- is only the index into it.
+    CREATE TABLE IF NOT EXISTS checkpoints (
+      id           TEXT PRIMARY KEY,
+      session_id   TEXT NOT NULL,
+      turn_id      TEXT,
+      workspace_id TEXT NOT NULL,
+      path         TEXT NOT NULL,
+      commit_sha   TEXT NOT NULL,
+      reason       TEXT NOT NULL,
+      created_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS checkpoints_turn ON checkpoints(session_id, turn_id);
+    CREATE INDEX IF NOT EXISTS checkpoints_ws   ON checkpoints(workspace_id, created_at DESC);
+
     -- §12 — attribution of a diff to human vs agent, keyed by path.
     CREATE TABLE IF NOT EXISTS touches (
       workspace_id TEXT NOT NULL,

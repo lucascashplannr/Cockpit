@@ -5,6 +5,7 @@ import * as registry from './registry.js'
 import * as supervisor from './supervisor.js'
 import * as agents from './agents.js'
 import * as leases from './leases.js'
+import * as checkpoints from './checkpoints.js'
 import * as terminals from './terminals.js'
 import * as watcher from './watcher.js'
 import { pushWorkspaces, startServer } from './server.js'
@@ -38,6 +39,10 @@ async function main(): Promise<void> {
   agents.reapSessions()
   const staleLeases = leases.releaseAll('service restart')
   const pruned = pruneJournal(cfg.journalRetentionDays)
+  // §13 — the snapshot stores hold trees; left alone they are the one thing
+  // here that grows with the size of the code rather than with its history.
+  // Not awaited: it is boot hygiene, not a precondition for serving.
+  void checkpoints.prune(cfg.journalRetentionDays)
 
   append({
     type: 'core.started',
@@ -76,7 +81,11 @@ async function main(): Promise<void> {
     })
   }, 60_000)
 
-  const daily = setInterval(() => pruneJournal(loadConfig().journalRetentionDays), 6 * 3600_000)
+  const daily = setInterval(() => {
+    const days = loadConfig().journalRetentionDays
+    pruneJournal(days)
+    void checkpoints.prune(days)
+  }, 6 * 3600_000)
 
   const shutdown = (signal: string) => {
     append({ type: 'core.stopping', actor: { kind: 'system' }, payload: { signal } })

@@ -5,6 +5,7 @@ import WorkspaceList from './components/WorkspaceList.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import PlanDialog from './components/PlanDialog.vue'
+import RevertDialog from './components/RevertDialog.vue'
 import ProjectDialog from './components/ProjectDialog.vue'
 import NewProjectDialog from './components/NewProjectDialog.vue'
 import AddRepoDialog from './components/AddRepoDialog.vue'
@@ -40,7 +41,11 @@ function onKey(e: KeyboardEvent) {
     return
   }
   if (e.key === 'Escape') {
-    if (state.newProjectOpen) state.newProjectOpen = false
+    if (state.pendingRevert) {
+      // Never while it is running: the work is already happening and closing
+      // the dialog would only hide its outcome.
+      if (!state.pendingRevert.busy) state.pendingRevert = null
+    } else if (state.newProjectOpen) state.newProjectOpen = false
     else if (state.addRepoProjectId) state.addRepoProjectId = null
     else if (state.settingsOpen) state.settingsOpen = false
     else if (state.editingProjectId) state.editingProjectId = null
@@ -166,6 +171,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
     <CommandPalette v-if="state.paletteOpen" />
     <PlanDialog v-if="state.pendingPlan" />
+    <RevertDialog />
     <ProjectDialog />
     <NewProjectDialog />
     <AddRepoDialog />

@@ -88,6 +88,13 @@ export type EventType =
   | 'agent.tool_result'
   /** §16 — the allow-list refused a tool, so the turn stopped short of its job. */
   | 'agent.denied'
+  /**
+   * §16 — the working tree as it stood before a turn was allowed to write, and
+   * the moment one was put back. Both are journal entries because both are
+   * things that happened to the code, not merely to the conversation.
+   */
+  | 'agent.checkpoint'
+  | 'agent.reverted'
   | 'agent.session_ended'
   // leases
   | 'lease.acquired'

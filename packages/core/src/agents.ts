@@ -8,6 +8,7 @@ import { getDb } from './db.js'
 import { append, recordTouch } from './journal.js'
 import { which } from './exec.js'
 import * as leases from './leases.js'
+import * as checkpoints from './checkpoints.js'
 
 /**
  * §7 — a session is a list of PATHS + an engine + a mode + a lease.
@@ -511,6 +512,9 @@ export function turnsOf(sessionId: string): AgentTurn[] {
   const rows = getDb()
     .prepare('SELECT * FROM agent_turns WHERE session_id = ? ORDER BY seq ASC')
     .all(sessionId) as Record<string, unknown>[]
+  // One query for the conversation rather than one per turn: a thread of forty
+  // turns is hydrated on every push.
+  const withCheckpoint = new Set(checkpoints.turnsWithCheckpoints(sessionId))
   return rows.map((r) => ({
     id: String(r.id),
     seq: Number(r.seq),
@@ -518,10 +522,14 @@ export function turnsOf(sessionId: string): AgentTurn[] {
     startedAt: Number(r.started_at),
     endedAt: r.ended_at === null ? null : Number(r.ended_at),
     status: String(r.status) as AgentTurn['status'],
+    restorable: withCheckpoint.has(String(r.id)),
+    // The undo's own snapshot is filed under a turn id derived from this one,
+    // which is what lets a turn offer the way back without a second table.
+    redoable: withCheckpoint.has('redo_' + String(r.id)),
   }))
 }
 
-function openTurn(sessionId: string, prompt: string): void {
+function openTurn(sessionId: string, prompt: string): string {
   const seq =
     Number(
       (
@@ -530,11 +538,33 @@ function openTurn(sessionId: string, prompt: string): void {
           .get(sessionId) as { n: number | null }
       ).n ?? 0,
     ) + 1
+  const id = newId('turn_')
   getDb()
     .prepare(
       'INSERT INTO agent_turns (id, session_id, seq, prompt, started_at, ended_at, status) VALUES (?,?,?,?,?,?,?)',
     )
-    .run(newId('turn_'), sessionId, seq, prompt, Date.now(), null, 'running')
+    .run(id, sessionId, seq, prompt, Date.now(), null, 'running')
+  return id
+}
+
+/**
+ * §16 — the tree before the turn, captured before the turn can reach it.
+ *
+ * Awaited by every caller. A snapshot racing the engine's first edit is a
+ * checkpoint of a tree that never existed, which would make the undo button
+ * worse than absent.
+ */
+async function checkpointTurn(
+  session: Conversation,
+  turnId: string,
+  reason: string,
+): Promise<void> {
+  await checkpoints.capture(
+    session.id,
+    turnId,
+    session.workspaceIds.map((id, i) => ({ workspaceId: id, path: session.paths[i] ?? session.paths[0]! })),
+    reason.slice(0, 120),
+  )
 }
 
 function closeTurn(sessionId: string, status: AgentTurn['status']): void {
@@ -654,7 +684,7 @@ export type StartAgentResult = { sessionId: string } | { denied: true; reason: s
  * ones that protect something a restore point cannot: an overlapping lease,
  * and an engine that is not installed.
  */
-export function startAgent(input: StartAgentInput): StartAgentResult {
+export async function startAgent(input: StartAgentInput): Promise<StartAgentResult> {
   const spec = ENGINES[input.engine]
   if (!spec) return { denied: true, reason: 'unknown engine: ' + input.engine }
 
@@ -688,13 +718,13 @@ export function startAgent(input: StartAgentInput): StartAgentResult {
  * Resuming is the other half: the conversation is still there, and the memory
  * has moved on since. Both are one call away, which is the whole point.
  */
-export function resumeAgent(
+export async function resumeAgent(
   sessionId: string,
   prompt: string,
   preamble = '',
   allow?: string[],
   opts?: EngineOptions,
-): StartAgentResult {
+): Promise<StartAgentResult> {
   const prev = get(sessionId)
   if (!prev) return { denied: true, reason: 'unknown session: ' + sessionId }
   if (!prev.engineSessionId) {
@@ -711,7 +741,7 @@ export function resumeAgent(
   const running = live.get(sessionId)
   if (running) {
     if (running.spec.streaming && running.spec.encodeTurn) {
-      const r = send(sessionId, prompt)
+      const r = await send(sessionId, prompt)
       return r.ok ? { sessionId } : { denied: true, reason: r.reason }
     }
     return { denied: true, reason: 'that conversation is already running' }
@@ -745,14 +775,14 @@ export interface EngineOptions {
   plan?: boolean
 }
 
-function launch(
+async function launch(
   session: Conversation,
   spec: EngineSpec,
   fullPrompt: string,
   resuming: boolean,
   allow?: string[],
   opts?: EngineOptions,
-): StartAgentResult {
+): Promise<StartAgentResult> {
   // §7 — the lease is what makes two overlapping agents impossible. It is taken
   // on paths, so a topic-wide session and a repo session inside it collide
   // exactly as they should.
@@ -775,7 +805,10 @@ function launch(
   session.leaseId = lease.lease.id
   persist(session)
   // After persist: the turn references the session row (§6).
-  openTurn(session.id, session.prompt)
+  const turnId = openTurn(session.id, session.prompt)
+  // §16 — before the process exists, not beside it. The lease is already held
+  // at this point, so nothing else can be writing into the tree being read.
+  await checkpointTurn(session, turnId, session.prompt)
 
   const cwd = session.paths[0]!
   // §7 — the engine runs in the first path; the rest have to be handed over
@@ -945,7 +978,7 @@ function launch(
           session.status = 'idle'
           changed = true
           if (spec.streaming) {
-            flushQueue(l)
+            void flushQueue(l)
             // Only when nothing followed it in: a conversation being worked
             // through is not idle between two of its own turns.
             if (!l.busy) armIdleTimer(l)
@@ -1006,16 +1039,23 @@ function launch(
  * the engine answer them as a single muddled question, which is exactly the
  * failure a queue exists to prevent.
  */
-function flushQueue(l: Live): void {
+async function flushQueue(l: Live): Promise<void> {
   if (l.busy || !l.queue.length) return
   clearIdleTimer(l)
   const prompt = l.queue.shift()!
   const encode = l.spec.encodeTurn
   if (!encode) return
+  // Everything that decides whether another flush may start happens before the
+  // first await: the busy flag is what a second `end` event reads, and it must
+  // already be true by the time the snapshot is being taken.
   l.busy = true
   l.session.status = 'thinking'
-  openTurn(l.session.id, prompt)
+  const turnId = openTurn(l.session.id, prompt)
   persist(l.session)
+  // The turn is on screen while its checkpoint is taken, rather than the
+  // window sitting on the previous answer for the length of a snapshot.
+  agentBus.emit('changed')
+  await checkpointTurn(l.session, turnId, prompt)
   l.child.stdin?.write(encode(prompt) + '\n')
   agentBus.emit('changed')
 }
@@ -1049,7 +1089,10 @@ export function stop(sessionId: string): void {
  * A one-shot engine has nothing to write into and says so, pointing at the
  * `agent.resume` that does work for it.
  */
-export function send(sessionId: string, prompt: string): { ok: true; queued: boolean } | { ok: false; reason: string } {
+export async function send(
+  sessionId: string,
+  prompt: string,
+): Promise<{ ok: true; queued: boolean } | { ok: false; reason: string }> {
   const l = live.get(sessionId)
   if (!l) return { ok: false, reason: 'no such live session — resume it instead' }
   if (!l.spec.streaming || !l.spec.encodeTurn) {
@@ -1070,7 +1113,7 @@ export function send(sessionId: string, prompt: string): { ok: true; queued: boo
   }
   clearIdleTimer(l)
   l.queue.push(text)
-  flushQueue(l)
+  await flushQueue(l)
   return { ok: true, queued: false }
 }
 

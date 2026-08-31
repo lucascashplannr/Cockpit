@@ -93,6 +93,15 @@ export interface AgentScopePreview {
   preamble: { memory: boolean; context: boolean }
 }
 
+/** §3.7 — the size of what an undo would discard, per repository. */
+export interface RevertPreviewEntry {
+  workspaceId: string
+  name: string
+  files: number
+  insertions: number
+  deletions: number
+}
+
 /** The outcome of acting on a conflict — always carrying the state after. */
 export interface GitResolveResult {
   ok: boolean
@@ -537,6 +546,26 @@ export interface Rpc {
    * tomorrow has to read as what was said, and this is where that comes from.
    */
   'agent.transcript': { params: { sessionId: string }; result: CockpitEvent[] }
+  /**
+   * §3.7 — what going back to a turn would change, per repository, before it
+   * changes anything. An undo that says "this will revert 12 files, +340 −18"
+   * is a decision; one that just says "undo?" is a gamble.
+   */
+  'agent.revertPreview': {
+    params: { sessionId: string; turnId: string }
+    result: RevertPreviewEntry[]
+  }
+  /**
+   * §16 — the working tree as it stood before that turn, put back: files
+   * edited, files created, files deleted, tracked or not, committed or not.
+   *
+   * The state being discarded is snapshotted on the way in, so this is not a
+   * one-way door — `redoTurnId` names the checkpoint that holds it.
+   */
+  'agent.revert': {
+    params: { sessionId: string; turnId: string }
+    result: { ok: boolean; detail: string; redoTurnId: string | null }
+  }
 
   'memory.read': { params: { workspaceId: string }; result: MemoryDoc | null }
   'memory.write': { params: { workspaceId: string; content: string }; result: { ok: true } }

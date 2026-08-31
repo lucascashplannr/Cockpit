@@ -3,7 +3,7 @@ import type {
   AddRepoSource, AgentScope, AgentScopePreview, Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, EngineOptions,
   DatabasePlan, Topic,
-  NewProjectSource, PlanPreview, Project, SeedProposal, Workspace,
+  NewProjectSource, PlanPreview, Project, RevertPreviewEntry, SeedProposal, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
@@ -60,6 +60,25 @@ export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'journal' | 'terminal
  */
 export type ReviewTool = 'diff' | 'code' | 'journal' | 'terminal'
 
+
+/**
+ * §16 — an undo waiting to be confirmed, with what it would change.
+ *
+ * `plan` is null while the core is still working out the answer: the dialog
+ * opens immediately and fills in, rather than the button hanging for the
+ * length of a `git diff` on a large repository with nothing on screen.
+ */
+export interface PendingRevert {
+  sessionId: string
+  turnId: string
+  /** Going forward again, rather than back: the same call, the other way. */
+  redo: boolean
+  /** Which turn, in the words it was asked in. */
+  turnSeq: number
+  turnPrompt: string
+  plan: RevertPreviewEntry[] | null
+  busy: boolean
+}
 
 export const state = reactive({
   connection: 'connecting' as ConnectionState,
@@ -140,6 +159,15 @@ export const state = reactive({
    * with one word changed.
    */
   promptHistory: [] as string[],
+
+  /**
+   * §16 + §3.7 — the undo being asked about, and what it would cost.
+   *
+   * At app level rather than inside the thread: it is a decision that discards
+   * work, and those are confirmed in a dialog in this app, never in a strip of
+   * text that a stray click can dismiss.
+   */
+  pendingRevert: null as PendingRevert | null,
 
   /** The start page. It owns the window on launch and whenever the mark is
    *  clicked; §12's "zero click" target starts from a search field, not from
@@ -1638,6 +1666,46 @@ export async function sendTurn(sessionId: string, prompt: string): Promise<boole
     return true
   }
   return resumeSession(sessionId, prompt)
+}
+
+/* ── §16, the undo ──────────────────────────────────────────────────────── */
+
+/**
+ * Asking is not doing. This opens the confirmation and then reads what would
+ * change; nothing has moved when it returns.
+ */
+export async function askRevert(
+  sessionId: string,
+  turn: { id: string; seq: number; prompt: string },
+  redo: boolean,
+): Promise<void> {
+  const turnId = redo ? 'redo_' + turn.id : turn.id
+  state.pendingRevert = {
+    sessionId,
+    turnId,
+    redo,
+    turnSeq: turn.seq,
+    turnPrompt: turn.prompt,
+    plan: null,
+    busy: false,
+  }
+  const r = await guard(() => client.call('agent.revertPreview', { sessionId, turnId }))
+  // Only if it is still the same question: the dialog can be dismissed, or
+  // another turn asked about, while this was in flight.
+  if (state.pendingRevert?.turnId === turnId) state.pendingRevert.plan = r ?? []
+}
+
+export async function applyPendingRevert(): Promise<void> {
+  const p = state.pendingRevert
+  if (!p || p.busy) return
+  p.busy = true
+  const r = await guard(() => client.call('agent.revert', { sessionId: p.sessionId, turnId: p.turnId }))
+  p.busy = false
+  if (!r) return
+  // Closed only on an answer: a dialog that vanishes on failure takes the
+  // reason with it.
+  if (r.ok) state.pendingRevert = null
+  toast(r.ok ? 'ok' : 'error', r.detail)
 }
 
 /** What the composer currently says, in the shape the core takes. */
