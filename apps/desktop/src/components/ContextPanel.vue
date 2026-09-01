@@ -215,6 +215,11 @@ const servers = computed(() => {
           <span v-if="w.lease" class="stat warn" :title="w.lease.reason">locked</span>
         </span>
 
+        <!-- The only thing here that wants to be wide. It used to be `.stats`
+             doing this job as well as its own, which is what made the counters
+             the first thing to go. -->
+        <span class="grow" />
+
         <!-- What you can do, pinned right and never clipped. The verbs of the
              thing named at the far left, then the conversation's own
              instruments — kept apart, and shaped apart, because a Push and a
@@ -350,17 +355,33 @@ const servers = computed(() => {
 }
 
 
-/* The middle zone: it takes what is left and gives it back first. `min-width:
-   0` is what lets it shrink below its content at all, and the hidden overflow
-   is the whole point — a fact about the work that will not fit is dropped, not
-   folded onto a second line. */
+/* The order things give up their width, and it is deliberate.
+ *
+ * Flex shrinks every willing item at once, weighted by `shrink × basis`, so the
+ * weights below are a ranking rather than a sequence: at 200 : 5 : 1 the branch
+ * has given two hundred pixels before the name gives five and the counters give
+ * one. In practice it reads as three stages — the branch ellipsises down to a
+ * stub, then the repository's name starts to lose characters, and only with
+ * nothing left anywhere do the counters begin to clip.
+ *
+ * The counters were going first, because `.stats` was `flex: 1 1 0`: with no
+ * basis of its own to defend it was both the thing that absorbed the free space
+ * and the first thing to hand it back. A `.grow` spacer does that job now, and
+ * the counters are the numbers you actually act on. */
 .stats {
-  /* Basis zero, so it has no width of its own to defend: the free space is
-     what it takes, and it is the first thing to give any of it back. That
-     ranking is the point — the name of the thing you are standing on outranks
-     every counter beside it, and with both set to shrink evenly the bar spent
-     its last hundred pixels on the branch and ellipsised the name. */
-  flex: 1 1 0;
+  flex: 0 1 auto;
+  /* Last resort, and only that.
+   *
+   * The weights inside `.scope` rank the branch against the name, but the top
+   * level splits the deficit between `.scope` and this box first — and there,
+   * at 1 : 1, `shrink × basis` made it roughly four to one, so a counter was
+   * being cut off while the branch still had eighty pixels to give. A factor
+   * this small takes a fraction of a pixel per hundred: the counters hold
+   * until `.scope` has frozen against its own floor (the `flex: none` kicker
+   * and the chip's icon, chevron and padding), and only the deficit left after
+   * that reaches them. Not zero, because zero would push the verbs off the
+   * right edge instead of clipping a number. */
+  flex-shrink: 0.01;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -368,41 +389,44 @@ const servers = computed(() => {
   overflow: hidden;
 }
 .stats > * { flex: none; }
+
+/* The only thing on the row that wants to be wide. */
+.grow { flex: 1 1 0; min-width: 0; }
+
 /* The right zone: verbs, then instruments. Never shrinks. */
 .acts { flex: none; display: flex; align-items: center; gap: 8px; }
 
+/* What the line is about — and, inside it, the two halves in the order they
+   are given up. */
+.scope { flex: 0 1 auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Second to give, and only after the branch beside it has nothing left. */
+.idr { flex: 0 5 auto; display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+/* First to give, by two hundred to one. A branch name is a ticket title with
+   hyphens in it — the longest thing on this row and the least of it, and the
+   only one of the three that is named again somewhere else the moment you look
+   (its own hover, and the menu it opens).
+ *
+ * No floor, deliberately. `min-width` is a floor at *all* times and not only
+ * while shrinking, so 66px of it padded every short branch — `main`, or the
+ * one-character one this was caught on — out to a box half again its size, on
+ * every screen, to buy legibility in a window nobody has open. What holds the
+ * chip up instead is its own furniture: the icon, the chevron and the padding
+ * are all `flex: none`, so it cannot collapse to nothing. */
+.br { flex: 0 200 auto; min-width: 44px; max-width: 26ch; }
 
-/* What the conversation is on — the one thing here that is not a detail. */
-/* Centred, not baseline-aligned. Baseline pushes the smaller label down until
-   its baseline meets the name's, which makes the pair's box taller than the
-   name and centres *that* — so the text everyone actually looks at ends up
-   sitting below the middle of the bar. In a row of 28px controls the two want
-   to be centred on each other, not on a shared baseline. */
-.scope {
-  /* The zone that gives space back last but not never: the name outranks every
-     counter beside it, and the branch inside it outranks nothing. */
-  flex: 0 1 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
 /* Baseline, not centre. Centred, the 10px kicker floats a couple of pixels
    above the line the name sits on and the pair reads as two things that missed
    each other. It costs nothing here: the small word needs less room above and
-   below its own baseline than the big one does, so aligning them leaves the
-   box exactly as tall as the name and the whole group stays centred in the
-   bar. (Centring was chosen originally against a version of this row where the
-   kicker was the taller of the two.) */
-.idr { flex: none; display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
-/* The one thing on this line allowed to lose characters. Its floor is wide
-   enough to still be recognisable as a branch, its ceiling stops a sixty
-   character ticket title from being the whole bar, and the full text is on the
-   hover and inside the menu it opens. */
-.br { flex: 0 1 auto; min-width: 84px; max-width: 26ch; }
-
+   below its own baseline than the big one does, so aligning them leaves the box
+   exactly as tall as the name and the whole group stays centred in the bar. */
+/* And after the branch, this: "REPOSITORY" is a category, not an identity, and
+   it is the one thing here that can go without the row losing an answer. It
+   gives fifty times faster than the name it labels, so on a column narrow
+   enough to force the choice the name is what survives. */
 .scope .k {
-  flex: none;
+  flex: 0 50 auto;
+  min-width: 0;
+  overflow: hidden;
   line-height: 1;
   font-size: 10px;
   letter-spacing: 0.05em;
@@ -418,7 +442,6 @@ const servers = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 /* A hairline instead of a gap: it parts the name from the numbers without
    adding another shape to the row. */
 .rule { flex: none; width: 1px; height: 14px; background: var(--line); }

@@ -212,6 +212,11 @@ function noteOf(b: BranchRef): string {
 </template>
 
 <style scoped>
+/* `min-width: 0` so the name inside can ellipsis: left at `auto`, this box's
+   automatic minimum came out as the whole branch name and the chip refused to
+   shrink at all — the kicker and the repository name were collapsing around a
+   full-width branch. The floor that stops it reaching zero is a real number on
+   `.br` in ContextPanel, where the rest of the ranking lives. */
 .bm { position: relative; display: inline-flex; min-width: 0; }
 
 /* The label, made pressable. Reads as text until it is under the cursor —
