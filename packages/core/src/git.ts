@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import type { GitOperation, GitState } from '@cockpit/shared'
+import type { BranchRef, GitOperation, GitState } from '@cockpit/shared'
 import { run, serialize } from './exec.js'
 
 /** §3.4 — we probe, we do not remember. Nothing here is cached to disk. */
@@ -242,6 +242,71 @@ function finishWorktree(c: Partial<WorktreeEntry>): WorktreeEntry {
     bare: c.bare ?? false,
     detached: c.detached ?? false,
   }
+}
+
+/**
+ * Every branch this repository could be put on, local and remote alike.
+ *
+ * One `for-each-ref` rather than `git branch -a` parsed by eye: the porcelain
+ * of `branch` is for humans and changes, and the tracking counts are only
+ * available here as a field.
+ *
+ * `checkedOutAt` is the one that matters in this app specifically. Cockpit
+ * hands out worktrees (a topic is a branch per repository in its own folder),
+ * and **git refuses to check out a branch that is already out somewhere else**.
+ * A picker that offers it anyway is a picker whose entries fail on click, so it
+ * says where the branch already is instead.
+ */
+export async function listBranches(cwd: string): Promise<BranchRef[]> {
+  const F = [
+    '%(refname)', '%(refname:short)', '%(upstream:short)', '%(upstream:track)',
+    '%(committerdate:unix)', '%(contents:subject)',
+  ].join('%1f')
+  const r = await git(cwd, ['for-each-ref', '--format=' + F, 'refs/heads', 'refs/remotes'])
+  if (!r.ok) return []
+
+  // Which branch is out where. `%(HEAD)` only marks the ref this *worktree* has
+  // out, and a bare-ish main checkout asking about a worktree's branch would
+  // get no mark at all — so the answer comes from `worktree list`, which knows
+  // about every checkout of this repository at once.
+  const worktrees = await listWorktrees(cwd)
+  const here = worktrees.find((w) => w.path === cwd)?.branch ?? null
+  const elsewhere = new Map<string, string>()
+  for (const w of worktrees) {
+    if (w.branch && w.path !== cwd) elsewhere.set(w.branch, w.path)
+  }
+
+  const local: BranchRef[] = []
+  const remote: BranchRef[] = []
+  for (const line of r.stdout.split('\n').filter(Boolean)) {
+    const [full = '', name = '', upstream = '', track = '', at = '0', subject = ''] =
+      line.split('\u001f')
+    // `origin/HEAD` is a symbolic ref pointing at the default branch, not a
+    // branch you can be on: checking it out lands you on a detached HEAD.
+    if (!name || full.endsWith('/HEAD')) continue
+    const ref: BranchRef = {
+      name,
+      current: name === here,
+      remoteOnly: false,
+      checkedOutAt: elsewhere.get(name) ?? null,
+      upstream: upstream || null,
+      ahead: Number(/ahead (\d+)/.exec(track)?.[1] ?? 0),
+      behind: Number(/behind (\d+)/.exec(track)?.[1] ?? 0),
+      ts: Number(at) * 1000,
+      subject,
+    }
+    ;(full.startsWith('refs/heads/') ? local : remote).push(ref)
+  }
+
+  // A remote branch is only worth offering while there is no local one for it:
+  // once `dev` exists here, `origin/dev` is the same branch said twice.
+  const localNames = new Set(local.map((b) => b.name))
+  const onlyRemote = remote
+    .filter((b) => !localNames.has(b.name.replace(/^[^/]+\//, '')))
+    .map((b) => ({ ...b, remoteOnly: true, checkedOutAt: null }))
+
+  const byTime = (a: BranchRef, b: BranchRef) => b.ts - a.ts
+  return [...local.sort(byTime), ...onlyRemote.sort(byTime)]
 }
 
 export async function defaultBranch(cwd: string): Promise<string> {

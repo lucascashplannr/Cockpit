@@ -6,8 +6,8 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentScope, Conversation, TranscriptFile, CockpitSettings, CommitPreview,
-  CoreStatus,
+  AddRepoSource, AgentScope, BranchRef, Conversation, TranscriptFile, CockpitSettings,
+  CommitPreview, CoreStatus,
   DatabasePlan,
   DiffFile, Topic,
   FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
@@ -484,8 +484,18 @@ export interface Rpc {
     result: { ok: boolean; detail: string; plan: PlanPreview | null; preview: CommitPreview[] }
   }
 
+  /**
+   * §2 — "on ne cache pas git". Every branch this checkout could be put on,
+   * local and remote, with the tracking counts and — because this app hands
+   * out worktrees — where each one is already checked out.
+   */
+  'git.branches': { params: { workspaceId: string }; result: BranchRef[] }
   'git.plan': {
-    params: { workspaceId: string; operation: 'rebase' | 'merge' | 'branch' | 'worktree' | 'push' | 'sync'; args?: Record<string, string> }
+    params: {
+      workspaceId: string
+      operation: 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'sync'
+      args?: Record<string, string>
+    }
     result: PlanPreview
   }
   'git.apply': { params: { planId: string }; result: ApplyResult }
@@ -579,6 +589,18 @@ export interface Rpc {
   }
   'agent.list': { params: void; result: Conversation[] }
   'agent.stop': { params: { sessionId: string }; result: { ok: true } }
+  /**
+   * §6 — the conversation removed, and only the conversation.
+   *
+   * The turns and the row in the list go; the journal, the checkpoints and the
+   * per-path attribution stay, because those record what happened to the code
+   * rather than what was said about it. Refuses while the engine is still
+   * running: stopping is its own decision.
+   */
+  'agent.delete': {
+    params: { sessionId: string }
+    result: { ok: true } | { ok: false; reason: string }
+  }
   /**
    * §6 — a turn written into a conversation that is already open.
    *

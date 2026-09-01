@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { newId } from '@cockpit/shared'
 import type { ApplyResult, PlanPreview, PlanStep } from '@cockpit/shared'
 import { getDb } from './db.js'
-import { defaultBranch, git, probeOperation } from './git.js'
+import { defaultBranch, git, listWorktrees, probeOperation } from './git.js'
 import * as restore from './restore.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
@@ -92,7 +92,7 @@ export function register(preview: PlanPreview, opts: RegisterOptions): PlanPrevi
   return preview
 }
 
-export type Operation = 'rebase' | 'merge' | 'branch' | 'worktree' | 'push' | 'sync'
+export type Operation = 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'sync'
 
 export async function plan(
   workspaceId: string,
@@ -141,6 +141,72 @@ export async function plan(
       const name = args.name
       if (!name) throw new Error('branch requires a name')
       steps.push({ title: 'Create branch ' + name, command: 'git switch -c ' + name, cwd: ws.path, destructive: false })
+      // Same as a switch: `-c` moves you onto the new branch and takes the
+      // working tree with it. Silent before, when this plan was always read in
+      // a dialog anyway; said now, because a plan with nothing to warn about
+      // is applied without one.
+      if ((ws.git?.staged ?? 0) + (ws.git?.unstaged ?? 0) > 0) {
+        warnings.push(
+          (ws.git!.staged + ws.git!.unstaged) + ' uncommitted change(s) come across to "' + name +
+          '" — that is what git does, and they are not left behind on ' + branch + '.',
+        )
+      }
+      break
+    }
+
+    /**
+     * §2 — "on ne cache pas git", and the gap it left: a checkout could be
+     * *created* on a new branch and rebased and pushed, but never moved onto a
+     * branch that already exists. Working on `dev` and merging to `main` — the
+     * plainest thing anyone does with two branches — had no answer in the
+     * window at all, short of a terminal.
+     *
+     * Deliberately not destructive, and so it takes no restore point: `git
+     * switch` either carries uncommitted work across or refuses outright. It is
+     * the one git verb here that cannot lose anything.
+     */
+    case 'switch': {
+      const name = args.name
+      if (!name) throw new Error('switch requires a branch name')
+      if (name === branch) {
+        warnings.push('Already on "' + name + '".')
+        break
+      }
+      if (args.remote === 'true') {
+        // `origin/dev` → a local `dev` set up to track it. `--track` on its own
+        // would name the branch `dev` too, but only by guessing from the ref;
+        // saying both makes it explicit and survives a second remote.
+        const local = name.replace(/^[^/]+\//, '')
+        steps.push({ title: 'Fetch ' + name, command: 'git fetch origin ' + local, cwd: ws.path, destructive: false })
+        steps.push({
+          title: 'Check out ' + local + ', tracking ' + name,
+          command: 'git switch -c ' + local + ' --track ' + name,
+          cwd: ws.path,
+          destructive: false,
+        })
+      } else {
+        // The picker greys these out, but the plan is the layer that has to be
+        // right: git allows a branch in one worktree at a time, and this app
+        // hands out worktrees, so `git switch` onto a topic's branch fails.
+        // Said before the step rather than after it, like every other refusal.
+        const held = (await listWorktrees(ws.path)).find(
+          (w) => w.branch === name && w.path !== ws.path,
+        )
+        if (held) {
+          warnings.push(
+            '"' + name + '" is already checked out at ' + held.path +
+            ' — git allows a branch in one worktree at a time, so this will fail. Go there instead.',
+          )
+        }
+        steps.push({ title: 'Switch to ' + name, command: 'git switch ' + name, cwd: ws.path, destructive: false })
+      }
+      const dirty = (ws.git?.staged ?? 0) + (ws.git?.unstaged ?? 0)
+      if (dirty) {
+        warnings.push(
+          dirty + ' uncommitted change(s) come across to "' + name + '" — that is what git does. ' +
+          'If any of them would be overwritten by the switch, git refuses and nothing moves.',
+        )
+      }
       break
     }
 

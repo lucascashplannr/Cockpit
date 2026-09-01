@@ -2,10 +2,12 @@
 import { computed } from 'vue'
 import {
   ArrowDown, ArrowUp, BookMarked, FileDiff, GitBranch, History, Layers, MousePointerClick,
-  PanelRight, Plug,
+  PanelRight,
 } from '@lucide/vue'
 import AgentTab from './tabs/AgentTab.vue'
 import ConflictPanel from './ConflictPanel.vue'
+import ConversationDrawer from './ConversationDrawer.vue'
+import BranchMenu from './BranchMenu.vue'
 import Wordmark from './brand/Wordmark.vue'
 import TopicActions from './TopicActions.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
@@ -80,6 +82,34 @@ const waiting = computed(
   () => conversations.value.filter((c) => attentionOf(c) !== 'none').length,
 )
 
+/**
+ * §8 — the servers, as one fact and one way in.
+ *
+ * They were three things on this line: a status dot, the name of the runner
+ * ("node"), and a pill per bound port. Two of the three were noise wherever
+ * you stood — the runner's name is in the Servers tool and never changes, and
+ * a port pill beside the word `down` advertises an address nothing is
+ * listening on, which is how this bar came to read `node down · web :8611`.
+ *
+ * So: the ports while they are actually bound, the status while they are not,
+ * and the whole of it opens the tool that holds the rest.
+ */
+const servers = computed(() => {
+  const rt = w.value?.runtime
+  if (!rt) return null
+  const ports = rt.ports ?? []
+  const bound = rt.status === 'up' && ports.length > 0
+  return {
+    word: bound ? ports.map((p) => ':' + p.port).join(' ') : rt.status,
+    title:
+      rt.impl +
+      ' · servers ' +
+      rt.status +
+      (ports.length ? ' · ' + ports.map((p) => p.name + ' :' + p.port).join(', ') : '') +
+      ' — open the Servers tool',
+  }
+})
+
 </script>
 
 <template>
@@ -97,125 +127,132 @@ const waiting = computed(
     </div>
 
     <template v-else>
-      <!-- One line: what this is, where it stands, and the instruments of the
-           conversation about it. Quiet on purpose — everything here is a fact
-           about the work rather than the work, so only the name it is all
-           about carries full contrast. -->
+      <!-- One line, and it stays one line. Three zones, ranked: what this
+           is, what is merely true about it, and what you can do to it. It was
+           a single wrapping run of thirteen controls at one weight, which on
+           any real window meant two rows of chrome before the first word of
+           the work and an eye with nothing to sort them by. -->
       <header class="head">
-        <span class="scope" :title="label.name">
-          <span class="k">{{ label.kind }}</span>
-          <span class="n">{{ label.name }}</span>
+        <!-- What this is, and where it stands: one line, in reading order.
+             It was stacked for a while, which put two type sizes on top of
+             each other in a 52px bar and read as cramped whatever the gap was.
+             The reason it was stacked — a branch name is a ticket title with
+             hyphens in it and ate the whole row — is answered here by letting
+             the branch, and only the branch, ellipsis. -->
+        <span class="scope">
+          <span class="idr" :title="label.name">
+            <span class="k">{{ label.kind }}</span>
+            <span class="n">{{ label.name }}</span>
+          </span>
+
+          <!-- §2 — and the one control that moves this checkout. Named only
+               when there is one to name, and not when it is already the name
+               beside it: on a branch the two are the same word. Across a topic
+               there is no single branch at all. -->
+          <BranchMenu
+            v-if="git?.branch && git.branch !== label.name"
+            class="br"
+            :workspace-id="w.id"
+            :branch="git.branch"
+          />
         </span>
 
-        <!-- How many repositories the word to the left stands for. This was a
-             whole row of its own inside the conversation, spent on one number;
-             it is a fact about the scope, so it belongs on the scope's line. -->
-        <span
-          v-if="covered.length > 1"
-          class="stat num"
-          :title="covered.length + ' repositories in this scope'"
-        >
-          <Layers class="sm si" />
-          <span class="v">{{ covered.length }}</span>
-        </span>
+        <span class="rule" />
 
-        <span v-if="git || w.runtime" class="rule" />
-
-        <template v-if="git">
-          <!-- Named only when there is one to name, and not when it is already
-               the name above it: on a worktree the two are the same word, and
-               saying it twice in one line is the noise this bar was merged to
-               remove. Across a topic there is no single branch at all. -->
-          <span v-if="git.branch && git.branch !== label.name" class="stat">
-            <GitBranch class="sm si" />
-            <span class="v">{{ git.branch }}</span>
-          </span>
-          <span class="stat num">
-            <span class="v sync">
-              <span :class="{ on: git.ahead }"><ArrowUp class="sm" />{{ git.ahead }}</span>
-              <span :class="{ warn: git.behind }"><ArrowDown class="sm" />{{ git.behind }}</span>
-            </span>
-          </span>
-          <!-- The count is the way into the review layer: what changed is the
-               reason you would open it at all. -->
-          <button
-            class="stat num act"
-            :title="changed + ' uncommitted change(s) — open the diff'"
-            @click="goTo('diff')"
+        <!-- Everything that is merely true, in one dim run that clips rather
+             than wraps: the bar keeps its line whatever the window does, and
+             what falls off the end is by construction the least of it. Each
+             one that can be acted on opens the tool that says more. -->
+        <span class="stats">
+          <!-- How many repositories the word to the left stands for. -->
+          <span
+            v-if="covered.length > 1"
+            class="stat num"
+            :title="covered.length + ' repositories in this scope'"
           >
-            <FileDiff class="sm si" />
-            <span class="v" :class="{ warn: changed }">{{ changed }}</span>
+            <Layers class="sm si" />
+            <span class="v">{{ covered.length }}</span>
+          </span>
+
+          <template v-if="git">
+            <span class="stat num">
+              <span class="v sync">
+                <span :class="{ on: git.ahead }"><ArrowUp class="sm" />{{ git.ahead }}</span>
+                <span :class="{ warn: git.behind }"><ArrowDown class="sm" />{{ git.behind }}</span>
+              </span>
+            </span>
+            <!-- The count is the way into the review layer: what changed is the
+                 reason you would open it at all. -->
+            <button
+              class="stat num act"
+              :title="changed + ' uncommitted change(s) — open the diff'"
+              @click="goTo('diff')"
+            >
+              <FileDiff class="sm si" />
+              <span class="v" :class="{ warn: changed }">{{ changed }}</span>
+            </button>
+          </template>
+
+          <button
+            v-if="servers"
+            class="stat act"
+            :title="servers.title"
+            @click="goTo('servers')"
+          >
+            <i class="dot" :class="w.runtime!.status" />
+            <span class="v">{{ servers.word }}</span>
           </button>
-        </template>
 
-        <span v-if="w.runtime" class="stat">
-          <i class="dot" :class="w.runtime.status" />
-          <span class="v">{{ w.runtime.impl }}</span>
-          <span class="k">{{ w.runtime.status }}</span>
+          <!-- §8 — a non-portable runtime says so, rather than failing later. -->
+          <span
+            v-if="w.runtime && !w.runtime.portable"
+            class="stat quiet"
+            title="These servers are set up on this machine only — they do not follow the repository"
+          >
+            local only
+          </span>
+
+          <span v-if="w.lease" class="stat warn" :title="w.lease.reason">locked</span>
         </span>
 
-        <!-- §8 — a non-portable runtime says so, rather than failing later. -->
-        <span
-          v-if="w.runtime && !w.runtime.portable"
-          class="stat quiet"
-          title="These servers are set up on this machine only — they do not follow the repository"
-        >
-          local only
+        <!-- What you can do, pinned right and never clipped. The verbs of the
+             thing named at the far left, then the conversation's own
+             instruments — kept apart, and shaped apart, because a Push and a
+             "show me the earlier conversations" are not the same kind of act
+             and drawing them as one row of identical ghosts said they were. -->
+        <span class="acts">
+          <TopicActions v-if="selectedTopicGroup" :group="selectedTopicGroup" />
+          <WorkspaceActions v-else />
+
+          <span class="inst">
+            <!-- §6 — the conversation's own two, and the way into the review
+                 layer. They belong beside what they are about, which is the
+                 scope named at the far left of this same line. -->
+            <button
+              :class="{ on: state.historyOpen, waiting: waiting > 0 }"
+              title="Earlier conversations here"
+              @click="state.historyOpen = !state.historyOpen"
+            >
+              <History class="sm" />
+              <span v-if="conversations.length" class="n">{{ conversations.length }}</span>
+            </button>
+            <button
+              :class="{ on: state.memoryOpen }"
+              title="The durable memory this conversation reads on the way in"
+              @click="state.memoryOpen = !state.memoryOpen"
+            >
+              <BookMarked class="sm" />
+              <span v-if="w.hasMemory" class="pip" />
+            </button>
+            <button
+              :class="{ on: state.reviewOpen }"
+              :title="(state.reviewOpen ? 'Close' : 'Open') + ' the review — diff, code, journal, terminal'"
+              @click="state.reviewOpen = !state.reviewOpen"
+            >
+              <PanelRight class="sm" />
+            </button>
+          </span>
         </span>
-
-        <span v-for="p in w.runtime?.ports ?? []" :key="p.name" class="stat num">
-          <Plug class="sm si" />
-          <span class="k">{{ p.name }}</span>
-          <span class="v">:{{ p.port }}</span>
-        </span>
-
-        <span v-if="w.lease" class="stat warn" :title="w.lease.reason">locked</span>
-
-        <span class="grow" />
-
-        <!-- The verbs of the thing named at the left of this same line. They
-             were in the window's title band, where they had a subject only
-             because the subject had been dragged up there to give them one. -->
-        <TopicActions v-if="selectedTopicGroup" :group="selectedTopicGroup" />
-        <WorkspaceActions v-else />
-
-        <span class="rule" />
-
-        <!-- §6 — the conversation's own two instruments. They belong beside
-             what they are about, which is the scope named at the far left of
-             this same line. -->
-        <button
-          class="ib"
-          :class="{ on: state.historyOpen, waiting: waiting > 0 }"
-          title="Earlier conversations here"
-          @click="state.historyOpen = !state.historyOpen"
-        >
-          <History class="sm" />
-          <span v-if="conversations.length" class="n">{{ conversations.length }}</span>
-        </button>
-        <button
-          class="ib"
-          :class="{ on: state.memoryOpen }"
-          title="The durable memory this conversation reads on the way in"
-          @click="state.memoryOpen = !state.memoryOpen"
-        >
-          <BookMarked class="sm" />
-          <span v-if="w.hasMemory" class="pip" />
-        </button>
-
-        <span class="rule" />
-
-        <!-- One icon. The word and the badge both said what the count two
-             stats to the left already says, in a bar whose whole point is to
-             stop repeating itself. -->
-        <button
-          class="ib"
-          :class="{ on: state.reviewOpen }"
-          :title="(state.reviewOpen ? 'Close' : 'Open') + ' the review — diff, code, journal, terminal'"
-          @click="state.reviewOpen = !state.reviewOpen"
-        >
-          <PanelRight class="sm" />
-        </button>
       </header>
 
       <!-- §3.7 — above everything on purpose: while a rebase is stopped, none
@@ -224,6 +261,12 @@ const waiting = computed(
 
       <div class="body">
         <AgentTab :workspace="w" />
+
+        <!-- §6 — hung from the bar it is opened from, and over the thread
+             rather than instead of it. In here, not beside `AgentTab`, so it
+             is clipped to the conversation's own box: a drawer that can spill
+             past the column it belongs to is a panel with an animation. -->
+        <ConversationDrawer v-if="state.historyOpen" />
       </div>
     </template>
   </section>
@@ -276,12 +319,10 @@ const waiting = computed(
 }
 
 /* ── header ──────────────────────────────────────────────────────────── */
-/* One row, and quiet. It was two — the branch's state, then the agent's scope
-   — each with its own pills on its own line, so the column spent seventy-odd
-   pixels telling you where you were before showing you anything. Everything
-   here is a fact *about* the work rather than the work, so it is all one small
-   size in one dim colour, and the only thing at full contrast is the name the
-   whole line is about. */
+/* Quiet, and ranked. Everything in the middle is a fact *about* the work
+   rather than the work, so it is all one small size in one dim colour; the
+   only thing at full contrast is the name the whole line is about, and the
+   only things with a shape of their own are the ones you can press. */
 /* Also the window's handle. The band that used to be the drag region is gone,
    and a frameless window nobody can move is worse than a band nobody needs —
    so this bar carries it, and every control in it opts back out. */
@@ -290,21 +331,16 @@ const waiting = computed(
   flex: none;
   display: flex;
   align-items: center;
-  /* Wraps rather than clips. This row now carries the name, the state, the
-     verbs and the instruments, and on a narrow column with a runtime and three
-     ports it will not all fit — a second line is a worse look than one line,
-     and losing the Push button off the right edge is worse than both. */
-  flex-wrap: wrap;
-  /* `align-items` centres each item inside its line; with wrapping on, the
-     lines themselves are placed by `align-content`, whose default leaves a
-     single short line sitting against the top of a 52px bar. Both are needed. */
-  align-content: center;
-  gap: 4px 8px;
-  /* Tall enough to be a header rather than a strip of chrome squeezed above
-     the work. 52px is also exactly where the rail's own top matter ends, so
-     the two columns start their content on one line. */
-  min-height: 52px;
-  padding: 0 12px 0 18px;
+  gap: 8px;
+  /* Fixed, and no wrapping. This row carries the name, the state, the verbs
+     and the instruments; allowed to wrap it grew a second line of chrome on
+     every window narrow enough to matter, which is most of them once the
+     review column is open. The state clips instead (`.stats`), and the acts
+     are never in the running to be clipped. 52px is where the workspace
+     list's own header ends, so the two columns start their content on one
+     line. */
+  height: 52px;
+  padding: 0 10px 0 18px;
   min-width: 0;
   /* Its own surface. On `--bg` it was the same colour as the conversation
      under it and only a hairline said otherwise; on the raised white it reads
@@ -312,7 +348,29 @@ const waiting = computed(
   background: var(--panel-raised);
   border-bottom: 1px solid var(--line);
 }
-.grow { flex: 1; }
+
+
+/* The middle zone: it takes what is left and gives it back first. `min-width:
+   0` is what lets it shrink below its content at all, and the hidden overflow
+   is the whole point — a fact about the work that will not fit is dropped, not
+   folded onto a second line. */
+.stats {
+  /* Basis zero, so it has no width of its own to defend: the free space is
+     what it takes, and it is the first thing to give any of it back. That
+     ranking is the point — the name of the thing you are standing on outranks
+     every counter beside it, and with both set to shrink evenly the bar spent
+     its last hundred pixels on the branch and ellipsised the name. */
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.stats > * { flex: none; }
+/* The right zone: verbs, then instruments. Never shrinks. */
+.acts { flex: none; display: flex; align-items: center; gap: 8px; }
+
 
 /* What the conversation is on — the one thing here that is not a detail. */
 /* Centred, not baseline-aligned. Baseline pushes the smaller label down until
@@ -320,7 +378,29 @@ const waiting = computed(
    name and centres *that* — so the text everyone actually looks at ends up
    sitting below the middle of the bar. In a row of 28px controls the two want
    to be centred on each other, not on a shared baseline. */
-.scope { display: inline-flex; align-items: center; gap: 6px; min-width: 0; margin-right: 2px; }
+.scope {
+  /* The zone that gives space back last but not never: the name outranks every
+     counter beside it, and the branch inside it outranks nothing. */
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* Baseline, not centre. Centred, the 10px kicker floats a couple of pixels
+   above the line the name sits on and the pair reads as two things that missed
+   each other. It costs nothing here: the small word needs less room above and
+   below its own baseline than the big one does, so aligning them leaves the
+   box exactly as tall as the name and the whole group stays centred in the
+   bar. (Centring was chosen originally against a version of this row where the
+   kicker was the taller of the two.) */
+.idr { flex: none; display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+/* The one thing on this line allowed to lose characters. Its floor is wide
+   enough to still be recognisable as a branch, its ceiling stops a sixty
+   character ticket title from being the whole bar, and the full text is on the
+   hover and inside the menu it opens. */
+.br { flex: 0 1 auto; min-width: 84px; max-width: 26ch; }
+
 .scope .k {
   flex: none;
   line-height: 1;
@@ -339,8 +419,8 @@ const waiting = computed(
   white-space: nowrap;
 }
 
-/* A hairline instead of a gap: it separates the three groups without adding
-   another shape to a row that just lost eleven of them. */
+/* A hairline instead of a gap: it parts the name from the numbers without
+   adding another shape to the row. */
 .rule { flex: none; width: 1px; height: 14px; background: var(--line); }
 
 /* No pill, no fill. A stat is a word and a number. */
@@ -387,25 +467,42 @@ const waiting = computed(
 .head :deep(button),
 .head .scope { -webkit-app-region: no-drag; }
 
-/* The three controls on the right, one shape. Ghosts until they are on. */
-.ib {
+/* The three instruments, in a case of their own.
+ *
+ * They were three more ghost icons in the same run as the verbs, at the same
+ * size and the same weight — so a Push and a "show me the earlier
+ * conversations" were the same shape, and the only way to tell a bar of eight
+ * of them apart was to hover all eight. What they have in common is that none
+ * of them *does* anything: each one opens or closes a way of looking. The case
+ * is that sentence, drawn. */
+.inst {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 8px;
+  gap: 1px;
+  padding: 3px;
   border-radius: var(--radius-sm);
-  font-size: var(--fs-xs);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-soft);
+}
+.inst > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-size: 11px;
   color: var(--text-dim);
   transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
 }
-.ib:hover { color: var(--text); background: var(--hover); }
-.ib.on { color: var(--accent); background: var(--accent-soft); }
-.ib.waiting { color: var(--warn); }
-.ib .n { font-size: 11px; color: var(--text-dim); }
-.ib.on .n, .ib.waiting .n { color: inherit; }
-.ib .pip { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); }
+.inst > button:hover { color: var(--text); background: var(--hover); }
+.inst > button.on { background: var(--panel-raised); color: var(--accent); box-shadow: var(--shadow-xs); }
+.inst > button.waiting { color: var(--warn); }
+.inst .n { color: inherit; }
+.inst .pip { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); }
 
-.body { flex: 1; min-height: 0; overflow: hidden; }
+/* Positioned, because the conversation drawer hangs inside it — from the top
+   of this box, which is exactly the underside of the bar. */
+.body { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 </style>

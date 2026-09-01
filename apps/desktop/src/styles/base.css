@@ -417,3 +417,53 @@ input[type='checkbox']:checked::after {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* A short list of acts, floating over the work.
+ *
+ * Descendant selectors, not `>`: a menu long enough to scroll needs a box
+ * inside it to scroll, and with the child combinator every row in that box
+ * lost its shape — no flex, no height, no padding — while still looking like
+ * markup that should have worked.
+ *
+ * Where a verb goes when it is not the next thing to do. A bar that draws
+ * every verb it has at the same weight is a bar nobody reads: eight ghost
+ * icons in a row say only "there are eight of these". The two or three the
+ * state actually calls for stay on the bar with their names on them; the rest
+ * live here, one click away and spelled out in full. */
+.menu {
+  position: absolute;
+  z-index: 60;
+  min-width: 190px;
+  padding: 5px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--overlay);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  text-align: left;
+  white-space: nowrap;
+}
+.menu button .lucide {
+  width: var(--ic-sm);
+  height: var(--ic-sm);
+  flex: none;
+  color: var(--text-dim);
+}
+.menu button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.menu button:hover:not(:disabled) .lucide { color: inherit; }
+/* The keystroke that does the same thing, at the right edge. A menu is where
+   you find out a verb has one. */
+.menu button .kb { margin-left: auto; padding-left: 14px; font-size: 11px; color: var(--text-dim); }
+.menu .rule { flex: none; height: 1px; margin: 4px 2px; background: var(--line-soft); }

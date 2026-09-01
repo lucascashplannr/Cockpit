@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
 import {
-  ArrowDown, BookMarked, CircleAlert, CircleStop, Clock, Gauge, Hand, History, Lock,
+  ArrowDown, BookMarked, CircleStop, Clock, Gauge, Hand, Lock,
   Redo2, ShieldCheck, Sparkles, Undo2, X,
 } from '@lucide/vue'
 import MemoryTab from './MemoryTab.vue'
@@ -11,11 +11,10 @@ import ToolCall from '../agent/ToolCall.vue'
 import ToolGroup from '../agent/ToolGroup.vue'
 import Composer from '../agent/Composer.vue'
 import {
-  activeAgentScope, agentDraft, attentionOf, client, closeThread, guard, isRunning,
+  activeAgentScope, agentDraft, client, closeThread, guard, isRunning,
   askRevert, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, toast, transcriptOf,
 } from '../../core/store.js'
-import type { Attention } from '../../core/store.js'
 import { usePaced } from '../../core/reveal.js'
 
 /**
@@ -75,12 +74,6 @@ const blocked = computed(() =>
 )
 const paths = computed(() => preview.value?.paths ?? [])
 
-/* ── conversations (§6) ────────────────────────────────────────────────── */
-
-const conversations = computed(() =>
-  [...sessionsForScope(scope.value)].sort((a, b) => b.startedAt - a.startedAt),
-)
-
 /**
  * Which thread is open is the scope's business, not this component's: it used
  * to be a local ref, so walking over to another project and back reset the
@@ -88,11 +81,6 @@ const conversations = computed(() =>
  * the store now, and it is remembered.
  */
 const selected = computed(() => openThreadFor(scope.value))
-
-function open(c: Conversation): void {
-  if (scope.value) pinThread(scope.value, c.id)
-  state.historyOpen = false
-}
 
 function close(c: Conversation): void {
   if (scope.value) closeThread(scope.value, c.id)
@@ -116,13 +104,6 @@ watch(
   },
   { immediate: true },
 )
-
-const ATTENTION_TEXT: Record<Attention, string> = {
-  none: '',
-  reply: 'answered — waiting for you',
-  blocked: 'stopped: it was refused a tool it needed',
-  failed: 'the engine failed',
-}
 
 /**
  * §3.3 — the transcript is the journal filtered, never a second copy. Split by
@@ -611,47 +592,10 @@ function dotClass(s: Conversation): string {
       <div class="obody"><MemoryTab :workspace="props.workspace" /></div>
     </section>
 
-    <!-- Every conversation here. Also over the conversation: it is a way back
-         into one, not a column to keep open. -->
-    <section v-else-if="state.historyOpen" class="over">
-      <header class="ohead">
-        <History class="sm mk" />
-        <span class="ttl">Conversations</span>
-        <span class="grow" />
-        <button class="icon-btn" title="Close (Esc)" @click="state.historyOpen = false">
-          <X class="sm" />
-        </button>
-      </header>
-      <div class="obody convos">
-        <p v-if="!conversations.length" class="none">
-          Nothing has run here yet.
-        </p>
-        <button
-          v-for="c in conversations"
-          :key="c.id"
-          class="conv"
-          :class="{ on: selected?.id === c.id }"
-          @click="open(c)"
-        >
-          <span class="crow">
-            <span class="dot" :class="dotClass(c)" />
-            <span class="ceng">{{ c.engine }}</span>
-            <span class="cturns">{{ c.history.length }} turn{{ c.history.length === 1 ? '' : 's' }}</span>
-            <span
-              v-if="attentionOf(c) !== 'none'"
-              class="needs"
-              :class="attentionOf(c)"
-              :title="ATTENTION_TEXT[attentionOf(c)]"
-            >
-              <component :is="attentionOf(c) === 'reply' ? Hand : CircleAlert" class="sm" />
-            </span>
-            <span class="grow" />
-            <span class="cwhen">{{ ago(c.startedAt) }}</span>
-          </span>
-          <span class="ctitle">{{ c.title || 'untitled' }}</span>
-        </button>
-      </div>
-    </section>
+    <!-- Every conversation on this scope used to be a third full-height panel
+         here, opened *instead of* the thread. It is a drawer under the column's
+         bar now (ConversationDrawer), so the thread it is a way back into stays
+         on screen while you look for it. -->
 
     <!-- The conversation. Nothing yet: the composer is the page, the way a new one is
          a question and a box under it. -->

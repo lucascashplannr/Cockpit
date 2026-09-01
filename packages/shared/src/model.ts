@@ -51,6 +51,35 @@ export interface GitOperation {
   unresolvedPaths: string[]
 }
 
+/**
+ * A branch this repository could be put on.
+ *
+ * Local and remote in one list because the question the picker answers is
+ * "where do I want to be", and "it exists on origin but not here yet" is an
+ * answer to that, not a different question — it just costs one more step
+ * (`git switch --track`).
+ */
+export interface BranchRef {
+  /** Short name: `dev` for a local branch, `origin/dev` for a remote one. */
+  name: string
+  /** HEAD is on it, in the checkout that was asked. */
+  current: boolean
+  /** Only on the remote so far: taking it creates a local tracking branch. */
+  remoteOnly: boolean
+  /**
+   * The other worktree holding it, if any. Git refuses to check out a branch
+   * that is already out somewhere else, and this app hands out worktrees, so
+   * the picker has to say so rather than offer a step that will fail.
+   */
+  checkedOutAt: string | null
+  upstream: string | null
+  ahead: number
+  behind: number
+  /** Last commit on it, which is the only useful way to order the list. */
+  ts: number
+  subject: string
+}
+
 export interface GitState {
   branch: string | null
   /** Detached HEAD, mid-rebase, mid-merge… */

@@ -405,6 +405,17 @@ const handlers: Record<string, Handler> = {
   'git.commitPreview': (p: commit.CommitInput) => commit.preview(p),
   'git.commit': (p: commit.CommitInput) => commit.plan(p),
 
+  /**
+   * §2 — every branch this checkout could be put on. Probed, never cached
+   * (§3.4): a branch created in the terminal tab has to appear in the picker
+   * the moment it is asked for.
+   */
+  'git.branches': async (p: { workspaceId: string }) => {
+    const ws = registry.requireWorkspace(p.workspaceId)
+    if (!ws.repo) return []
+    const { listBranches } = await import('./git.js')
+    return listBranches(ws.path)
+  },
   'git.plan': (p: { workspaceId: string; operation: plans.Operation; args?: Record<string, string> }) =>
     plans.plan(p.workspaceId, p.operation, p.args ?? {}),
   'git.apply': async (p: { planId: string }) => {
@@ -536,6 +547,11 @@ const handlers: Record<string, Handler> = {
     agents.stop(p.sessionId)
     pushAgentActivity()
     return { ok: true }
+  },
+  'agent.delete': (p: { sessionId: string }) => {
+    const r = agents.remove(p.sessionId)
+    if (r.ok) pushAgentActivity()
+    return r
   },
   'agent.send': async (p: { sessionId: string; prompt: string }) => {
     const r = await agents.send(p.sessionId, p.prompt)

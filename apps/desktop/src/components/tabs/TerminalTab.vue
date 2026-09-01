@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import type { Workspace } from '@cockpit/shared'
-import { client, guard, onTermData } from '../../core/store.js'
+import { client, guard, onTermData, state } from '../../core/store.js'
 
 /**
  * §2 — "Il en embarque un, indispensable comme porte de sortie."
@@ -27,6 +27,41 @@ function readVar(name: string, fallback: string): string {
   return v || fallback
 }
 
+/**
+ * A colour token, as a colour.
+ *
+ * This is why the shell came up in white on the light theme. A custom property
+ * is *substituted*, not resolved: `getPropertyValue('--text')` hands back the
+ * literal string `light-dark(#16161c, #ecedf3)`, which is a perfectly good CSS
+ * value and not a colour xterm can parse. It fell back to its own palette —
+ * white on black — and `.xterm-viewport { background: transparent }` hid the
+ * black half, leaving white text on the app's light ground.
+ *
+ * Reading it back off a real element makes the browser do the resolving, which
+ * is the only thing that can: `light-dark()` needs the `color-scheme` in force
+ * at that point in the tree, and the tokens are written as one palette in
+ * light-dark pairs on purpose (tokens.css). The probe goes in the body so it
+ * inherits the same scheme the app is drawn in.
+ */
+function readColor(name: string, fallback: string): string {
+  const probe = document.createElement('span')
+  probe.style.cssText = `position:absolute;visibility:hidden;pointer-events:none;color:var(${name})`
+  document.body.appendChild(probe)
+  const v = getComputedStyle(probe).color
+  probe.remove()
+  return v || fallback
+}
+
+/** The four colours xterm is told about, read fresh from the tokens. */
+function palette() {
+  return {
+    background: readColor('--bg', '#0c0c0f'),
+    foreground: readColor('--text', '#16161c'),
+    cursor: readColor('--accent', '#5b58e0'),
+    selectionBackground: readColor('--accent-soft', 'rgba(91,88,224,0.16)'),
+  }
+}
+
 async function boot() {
   await teardown()
   const el = host.value
@@ -38,12 +73,7 @@ async function boot() {
     lineHeight: 1.45,
     cursorBlink: true,
     allowProposedApi: true,
-    theme: {
-      background: readVar('--bg', '#0c0c0f'),
-      foreground: readVar('--text', '#ececf1'),
-      cursor: readVar('--accent', '#817fff'),
-      selectionBackground: readVar('--accent-soft', 'rgba(129,127,255,0.16)'),
-    },
+    theme: palette(),
   })
   const f = new FitAddon()
   t.loadAddon(f)
@@ -97,9 +127,32 @@ async function teardown() {
   term.value = null
 }
 
+/**
+ * The appearance changing repaints the shell in place.
+ *
+ * Two sources, because there are two ways it changes: the setting in the rail,
+ * and — while that setting is 'system' — the OS deciding it is evening. The
+ * terminal is the one surface in the window that does not get this for free:
+ * everything else is CSS and re-resolves itself, while xterm was handed four
+ * colours once at boot and would have kept them until the tab was closed.
+ */
+const scheme = window.matchMedia('(prefers-color-scheme: dark)')
+function repaint() {
+  const t = term.value
+  if (t) t.options.theme = palette()
+}
+scheme.addEventListener('change', repaint)
+
 onMounted(boot)
-onBeforeUnmount(() => void teardown())
+onBeforeUnmount(() => {
+  scheme.removeEventListener('change', repaint)
+  void teardown()
+})
 watch(() => props.workspace.id, () => void boot())
+// After the attribute lands on the root, not with it: `palette()` reads the
+// scheme in force, and reading it in the same tick as the change gets the old
+// one back.
+watch(() => state.theme, () => void nextTick(repaint))
 </script>
 
 <template>

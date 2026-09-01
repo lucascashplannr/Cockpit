@@ -52,7 +52,7 @@ const tools = computed(() =>
         @click="state.reviewTool = t.id"
       >
         <component :is="t.icon" class="sm" />
-        <span>{{ t.label }}</span>
+        <span class="tl">{{ t.label }}</span>
         <span v-if="t.badge !== undefined" class="tbadge num">{{ t.badge }}</span>
       </button>
       <span class="grow" />
@@ -74,23 +74,39 @@ const tools = computed(() =>
 <style scoped>
 .review { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
 
+/* The same 52px the other two column headers are, on the same surface.
+ *
+ * It was a 36px strip on the sunken ground, so the top of the window was two
+ * bands that did not agree: the workspace list's header and the conversation's
+ * ran to one line, and this one stopped short of it and changed colour. They
+ * are all the head of a column; they are all drawn the same. It carries the
+ * window's drag region for the same reason they do — a frameless window has to
+ * be movable from its top edge, and its right third is this. */
 .tools {
+  -webkit-app-region: drag;
   flex: none;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 0 10px 0 14px;
+  height: 52px;
+  padding: 0 8px 0 10px;
   border-bottom: 1px solid var(--line);
-  background: var(--bg-sunken);
+  background: var(--panel-raised);
+  min-width: 0;
 }
+.tools button { -webkit-app-region: no-drag; }
 .grow { flex: 1; }
 .tool {
   position: relative;
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 36px;
+  /* Full height, so the underline lands on the bar's own bottom edge rather
+     than floating eight pixels above it. */
+  height: 100%;
   padding: 0 10px;
+  white-space: nowrap;
   font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text-dim);
@@ -131,6 +147,16 @@ const tools = computed(() =>
    them. A container query rather than a media query: the window is wide, this
    box is not. */
 .review { container-type: inline-size; }
+
+/* Five tools with five names need about 460px, and the column's floor is 320 —
+   so at the widths it is actually dragged to, the last tab used to be cut in
+   half by the window's edge. Only the tool you are in keeps its name; the rest
+   are their icons, which is what a tab strip does when it runs out of room,
+   and every one of them keeps its keystroke (⌘1..⌘n). */
+@container (max-width: 470px) {
+  .tool:not(.on) .tl { display: none; }
+  .tool:not(.on) { padding: 0 9px; }
+}
 
 @container (max-width: 620px) {
   .body :deep(.diff),

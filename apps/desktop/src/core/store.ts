@@ -3,7 +3,7 @@ import type {
   AddRepoSource, AgentScope, AgentScopePreview, Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, EngineOptions,
   DatabasePlan, Topic,
-  NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
+  ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ServerBoardRow, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
@@ -940,6 +940,42 @@ export function closeThread(scope: AgentScope, sessionId: string): void {
   saveThreads()
 }
 
+/**
+ * §6 — the conversation removed, here and in the service.
+ *
+ * The service draws the line (`agents.remove`): the conversation and its turns
+ * go, the journal and the per-path attribution stay. What is left to do here
+ * is the window's own bookkeeping, all of it keyed by session id — a pin, a
+ * closed mark, a read mark and a cached transcript. A pin left pointing at a
+ * conversation that no longer exists is the one that actually bites:
+ * `openThreadFor` finds nothing for it and falls silently through to whatever
+ * ran before, so the panel answers a question nobody asked.
+ *
+ * Answers whether it happened, so the caller can keep its confirmation open
+ * on a refusal ("it is still running") instead of closing on a lie.
+ */
+export async function deleteConversation(sessionId: string): Promise<boolean> {
+  const r = await guard(() => client.call('agent.delete', { sessionId }))
+  if (!r) return false
+  if (!r.ok) {
+    toast('error', r.reason)
+    return false
+  }
+  for (const key of Object.keys(threads.pinned)) {
+    if (threads.pinned[key] === sessionId) delete threads.pinned[key]
+  }
+  delete threads.closed[sessionId]
+  delete threads.read[sessionId]
+  saveThreads()
+  delete state.transcripts[sessionId]
+  delete state.deltas[sessionId]
+  // The list is pushed by the service, but not before this returns — dropping
+  // it here is what keeps the row from staying under the cursor for a beat
+  // after the click that removed it.
+  state.agents = state.agents.filter((c) => c.id !== sessionId)
+  return true
+}
+
 /* ── the transcript, and what is being written into it ─────────────────── */
 
 /** Fetched once per conversation; live events keep it current after that. */
@@ -1339,22 +1375,77 @@ export function cycleTheme(): void {
 }
 
 /** §3.7 — no git operation runs without its plan being shown first. */
-export async function requestPlan(
-  workspaceId: string,
-  operation: 'rebase' | 'merge' | 'branch' | 'worktree' | 'push' | 'sync',
-  args: Record<string, string> = {},
-): Promise<void> {
-  const plan = await guard(() => client.call('git.plan', { workspaceId, operation, args }))
-  if (plan) state.pendingPlan = plan
+/**
+ * A plan with nothing to warn about and nothing destructive in it.
+ *
+ * The confirmation exists because a rebase rewrites history and a push leaves
+ * this machine — reading the steps first is the whole point of §12's "2 clicks:
+ * bouton → confirmation du plan". A `git switch` onto a branch with a clean
+ * tree has neither property: git either moves you or refuses, and nothing is
+ * lost either way. A modal in front of that is a modal in front of nothing,
+ * and modals in front of nothing are how people learn to click through the
+ * ones that matter.
+ *
+ * Steps are required as well as warnings being absent: a plan that would do
+ * nothing has something to say about why, and that something is a warning the
+ * dialog is the only place to read.
+ */
+function isTrivial(plan: PlanPreview): boolean {
+  return (
+    plan.steps.length > 0 &&
+    plan.warnings.length === 0 &&
+    !plan.steps.some((s) => s.destructive)
+  )
 }
 
-export async function applyPendingPlan(): Promise<void> {
-  const plan = state.pendingPlan
-  if (!plan) return
-  state.planBusy = true
-  const res = await guard(() => client.call('git.apply', { planId: plan.planId }))
-  state.planBusy = false
-  state.pendingPlan = null
+/**
+ * Workspaces with a git plan in flight, and which verb it is.
+ *
+ * It exists because of the plan dialog's own absence: while every plan was read
+ * in a modal, the modal *was* the busy state — it covered the window, it said
+ * what was running, and nothing behind it could be clicked. A switch applied
+ * without one leaves a bar that looks idle for as long as git takes, so the
+ * controls that must not be pressed during it have to say so themselves.
+ *
+ * A record rather than one id: nothing stops a second repository being asked
+ * for something while this one works.
+ */
+export const gitBusy = reactive<Record<string, string>>({})
+
+export async function requestPlan(
+  workspaceId: string,
+  operation: 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'sync',
+  args: Record<string, string> = {},
+  /**
+   * `always` is the default and stays the default: every verb that reaches
+   * outside this checkout keeps its confirmation. `whenItMatters` hands the
+   * decision to the plan itself — see `isTrivial` — and is for the two verbs
+   * that cannot lose anything, switching branch and creating one.
+   */
+  confirm: 'always' | 'whenItMatters' = 'always',
+): Promise<void> {
+  // From asking for the plan, not from applying it: building one shells out to
+  // git too, and the gap between the click and the dialog is exactly as long
+  // as the gap between the click and the switch.
+  gitBusy[workspaceId] = operation
+  try {
+    const plan = await guard(() => client.call('git.plan', { workspaceId, operation, args }))
+    if (!plan) return
+    if (confirm === 'whenItMatters' && isTrivial(plan)) {
+      // Never through `state.pendingPlan`: the dialog is rendered off it, and
+      // setting it around an awaited call flashes the modal for a frame — which
+      // is worse than showing it properly.
+      await settlePlan(plan, await guard(() => client.call('git.apply', { planId: plan.planId })))
+      return
+    }
+    state.pendingPlan = plan
+  } finally {
+    delete gitBusy[workspaceId]
+  }
+}
+
+/** What an apply came to, wherever it was applied from. */
+async function settlePlan(plan: PlanPreview, res: ApplyResult | null): Promise<void> {
   if (!res) return
   // The topic row is written by the plan's own apply hook, so the list is
   // only true again once that has run.
@@ -1378,6 +1469,16 @@ export async function applyPendingPlan(): Promise<void> {
     return
   }
   toast('ok', plan.operation + ' applied')
+}
+
+export async function applyPendingPlan(): Promise<void> {
+  const plan = state.pendingPlan
+  if (!plan) return
+  state.planBusy = true
+  const res = await guard(() => client.call('git.apply', { planId: plan.planId }))
+  state.planBusy = false
+  state.pendingPlan = null
+  await settlePlan(plan, res)
 }
 
 /* ── commit and land ─────────────────────────────────────────────────────

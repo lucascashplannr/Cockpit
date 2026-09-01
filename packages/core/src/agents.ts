@@ -1256,6 +1256,42 @@ function relativeTo(root: string, p: string): string {
   return b.startsWith(a + '/') ? b.slice(a.length + 1) : b
 }
 
+/**
+ * §6 — a conversation taken off the bench, for good.
+ *
+ * The line this draws is deliberate, and it is the one §16 needs: what leaves
+ * is the **conversation** — the row in the list, its turns, its title. What
+ * stays is everything that says what happened to the *code*: the journal
+ * entries (§3.3, and the transcript is that journal filtered), the checkpoints
+ * an undo is backed by, and the `touches` that tell a human-written line from
+ * an agent-written one (§12). Deleting those would quietly reattribute code
+ * nobody has read to a person, which is the one guard-rail this app exists to
+ * keep.
+ *
+ * A running conversation is refused rather than killed: stopping it is a
+ * separate decision with a separate button, and doing both behind one word is
+ * how a mis-click ends a turn mid-write.
+ */
+export function remove(sessionId: string): { ok: true } | { ok: false; reason: string } {
+  if (live.has(sessionId)) {
+    return { ok: false, reason: 'it is still running — stop it first' }
+  }
+  const s = get(sessionId)
+  if (!s) return { ok: false, reason: 'no such conversation' }
+  // Not live, but a lease outlives a crashed core: releasing it here is the
+  // same repair `stop` does, and forgetting it would wedge the path forever
+  // now that nothing points at the holder any more.
+  if (s.leaseId) leases.release(s.leaseId)
+
+  const d = getDb()
+  d.transaction(() => {
+    d.prepare('DELETE FROM agent_turns WHERE session_id = ?').run(sessionId)
+    d.prepare('DELETE FROM agent_sessions WHERE id = ?').run(sessionId)
+  })()
+  agentBus.emit('changed')
+  return { ok: true }
+}
+
 export function stop(sessionId: string): void {
   const l = live.get(sessionId)
   if (l) {

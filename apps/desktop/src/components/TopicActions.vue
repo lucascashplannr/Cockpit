@@ -2,16 +2,20 @@
 import { computed } from 'vue'
 import { GitCompareArrows, GitMerge, Pause, Play } from '@lucide/vue'
 import type { ListGroup } from '../core/store.js'
+import OverflowMenu from './OverflowMenu.vue'
 import { startTopic, mergeTopic, stopTopic, rebaseTopic } from '../core/store.js'
 
 /**
  * §4 — the verbs of the selected topic, on the bar of the column it is about.
  *
- * They used to be four icons crowded into the list's group header, which made
- * the header read as a toolbar rather than as something you could stand on.
- * The band already holds the verbs of whatever the window is about; when that
- * is a topic, these are they. The agent is not among them: selecting the
- * topic already aimed the conversation at it.
+ * Same ranking as a repository's (WorkspaceActions), for the same reason: the
+ * servers' switch is always the act you came for, and the git verbs are drawn
+ * only while they are the next thing to do — Merge once there is something
+ * committed and ahead, Rebase while the topic is behind its base. Both are in
+ * the menu at all times, so the bar being quiet never means the verb is gone.
+ *
+ * The agent is not among them: selecting the topic already aimed the
+ * conversation at it.
  */
 
 const props = defineProps<{ group: ListGroup }>()
@@ -35,6 +39,12 @@ const dirty = computed(() =>
  */
 const togglable = computed(() => !!f.value && !f.value.derived && f.value.state !== 'closed')
 
+const mergeTitle = computed(() =>
+  dirty.value
+    ? 'Commit first — merging refuses over uncommitted changes'
+    : 'Merge onto the base branch — one --no-ff merge per repository',
+)
+
 async function toggle() {
   const topic = f.value
   if (!topic) return
@@ -44,37 +54,10 @@ async function toggle() {
 </script>
 
 <template>
-  <div class="verbs">
-    <!-- §4 — the step the lifecycle was missing: the branch goes onto the
-         base, in every repository the topic spans. -->
+  <div v-if="togglable" class="verbs">
+    <!-- Always: it is the switch. -->
     <button
-      v-if="togglable"
-      class="btn ghost"
-      :class="{ ready: ahead && !dirty }"
-      :title="dirty
-        ? 'Commit first — merging refuses over uncommitted changes'
-        : 'Merge onto the base branch — one --no-ff merge per repository'"
-      @click="mergeTopic(f!.id, false)"
-    >
-      <GitMerge /><span class="vl">Merge</span>
-    </button>
-    <!-- One plan across every repository it spans, stopping at the first
-         conflict and keeping what already replayed. -->
-    <button
-      v-if="togglable"
-      class="btn ghost"
-      :class="{ nudge: behind }"
-      :title="behind
-        ? 'Rebase every repository onto its base — ' + behind + ' commit(s) behind'
-        : 'Rebase every repository in this topic onto its base'"
-      @click="rebaseTopic(f!.id)"
-    >
-      <GitCompareArrows /><span class="vl">Rebase</span>
-    </button>
-    <span v-if="togglable" class="vrule" />
-    <button
-      v-if="togglable"
-      class="btn ghost toggle"
+      class="btn ghost sw"
       :class="{ on: f!.state === 'running' }"
       :title="f!.state === 'running'
         ? 'Stop the servers — the branches stay where they are'
@@ -84,6 +67,37 @@ async function toggle() {
       <component :is="f!.state === 'running' ? Pause : Play" />
       <span class="vl">{{ f!.state === 'running' ? 'Stop' : 'Start' }}</span>
     </button>
+
+    <!-- §4 — the step the lifecycle was missing: the branch goes onto the
+         base, in every repository the topic spans. Drawn on the bar once
+         there is something to merge and nothing in the way of merging it. -->
+    <button
+      v-if="ahead && !dirty"
+      class="btn ghost ready"
+      :title="mergeTitle"
+      @click="mergeTopic(f!.id, false)"
+    >
+      <GitMerge /><span class="vl">Merge</span>
+    </button>
+    <button
+      v-if="behind"
+      class="btn ghost nudge"
+      :title="'Rebase every repository onto its base — ' + behind + ' commit(s) behind'"
+      @click="rebaseTopic(f!.id)"
+    >
+      <GitCompareArrows /><span class="vl">Rebase</span>
+    </button>
+
+    <OverflowMenu label="Everything else this topic can do">
+      <button :title="mergeTitle" @click="mergeTopic(f!.id, false)">
+        <GitMerge /> Merge onto the base
+      </button>
+      <!-- One plan across every repository it spans, stopping at the first
+           conflict and keeping what already replayed. -->
+      <button @click="rebaseTopic(f!.id)">
+        <GitCompareArrows /> Rebase every repository
+      </button>
+    </OverflowMenu>
   </div>
 </template>
 
@@ -94,11 +108,11 @@ async function toggle() {
 .verbs {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
   flex: none;
 }
 .verbs .btn {
-  height: 28px;
+  height: 26px;
   padding: 0 9px;
   font-size: var(--fs-xs);
   gap: 6px;
@@ -109,24 +123,18 @@ async function toggle() {
 }
 .verbs .btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .verbs .btn .lucide { width: 14px; height: 14px; }
-.vrule {
-  width: 1px;
-  height: 16px;
-  margin: 0 5px;
-  background: var(--line);
-}
 
-/* Narrow column: the icons carry the verbs on their own. Every one keeps its
-   tooltip, so nothing becomes unnameable — it becomes unlabelled, which is the
-   trade a 380px column is asking for. */
-@container (max-width: 700px) {
-  .verbs .vl { display: none; }
+/* Behind its base is the one state where rebasing is the next thing to do.
+   Committed and ahead is the one where merging is. */
+.nudge { color: var(--warn); }
+.ready { color: var(--ok); }
+.verbs .btn.on { color: var(--ok); }
+
+/* Narrow column: the switch drops its word — its icon is a play triangle and
+   nothing else here is. The promoted git verbs keep theirs, which is the whole
+   reason they were promoted. */
+@container (max-width: 620px) {
+  .verbs .btn.sw .vl { display: none; }
   .verbs .btn { padding: 0 6px; }
 }
-
-/* Behind its base is the one state where rebasing is the next thing to do. */
-.nudge { color: var(--warn); }
-/* Committed and ahead: landing is the next thing, so it says so. */
-.ready { color: var(--ok); }
-.toggle.on { color: var(--ok); }
 </style>
