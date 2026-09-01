@@ -1,260 +1,66 @@
 /**
  * The Cockpit mark is generated, not drawn.
  *
- * A wordmark made of pixels only stays honest if the pixels are real: a bitmap
- * font on a 12-row grid, run-length merged into rectangles, with a deterministic
- * ordered dither around every stroke. Nothing here is hand-placed, so the mark
- * can be re-cut at any size — or for any word — without a design tool.
- *
  *   node apps/desktop/scripts/logo.mjs
  *
- * Writes the two Vue brand components (currentColor, theme-aware) and the two
+ * A wordmark made of pixels only stays honest if the pixels are real: the
+ * letterforms are a bitmap face (scripts/glyphs.mjs), run-length merged into
+ * rectangles. Nothing is hand-placed, so the mark can be re-cut at any size —
+ * or for any word — without a design tool, and `icon.mjs` cuts the Dock icon
+ * from the same grid.
+ *
+ * Writes the two Vue brand components (theme-aware, currentColor) and the two
  * standalone SVGs used outside the app (README, packaging).
  */
 
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ROWS, LETTER_GAP, compose, runs } from './glyphs.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const app = resolve(here, '..')
 
-/* ── the font ──────────────────────────────────────────────────────────
- * 12 rows: 0–8 above the baseline, 9–11 the descender. Stems are 2px, so
- * the shapes stay legible when the whole word is 14px tall in the rail.
- */
-const GLYPHS = {
-  C: [
-    '..####..',
-    '.######.',
-    '##....##',
-    '##......',
-    '##......',
-    '##......',
-    '##....##',
-    '.######.',
-    '..####..',
-    '........',
-    '........',
-    '........',
-  ],
-  o: [
-    '.......',
-    '.......',
-    '.......',
-    '.#####.',
-    '##...##',
-    '##...##',
-    '##...##',
-    '##...##',
-    '.#####.',
-    '.......',
-    '.......',
-    '.......',
-  ],
-  c: [
-    '.......',
-    '.......',
-    '.......',
-    '.#####.',
-    '##...##',
-    '##.....',
-    '##.....',
-    '##...##',
-    '.#####.',
-    '.......',
-    '.......',
-    '.......',
-  ],
-  k: [
-    '##....',
-    '##....',
-    '##....',
-    '##..##',
-    '##.##.',
-    '####..',
-    '####..',
-    '##.##.',
-    '##..##',
-    '......',
-    '......',
-    '......',
-  ],
-  p: [
-    '.......',
-    '.......',
-    '.......',
-    '######.',
-    '##...##',
-    '##...##',
-    '##...##',
-    '##...##',
-    '######.',
-    '##.....',
-    '##.....',
-    '##.....',
-  ],
-  i: [
-    '##',
-    '##',
-    '..',
-    '##',
-    '##',
-    '##',
-    '##',
-    '##',
-    '##',
-    '..',
-    '..',
-    '..',
-  ],
-  t: [
-    '.....',
-    '.##..',
-    '.##..',
-    '#####',
-    '.##..',
-    '.##..',
-    '.##..',
-    '.##..',
-    '.####',
-    '.....',
-    '.....',
-    '.....',
-  ],
-}
-
-const ROWS = 12
-const LETTER_GAP = 3
-
-/** Lay a word out on the grid; returns the set of lit cells and the width. */
-function compose(word) {
-  const cells = new Set()
-  let x = 0
-  for (const ch of word) {
-    const g = GLYPHS[ch]
-    if (!g) throw new Error('no glyph for ' + ch)
-    const w = g[0].length
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < w; c++) {
-        if (g[r][c] === '#') cells.add((x + c) + ',' + r)
-      }
-    }
-    x += w + LETTER_GAP
-  }
-  return { cells, width: x - LETTER_GAP, height: ROWS }
-}
-
-/**
- * The dither. Two ordered rings outside the letterform — a checkerboard at
- * distance 1, a quarter grid at distance 2 — plus a checkerboard erosion of
- * the pixels along the top edge of every stroke. Ordered, never random: the
- * same word always cuts the same mark.
- */
-function dither(cells, width, height) {
-  const on = (x, y) => cells.has(x + ',' + y)
-  const near = (x, y, d) => {
-    for (let dy = -d; dy <= d; dy++) {
-      for (let dx = -d; dx <= d; dx++) if (on(x + dx, y + dy)) return true
-    }
-    return false
-  }
-
-  const ring1 = []
-  const ring2 = []
-  for (let y = -2; y < height + 2; y++) {
-    for (let x = -2; x < width + 2; x++) {
-      if (on(x, y)) continue
-      if (near(x, y, 1)) {
-        if ((x + y) % 2 === 0) ring1.push([x, y])
-      } else if (near(x, y, 2)) {
-        if (x % 2 === 0 && y % 2 === 0) ring2.push([x, y])
-      }
-    }
-  }
-
-  // Erosion: a lit pixel with sky directly above it, every other column.
-  const eroded = new Set()
-  for (const key of cells) {
-    const [x, y] = key.split(',').map(Number)
-    if (!on(x, y - 1) && (x + y) % 2 === 0 && y > 0) eroded.add(key)
-  }
-
-  const solid = [...cells].filter((k) => !eroded.has(k)).map((k) => k.split(',').map(Number))
-  return { solid, eroded: [...eroded].map((k) => k.split(',').map(Number)), ring1, ring2 }
-}
-
-/** Merge each row of cells into horizontal runs — far fewer nodes, same shape. */
-function runs(list) {
-  const byRow = new Map()
-  for (const [x, y] of list) {
-    const arr = byRow.get(y) ?? []
-    arr.push(x)
-    byRow.set(y, arr)
-  }
-  const out = []
-  for (const [y, xs] of [...byRow].sort((a, b) => a[0] - b[0])) {
-    xs.sort((a, b) => a - b)
-    let start = xs[0]
-    let prev = xs[0]
-    for (let i = 1; i <= xs.length; i++) {
-      if (xs[i] === prev + 1) {
-        prev = xs[i]
-        continue
-      }
-      out.push([start, y, prev - start + 1])
-      start = xs[i]
-      prev = xs[i]
-    }
-  }
-  return out
-}
-
-function rects(list, indent) {
-  return runs(list)
+function rects(cells, indent) {
+  return runs(cells)
     .map(([x, y, w]) => `${indent}<rect x="${x}" y="${y}" width="${w}" height="1" />`)
     .join('\n')
 }
 
+/**
+ * The mark, split into its two inks.
+ *
+ * The first letter carries its own ink so a placement can tint it: the C of
+ * the wordmark and the C of the app icon are the same shape, and colouring it
+ * apart is what says so. The cut runs down the middle of the first gap.
+ */
 function layers(word) {
-  const { cells, width, height } = compose(word)
-  const d = dither(cells, width, height)
-  const pad = 2
+  const { cells, spans, width } = compose(word)
+  const cut = spans.length > 1 ? spans[0].x1 + Math.ceil(LETTER_GAP / 2) : Infinity
+  const keys = [...cells]
+  const lead = keys.filter((k) => Number(k.split(',')[0]) <= cut)
+  const ink = keys.filter((k) => Number(k.split(',')[0]) > cut)
 
-  // Trim to the ink: a mark with no descender must not carry the room for one.
-  let top = ROWS
-  let bottom = 0
-  for (const key of cells) {
-    const y = Number(key.split(',')[1])
-    if (y < top) top = y
-    if (y > bottom) bottom = y
-  }
-  const body = [
-    `  <g opacity="1">\n${rects(d.solid, '    ')}\n  </g>`,
-    `  <g opacity="0.62">\n${rects(d.eroded, '    ')}\n  </g>`,
-    `  <g opacity="0.42">\n${rects(d.ring1, '    ')}\n  </g>`,
-    `  <g opacity="0.15">\n${rects(d.ring2, '    ')}\n  </g>`,
-  ].join('\n')
-  // The letterform on its own, no dither and no padding. Below ~24px the two
-  // fringe rings are worth less than the stroke they blur, so the rail and the
-  // dock get this instead — same shapes, every edge on a whole pixel.
-  const ink = [...cells].map((k) => k.split(',').map(Number))
+  const body = (indent, leadFill, inkFill) =>
+    [
+      `${indent}<g class="lead"${leadFill ? ` fill="${leadFill}"` : ''}>`,
+      rects(lead, indent + '  '),
+      `${indent}</g>`,
+      ...(ink.length
+        ? [
+            `${indent}<g class="ink"${inkFill ? ` fill="${inkFill}"` : ''}>`,
+            rects(ink, indent + '  '),
+            `${indent}</g>`,
+          ]
+        : []),
+    ].join('\n')
 
-  return {
-    viewBox: `${-pad} ${top - pad} ${width + pad * 2} ${bottom - top + 1 + pad * 2}`,
-    width: width + pad * 2,
-    height: bottom - top + 1 + pad * 2,
-    body,
-    ink: {
-      viewBox: `0 ${top} ${width} ${bottom - top + 1}`,
-      width,
-      height: bottom - top + 1,
-      body: `    <g>\n${rects(ink, '      ')}\n    </g>`,
-    },
-  }
+  /* The box is the ink and nothing else. Air around a logo is the caller's
+     business — baked in, it becomes padding no margin can take back. */
+  return { width, height: ROWS, body }
 }
 
-function vue(word, name, comment) {
+function vue(word, comment) {
   const l = layers(word)
   return `<script setup lang="ts">
 import { computed } from 'vue'
@@ -262,28 +68,23 @@ import { computed } from 'vue'
 /**
  * ${comment}
  *
- * Generated by apps/desktop/scripts/logo.mjs — edit the generator, not this file.
- * Every pixel is a rect on a ${ROWS}-row grid; the fringe is an ordered dither,
- * so the mark stays itself at 14px and at 400px.
+ * Generated by apps/desktop/scripts/logo.mjs — edit the generator, not this
+ * file. Every pixel is a rect on a ${ROWS}-row grid, so the mark has one
+ * silhouette at 18px and at 400px rather than a shape that dissolves as it
+ * shrinks.
  *
- * \`crisp\` drops the dither and trims to the letterform. Use it anywhere the
- * mark is small: the fringe needs three or four device pixels per grid cell to
- * read as a fringe, and below that it only softens the stroke.
+ * The first letter is its own ink. It follows \`currentColor\` like the rest
+ * until a placement sets \`--wm-lead\` — the two-tone wordmark is opt-in, so
+ * the mark never arrives tinted somewhere it was only meant to be text.
  */
-const props = withDefaults(defineProps<{ height?: number; crisp?: boolean }>(), {
-  height: ${l.height * 2},
-  crisp: false,
-})
+const props = withDefaults(defineProps<{ height?: number }>(), { height: ${ROWS * 3} })
 
-/* Crisp only pays off on a whole multiple of the grid — a 2px stem at a
-   fractional scale lands on a half pixel and the rounding eats one side of it. */
-const INK_ROWS = ${l.ink.height}
-const h = computed(() =>
-  props.crisp ? Math.max(INK_ROWS, Math.round(props.height / INK_ROWS) * INK_ROWS) : props.height,
-)
-const w = computed(() =>
-  props.crisp ? (h.value * ${l.ink.width}) / INK_ROWS : (h.value * ${l.width}) / ${l.height},
-)
+/* Snapped to a whole multiple of the grid. A 2px stem at a fractional scale
+   lands on a half pixel and the rounding eats one side of it — which is the
+   difference between a pixel mark and a blurred one. */
+const GRID = ${ROWS}
+const h = computed(() => Math.max(GRID, Math.round(props.height / GRID) * GRID))
+const w = computed(() => (h.value * ${l.width}) / GRID)
 <\/script>
 
 <template>
@@ -291,18 +92,13 @@ const w = computed(() =>
     class="brand"
     :height="h"
     :width="w"
-    :viewBox="crisp ? '${l.ink.viewBox}' : '${l.viewBox}'"
+    viewBox="0 0 ${l.width} ${l.height}"
     fill="currentColor"
     shape-rendering="crispEdges"
     role="img"
     aria-label="${word}"
   >
-    <template v-if="crisp">
-${l.ink.body}
-    </template>
-    <template v-else>
-${indent(l.body, '  ')}
-    </template>
+${l.body('    ')}
   </svg>
 </template>
 
@@ -311,22 +107,22 @@ ${indent(l.body, '  ')}
   display: block;
   flex: none;
 }
+.lead {
+  fill: var(--wm-lead, currentColor);
+}
 </style>
 `
 }
 
-/** Re-indent an already-emitted block so it nests under a <template>. */
-function indent(block, by) {
-  return block
-    .split('\n')
-    .map((line) => (line ? by + line : line))
-    .join('\n')
-}
+/* The standalone files are read outside the app, where no custom property
+   resolves — so they carry the light-theme inks literally. */
+const INK = '#5f5f6b'
+const LEAD = '#5b58e0'
 
 function svg(word) {
   const l = layers(word)
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${l.width * 8}" height="${l.height * 8}" viewBox="${l.viewBox}" fill="#6b7280" shape-rendering="crispEdges">
-${l.body}
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${l.width * 8}" height="${l.height * 8}" viewBox="0 0 ${l.width} ${l.height}" fill="${INK}" shape-rendering="crispEdges">
+${l.body('  ', LEAD, INK)}
 </svg>
 `
 }
@@ -336,13 +132,13 @@ mkdirSync(resolve(app, 'src/assets'), { recursive: true })
 
 writeFileSync(
   resolve(app, 'src/components/brand/Wordmark.vue'),
-  vue('Cockpit', 'Wordmark', 'The full wordmark — used where the app introduces itself.'),
+  vue('COCKPIT', 'The full wordmark — used where the app introduces itself.'),
 )
 writeFileSync(
   resolve(app, 'src/components/brand/Mark.vue'),
-  vue('C', 'Mark', 'The compact mark — the rail, the dock, anywhere the word will not fit.'),
+  vue('C', 'The compact mark — the rail, the dock, anywhere the word will not fit.'),
 )
-writeFileSync(resolve(app, 'src/assets/wordmark.svg'), svg('Cockpit'))
+writeFileSync(resolve(app, 'src/assets/wordmark.svg'), svg('COCKPIT'))
 writeFileSync(resolve(app, 'src/assets/mark.svg'), svg('C'))
 
 console.log('wrote Wordmark.vue, Mark.vue, wordmark.svg, mark.svg')

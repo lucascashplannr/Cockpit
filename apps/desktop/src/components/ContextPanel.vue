@@ -86,7 +86,7 @@ const waiting = computed(
   <section class="panel">
     <!-- Nothing selected is still a first impression: the app says its name. -->
     <div v-if="!w" class="welcome">
-      <Wordmark :height="48" class="wm" />
+      <Wordmark :height="27" class="wm" />
       <p class="tag">Everything in flight, in one window.</p>
       <div class="hints">
         <span class="hint">
@@ -251,7 +251,10 @@ const waiting = computed(
   gap: 14px;
   padding: 40px;
 }
-.wm { color: var(--text); opacity: 0.9; }
+.wm {
+  color: var(--text-muted);
+  --wm-lead: var(--accent);
+}
 .tag {
   margin: -4px 0 0;
   font-size: var(--fs-md);

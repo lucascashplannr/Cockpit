@@ -200,7 +200,7 @@ onMounted(() => void nextTick(() => input.value?.focus()))
 
     <div class="stage">
       <header class="hero">
-        <Wordmark :height="48" class="wm" />
+        <Wordmark :height="36" class="wm" />
         <p class="tag">Everything in flight, in one window.</p>
       </header>
 
@@ -382,7 +382,13 @@ onMounted(() => void nextTick(() => input.value?.focus()))
   gap: 8px;
   margin-bottom: 2px;
 }
-.wm { color: var(--text); }
+/* The mark's own C carries the accent and the rest of the word is text —
+   the one place in the app where the accent is decoration rather than
+   meaning, and the only place it is allowed to be. */
+.wm {
+  color: var(--text);
+  --wm-lead: var(--accent);
+}
 .tag {
   margin: 0;
   font-size: var(--fs-md);

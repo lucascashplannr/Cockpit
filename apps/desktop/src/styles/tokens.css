@@ -7,79 +7,127 @@
  * finds state instantly — so every semantic colour below maps to exactly one
  * idea and is never reused for emphasis.
  *
- * Density note: the row is 34px and the base type 14px. Denser than that reads
+ * ── one palette, not three ────────────────────────────────────────────
+ * Both appearances are written once, as `light-dark()` pairs. Until Chromium
+ * shipped that function this file had to state the dark palette twice — once
+ * under `prefers-color-scheme`, once under `[data-theme='dark']` — because
+ * plain CSS has no way to say a block of declarations in two places, and the
+ * two copies had already drifted apart in a handful of values. The three
+ * `color-scheme` rules below are now the whole of the theme machinery: the
+ * attribute picks a scheme, the scheme picks a side of every pair.
+ *
+ * Density note: the row is 30px and the base type 14px. Denser than that reads
  * as a spreadsheet rather than a cockpit, and the numbers in the list are the
  * things the eye must catch first.
  */
 
 :root {
+  /* No attribute — follow the system. `applyTheme()` removes `data-theme`
+     for 'system', so this is the default state. */
+  color-scheme: light dark;
+}
+:root[data-theme='light'] {
   color-scheme: light;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
 
-  /* Ground and layered surfaces */
-  --bg: #f4f4f6;
-  --bg-sunken: #eaeaee;
-  --panel: #fbfbfc;
-  --panel-raised: #ffffff;
-  --overlay: #ffffff;
-  --scrim: rgba(14, 14, 18, 0.24);
+:root {
+  /* ── ground and layered surfaces ──────────────────────────────────
+   * Four steps between the window's floor and a menu floating over it, on
+   * one cool grey axis. Light goes up towards white as it rises; dark goes
+   * up away from black. Neither ever reaches its endpoint, so there is
+   * always somewhere further for a dialog to go. */
+  --bg: light-dark(#f2f2f6, #0c0c10);
+  --bg-sunken: light-dark(#e8e8ee, #08080b);
+  --panel: light-dark(#fafafc, #121217);
+  --panel-raised: light-dark(#ffffff, #1a1a21);
+  --overlay: light-dark(#ffffff, #1c1c24);
+  --scrim: light-dark(rgba(16, 16, 24, 0.28), rgba(0, 0, 0, 0.55));
 
   /* Hairlines. Three weights: barely there, there, and structural. */
-  --line-soft: #ededf0;
-  --line: #e0e0e5;
-  --line-strong: #cdcdd4;
+  --line-soft: light-dark(#ececf1, #1c1c23);
+  --line: light-dark(#dfdfe7, #27272f);
+  --line-strong: light-dark(#c9c9d4, #383842);
 
-  /* Text ramp */
-  --text: #16161a;
-  --text-muted: #5f5f6b;
-  --text-dim: #9292a0;
+  /* Text ramp. Three steps, and the gap between them is deliberate: two
+     greys a shade apart are read as one grey and the hierarchy is lost. */
+  --text: light-dark(#16161c, #ecedf3);
+  --text-muted: light-dark(#5b5b69, #9899a9);
+  --text-dim: light-dark(#8c8c9c, #666679);
 
   /* Interaction */
-  --hover: rgba(16, 16, 24, 0.045);
-  --active: rgba(16, 16, 24, 0.075);
-  --selected: rgba(88, 86, 214, 0.10);
-  --focus-ring: rgba(88, 86, 214, 0.5);
+  --hover: light-dark(rgba(16, 16, 26, 0.045), rgba(255, 255, 255, 0.05));
+  --active: light-dark(rgba(16, 16, 26, 0.075), rgba(255, 255, 255, 0.09));
+  --selected: light-dark(rgba(91, 88, 224, 0.1), rgba(139, 136, 255, 0.15));
+  --focus-ring: light-dark(rgba(91, 88, 224, 0.48), rgba(139, 136, 255, 0.58));
 
-  /* One accent. */
-  --accent: #5856d6;
-  --accent-hover: #4d4bc4;
-  --accent-soft: rgba(88, 86, 214, 0.12);
-  --accent-text: #ffffff;
+  /* One accent — the periwinkle of the mark, so the app and its icon agree. */
+  --accent: light-dark(#5b58e0, #8b88ff);
+  --accent-hover: light-dark(#4e4bd2, #a3a1ff);
+  --accent-soft: light-dark(rgba(91, 88, 224, 0.11), rgba(139, 136, 255, 0.16));
+  --accent-text: light-dark(#ffffff, #0b0b0f);
 
-  /* Semantic — each maps to a single meaning. */
-  --ok: #17864a;          /* runtime up, ahead, clean       */
-  --warn: #a86a12;        /* dirty, behind, needs attention */
-  --danger: #c33a30;      /* conflict, destructive step     */
-  --agent: #7c3aed;       /* anything written by an agent   */
-  --human: #17864a;       /* anything written by a person   */
-  --info: #2563eb;
+  /* Semantic — each maps to a single meaning. The dark values are not the
+     light ones lightened: a saturated green that carries on white goes
+     fluorescent on near-black, so each side is picked for its own ground. */
+  --ok: light-dark(#0f7a4c, #45dd9e);        /* runtime up, ahead, clean       */
+  --warn: light-dark(#9d6410, #e8b551);      /* dirty, behind, needs attention */
+  --danger: light-dark(#c53a2f, #ff7268);    /* conflict, destructive step     */
+  --agent: light-dark(#7141e8, #ab8dfb);     /* anything written by an agent   */
+  --human: light-dark(#0f7a4c, #45dd9e);     /* anything written by a person   */
+  --info: light-dark(#2563eb, #6da8ff);
 
-  --ok-soft: rgba(23, 134, 74, 0.12);
-  --warn-soft: rgba(168, 106, 18, 0.13);
-  --danger-soft: rgba(195, 58, 48, 0.12);
-  --agent-soft: rgba(124, 58, 237, 0.12);
-  --info-soft: rgba(37, 99, 235, 0.12);
+  --ok-soft: light-dark(rgba(15, 122, 76, 0.12), rgba(69, 221, 158, 0.14));
+  --warn-soft: light-dark(rgba(157, 100, 16, 0.13), rgba(232, 181, 81, 0.14));
+  --danger-soft: light-dark(rgba(197, 58, 47, 0.12), rgba(255, 114, 104, 0.14));
+  --agent-soft: light-dark(rgba(113, 65, 232, 0.12), rgba(171, 141, 251, 0.16));
+  --info-soft: light-dark(rgba(37, 99, 235, 0.12), rgba(109, 168, 255, 0.14));
 
   /* Diff */
-  --diff-add-bg: rgba(23, 134, 74, 0.10);
-  --diff-add-text: #0e6b39;
-  --diff-del-bg: rgba(195, 58, 48, 0.09);
-  --diff-del-text: #9e2d24;
+  --diff-add-bg: light-dark(rgba(15, 122, 76, 0.1), rgba(69, 221, 158, 0.1));
+  --diff-add-text: light-dark(#0d6b42, #86f0c4);
+  --diff-del-bg: light-dark(rgba(197, 58, 47, 0.09), rgba(255, 114, 104, 0.1));
+  --diff-del-text: light-dark(#9d2b22, #ffb0a9);
 
-  /* Elevation — four steps, each one a real distance from the ground. */
-  --shadow-xs: 0 1px 2px rgba(15, 15, 25, 0.05);
-  --shadow-sm: 0 1px 3px rgba(15, 15, 25, 0.07), 0 1px 1px rgba(15, 15, 25, 0.04);
-  --shadow-md: 0 6px 20px rgba(15, 15, 25, 0.10), 0 2px 6px rgba(15, 15, 25, 0.06);
-  --shadow-lg: 0 24px 64px rgba(15, 15, 25, 0.18), 0 6px 16px rgba(15, 15, 25, 0.08);
-  --inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  /* ── elevation ────────────────────────────────────────────────────
+   * Four steps, each one a real distance from the ground. The geometry is
+   * shared; only the ink changes with the appearance, because a shadow on a
+   * dark ground is not a lighter shadow, it is a darker one. */
+  --sh-1: light-dark(rgba(15, 15, 25, 0.05), rgba(0, 0, 0, 0.4));
+  --sh-2: light-dark(rgba(15, 15, 25, 0.07), rgba(0, 0, 0, 0.45));
+  --sh-3: light-dark(rgba(15, 15, 25, 0.1), rgba(0, 0, 0, 0.5));
+  --sh-4: light-dark(rgba(15, 15, 25, 0.18), rgba(0, 0, 0, 0.62));
 
-  /* Type */
-  --font: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
-  --mono: 'SF Mono', 'JetBrains Mono', 'Menlo', ui-monospace, monospace;
+  --shadow-xs: 0 1px 2px var(--sh-1);
+  --shadow-sm: 0 1px 3px var(--sh-2), 0 1px 1px var(--sh-1);
+  --shadow-md: 0 8px 24px var(--sh-3), 0 2px 6px var(--sh-2);
+  --shadow-lg: 0 28px 72px var(--sh-4), 0 8px 20px var(--sh-3);
+  --inset-top: inset 0 1px 0 light-dark(rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.05));
+
+  /* ── type ─────────────────────────────────────────────────────────
+   * Geist and Geist Mono are bundled (see main.ts), not asked for from the
+   * system: the app has to look the same on a Mac, in a screenshot, and on
+   * the machine of someone who has neither installed. The system stack stays
+   * behind them for the frame or two before the local file is parsed.
+   *
+   * One family for both roles. A branch name in mono sits inside a sentence
+   * in sans on nearly every row of the workspace list, and two families drawn
+   * by different hands make that a seam; Geist's mono is the same skeleton at
+   * a fixed advance, so the row reads as one line of type. */
+  --font: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Geist Mono Variable', 'SF Mono', 'Menlo', ui-monospace, monospace;
+
   --fs-xs: 12px;
   --fs-sm: 13px;
   --fs-md: 14px;
   --fs-lg: 16px;
   --fs-xl: 20px;
+
+  /* Tracking. Inter is drawn for text sizes; anything set large needs to be
+     pulled back in or it reads as loose. Only headings use this. */
+  --track-tight: -0.015em;
 
   /* Geometry */
   --row-h: 30px;
@@ -112,115 +160,4 @@
   --dur-1: 110ms;
   --dur-2: 170ms;
   --dur-3: 260ms;
-}
-
-/* The dark palette, defined once as a custom property block and applied by
-   both selectors below — plain CSS has no other way to say it twice. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    color-scheme: dark;
-
-    --bg: #0c0c0f;
-    --bg-sunken: #08080a;
-    --panel: #121216;
-    --panel-raised: #1a1a20;
-    --overlay: #1b1b21;
-    --scrim: rgba(0, 0, 0, 0.5);
-
-    --line-soft: #1b1b21;
-    --line: #26262e;
-    --line-strong: #35353f;
-
-    --text: #edeef2;
-    --text-muted: #9b9baa;
-    --text-dim: #67677a;
-
-    --hover: rgba(255, 255, 255, 0.05);
-    --active: rgba(255, 255, 255, 0.09);
-    --selected: rgba(129, 127, 255, 0.15);
-    --focus-ring: rgba(129, 127, 255, 0.6);
-
-    --accent: #817fff;
-    --accent-hover: #9391ff;
-    --accent-soft: rgba(129, 127, 255, 0.16);
-    --accent-text: #0b0b0e;
-
-    --ok: #3ddc97;
-    --warn: #e6b446;
-    --danger: #ff6f63;
-    --agent: #a78bfa;
-    --human: #3ddc97;
-    --info: #6aa6ff;
-
-    --ok-soft: rgba(61, 220, 151, 0.14);
-    --warn-soft: rgba(230, 180, 70, 0.14);
-    --danger-soft: rgba(255, 111, 99, 0.14);
-    --agent-soft: rgba(167, 139, 250, 0.16);
-    --info-soft: rgba(106, 166, 255, 0.14);
-
-    --diff-add-bg: rgba(61, 220, 151, 0.10);
-    --diff-add-text: #7ff0c0;
-    --diff-del-bg: rgba(255, 111, 99, 0.10);
-    --diff-del-text: #ffada5;
-
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
-    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
-    --shadow-lg: 0 28px 72px rgba(0, 0, 0, 0.62), 0 8px 20px rgba(0, 0, 0, 0.45);
-    --inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  }
-}
-
-/* Explicit choice always wins over the system preference. */
-:root[data-theme='dark'] {
-  color-scheme: dark;
-
-  --bg: #0c0c0f;
-  --bg-sunken: #08080a;
-  --panel: #121216;
-  --panel-raised: #1a1a20;
-  --overlay: #1b1b21;
-  --scrim: rgba(0, 0, 0, 0.5);
-
-  --line-soft: #1b1b21;
-  --line: #26262e;
-  --line-strong: #35353f;
-
-  --text: #edeef2;
-  --text-muted: #9b9baa;
-  --text-dim: #67677a;
-
-  --hover: rgba(255, 255, 255, 0.05);
-  --active: rgba(255, 255, 255, 0.09);
-  --selected: rgba(129, 127, 255, 0.15);
-  --focus-ring: rgba(129, 127, 255, 0.6);
-
-  --accent: #817fff;
-  --accent-hover: #9391ff;
-  --accent-soft: rgba(129, 127, 255, 0.16);
-  --accent-text: #0b0b0e;
-
-  --ok: #3ddc97;
-  --warn: #e6b446;
-  --danger: #ff6f63;
-  --agent: #a78bfa;
-  --human: #3ddc97;
-  --info: #6aa6ff;
-
-  --ok-soft: rgba(61, 220, 151, 0.14);
-  --warn-soft: rgba(230, 180, 70, 0.14);
-  --danger-soft: rgba(255, 111, 99, 0.14);
-  --agent-soft: rgba(167, 139, 250, 0.16);
-  --info-soft: rgba(106, 166, 255, 0.14);
-
-  --diff-add-bg: rgba(61, 220, 151, 0.10);
-  --diff-add-text: #7ff0c0;
-  --diff-del-bg: rgba(255, 111, 99, 0.10);
-  --diff-del-text: #ffada5;
-
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 28px 72px rgba(0, 0, 0, 0.62), 0 8px 20px rgba(0, 0, 0, 0.45);
-  --inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }

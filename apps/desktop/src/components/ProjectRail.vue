@@ -65,7 +65,7 @@ const themeLabel = computed(() =>
          Not `.brand` — that is Mark's own root class, and this component's
          scope id lands on it too. -->
     <button class="tile mark" title="Start page" @click="openHome">
-      <Mark :height="27" crisp />
+      <Mark :height="27" />
     </button>
 
     <!-- ⌘K reaches every project, so it belongs to the one column that does

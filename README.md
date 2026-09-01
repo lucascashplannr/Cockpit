@@ -288,17 +288,29 @@ Agent engines shipped: `claude`, `codex` — normalised into one event stream (�
 
 ## The mark
 
-The wordmark and the compact mark are generated, not drawn:
+The wordmark, the compact mark and the app icon are generated, not drawn:
 
 ```bash
-node apps/desktop/scripts/logo.mjs
+pnpm --filter @cockpit/desktop logo   # the wordmark and the mark
+pnpm --filter @cockpit/desktop icon   # build/icon.png and build/icon.icns
 ```
 
-The script carries a small bitmap font on a 12-row grid, merges each row into rectangles and
-lays an ordered dither around every stroke — so the mark is reproducible, re-cuttable at any
-size, and can be re-issued for another word by changing one string. It writes the two Vue brand
-components (`currentColor`, so they follow the theme) and the two standalone SVGs used outside
-the app.
+`apps/desktop/scripts/glyphs.mjs` holds the whole of the design: a squared bitmap face on a
+12-row grid, cap height only, every stroke 3px on a 9px em — a third of the cap height, which is
+the weight at which the counters close to slots and the word reads as one shape before it reads
+as seven letters. Both scripts cut their shapes from it, so the icon
+in the Dock cannot drift away from the mark in the rail. `logo.mjs` merges each row into
+rectangles and writes the two Vue brand components (`currentColor`, so they follow the theme)
+plus the two standalone SVGs used outside the app; `icon.mjs` writes the pixels itself — a
+superellipse tile, a vertical gradient and the grid on top, sampled 4×4 and encoded as PNG with
+nothing but `zlib` — then hands the ten sizes to `iconutil`.
+
+The first letter is its own ink in both components. It follows `currentColor` until a placement
+sets `--wm-lead`, which is how the hero wordmark gets its accent C and why nothing else does.
+
+macOS reads a packaged app's icon from the bundle; unpackaged there is no bundle of ours, so
+`electron/main.cjs` calls `app.dock.setIcon` in development. That is the only reason the Dock
+does not say Electron.
 
 ## The local database
 
@@ -317,7 +329,12 @@ replaced database costs history, never state.
 Material-shaped, and fighting it toward the dense, hairline, keyboard-first look the document
 asks for in §12 costs more than it saves. The renderer is plain Vue 3 + Vite with a small token
 system in `apps/desktop/src/styles/` — `tokens.css` holds every colour, size, radius and easing,
-and nothing else in the app is allowed a literal. Icons are [Lucide](https://lucide.dev)
+and nothing else in the app is allowed a literal. Both appearances are written once, as CSS
+`light-dark()` pairs: three `color-scheme` rules are the whole of the theme machinery, and the
+dark palette is no longer stated twice with the two copies free to drift. Type is bundled rather
+than borrowed — Geist and Geist Mono ship with the app, so an offline window looks the same on
+every machine, and sans and mono share one skeleton because they share every row of the
+workspace list. Icons are [Lucide](https://lucide.dev)
 (`@lucide/vue`, tree-shaken), sized and weighted by one rule in `base.css` rather than per call
 site. Every other stack choice in §14 is as specified —
 TypeScript throughout, the core as its own Node process, WebSocket transport, CodeMirror 6,
