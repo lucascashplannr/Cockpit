@@ -68,16 +68,8 @@ const themeLabel = computed(() =>
       <Mark :height="27" />
     </button>
 
-    <!-- ⌘K reaches every project, so it belongs to the one column that does
-         too. It spent a moment at the head of the workspace list, which was
-         wrong for the same reason the title band was wrong for the workspace's
-         name: that column is one project's, and this search is not. -->
-    <button class="icon-btn find" title="Search or run a command  ⌘K" @click="state.paletteOpen = true">
-      <Search />
-    </button>
-
-    <!-- Under both of them: what is above the rule belongs to the app, what is
-         below belongs to your projects. -->
+    <!-- Under it: what is above the rule belongs to the app, what is below
+         belongs to your projects. -->
     <div class="rule" />
 
     <div class="tiles">
@@ -113,6 +105,18 @@ const themeLabel = computed(() =>
 
     <div class="grow" />
 
+    <!-- ⌘K reaches every project, so it belongs to the one column that does
+         too. It spent a moment at the head of the workspace list, which was
+         wrong for the same reason the title band was wrong for the workspace's
+         name: that column is one project's, and this search is not.
+         At the *head* of this column it was wrong differently: an icon-btn on
+         its own between the mark and the rule, in a band that holds nothing
+         else — a group of one, which the eye reads as a leftover. It is an act
+         and not a destination, and every other act in this rail is down here. -->
+    <button class="icon-btn find" title="Search or run a command  ⌘K" @click="state.paletteOpen = true">
+      <Search />
+    </button>
+
     <button class="icon-btn" title="Settings" @click="state.settingsOpen = true">
       <SlidersHorizontal />
     </button>
@@ -132,8 +136,10 @@ const themeLabel = computed(() =>
   align-items: center;
   /* The window's three buttons are drawn at (10, 19) and float over whatever
      is under them (TrafficLights). Nothing else in this column may start above
-     them, so the rail begins where they end rather than at --col-top. */
-  padding: var(--lights-h) 0 12px;
+     them, so the rail begins where they end rather than at --col-top — and
+     then a gap again, because ending where they end put the mark flush against
+     them and the two read as one cluster of round things. */
+  padding: calc(var(--lights-h) + 10px) 0 12px;
   /* The strip the lights sit in is the window's own, so dragging it moves the
      window; every tile below opts back out. */
   -webkit-app-region: drag;
@@ -152,9 +158,9 @@ const themeLabel = computed(() =>
    tile is a *destination* — the mark and the projects are places you go, and
    they are filled and 44px square to say so. Search is an act. Giving it a
    tile made it read as a fourth project sitting above the rule, at exactly the
-   weight of the app's own mark. It belongs to the same family as the settings
-   and theme buttons at the foot: unfilled until touched. */
-.find { color: var(--text-dim); margin-top: 2px; }
+   weight of the app's own mark. It is the same family as the settings and
+   theme buttons, unfilled until touched — and now it stands with them. */
+.find { color: var(--text-dim); }
 .find:hover { color: var(--text); background: var(--hover); }
 
 .tile {
@@ -170,15 +176,15 @@ const themeLabel = computed(() =>
   font-weight: 650;
   letter-spacing: 0.02em;
   color: var(--text-muted);
-  background: var(--hover);
-  border: 1px solid transparent;
+  background: var(--panel);
+  border: 1px solid var(--line);
   transition:
     background var(--dur-2) var(--ease),
     color var(--dur-2) var(--ease),
     border-color var(--dur-2) var(--ease),
     transform var(--dur-1) var(--ease);
 }
-.tile:hover { background: var(--active); color: var(--text); }
+.tile:hover { background: var(--panel-raised); border-color: var(--line-strong); color: var(--text); }
 .tile:active { transform: scale(0.94); }
 
 /* Same tile as a project, one step quieter in ink: it belongs to the column
@@ -190,9 +196,11 @@ const themeLabel = computed(() =>
   display: flex;
   flex-direction: column;
   align-items: center;
-  /* 12px, not 8: the status badges hang 2px below each tile, and a tighter
-     column makes them read as belonging to the tile underneath. */
-  gap: 12px;
+  /* The badges live inside the tiles now, so this no longer has to buy room
+     for them below each one — but 10px still beats 8: the tiles are filled
+     surfaces against a sunken rail, and packed tighter they start to read as
+     one segmented strip rather than a stack of separate cards. */
+  gap: 10px;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
@@ -209,7 +217,7 @@ const themeLabel = computed(() =>
   flex: none;
   width: 28px;
   height: 1px;
-  margin: 10px 0 12px;
+  margin: 14px 0 14px;
   background: var(--line);
 }
 
@@ -217,7 +225,8 @@ const themeLabel = computed(() =>
    than decoration". A hue per project was decoration — the monogram already
    tells them apart, and the rail's only coloured thing should be the answer to
    "where am I". */
-.tile.active {
+.tile.active,
+.tile.active:hover {
   background: var(--accent-soft);
   border-color: transparent;
   color: var(--accent);
@@ -237,21 +246,32 @@ const themeLabel = computed(() =>
 
 .tile.add {
   background: transparent;
-  border: 1px dashed var(--line-strong);
-  color: var(--text-dim);
+  /* Dashed on `--line-strong` all but vanished against the rail. It should
+     stay quieter than a project — empty rather than filled — but a control
+     you cannot see is not restraint. */
+  border: 1px dashed var(--text-dim);
+  color: var(--text-muted);
 }
-.tile.add:hover { background: var(--hover); color: var(--text-muted); border-style: solid; }
+.tile.add:hover {
+  background: var(--panel);
+  border-color: var(--text-muted);
+  border-style: solid;
+  color: var(--text);
+}
 
+/* Inside the tile, not hanging off it. The pill wore the rail's own ground so
+   it could sit across the tile's bottom edge without the dots landing half on
+   one surface and half on the other — which worked while the tile was a wash
+   of that same ground, and became a notch bitten out of the card the moment
+   the tile became a surface of its own. On a card the dots have a ground
+   already: the card's. */
 .badges {
   position: absolute;
-  bottom: -2px;
+  bottom: 5px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   gap: 3px;
-  padding: 2px;
-  border-radius: 999px;
-  background: var(--bg-sunken);
 }
 .b {
   width: 4px;
