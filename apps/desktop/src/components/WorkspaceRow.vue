@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  ArrowDown, ArrowUp, CircleAlert, GitBranch, Hand, Lock, Sparkles, SquareDot, TriangleAlert,
+  ArrowDown, ArrowUp, CircleAlert, CirclePlay, CircleStop, GitBranch, Hand, Lock, Sparkles,
+  SquareDot, TriangleAlert,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
-import { activityFor, openAgentOn, selectedTopicId, selectWorkspace, state } from '../core/store.js'
+import {
+  activityFor, openAgentOn, selectedTopicId, selectWorkspace, state, toggleWorkspaceRuntime,
+} from '../core/store.js'
 
 const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
 
@@ -15,6 +18,24 @@ const w = computed(() => props.workspace)
 const selected = computed(
   () => w.value.id === state.activeWorkspaceId && !selectedTopicId.value,
 )
+
+/**
+ * §8 — `starting` counts as running: a server still coming up is one to stop,
+ * not one to start a second time onto the same port.
+ */
+const serverRunning = computed(
+  () => w.value.runtime?.status === 'up' || w.value.runtime?.status === 'starting',
+)
+
+/**
+ * Select first, then act. Starting a server from a row you are not standing on
+ * would leave the window pointed somewhere else while the thing you asked for
+ * boots out of sight — and looking at it is the reason you started it.
+ */
+async function startHere() {
+  selectWorkspace(w.value.id)
+  await toggleWorkspaceRuntime(w.value)
+}
 
 const dirty = computed(() => {
   const g = w.value.git
@@ -109,6 +130,21 @@ const kindLabel = computed(() =>
         <Lock class="sm" />
       </span>
 
+      <!-- §8 — and the servers are started *here* too, for the same reason the
+           agent is: "click play and it switches to that branch and runs it"
+           should not require selecting the row first and then crossing the
+           window to a bar. Absent where there is nothing to run (§3.9). -->
+      <span
+        v-if="w.runtime"
+        class="go run"
+        :class="{ lit: serverRunning }"
+        role="button"
+        :title="serverRunning ? 'Stop the servers on ' + w.name : 'Start the servers on ' + w.name"
+        @click.stop="startHere"
+      >
+        <component :is="serverRunning ? CircleStop : CirclePlay" class="sm" />
+      </span>
+
       <!-- §7 — the agent is aimed *here* by clicking here. The scope is where
            you clicked; there is no second menu asking what you meant. -->
       <span
@@ -141,6 +177,11 @@ const kindLabel = computed(() =>
 }
 .row:hover .go, .row.selected .go { opacity: 1; }
 .go:hover { background: var(--agent-soft); color: var(--agent); }
+
+/* A server that is up is not a hover affordance — it is the state of the row,
+   so it stays lit when the pointer leaves and keeps the runtime's own colour. */
+.go.run:hover { background: var(--ok-soft); color: var(--ok); }
+.go.run.lit { opacity: 1; color: var(--ok); }
 
 .row {
   display: flex;

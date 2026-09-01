@@ -2,7 +2,8 @@ import { resolve } from 'node:path'
 import { WebSocketServer, WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@cockpit/shared'
 import type {
-  AgentScope, CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse, ServerPush,
+  AgentScope, CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse,
+  ServerBoardRow, ServerPush,
 } from '@cockpit/shared'
 import { DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, forSession, tail } from './journal.js'
@@ -115,6 +116,42 @@ function pushAgentActivity(): void {
 
 /** Opens a path in the configured editor / Finder / browser (§2: the cockpit
  *  opens the IDE at the right place, it is not the IDE). */
+/**
+ * §11 — every checkout with a runtime, and what it is doing right now.
+ *
+ * Deliberately across *all* projects rather than the active one: the question
+ * this answers is "which of the things I have running is on which port", and
+ * that question does not stop at the project boundary — running two topics of
+ * two different projects at once is the case the global allocator exists for.
+ */
+function serverBoard(): ServerBoardRow[] {
+  const projects = new Map(registry.allProjects().map((pr) => [pr.id, pr.name]))
+  const topics = new Map(registry.allTopics(undefined, true).map((t) => [t.id, t.name]))
+
+  return registry
+    .allWorkspaces()
+    .filter((w) => w.runtime)
+    .map((w) => ({
+      workspaceId: w.id,
+      workspace: w.name,
+      projectId: w.projectId,
+      project: projects.get(w.projectId) ?? w.projectId,
+      topic: w.topicId ? (topics.get(w.topicId) ?? null) : null,
+      branch: w.git?.branch ?? null,
+      impl: w.runtime!.impl,
+      status: w.runtime!.status,
+      url: w.runtime!.preview?.kind === 'url' ? (w.runtime!.preview.value ?? null) : null,
+      ports: w.runtime!.ports.map((x) => ({ name: x.name, port: x.port })),
+      processes: w.runtime!.processes.length,
+    }))
+    // Up first, then starting, then the rest: the board is read top-down and
+    // what is actually serving is what it is being read for.
+    .sort((a, b) => rank(a.status) - rank(b.status) || a.project.localeCompare(b.project))
+}
+
+const STATUS_RANK: Record<string, number> = { up: 0, starting: 1, unhealthy: 2, down: 3, unknown: 4 }
+const rank = (st: string) => STATUS_RANK[st] ?? 5
+
 async function openIn(workspaceId: string, target: string, path?: string) {
   const ws = registry.requireWorkspace(workspaceId)
   const cfg = loadConfig()
@@ -422,8 +459,11 @@ const handlers: Record<string, Handler> = {
     runtime.health(registry.requireWorkspace(p.workspaceId)),
   'runtime.preview': async (p: { workspaceId: string }) =>
     runtime.preview(registry.requireWorkspace(p.workspaceId)),
+  'runtime.logs': (p: { workspaceId: string }) =>
+    runtime.logs(registry.requireWorkspace(p.workspaceId)),
 
   'ports.map': () => portMap(),
+  'runtime.board': () => serverBoard(),
 
   'agent.engines': () => agents.engines(),
   'agent.preview': (p: { scope: AgentScope }) => scope.preview(p.scope),
@@ -653,6 +693,14 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
    */
   agents.agentBus.on('delta', (sessionId, messageId, text) => {
     broadcast({ t: 'agent-delta', sessionId, messageId, text })
+  })
+  /**
+   * §8 — a dev server's output reaches the window as it is written, beside the
+   * journal rather than through it. Without this the supervisor's ring buffer
+   * was write-only and a server that failed to boot said nothing at all.
+   */
+  supervisor.onOutput(({ procId, workspaceId, label, chunk }) => {
+    broadcast({ t: 'runtime-log', workspaceId, procId, label, chunk })
   })
   termBus.on('data', ({ termId, data }) => broadcast({ t: 'term', termId, data }))
   termBus.on('exit', ({ termId, code }) => broadcast({ t: 'term-exit', termId, code }))

@@ -199,6 +199,51 @@ export interface SupervisedProcess {
   cwd: string
 }
 
+/**
+ * §8 — what one supervised process has written, and how it ended.
+ *
+ * The supervisor has always captured stdout and stderr into a ring buffer and
+ * nothing has ever been able to read it: `logsFor` existed, no method exposed
+ * it, and the window could not tell a server that failed to boot from one that
+ * booted perfectly. This is the type that closes that hole.
+ */
+export interface ProcessLog {
+  procId: string
+  label: string
+  cwd: string
+  startedAt: number
+  status: 'running' | 'exited' | 'failed'
+  exitCode: number | null
+  /** Everything still in the ring, oldest first, ANSI included. */
+  text: string
+}
+
+/**
+ * §8 — the answer to "start this", after it has actually been tried.
+ *
+ * `up` used to call `spawn()` and return `{ ok: true }` on the very next line,
+ * so the window said *started* whether the server was booting or had already
+ * died on a missing dependency — and the status only moved on the next probe,
+ * long after the toast was gone. This carries what was actually observed:
+ * whether the port answered, the URL if it did, and the tail of the server's
+ * own output, which is the only thing that ever explains a failure.
+ */
+export interface RuntimeUpResult {
+  ok: boolean
+  /**
+   * `up` — the port answered. `starting` — the process is alive but has not
+   * answered yet, which is a normal state for a slow bundler and not a
+   * failure. `down` — it is gone.
+   */
+  status: RuntimeState['status']
+  detail: string
+  url: string | null
+  /** How long was spent waiting for the port, in ms. */
+  waitedMs: number
+  /** The tail of the process's own output. Empty when there is nothing to say. */
+  log: string
+}
+
 export interface Workspace {
   id: string
   projectId: string

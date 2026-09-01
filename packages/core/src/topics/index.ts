@@ -378,6 +378,22 @@ export interface StartResult {
   stoppedTopics: string[]
   /** Why it refused, when it did. */
   conflicts: string[]
+  /**
+   * §8 — one entry per repository that was asked to start, and what came of
+   * it. A topic spanning three repositories where one server died is not
+   * "started" and is not "failed" either; it is this list, and the window can
+   * only say which one broke if it is told which one broke.
+   */
+  servers: {
+    workspaceId: string
+    name: string
+    impl: string
+    ok: boolean
+    status: string
+    detail: string
+    url: string | null
+    log: string
+  }[]
 }
 
 function workspacesOf(topicId: string): Workspace[] {
@@ -407,7 +423,13 @@ export async function start(topicId: string, force = false): Promise<StartResult
   const f = store.get(topicId)
   if (!f) throw new Error('unknown topic: ' + topicId)
   if (f.state === 'closed') {
-    return { ok: false, detail: 'this topic is closed; re-open it before starting it', stoppedTopics: [], conflicts: [] }
+    return {
+      ok: false,
+      detail: 'this topic is closed; re-open it before starting it',
+      stoppedTopics: [],
+      conflicts: [],
+      servers: [],
+    }
   }
 
   const targets = workspacesOf(topicId).filter((w) => w.runtime)
@@ -415,7 +437,7 @@ export async function start(topicId: string, force = false): Promise<StartResult
     store.patch(topicId, (x) => {
       x.state = 'running'
     })
-    return { ok: true, detail: 'nothing to start in this topic', stoppedTopics: [], conflicts: [] }
+    return { ok: true, detail: 'nothing to start in this topic', stoppedTopics: [], conflicts: [], servers: [] }
   }
 
   const clashes = exclusiveConflicts(topicId, targets)
@@ -436,6 +458,7 @@ export async function start(topicId: string, force = false): Promise<StartResult
       ok: false,
       stoppedTopics: [],
       conflicts,
+      servers: [],
       detail: 'stop it first, or start with force to have Cockpit stop it for you',
     }
   }
@@ -454,21 +477,54 @@ export async function start(topicId: string, force = false): Promise<StartResult
     if (!stoppedTopics.includes(label)) stoppedTopics.push(label)
   }
 
-  const details: string[] = []
-  for (const w of targets) {
-    const res = await runtime.up(w)
-    details.push(w.name + ': ' + res.detail)
-    if (!w.runtime!.portable) {
-      details.push(w.name + ': ' + w.runtime!.impl + ' is machine-local (§8) — this will not follow you elsewhere')
-    }
-    await registry.probeWorkspace(w.id)
-  }
+  // In parallel, and that is not an optimisation: `up` now waits for each
+  // server to answer, so starting a three-repository topic one at a time would
+  // stack three timeouts into a wait long enough to look like a hang. The
+  // servers are independent — the only thing that was not, the exclusive
+  // runtime arbitration, has already happened above.
+  const servers = await Promise.all(
+    targets.map(async (w) => {
+      const res = await runtime.up(w)
+      await registry.probeWorkspace(w.id)
+      return {
+        workspaceId: w.id,
+        name: w.name,
+        impl: w.runtime!.impl,
+        ok: res.ok,
+        status: res.status,
+        detail: res.detail,
+        url: res.url,
+        log: res.log,
+        portable: w.runtime!.portable,
+      }
+    }),
+  )
 
+  const details = servers.flatMap((r) => [
+    r.name + ': ' + r.detail,
+    ...(r.portable ? [] : [r.name + ': ' + r.impl + ' is machine-local (§8) — this will not follow you elsewhere']),
+  ])
+  const failed = servers.filter((r) => !r.ok)
+
+  // Running means at least one server came up. A topic where every server
+  // died is not running, and marking it so would put a green dot on nothing.
+  const anyUp = servers.some((r) => r.ok)
   store.patch(topicId, (x) => {
-    x.state = 'running'
+    x.state = anyUp ? 'running' : 'stopped'
   })
-  append({ type: 'topic.started', projectId: f.projectId, payload: { topicId, workspaces: targets.length, stoppedTopics } })
-  return { ok: true, detail: details.join('\n'), stoppedTopics, conflicts: [] }
+  append({
+    type: 'topic.started',
+    level: failed.length ? 'warn' : 'info',
+    projectId: f.projectId,
+    payload: { topicId, workspaces: targets.length, stoppedTopics, failed: failed.map((r) => r.name) },
+  })
+  return {
+    ok: anyUp && !failed.length,
+    detail: details.join('\n'),
+    stoppedTopics,
+    conflicts: [],
+    servers: servers.map(({ portable: _p, ...rest }) => rest),
+  }
 }
 
 /** Servers down, ports freed, worktrees untouched. Picking it back up is one click. */

@@ -3,7 +3,8 @@ import type {
   AddRepoSource, AgentScope, AgentScopePreview, Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, EngineOptions,
   DatabasePlan, Topic,
-  NewProjectSource, PlanPreview, Project, RevertPreviewEntry, SeedProposal, Workspace,
+  NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
+  ServerBoardRow, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
@@ -46,7 +47,7 @@ export const hostWindow = host?.platform === 'darwin' ? (host.window ?? null) : 
 const PORT = host?.corePort ?? 7717
 const URL = 'ws://127.0.0.1:' + PORT
 
-export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'journal' | 'terminal' | 'ticket'
+export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'servers' | 'journal' | 'terminal' | 'ticket'
 
 /**
  * The four roles, in the order they are used.
@@ -58,7 +59,7 @@ export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'journal' | 'terminal
  *
  * The Agent owns the panel permanently; these are what open beside it.
  */
-export type ReviewTool = 'diff' | 'code' | 'journal' | 'terminal'
+export type ReviewTool = 'diff' | 'code' | 'servers' | 'journal' | 'terminal'
 
 
 /**
@@ -110,6 +111,19 @@ export const state = reactive({
    * had all of it, and nothing was asking for it by conversation.
    */
   transcripts: {} as Record<string, CockpitEvent[]>,
+
+  /**
+   * §8 — what each workspace's servers are writing, live.
+   *
+   * Beside the journal rather than in it, for the same reason agent deltas are
+   * (§3.3): a dev server writes thousands of lines an hour and none of them
+   * are history. Bounded per workspace, and the oldest go first — a log view
+   * is read from the bottom.
+   */
+  runtimeLogs: {} as Record<string, string>,
+
+  /** §11 — every checkout with a runtime, across every project. */
+  board: [] as ServerBoardRow[],
 
   status: null as CoreStatus | null,
 
@@ -260,7 +274,30 @@ export const client = new CoreClient(URL, {
   onTermExit(termId) {
     for (const fn of termListeners.get(termId) ?? []) fn('\r\n\x1b[2m[process exited]\x1b[0m\r\n')
   },
+  onRuntimeLog(workspaceId, _procId, _label, chunk) {
+    if (!workspaceId) return
+    const next = (state.runtimeLogs[workspaceId] ?? '') + chunk
+    // A dev server left running all day would grow this without bound, and
+    // nobody scrolls back through a megabyte of HMR notices.
+    state.runtimeLogs[workspaceId] = next.length > LOG_MAX ? next.slice(-LOG_MAX) : next
+    for (const fn of logListeners.get(workspaceId) ?? []) fn(chunk)
+  },
 })
+
+/** Roughly a screenful of scrollback per workspace, which is what it is for. */
+const LOG_MAX = 120_000
+const logListeners = new Map<string, ((d: string) => void)[]>()
+
+/** Lets a log view follow one workspace's output without re-rendering on each chunk. */
+export function onRuntimeLogData(workspaceId: string, fn: (d: string) => void): () => void {
+  const arr = logListeners.get(workspaceId) ?? []
+  arr.push(fn)
+  logListeners.set(workspaceId, arr)
+  return () => {
+    const cur = logListeners.get(workspaceId) ?? []
+    logListeners.set(workspaceId, cur.filter((f) => f !== fn))
+  }
+}
 
 export function onTermData(termId: string, fn: (d: string) => void): () => void {
   const arr = termListeners.get(termId) ?? []
@@ -331,7 +368,12 @@ export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
   if (!w) return []
   const ids: ReviewTool[] = []
   if (w.git) ids.push('diff')
-  ids.push('code', 'journal', 'terminal')
+  ids.push('code')
+  // §3.9 — a checkout with nothing to run has no Servers tool, rather than one
+  // that opens on an empty list. The board it opens on is machine-wide, but
+  // the strip is still the strip of *this* workspace.
+  if (w.runtime) ids.push('servers')
+  ids.push('journal', 'terminal')
   return ids
 }
 
@@ -1603,31 +1645,100 @@ export async function openTopic(input: {
  * §8 — an exclusive runtime held elsewhere is a refusal, not a failure. The
  * second call is the user answering "yes, park the other one".
  */
+/**
+ * §8 — what to say after starting, now that starting reports what happened.
+ *
+ * "started" was the only outcome this could ever announce, because `up`
+ * answered before the server had done anything. It can now come back three
+ * ways, and each one is a different sentence: it is serving, it is still
+ * coming up, or it died and here is what it said.
+ */
+function reportStart(res: { servers: { name: string; ok: boolean; status: string; log: string }[] }): void {
+  const failed = res.servers.filter((r) => !r.ok)
+  const starting = res.servers.filter((r) => r.ok && r.status === 'starting')
+  const up = res.servers.filter((r) => r.status === 'up')
+
+  if (failed.length) {
+    // The name and the last line it wrote: enough to know which repository
+    // broke and why, without opening anything.
+    const first = failed[0]!
+    const why = first.log.split('\n').filter(Boolean).slice(-1)[0] ?? 'it exited before it answered'
+    toast('error', first.name + ' did not start — ' + why.slice(0, 160))
+    // The rest of the reason is one click away rather than in a toast.
+    state.reviewTool = 'servers'
+    state.reviewOpen = true
+    return
+  }
+  if (starting.length) {
+    toast('info', starting.map((r) => r.name).join(', ') + ' — still starting, no answer yet')
+    return
+  }
+  toast('ok', up.length > 1 ? up.length + ' servers up' : 'up')
+}
+
 export async function startTopic(topicId: string): Promise<void> {
   const res = await guard(() => client.call('topic.start', { topicId, force: false }))
   if (!res) return
-  if (!res.ok) {
-    if (!res.conflicts.length) {
-      toast('error', res.detail)
-      return
-    }
-    const ok = window.confirm(res.conflicts.join('\n') + '\n\nPark it and continue?')
+  if (!res.ok && res.conflicts.length) {
+    const ok = window.confirm(res.conflicts.join('\n') + '\n\nStop it and continue?')
     if (!ok) return
     const forced = await guard(() => client.call('topic.start', { topicId, force: true }))
-    if (!forced?.ok) return
+    if (!forced) return
     await refreshTopics()
-    toast('ok', forced.stoppedTopics.length ? 'started — stopped ' + forced.stoppedTopics.join(', ') : 'started')
+    await refreshBoard()
+    if (forced.stoppedTopics.length) toast('info', 'stopped ' + forced.stoppedTopics.join(', '))
+    reportStart(forced)
     return
   }
   await refreshTopics()
-  toast('ok', 'started')
+  await refreshBoard()
+  // A refusal with no servers behind it (a closed topic, nothing to start) has
+  // only its own sentence to offer.
+  if (!res.servers.length) {
+    toast(res.ok ? 'info' : 'error', res.detail)
+    return
+  }
+  reportStart(res)
+}
+
+/** §11 — the board is machine-wide, so anything that starts or stops refreshes it. */
+export async function refreshBoard(): Promise<void> {
+  const rows = await client.call('runtime.board', undefined).catch(() => null)
+  if (rows) state.board = rows
+}
+
+export async function loadRuntimeLogs(workspaceId: string): Promise<ProcessLog[]> {
+  return (await client.call('runtime.logs', { workspaceId }).catch(() => [])) as ProcessLog[]
 }
 
 export async function stopTopic(topicId: string): Promise<void> {
   const res = await guard(() => client.call('topic.stop', { topicId }))
   if (!res) return
   await refreshTopics()
+  await refreshBoard()
   toast('ok', 'stopped — the branches stay exactly where they are')
+}
+
+/**
+ * §8 — start or stop one checkout's servers, from wherever the row is.
+ *
+ * The same three outcomes as a topic, reported the same way: this is the one
+ * function behind the Start button on the bar and the play control on the row,
+ * so they cannot drift into saying different things about the same act.
+ */
+export async function toggleWorkspaceRuntime(w: Workspace): Promise<void> {
+  if (!w.runtime) return
+  const running = w.runtime.status === 'up' || w.runtime.status === 'starting'
+  if (running) {
+    const res = await guard(() => client.call('runtime.down', { workspaceId: w.id }))
+    await refreshBoard()
+    if (res) toast('ok', 'stopped')
+    return
+  }
+  const res = await guard(() => client.call('runtime.up', { workspaceId: w.id }))
+  await refreshBoard()
+  if (!res) return
+  reportStart({ servers: [{ name: w.name, ok: res.ok, status: res.status, log: res.log }] })
 }
 
 /** §16 — refuses over unpushed work; removing the checkouts is its own plan. */

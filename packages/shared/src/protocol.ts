@@ -10,9 +10,35 @@ import type {
   CoreStatus,
   DatabasePlan,
   DiffFile, Topic,
-  FileDiff, GitOperation, MemoryDoc, NewProjectSource, Project, SearchHit, SeedProposal,
+  FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
+  SearchHit, SeedProposal,
   Workspace,
 } from './model.js'
+
+/**
+ * §11 — one row of "what is running on this machine, and whose is it".
+ *
+ * The port allocator has always been able to list its assignments, and the
+ * window has never asked: `ports.map` answers in project and workspace ids,
+ * which is not something a person can read. This is the same information with
+ * the names resolved and the health attached, which is the whole of the
+ * question "which of my worktrees is on which port".
+ */
+export interface ServerBoardRow {
+  workspaceId: string
+  workspace: string
+  projectId: string
+  project: string
+  /** The topic this checkout belongs to, when it belongs to one (§4). */
+  topic: string | null
+  branch: string | null
+  impl: string
+  status: string
+  url: string | null
+  ports: { name: string; port: number }[]
+  /** Processes this core is supervising for it. */
+  processes: number
+}
 
 /**
  * §7 — starting is allowed to refuse, and a refusal that does not say what to
@@ -354,7 +380,28 @@ export interface Rpc {
   /** Bring its runtimes up. Refuses when an exclusive runtime is held elsewhere. */
   'topic.start': {
     params: { topicId: string; force?: boolean }
-    result: { ok: boolean; detail: string; stoppedTopics: string[]; conflicts: string[] }
+    result: {
+      ok: boolean
+      detail: string
+      stoppedTopics: string[]
+      conflicts: string[]
+      /**
+       * §8 — one entry per repository asked to start, and what came of it. A
+       * topic spanning three repositories where one server died is neither
+       * started nor failed; it is this list, and the window can only name the
+       * one that broke if it is told which one broke.
+       */
+      servers: {
+        workspaceId: string
+        name: string
+        impl: string
+        ok: boolean
+        status: string
+        detail: string
+        url: string | null
+        log: string
+      }[]
+    }
   }
   /** Take its runtimes down and free the exclusive resources. Worktrees stay. */
   'topic.stop': { params: { topicId: string }; result: { ok: boolean; detail: string } }
@@ -465,12 +512,31 @@ export interface Rpc {
     result: { hash: string; subject: string; author: string; ts: number; refs: string }[]
   }
 
-  'runtime.up': { params: { workspaceId: string }; result: { ok: boolean; detail: string } }
+  /**
+   * §8 — starts the servers and waits for them to answer, so the result is
+   * what was observed rather than what was attempted. It can therefore take
+   * as long as the server takes to boot; `status` distinguishes a server that
+   * is up from one that is merely still coming up.
+   */
+  'runtime.up': { params: { workspaceId: string }; result: RuntimeUpResult }
   'runtime.down': { params: { workspaceId: string }; result: { ok: boolean; detail: string } }
   'runtime.health': { params: { workspaceId: string }; result: { status: string; detail: string } }
   'runtime.preview': { params: { workspaceId: string }; result: { kind: 'url' | 'qr' | 'none'; value?: string } }
+  /**
+   * §8 — what this workspace's servers have written, the ones that already
+   * died included. The supervisor has captured this since it was written and
+   * nothing has ever been able to read it, which is why a server that failed
+   * to boot and one that booted looked identical from the window.
+   */
+  'runtime.logs': { params: { workspaceId: string }; result: ProcessLog[] }
 
   'ports.map': { params: void; result: { port: number; owner: string; name: string }[] }
+  /**
+   * §11 — every port this machine has handed out, with the workspace and topic
+   * behind it resolved. `ports.map` answers in ids; this answers in names,
+   * which is what a window showing "what is running where" needs.
+   */
+  'runtime.board': { params: void; result: ServerBoardRow[] }
 
   'agent.engines': { params: void; result: { id: string; available: boolean; bin: string }[] }
   /**
@@ -626,6 +692,15 @@ export type ServerPush =
   | { t: 'agent-delta'; sessionId: string; messageId: string; text: string }
   | { t: 'term'; termId: string; data: string }
   | { t: 'term-exit'; termId: string; code: number }
+  /**
+   * §8 — a dev server's output, as it is written.
+   *
+   * Beside the journal for the same reason agent deltas are (§3.3): a log line
+   * is not an event, and putting several thousand of them a minute into the
+   * journal would drown the history it exists to keep. The window holds a
+   * bounded tail and drops it when the workspace goes away.
+   */
+  | { t: 'runtime-log'; workspaceId: string | null; procId: string; label: string; chunk: string }
 
 export type ClientMessage = RpcRequest
 export type ServerMessage = RpcResponse | ServerPush

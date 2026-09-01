@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { scopedName as scopedNameFor } from '@cockpit/shared'
-import type { RuntimeState, Workspace } from '@cockpit/shared'
+import type { RuntimeState, RuntimeUpResult, Workspace } from '@cockpit/shared'
+import type { Framework } from '../detect.js'
 import { run } from '../exec.js'
 import { allocate, portKey } from '../ports.js'
 import { append } from '../journal.js'
@@ -19,7 +20,13 @@ export interface Runtime {
   /** §8 — can several workspaces of this runtime run at once? */
   exclusive: boolean
   provision(ws: Workspace): Promise<{ ok: boolean; detail: string }>
-  up(ws: Workspace): Promise<{ ok: boolean; detail: string }>
+  /**
+   * `procId` is how `up` below watches what it started: a process that dies
+   * during the wait is the answer, and the fastest one available. A runtime
+   * with nothing to supervise — Herd links a folder, Compose detaches — simply
+   * omits it and is judged on its health check alone.
+   */
+  up(ws: Workspace): Promise<{ ok: boolean; detail: string; procId?: string }>
   down(ws: Workspace): Promise<{ ok: boolean; detail: string }>
   health(ws: Workspace): Promise<{ status: RuntimeState['status']; detail: string }>
   preview(ws: Workspace): Promise<NonNullable<RuntimeState['preview']>>
@@ -60,6 +67,73 @@ async function httpOk(url: string): Promise<boolean> {
   }
 }
 
+/**
+ * The two loopback addresses, because a dev server picks one and they are not
+ * interchangeable.
+ *
+ * Vite binds `[::1]` and nothing else, so polling `127.0.0.1` — which is what
+ * every health check here used to do — is refused by a server that is up and
+ * serving perfectly. That reported `starting` forever, indistinguishable from
+ * a server that never came up, and it is the second half of why Start could
+ * not be trusted: fixing the port alone would have moved the failure rather
+ * than removed it.
+ */
+const LOOPBACKS = ['127.0.0.1', '[::1]'] as const
+
+/** True as soon as either family answers. */
+async function listening(port: number, path = ''): Promise<boolean> {
+  const tries = await Promise.all(LOOPBACKS.map((h) => httpOk('http://' + h + ':' + port + path)))
+  return tries.some(Boolean)
+}
+
+/**
+ * The URL to hand a person, as opposed to the one to poll.
+ *
+ * `localhost` rather than a literal address on purpose: it resolves to
+ * whichever family the server actually chose, so the link works without the
+ * window having to know which one that was.
+ */
+const localUrl = (port: number) => 'http://localhost:' + port
+
+function packageManager(dir: string): string {
+  if (existsSync(join(dir, 'pnpm-lock.yaml'))) return 'pnpm'
+  if (existsSync(join(dir, 'yarn.lock'))) return 'yarn'
+  return 'npm'
+}
+
+/**
+ * §11 — how each dev server is told the port the allocator picked for it.
+ *
+ * `PORT` in the environment is a convention, not a rule, and the most common
+ * dev server on this machine ignores it: Vite reads `--port` and otherwise
+ * binds 5173 whatever the environment says. That does not fail — it *runs*, on
+ * a number nothing in the window knows about, so health polls the allocated
+ * port forever, reports `starting`, and Preview opens a URL with nothing
+ * behind it. Passing the port a way the server actually listens to is the
+ * difference between the allocator being true and being decorative.
+ *
+ * `--strictPort` is Vite's own, and it is deliberate: the allocator already
+ * proved this port free, so a Vite that moved to the next one has hit
+ * something Cockpit cannot see. Failing loudly beats drifting silently.
+ */
+interface PortStyle {
+  flag: string | null
+  extra: string[]
+  env: string[]
+}
+
+/** Nothing recognised: the convention is all there is, so use it and say so. */
+const PORT_BY_ENV: PortStyle = { flag: null, extra: [], env: ['PORT'] }
+
+const PORT_STYLES: Record<string, PortStyle> = {
+  vite: { flag: '--port', extra: ['--strictPort'], env: [] },
+  quasar: { flag: '--port', extra: [], env: [] },
+  next: { flag: '--port', extra: [], env: ['PORT'] },
+  nuxt: { flag: '--port', extra: [], env: ['PORT', 'NUXT_PORT'] },
+  astro: { flag: '--port', extra: [], env: [] },
+  angular: { flag: '--port', extra: [], env: [] },
+}
+
 /** A plain `npm run dev` style server. The most common case by far. */
 const nodeRuntime: Runtime = {
   id: 'node',
@@ -67,32 +141,41 @@ const nodeRuntime: Runtime = {
   exclusive: false,
   async provision(ws) {
     if (existsSync(join(ws.path, 'node_modules'))) return { ok: true, detail: 'dependencies present' }
-    const pm = existsSync(join(ws.path, 'pnpm-lock.yaml'))
-      ? 'pnpm'
-      : existsSync(join(ws.path, 'yarn.lock'))
-        ? 'yarn'
-        : 'npm'
+    const pm = packageManager(ws.path)
     const r = await run(pm, ['install'], { cwd: ws.path, timeoutMs: 600_000 })
     return { ok: r.ok, detail: r.ok ? pm + ' install done' : r.stderr.slice(-800) }
   },
   async up(ws) {
     const detail = runtimeDetail(ws)
     const script = String(detail.script ?? 'dev')
+    const framework = (detail.framework as Framework) ?? null
+    const style = (framework ? PORT_STYLES[framework] : null) ?? PORT_BY_ENV
     const port = await allocate(portKey(ws.projectId, ws.id, 'web'))
-    const pm = existsSync(join(ws.path, 'pnpm-lock.yaml'))
-      ? 'pnpm'
-      : existsSync(join(ws.path, 'yarn.lock'))
-        ? 'yarn'
-        : 'npm'
-    sup.start({
+    const pm = packageManager(ws.path)
+
+    // `--` is what makes npm forward the rest to the script rather than eat it;
+    // pnpm and yarn accept it too, so one form covers all three.
+    const args = ['run', script]
+    if (style.flag) args.push('--', style.flag, String(port), ...style.extra)
+
+    const env: Record<string, string> = {}
+    for (const key of style.env) env[key] = String(port)
+
+    const proc = sup.start({
       workspaceId: ws.id,
       label: pm + ' run ' + script,
       cwd: ws.path,
       command: pm,
-      args: ['run', script],
-      env: { PORT: String(port) },
+      args,
+      env,
     })
-    return { ok: true, detail: 'started on port ' + port }
+    return {
+      ok: true,
+      procId: proc.id,
+      detail: style.flag
+        ? 'port ' + port + ' via ' + style.flag
+        : 'port ' + port + ' via PORT (no framework recognised — if the server picks its own port, set it in the script)',
+    }
   },
   async down(ws) {
     const n = sup.stopWorkspace(ws.id)
@@ -102,12 +185,12 @@ const nodeRuntime: Runtime = {
     const procs = sup.listForWorkspace(ws.id)
     if (!procs.length) return { status: 'down', detail: 'no process' }
     const port = await allocate(portKey(ws.projectId, ws.id, 'web'))
-    const ok = await httpOk('http://127.0.0.1:' + port)
+    const ok = await listening(port)
     return { status: ok ? 'up' : 'starting', detail: 'port ' + port }
   },
   async preview(ws) {
     const port = await allocate(portKey(ws.projectId, ws.id, 'web'))
-    return { kind: 'url', value: 'http://127.0.0.1:' + port }
+    return { kind: 'url', value: localUrl(port) }
   },
   async ports(ws) {
     return [{ name: 'web', port: await allocate(portKey(ws.projectId, ws.id, 'web')) }]
@@ -124,14 +207,14 @@ const expoRuntime: Runtime = {
   exclusive: false,
   async up(ws) {
     const port = await allocate(portKey(ws.projectId, ws.id, 'bundler'))
-    sup.start({
+    const proc = sup.start({
       workspaceId: ws.id,
       label: 'expo start',
       cwd: ws.path,
       command: 'npx',
       args: ['expo', 'start', '--port', String(port)],
     })
-    return { ok: true, detail: 'bundler on ' + port }
+    return { ok: true, procId: proc.id, detail: 'bundler on ' + port }
   },
   async preview(ws) {
     const port = await allocate(portKey(ws.projectId, ws.id, 'bundler'))
@@ -143,7 +226,7 @@ const expoRuntime: Runtime = {
     const procs = sup.listForWorkspace(ws.id)
     if (!procs.length) return { status: 'down', detail: 'no bundler' }
     const port = await allocate(portKey(ws.projectId, ws.id, 'bundler'))
-    const ok = await httpOk('http://127.0.0.1:' + port + '/status')
+    const ok = await listening(port, '/status')
     return { status: ok ? 'up' : 'starting', detail: 'bundler ' + port }
   },
   async ports(ws) {
@@ -192,7 +275,7 @@ const composeRuntime: Runtime = {
   },
   async preview(ws) {
     const port = await allocate(portKey(ws.projectId, ws.id, 'web'))
-    return { kind: 'url', value: 'http://127.0.0.1:' + port }
+    return { kind: 'url', value: localUrl(port) }
   },
   async ports(ws) {
     return [{ name: 'web', port: await allocate(portKey(ws.projectId, ws.id, 'web')) }]
@@ -288,20 +371,147 @@ export async function runtimeStateFor(ws: Workspace): Promise<RuntimeState | nul
   }
 }
 
-export async function up(ws: Workspace) {
+/**
+ * How long to keep asking before answering `starting` rather than `up`.
+ *
+ * Generous on purpose: a cold webpack build or a first-run Vite dep
+ * optimisation genuinely takes half a minute, and calling that a failure would
+ * be a worse lie than the one this replaces.
+ */
+const UP_TIMEOUT_MS = 45_000
+const POLL_MS = 350
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+function upResult(over: Partial<RuntimeUpResult>): RuntimeUpResult {
+  return { ok: false, status: 'down', detail: '', url: null, waitedMs: 0, log: '', ...over }
+}
+
+/**
+ * §8 — wait for the thing that was started to actually be up, and report what
+ * was observed rather than what was attempted.
+ *
+ * The old `up` returned `{ ok: true }` on the line after `spawn()`, so the
+ * window said *started* for a process that had already died on a missing
+ * dependency, and the status only corrected itself on the next probe — long
+ * after the toast was gone. Three outcomes are worth telling apart, and this
+ * is where they are told apart: it answered, it died (and here is what it
+ * said), or it is still coming up, which is not a failure.
+ */
+async function settle(
+  ws: Workspace,
+  rt: Runtime,
+  procId: string | null,
+  timeoutMs: number,
+): Promise<RuntimeUpResult> {
+  const started = Date.now()
+  let lastDetail = ''
+
+  for (;;) {
+    const waitedMs = Date.now() - started
+
+    // A process that exited is the answer, and the fastest one there is —
+    // there is no point polling a port for 45 seconds when the thing that was
+    // meant to bind it is already gone.
+    if (procId) {
+      const st = sup.statusOf(procId)
+      if (st && !st.alive) {
+        return upResult({
+          ok: false,
+          status: 'down',
+          detail: 'exited with code ' + (st.exitCode ?? '?') + ' before it answered',
+          waitedMs,
+          log: sup.tail(procId, 24),
+        })
+      }
+    }
+
+    const h = await rt.health(ws)
+    lastDetail = h.detail
+
+    if (h.status === 'up') {
+      const preview = await rt.preview(ws).catch(() => null)
+      return upResult({
+        ok: true,
+        status: 'up',
+        detail: h.detail,
+        url: preview?.kind === 'url' ? (preview.value ?? null) : null,
+        waitedMs: Date.now() - started,
+        log: procId ? sup.tail(procId, 8) : '',
+      })
+    }
+    if (h.status === 'unhealthy') {
+      return upResult({
+        ok: false,
+        status: 'unhealthy',
+        detail: h.detail,
+        waitedMs: Date.now() - started,
+        log: procId ? sup.tail(procId, 24) : '',
+      })
+    }
+
+    if (Date.now() - started >= timeoutMs) break
+    await sleep(POLL_MS)
+  }
+
+  // Alive, but silent. Not a failure — a slow one, and saying so is the point.
+  return upResult({
+    ok: true,
+    status: 'starting',
+    detail: 'still starting after ' + Math.round(timeoutMs / 1000) + 's — ' + lastDetail,
+    waitedMs: Date.now() - started,
+    log: procId ? sup.tail(procId, 12) : '',
+  })
+}
+
+export async function up(ws: Workspace): Promise<RuntimeUpResult> {
   const rt = runtimeFor(ws)
-  if (!rt) return { ok: false, detail: 'no runtime for this workspace' }
+  if (!rt) return upResult({ status: 'unknown', detail: 'no runtime for this workspace' })
+
   append({ type: 'runtime.provision', workspaceId: ws.id, payload: { impl: rt.id } })
   const prov = await rt.provision(ws)
-  if (!prov.ok) return prov
+  if (!prov.ok) {
+    append({
+      type: 'runtime.up',
+      level: 'error',
+      workspaceId: ws.id,
+      payload: { impl: rt.id, detail: prov.detail, phase: 'provision' },
+    })
+    return upResult({ detail: prov.detail, log: prov.detail })
+  }
+
   const res = await rt.up(ws)
+  if (!res.ok) {
+    append({
+      type: 'runtime.up',
+      level: 'error',
+      workspaceId: ws.id,
+      payload: { impl: rt.id, detail: res.detail },
+    })
+    return upResult({ detail: res.detail, log: res.detail })
+  }
+
+  const settled = await settle(ws, rt, res.procId ?? null, UP_TIMEOUT_MS)
   append({
     type: 'runtime.up',
-    level: res.ok ? 'info' : 'error',
+    level: settled.ok ? 'info' : 'error',
     workspaceId: ws.id,
-    payload: { impl: rt.id, detail: res.detail },
+    payload: {
+      impl: rt.id,
+      // What the runtime set up, then what was actually observed of it.
+      detail: res.detail + ' — ' + settled.detail,
+      status: settled.status,
+      waitedMs: settled.waitedMs,
+    },
   })
-  return res
+  // The launch line names the port and how it was passed; the settle line says
+  // what came of it. Both matter, so neither is dropped.
+  return { ...settled, detail: res.detail + ' — ' + settled.detail }
+}
+
+/** §8 — what the servers of this workspace have written, the dead included. */
+export function logs(ws: Workspace) {
+  return sup.logsForWorkspace(ws.id)
 }
 
 export async function down(ws: Workspace) {

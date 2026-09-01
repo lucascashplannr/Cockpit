@@ -2,10 +2,11 @@
 import { computed } from 'vue'
 import type { Component } from 'vue'
 import type { Workspace } from '@cockpit/shared'
-import { FileCode, GitCompareArrows, ScrollText, SquareTerminal, X } from '@lucide/vue'
+import { FileCode, GitCompareArrows, ScrollText, Server, SquareTerminal, X } from '@lucide/vue'
 import CodeTab from './tabs/CodeTab.vue'
 import DiffTab from './tabs/DiffTab.vue'
 import JournalTab from './tabs/JournalTab.vue'
+import ServersTab from './tabs/ServersTab.vue'
 import TerminalTab from './tabs/TerminalTab.vue'
 import { reviewTools, state } from '../core/store.js'
 import type { ReviewTool } from '../core/store.js'
@@ -21,6 +22,7 @@ const props = defineProps<{ workspace: Workspace; closable?: boolean }>()
 const META: Record<ReviewTool, { label: string; icon: Component }> = {
   diff: { label: 'Diff', icon: GitCompareArrows },
   code: { label: 'Code', icon: FileCode },
+  servers: { label: 'Servers', icon: Server },
   journal: { label: 'Journal', icon: ScrollText },
   terminal: { label: 'Terminal', icon: SquareTerminal },
 }
@@ -62,6 +64,7 @@ const tools = computed(() =>
     <div class="body">
       <DiffTab v-if="state.reviewTool === 'diff'" :workspace="workspace" />
       <CodeTab v-else-if="state.reviewTool === 'code'" :workspace="workspace" />
+      <ServersTab v-else-if="state.reviewTool === 'servers'" :workspace="workspace" />
       <JournalTab v-else-if="state.reviewTool === 'journal'" :workspace="workspace" />
       <TerminalTab v-else-if="state.reviewTool === 'terminal'" :workspace="workspace" />
     </div>

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { newId } from '@cockpit/shared'
-import type { SupervisedProcess } from '@cockpit/shared'
+import type { ProcessLog, SupervisedProcess } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { append } from './journal.js'
 
@@ -17,10 +17,42 @@ interface Managed {
   label: string
   workspaceId: string | null
   ring: string[]
+  startedAt: number
+  cwd: string
+  exit: { code: number | null; at: number } | null
 }
 
 const live = new Map<string, Managed>()
 const RING_MAX = 500
+
+/**
+ * The output of processes that have already died.
+ *
+ * A dev server that fails to boot writes the only explanation there will ever
+ * be and then exits, and until now that took the ring buffer with it: the
+ * window asked what happened and the answer was an empty string. Keeping the
+ * last few corpses is what turns "it didn't start" into a stack trace.
+ */
+const dead = new Map<string, Managed>()
+const DEAD_MAX = 24
+
+/**
+ * Registered by the server so a chunk reaches the window while it is being
+ * written rather than on the next poll. Output is pushed beside the journal
+ * for the same reason agent deltas are (§3.3): a log line is not an event.
+ */
+export type OutputSink = (o: {
+  procId: string
+  workspaceId: string | null
+  label: string
+  chunk: string
+}) => void
+
+let sink: OutputSink | null = null
+
+export function onOutput(fn: OutputSink | null): void {
+  sink = fn
+}
 
 export interface StartOptions {
   workspaceId: string | null
@@ -40,13 +72,23 @@ export function start(opts: StartOptions): SupervisedProcess {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
-  const managed: Managed = { id, child, label: opts.label, workspaceId: opts.workspaceId, ring: [] }
+  const managed: Managed = {
+    id,
+    child,
+    label: opts.label,
+    workspaceId: opts.workspaceId,
+    ring: [],
+    startedAt: Date.now(),
+    cwd: opts.cwd,
+    exit: null,
+  }
   live.set(id, managed)
 
   const record = (chunk: Buffer) => {
     const text = chunk.toString('utf8')
     managed.ring.push(text)
     if (managed.ring.length > RING_MAX) managed.ring.shift()
+    sink?.({ procId: id, workspaceId: opts.workspaceId, label: opts.label, chunk: text })
     append({
       type: 'runtime.log',
       level: 'debug',
@@ -81,6 +123,11 @@ export function start(opts: StartOptions): SupervisedProcess {
 
   child.on('exit', (code) => {
     live.delete(id)
+    managed.exit = { code, at: Date.now() }
+    dead.set(id, managed)
+    // Oldest first: a Map iterates in insertion order, so this is the corpse
+    // that has been lying around longest.
+    while (dead.size > DEAD_MAX) dead.delete(dead.keys().next().value as string)
     getDb().prepare('UPDATE processes SET status = ?, exit_code = ? WHERE id = ?').run(
       code === 0 ? 'exited' : 'failed',
       code ?? -1,
@@ -205,7 +252,49 @@ export function listForWorkspace(workspaceId: string): SupervisedProcess[] {
 }
 
 export function logsFor(procId: string): string {
-  return live.get(procId)?.ring.join('') ?? ''
+  return (live.get(procId) ?? dead.get(procId))?.ring.join('') ?? ''
+}
+
+/**
+ * §8 — everything this core has run for a workspace and can still account for,
+ * the ones that died included.
+ *
+ * `up` reports a failure by handing back the tail of this, which is the whole
+ * difference between "it didn't start" and a reason.
+ */
+export function logsForWorkspace(workspaceId: string): ProcessLog[] {
+  const out: ProcessLog[] = []
+  for (const m of [...live.values(), ...dead.values()]) {
+    if (m.workspaceId !== workspaceId) continue
+    out.push({
+      procId: m.id,
+      label: m.label,
+      cwd: m.cwd,
+      startedAt: m.startedAt,
+      status: m.exit ? (m.exit.code === 0 ? 'exited' : 'failed') : 'running',
+      exitCode: m.exit?.code ?? null,
+      text: m.ring.join(''),
+    })
+  }
+  return out.sort((a, b) => b.startedAt - a.startedAt)
+}
+
+/** Whether a process this core started is still up, and how it ended if not. */
+export function statusOf(procId: string): { alive: boolean; exitCode: number | null } | null {
+  if (live.has(procId)) return { alive: true, exitCode: null }
+  const d = dead.get(procId)
+  if (d) return { alive: false, exitCode: d.exit?.code ?? null }
+  return null
+}
+
+/** The last `n` non-empty lines, which is what a failure is usually made of. */
+export function tail(procId: string, n = 12): string {
+  return logsFor(procId)
+    .split('\n')
+    .map((l) => l.replace(/\r/g, '').trimEnd())
+    .filter(Boolean)
+    .slice(-n)
+    .join('\n')
 }
 
 function isAlive(pid: number | null): boolean {

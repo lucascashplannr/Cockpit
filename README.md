@@ -233,6 +233,66 @@ is refused with the offer to stop the other, rather than failing deep inside Doc
 
 `cockpit help` lists the rest.
 
+## When a server does not start
+
+Starting used to be the one act in the app you could not trust. `runtime.up`
+called `spawn()` and returned `{ ok: true }` on the very next line, so the
+window said *started* whether the server was booting, or had already died on a
+missing dependency — and the status only corrected itself on the next probe,
+long after the toast had gone. Three separate faults sat behind that, and all
+three are fixed:
+
+**The port was a suggestion.** `up` passed the port §11 allocated as `PORT` in
+the environment and nothing else. Next.js reads that; **Vite does not** — it
+takes `--port`, and otherwise binds 5173 whatever the environment says. That
+does not fail, it *runs*, on a number nothing in the window knows about, so
+health polled the allocated port forever and Preview opened a URL with nothing
+behind it. Cockpit now identifies the dev server from the script's own text
+(then its dependencies) and passes the port the way that server actually reads
+it — `--port` for Vite, Quasar, Next, Nuxt, Astro and Angular, `PORT` for
+everything else. Vite also gets `--strictPort`: the allocator already proved
+the port free, so a Vite that moved to the next one has hit something Cockpit
+cannot see, and failing loudly beats drifting silently.
+
+**The health check asked the wrong address.** Vite binds `[::1]` and nothing
+else, so polling `http://127.0.0.1:<port>` was refused by a server that was up
+and serving. Every check now tries both loopback families and takes the first
+that answers, and the URL handed to a person is `localhost`, which resolves to
+whichever the server chose. The port allocator had the same blind spot — a port
+an IPv6-only server was already serving on looked free — and now tests both.
+
+**Nothing could read the output.** The supervisor has captured every dev
+server's stdout into a ring buffer since it was written, and no method exposed
+it: `logsFor` existed and nothing could call it. So a server that failed to
+boot and one that booted looked identical from the window. `runtime.logs`
+returns it now — including for processes that have already died, which is
+exactly when it matters — and a `runtime-log` push streams it live, beside the
+journal rather than into it.
+
+So `runtime.up` waits, and reports what it observed rather than what it
+attempted: **up** with the URL, **down** with the tail of the server's own
+output, or **starting** for one that is alive and simply slow, which is not a
+failure. A topic starts its repositories in parallel, because three sequential
+waits would stack into something that looks like a hang.
+
+## Servers
+
+The fourth layer — navigate, agent, review, **run** — now has a surface. It
+answers the two questions that were unanswerable: *where* and *why*.
+
+`ports.map` has always known which workspace holds which port and nothing in
+the window ever asked it, so somebody with three worktrees up had no way to
+tell which was on which number short of reading `lsof`. The board is that
+question answered, in names rather than ids, deliberately **across every
+project** — running two topics of two different projects at once is the case
+the global allocator exists for, and a board that stopped at the project
+boundary would not answer what it is opened to answer. Under it sits the log of
+whichever row is selected, live.
+
+Start is also on the row itself, beside the agent's sparkle and for the same
+reason: aiming at a branch should not mean selecting it and then crossing the
+window to a bar.
+
 ## What is implemented
 
 | §  | Subject | State |
@@ -258,6 +318,12 @@ is refused with the offer to stop the other, rather than failing deep inside Doc
 | 16 | Agent command allow-list: edits and read-only git, never a commit or push | done |
 | 7 | Cross-repo `CONTEXT.md` generated and fed to any multi-repo session | done |
 | 8 | Runtime contract (`provision`/`up`/`preview`/`health`/`down`), `portable` + `exclusive` | done |
+| 8 | `up` waits and reports what it observed: up, down with the log, or still starting | done |
+| 8 | Dev server logs readable and streamed live, dead processes included | done |
+| 11 | The allocated port passed the way each dev server actually reads it | done |
+| 11 | Both loopback families checked — health, preview and allocation | done |
+| 8 | Servers board: what is running, on which port, across every project | done |
+| 8 | Start on the branch row, not only on the bar | done |
 | 8 | Exclusive runtimes arbitrated: a second started topic is refused, not broken | done |
 | 11 | Global, deterministic port allocation across all projects | done |
 | 12 | Three-column shell, ⌘K palette, diff split by author | done |
@@ -276,6 +342,9 @@ Agent engines shipped: `claude`, `codex` — normalised into one event stream (�
   has not been built.
 - **CI badges** — the capability is detected, the status is not polled.
 - **Conversation comparison** (§6, "sessions comparables") — they are listed, not diffed.
+- **Preview opens the system browser.** Two worktrees can be up at once and the
+  board says which is on which port, but comparing them side by side is still a
+  matter of arranging browser windows yourself.
 - **Documentation capability** (§9) — detected, not indexed or rendered.
 - **Topic creation at the full setup level** creates the branch folders, the memory, the cross-repo context and the
   local config each worktree needs (§7); `--clone-db` also gives each one its own database

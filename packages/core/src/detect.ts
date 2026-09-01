@@ -74,8 +74,52 @@ export function detectRuntime(dir: string): { impl: string; detail: Record<strin
   if (pkg) {
     const scripts = (pkg.scripts ?? {}) as Record<string, string>
     const script = scripts.dev ? 'dev' : scripts.start ? 'start' : scripts.serve ? 'serve' : null
-    if (script) return { impl: 'node', detail: { script } }
+    if (script) {
+      const deps = { ...(pkg.dependencies as object), ...(pkg.devDependencies as object) }
+      return { impl: 'node', detail: { script, framework: detectFramework(scripts[script] ?? '', deps) } }
+    }
   }
+  return null
+}
+
+/**
+ * Which dev server this is, and therefore how it must be told its port (§11).
+ *
+ * This exists because `PORT` in the environment is a convention rather than a
+ * rule, and the most common dev server on this machine does not follow it:
+ * Vite reads `--port` and otherwise binds 5173 whatever the environment says.
+ * A server that ignores the port Cockpit allocated does not fail — it *runs*,
+ * on a number nothing in the window knows, so health reports `starting`
+ * forever and Preview opens a URL with nothing behind it. That is the failure
+ * mode this identification prevents.
+ *
+ * The script's own text is the first signal and the strongest: a package that
+ * merely *depends* on vite may well run something else, while a `dev` script
+ * that says `vite` is running vite. Dependencies are the fallback for a
+ * script that hides behind a wrapper.
+ */
+export type Framework = 'vite' | 'quasar' | 'next' | 'nuxt' | 'astro' | 'angular' | null
+
+function detectFramework(scriptBody: string, deps: object): Framework {
+  // Quasar before Vite: it is built on Vite and would match both, but its CLI
+  // is what receives the flag and it does not take Vite's own options.
+  const byScript: [RegExp, Framework][] = [
+    [/\bquasar\b/, 'quasar'],
+    [/\bvite\b/, 'vite'],
+    [/\bnext\b/, 'next'],
+    [/\bnuxt\b/, 'nuxt'],
+    [/\bastro\b/, 'astro'],
+    [/\bng\s+serve\b/, 'angular'],
+  ]
+  for (const [re, id] of byScript) if (re.test(scriptBody)) return id
+
+  const has = (name: string) => name in deps
+  if (has('@quasar/app-vite') || has('@quasar/app-webpack')) return 'quasar'
+  if (has('next')) return 'next'
+  if (has('nuxt')) return 'nuxt'
+  if (has('astro')) return 'astro'
+  if (has('@angular/cli')) return 'angular'
+  if (has('vite')) return 'vite'
   return null
 }
 

@@ -23,13 +23,27 @@ export function portKey(projectId: string, workspaceId: string, service: string)
   return projectId + '/' + workspaceId + '/' + service
 }
 
-export function isPortFree(port: number): Promise<boolean> {
+function freeOn(port: number, host: string): Promise<boolean> {
   return new Promise((res) => {
     const srv = createServer()
     srv.once('error', () => res(false))
     srv.once('listening', () => srv.close(() => res(true)))
-    srv.listen(port, '127.0.0.1')
+    srv.listen(port, host)
   })
+}
+
+/**
+ * Free on *both* loopback families, not just IPv4.
+ *
+ * Checking only `127.0.0.1` made the allocator blind to the servers most
+ * likely to be running: Vite binds `[::1]` and nothing else, so a port it was
+ * already serving on looked free and got handed to a second workspace. With
+ * `--strictPort` that now fails loudly instead of silently stealing, but the
+ * allocation should not have happened at all.
+ */
+export async function isPortFree(port: number): Promise<boolean> {
+  const [v4, v6] = await Promise.all([freeOn(port, '127.0.0.1'), freeOn(port, '::1')])
+  return v4 && v6
 }
 
 /**

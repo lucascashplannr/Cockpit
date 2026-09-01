@@ -28,6 +28,8 @@ interface Handlers {
   onEvent(e: CockpitEvent): void
   onTerm(termId: string, data: string): void
   onTermExit(termId: string, code: number): void
+  /** §8 — a dev server's output, as it is written. See the `runtime-log` push. */
+  onRuntimeLog(workspaceId: string | null, procId: string, label: string, chunk: string): void
   onState(state: ConnectionState, detail?: string): void
 }
 
@@ -127,6 +129,9 @@ export class CoreClient {
           break
         case 'term-exit':
           this.h.onTermExit(msg.termId, msg.code)
+          break
+        case 'runtime-log':
+          this.h.onRuntimeLog(msg.workspaceId, msg.procId, msg.label, msg.chunk)
           break
       }
     }

@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import {
   AppWindow, ArrowUpFromLine, CirclePlay, CircleStop, FileCode, GitCompareArrows, Undo2,
 } from '@lucide/vue'
-import { activeWorkspace, client, guard, requestPlan } from '../core/store.js'
+import { activeWorkspace, client, guard, requestPlan, toggleWorkspaceRuntime } from '../core/store.js'
 
 /**
  * The verbs for the selected workspace, on the bar of the column it is about.
@@ -26,11 +26,20 @@ const preview = computed(() => w.value?.runtime?.preview ?? null)
  */
 const midOperation = computed(() => !!w.value?.git?.operation)
 
+/**
+ * `starting` counts as running: a server still coming up is one you stop, not
+ * one you start again. Offering Start there is how two of the same server end
+ * up fighting over one port.
+ */
+const running = computed(
+  () => w.value?.runtime?.status === 'up' || w.value?.runtime?.status === 'starting',
+)
+
+/** One path for the bar and the row alike, so they cannot come to disagree
+ *  about what starting a server means or what to say when it fails. */
 async function toggleRuntime() {
   const ws = w.value
-  if (!ws?.runtime) return
-  const method = ws.runtime.status === 'up' ? 'runtime.down' : 'runtime.up'
-  await guard(() => client.call(method, { workspaceId: ws.id }))
+  if (ws) await toggleWorkspaceRuntime(ws)
 }
 
 async function openIde() {
@@ -57,11 +66,11 @@ async function undo() {
     <button
       v-if="w.runtime"
       class="btn ghost"
-      :title="w.runtime.status === 'up' ? 'Stop the servers' : 'Start the servers'"
+      :title="running ? 'Stop the servers' : 'Start the servers'"
       @click="toggleRuntime"
     >
-      <component :is="w.runtime.status === 'up' ? CircleStop : CirclePlay" />
-      <span class="vl">{{ w.runtime.status === 'up' ? 'Stop' : 'Start' }}</span>
+      <component :is="running ? CircleStop : CirclePlay" />
+      <span class="vl">{{ w.runtime.status === 'starting' ? 'Starting' : running ? 'Stop' : 'Start' }}</span>
     </button>
     <button
       v-if="preview && preview.kind === 'url'"
