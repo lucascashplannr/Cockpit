@@ -50,6 +50,12 @@
   --line-soft: light-dark(#ececf1, #1c1c23);
   --line: light-dark(#dfdfe7, #27272f);
   --line-strong: light-dark(#c9c9d4, #383842);
+  /* A hairline on a *raised* surface — a menu, a sheet, a popover.
+     The three above are mixed against `--panel` and `--bg`; on `--overlay`
+     the dark value of `--line-soft` (#1c1c23) lands on #1c1c24, which is a
+     contrast ratio of 1.00 — a separator that separates nothing, invisible
+     rather than subtle. Anything drawn on `--overlay` uses this instead. */
+  --line-overlay: light-dark(#e4e4ec, #35353f);
 
   /* Text ramp. Three steps, and the gap between them is deliberate: two
      greys a shade apart are read as one grey and the hierarchy is lost. */

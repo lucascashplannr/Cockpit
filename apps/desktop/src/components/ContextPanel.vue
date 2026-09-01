@@ -483,7 +483,7 @@ const servers = computed(() => {
 
 /* The changed count is a button, because it is the reason you would open the
    review layer at all: what moved is what there is to read. */
-.stat.act { cursor: pointer; padding: 0 6px; }
+.stat.act { padding: 0 6px; }
 .stat.act:hover { background: var(--hover); color: var(--text); }
 
 .head button,

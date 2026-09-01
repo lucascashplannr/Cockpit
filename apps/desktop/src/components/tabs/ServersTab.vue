@@ -240,7 +240,6 @@ function reveal(id: string) {
   font: inherit;
   font-size: var(--fs-sm);
   text-align: left;
-  cursor: default;
 }
 .row:hover { background: var(--hover); }
 .row.on { background: var(--selected); }
@@ -315,7 +314,7 @@ function reveal(id: string) {
 .lstatus.starting { color: var(--warn); }
 .lstatus.unhealthy, .lstatus.down { color: var(--danger); }
 .spacer { flex: 1; }
-.tailoff { color: var(--accent); cursor: default; }
+.tailoff { color: var(--accent); cursor: pointer; }
 .tailoff:hover { text-decoration: underline; }
 
 .lbody { flex: 1; overflow: auto; padding: 8px 12px; min-height: 0; }

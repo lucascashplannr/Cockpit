@@ -144,11 +144,21 @@ vocabulaire à réapprendre à chaque écran.
 | Action | Le verbe | Jamais |
 |---|---|---|
 | monter / descendre les serveurs | **Start / Stop** | make live, park, activate |
-| fusionner sur la base | **Merge** | land |
+| ramener la base dans la branche | **Catch up** | rebase, update, sync |
+| renvoyer la branche sur la base | **Send to `<base>`** | merge, land, ship, push |
 | relire l'état depuis le disque | **Refresh** | probe, re-probe, rescan, reconcile |
 | archiver un topic | **Close / Reopen** | archive, park |
 | revenir en arrière | **Undo** | roll back |
-| git | **Rebase / Push / Sync / Commit** | (inchangé — §2 : on ne cache pas git) |
+| git | **Push / Sync / Commit** | (inchangé — §2 : on ne cache pas git) |
+
+**L'exception à « on ne cache pas git » (§2), assumée.** `Rebase` et `Merge`
+étaient les deux seuls verbes de la barre à ne pas dire *dans quel sens le code
+se déplace* — et c'est exactement là-dessus qu'on hésite, jamais sur ce que fait
+git en dessous. `Catch up` et `Send to dev` le disent, et `Send to` nomme la
+branche réelle : `dev` sur le front, `master` sur le back. Les deux autres
+verbes git gardent leur nom, parce qu'ils n'ont jamais posé la question.
+La commande sous-jacente reste affichée dans le plan (§3.7) : on renomme le
+bouton, on ne cache pas ce qu'il exécute.
 
 ## 5. Le modèle de capacités
 

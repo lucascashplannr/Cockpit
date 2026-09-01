@@ -19,7 +19,7 @@ import {
  *
  * The ranking is the state itself (§3.9, one step further): the servers'
  * switch is always the one act you came for, Push appears while there is
- * something to push, Rebase while the branch is behind. Everything this
+ * something to push, Catch up while the branch is behind. Everything this
  * repository can do is in the menu beside them, named, in a fixed order — so
  * the bar gets quieter as the work gets calmer, and nothing is ever gone.
  */
@@ -35,7 +35,7 @@ const busy = computed(() => !!(w.value && gitBusy[w.value.id]))
 const preview = computed(() => w.value?.runtime?.preview ?? null)
 
 /**
- * §3.9 — while a rebase is stopped, Rebase and Push are not verbs this
+ * §3.9 — while a rebase is stopped, Catch up and Push are not verbs this
  * repository has: git refuses both, and the three that do apply are in the
  * conflict panel. Absent, not greyed out.
  */
@@ -46,6 +46,28 @@ const git = computed(() => (w.value?.git?.operation ? null : (w.value?.git ?? nu
  * one you start again. Offering Start there is how two of the same server end
  * up fighting over one port.
  */
+/**
+ * The base named rather than implied — "Catch up from dev" says which way the
+ * code moves, which "Rebase" never did. Falls back to the generic noun rather
+ * than inventing a branch name when the probe has not answered yet.
+ */
+/** Honest in both states, because it is now visible in both. */
+const pushTitle = computed(() => {
+  const g = w.value?.git
+  if (!g) return 'Push this branch'
+  if (g.ahead) return 'Push this branch — ' + g.ahead + ' commit(s) ahead'
+  return g.upstream
+    ? 'Push this branch — nothing to push, ' + g.upstream + ' is up to date'
+    : 'Push this branch — no upstream yet, this would set one'
+})
+
+const catchUpTitle = computed(() => {
+  const g = w.value?.git
+  const from = g?.base ? 'Catch up from ' + g.base : 'Catch up with the base'
+  if (!g) return from
+  return g.behind ? from + ' — ' + g.behind + ' commit(s) behind' : from + ' — already up to date'
+})
+
 const running = computed(
   () => w.value?.runtime?.status === 'up' || w.value?.runtime?.status === 'starting',
 )
@@ -91,25 +113,37 @@ async function undo() {
       <span class="vl">{{ w.runtime.status === 'starting' ? 'Starting' : running ? 'Stop' : 'Start' }}</span>
     </button>
 
-    <!-- Only while it is the next thing to do. Both stay in the menu, so this
-         is a promotion rather than the only way to reach them. -->
+    <!-- Always, wherever there is a branch to push.
+         Push is the one git verb that is never a surprise and never contextual
+         — you reach for it because you decided to, not because the window
+         noticed something. Hiding it until the app agreed there was something
+         to send made it the only verb you had to go looking for, in a menu
+         labelled "everything else". It lights up when there is something
+         ahead; it is present either way. -->
     <button
-      v-if="git?.ahead"
-      class="btn ghost ready"
+      v-if="git"
+      class="btn ghost"
+      :class="{ ready: git.ahead > 0 }"
       :disabled="busy"
-      :title="'Push this branch — ' + git.ahead + ' commit(s) ahead'"
+      :title="pushTitle"
       @click="requestPlan(w.id, 'push')"
     >
       <ArrowUpFromLine /><span class="vl">Push</span>
+      <span v-if="git.ahead" class="cnt">{{ git.ahead }}</span>
     </button>
+    <!-- Permanent, like Push and for the same reason: a verb reached for this
+         often must not move, and a bar that changes shape as probes come back
+         is one you cannot aim at without looking. -->
     <button
-      v-if="git?.behind"
-      class="btn ghost nudge"
+      v-if="git"
+      class="btn ghost"
+      :class="{ nudge: git.behind > 0 }"
       :disabled="busy"
-      :title="'Rebase onto the base branch — ' + git.behind + ' commit(s) behind'"
+      :title="catchUpTitle"
       @click="requestPlan(w.id, 'rebase')"
     >
-      <GitCompareArrows /><span class="vl">Rebase</span>
+      <GitCompareArrows /><span class="vl">Catch up</span>
+      <span v-if="git.behind" class="cnt">{{ git.behind }}</span>
     </button>
 
     <OverflowMenu label="Everything else you can do here" :disabled="busy">
@@ -120,13 +154,6 @@ async function undo() {
         <FileCode /> Open in the editor <span class="kb">O</span>
       </button>
       <template v-if="git">
-        <span class="rule" />
-        <button @click="requestPlan(w.id, 'rebase')">
-          <GitCompareArrows /> Rebase onto the base <span class="kb">R</span>
-        </button>
-        <button @click="requestPlan(w.id, 'push')">
-          <ArrowUpFromLine /> Push this branch <span class="kb">P</span>
-        </button>
         <span class="rule" />
         <button @click="undo">
           <Undo2 /> Undo to the last restore point
@@ -158,6 +185,14 @@ async function undo() {
 }
 .verbs .btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .verbs .btn .lucide { width: 14px; height: 14px; }
+/* The number that used to be the reason the button appeared at all. It now
+   rides on a button that is always there, so it carries the signal instead. */
+.verbs .cnt {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  color: var(--ok);
+}
+.verbs .nudge .cnt { color: var(--warn); }
 
 /* Behind its base is the one state where rebasing is the next thing to do,
    and committed-and-ahead is the one where pushing is. Same two colours the

@@ -45,6 +45,26 @@ button {
   background: none;
   border: none;
   padding: 0;
+  cursor: pointer;
+}
+
+/* Pressable things that cannot be a `<button>` — mostly because they sit
+   inside one, and a button may not nest another. They are buttons in every
+   way that matters to the person using them, so they read as buttons.
+
+   This reverses the rule that stood here before ("a desktop app is not a
+   document", so the arrow everywhere, as macOS does it). It was a defensible
+   position and it was never actually held: four components overrode it, so
+   some controls gave a hand and most did not, which taught nothing. The
+   affordance is now carried by the cursor everywhere rather than by a hover
+   background that is invisible until you are already on top of it. */
+[role='button'] {
+  cursor: pointer;
+}
+
+/* Nothing to press. The one place both conventions agree. */
+button:disabled,
+[aria-disabled='true'] {
   cursor: default;
 }
 
@@ -466,4 +486,16 @@ input[type='checkbox']:checked::after {
 /* The keystroke that does the same thing, at the right edge. A menu is where
    you find out a verb has one. */
 .menu button .kb { margin-left: auto; padding-left: 14px; font-size: 11px; color: var(--text-dim); }
-.menu .rule { flex: none; height: 1px; margin: 4px 2px; background: var(--line-soft); }
+.menu .rule { flex: none; height: 1px; margin: 4px 2px; background: var(--line-overlay); }
+
+/* A separator separates two things. Menu items are `v-if`-heavy — a verb moves
+   to the bar, a capability is absent (§3.9) — so the item between two rules can
+   simply not be rendered, leaving a doubled line, or a line above the first
+   item, or below the last. None of those separate anything, so none of them
+   are drawn. This is the rule doing its own bookkeeping rather than every menu
+   remembering to. */
+.menu .rule:first-child,
+.menu .rule:last-child,
+.menu .rule + .rule {
+  display: none;
+}

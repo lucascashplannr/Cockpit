@@ -31,10 +31,13 @@ export async function isWorktree(path: string): Promise<boolean> {
 export async function probeGit(cwd: string): Promise<GitState | null> {
   if (!isRepo(cwd)) return null
 
-  const [status, head, unpushed] = await Promise.all([
+  const [status, head, unpushed, base] = await Promise.all([
     git(cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=all']),
     git(cwd, ['log', '-1', '--format=%H%x1f%s%x1f%an%x1f%at']),
     git(cwd, ['log', '--branches', '--not', '--remotes', '--format=%H', '-1']),
+    // Reads a ref file in the common case, so it costs about nothing to probe
+    // it every time rather than resolving it at the moment of the action.
+    defaultBranch(cwd),
   ])
 
   if (!status.ok) return null
@@ -43,6 +46,7 @@ export async function probeGit(cwd: string): Promise<GitState | null> {
     branch: null,
     headState: 'attached',
     upstream: null,
+    base,
     ahead: 0,
     behind: 0,
     staged: 0,

@@ -124,7 +124,7 @@ const commands = computed<Item[]>(() => {
     const isLive = f.state === 'running'
     out.push({
       id: 'topic:land:' + f.id,
-      label: 'Merge ' + f.name,
+      label: 'Send ' + f.name + ' to its base',
       hint: 'onto the base branch in every repository — the plan is shown first',
       group: 'Topic',
       icon: GitMerge,
@@ -132,7 +132,7 @@ const commands = computed<Item[]>(() => {
     })
     out.push({
       id: 'topic:landpush:' + f.id,
-      label: 'Merge and push ' + f.name,
+      label: 'Send ' + f.name + ' to its base and push',
       hint: 'the same, then pushes the base branch',
       group: 'Topic',
       icon: GitMerge,
@@ -140,7 +140,7 @@ const commands = computed<Item[]>(() => {
     })
     out.push({
       id: 'topic:rebase:' + f.id,
-      label: 'Rebase ' + f.name,
+      label: 'Catch ' + f.name + ' up with its base',
       hint: 'every repository it spans, one plan — stops at the first conflict',
       group: 'Topic',
       icon: GitCompareArrows,

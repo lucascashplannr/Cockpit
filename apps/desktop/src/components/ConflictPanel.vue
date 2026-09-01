@@ -176,7 +176,6 @@ const progress = computed(() => {
   max-width: 46ch;
   color: var(--text);
   font-size: var(--fs-xs);
-  cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -193,7 +192,7 @@ const progress = computed(() => {
   background: none;
 }
 .tag.ok { color: var(--ok); }
-.tag.act { color: var(--text-muted); border-color: var(--line); cursor: pointer; }
+.tag.act { color: var(--text-muted); border-color: var(--line); }
 .tag.act:hover:not(:disabled) { color: var(--text); background: var(--hover); }
 
 .ready {

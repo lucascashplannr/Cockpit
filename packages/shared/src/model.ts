@@ -85,6 +85,17 @@ export interface GitState {
   /** Detached HEAD, mid-rebase, mid-merge… */
   headState: 'attached' | 'detached' | 'rebasing' | 'merging' | 'bisecting'
   upstream: string | null
+  /**
+   * The branch this one is worked against — what "Catch up" pulls from and
+   * "Send to" goes back onto.
+   *
+   * Distinct from `upstream`, which is this branch's own tracking ref
+   * (`origin/two-factor-auth`) and says nothing about where the work belongs.
+   * Exposed so the buttons can name it: a verb that says *which direction the
+   * code moves* is the whole reason they were renamed, and "Send to dev"
+   * cannot be written without knowing it is dev.
+   */
+  base: string | null
   ahead: number
   behind: number
   staged: number

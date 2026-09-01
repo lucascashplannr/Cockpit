@@ -282,7 +282,6 @@ const mark: Record<string, Component> = {
   gap: 7px;
   font-size: var(--fs-xs);
   color: var(--text-muted);
-  cursor: pointer;
 }
 .call input { accent-color: var(--accent); }
 .cnote {
