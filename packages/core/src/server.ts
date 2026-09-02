@@ -3,7 +3,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@cockpit/shared'
 import type {
   AgentScope, CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse,
-  ServerBoardRow, ServerPush,
+  ProjectSettings, ServerBoardRow, ServerPush,
 } from '@cockpit/shared'
 import { DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, forSession, tail } from './journal.js'
@@ -225,6 +225,15 @@ const handlers: Record<string, Handler> = {
     await registry.reconcile(p.projectId)
     pushAll()
     return registry.allProjects().find((x) => x.id === p.projectId)
+  },
+  'project.settings': async (p: { projectId: string; patch: Partial<ProjectSettings> }) => {
+    const project = registry.setSettings(p.projectId, p.patch)
+    // The base a workspace reports is probed, and a new override only reaches
+    // it on the next probe — so a base changed here would have been true in the
+    // config and stale on every badge until something else moved.
+    await registry.reconcile(project.id)
+    pushAll()
+    return registry.allProjects().find((x) => x.id === project.id) ?? project
   },
   'project.rename': async (p: { projectId: string; name: string | null }) => {
     const project = registry.renameProject(p.projectId, p.name)

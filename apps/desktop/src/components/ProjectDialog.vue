@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { FolderOpen, Trash2, TriangleAlert, X } from '@lucide/vue'
+import { FolderOpen, Lock, Plus, Trash2, TriangleAlert, X } from '@lucide/vue'
 import {
-  editingProject, forgetProject, moveProject, pickFolder, renameProject, state, trashProject,
+  editingProject, forgetProject, moveProject, pickFolder, renameProject, setProjectSettings,
+  state, trashProject,
 } from '../core/store.js'
 
 /**
@@ -22,12 +23,21 @@ const busy = ref(false)
 const confirming = ref<null | 'forget' | 'trash'>(null)
 const typed = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
+/** §15 — see the block below `nameChanged`. Declared up here because the watch
+ *  that fills them runs immediately, and a ref read before its `const` is a
+ *  blank dialog and a console nobody was looking at. */
+const baseBranch = ref('')
+const locked = ref<string[]>([])
+const lockDraft = ref('')
 
 watch(
   p,
   (proj) => {
     name.value = proj?.name ?? ''
     root.value = proj?.root ?? ''
+    baseBranch.value = proj?.settings.defaultBranch ?? ''
+    locked.value = [...(proj?.settings.lockedBranches ?? [])]
+    lockDraft.value = ''
     moveFiles.value = true
     confirming.value = null
     typed.value = ''
@@ -36,9 +46,47 @@ watch(
   { immediate: true },
 )
 
+/* ── §15 — what this machine has been told about the project ─────────────
+ *
+ * Both of these used to be decided for you. The base was whatever `origin/HEAD`
+ * said, and the default branch was refused a commit outright — §16's rule for
+ * agents, applied to the person using the app. The first is right nearly always
+ * and now has an escape hatch; the second was a guess about how people work,
+ * and plenty of repositories are committed to directly by whoever owns them.
+ *
+ * So locking is opt-in, per project, and empty until someone sets it.
+ */
+/** What git says, so the field can show it rather than describe it. */
+const probedBase = computed(
+  () => workspaces.value.find((w) => w.git?.base)?.git?.base ?? null,
+)
+
+function addLock(branch?: string) {
+  const v = (branch ?? lockDraft.value).trim()
+  if (!v || locked.value.includes(v)) {
+    lockDraft.value = ''
+    return
+  }
+  locked.value = [...locked.value, v]
+  lockDraft.value = ''
+}
+
+function removeLock(branch: string) {
+  locked.value = locked.value.filter((b) => b !== branch)
+}
+
+const settingsChanged = computed(() => {
+  const s = p.value?.settings
+  if (!s) return false
+  return (
+    (baseBranch.value.trim() || null) !== s.defaultBranch ||
+    locked.value.join('\u0000') !== s.lockedBranches.join('\u0000')
+  )
+})
+
 const nameChanged = computed(() => !!p.value && name.value.trim() !== p.value.name)
 const rootChanged = computed(() => !!p.value && root.value.trim() !== p.value.root)
-const dirty = computed(() => nameChanged.value || rootChanged.value)
+const dirty = computed(() => nameChanged.value || rootChanged.value || settingsChanged.value)
 
 /** A project holds repositories and branches of them; the count is what makes
  *  the danger real. */
@@ -65,6 +113,18 @@ async function save() {
     if (nameChanged.value) {
       const next = name.value.trim()
       if (!(await renameProject(proj.id, next || null))) return
+    }
+    if (settingsChanged.value) {
+      // Before the move: moving rebuilds the project under a new id derived
+      // from its path, and settings are keyed by the path they were saved at.
+      if (
+        !(await setProjectSettings(proj.id, {
+          defaultBranch: baseBranch.value.trim() || null,
+          lockedBranches: [...locked.value],
+        }))
+      ) {
+        return
+      }
     }
     if (rootChanged.value) {
       if (!(await moveProject(proj.id, root.value.trim(), moveFiles.value))) return
@@ -168,6 +228,69 @@ function onKey(e: KeyboardEvent) {
           Servers still up in {{ running.length }} of them — moving will be refused until
           {{ running.length === 1 ? 'it is' : 'they are' }} stopped.
         </p>
+
+        <span class="section-label sep">Git</span>
+
+        <label class="field">
+          <span class="lbl">Base branch</span>
+          <input
+            v-model="baseBranch"
+            class="input mono"
+            type="text"
+            spellcheck="false"
+            :placeholder="probedBase ? probedBase + ' — what git says' : 'ask git'"
+          />
+          <span class="help">
+            What topics fork from and Send to lands on. Empty asks git:
+            <code class="mono">origin/HEAD</code>, then main, master, develop. Set it when the
+            probe is wrong — a repository whose work happens on
+            <code class="mono">develop</code> while <code class="mono">main</code> is a stale
+            release branch.
+          </span>
+        </label>
+
+        <!-- §16 — the rule that used to be hardcoded, handed back. -->
+        <div class="field">
+          <span class="lbl">Locked branches</span>
+          <div v-if="locked.length" class="chips">
+            <button
+              v-for="b in locked"
+              :key="b"
+              class="chip lockchip mono"
+              title="Unlock this branch"
+              @click="removeLock(b)"
+            >
+              <Lock class="sm" />{{ b }}<X class="sm x" />
+            </button>
+          </div>
+          <div class="row">
+            <input
+              v-model="lockDraft"
+              class="input mono"
+              type="text"
+              spellcheck="false"
+              placeholder="main, or release/*"
+              @keydown.enter.prevent="addLock()"
+            />
+            <button class="btn" :disabled="!lockDraft.trim()" @click="addLock()">
+              <Plus />Lock
+            </button>
+          </div>
+          <span class="help">
+            Cockpit refuses to commit on these. Nothing is locked by default —
+            committing straight to
+            <code class="mono">{{ probedBase ?? 'main' }}</code> is a normal way to work and
+            the app used to refuse it outright. Agents are not governed by this: they never
+            commit at all.
+            <button
+              v-if="probedBase && !locked.includes(probedBase)"
+              class="linkish"
+              @click="addLock(probedBase)"
+            >
+              Lock {{ probedBase }}
+            </button>
+          </span>
+        </div>
       </div>
 
       <div class="danger">
@@ -329,6 +452,32 @@ function onKey(e: KeyboardEvent) {
   color: var(--text-dim);
 }
 .help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.55; }
+.help code { color: var(--text-muted); }
+.sep { display: block; margin-top: 4px; }
+
+/* A locked branch is one short token and a way to take it back off. */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.lockchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-xs);
+}
+.lockchip .lucide { width: 11px; height: 11px; }
+.lockchip .x { opacity: 0.55; }
+.lockchip:hover .x { opacity: 1; }
+
+/* A sentence that ends in an action, rather than a button sitting under one. */
+.linkish {
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .row { display: flex; align-items: center; gap: 8px; }
 .row .input { flex: 1; min-width: 0; }
 .row .btn { flex: none; }

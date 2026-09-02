@@ -1,6 +1,7 @@
 import { basename } from 'node:path'
 import { newId } from '@cockpit/shared'
 import type { CommitPreview, PlanPreview, PlanStep } from '@cockpit/shared'
+import { isLocked } from './config.js'
 import { run, which } from './exec.js'
 import { git } from './git.js'
 import { append } from './journal.js'
@@ -116,6 +117,9 @@ export async function plan(input: CommitInput): Promise<{
   const steps: PlanStep[] = []
   const warnings: string[] = []
   const repos: string[] = []
+  /** Where each commit lands, said afterwards: how it is worded depends on
+   *  whether there turned out to be one repository or several. */
+  const landings: { repo: string; branch: string | null; files: number }[] = []
 
   for (const w of targets) {
     const row = rows.find((r) => r.workspaceId === w.id)
@@ -130,11 +134,20 @@ export async function plan(input: CommitInput): Promise<{
       }
     }
 
-    // §7 + §16 — never a commit on the protected branch. The same rule agents
-    // live under; a human clicking a button is not an exemption.
-    const base = await defaultBranchOf(w.path)
-    if (row.branch && row.branch === base) {
-      warnings.push(w.name + ' is on ' + base + ' and will be skipped — Cockpit does not commit to the protected branch.')
+    // This used to refuse any commit on the repository's default branch, for
+    // everyone, always — §16's rule for agents applied to the person using the
+    // app. It is the right rule for an agent and the wrong one for a person:
+    // plenty of repositories are committed to directly, on purpose, by whoever
+    // owns them, and an app that refuses is not protecting them from anything.
+    //
+    // What replaces it is a handrail you put up yourself, per project. Agents
+    // are unaffected — they never commit at all (§16, `DEFAULT_DENY`).
+    const locked = registry.lockedBranches(w.projectId)
+    if (isLocked(row.branch, locked)) {
+      warnings.push(
+        w.name + ' is on ' + row.branch + ', which this project locks. ' +
+          'Switch branch, or unlock it in the project settings.',
+      )
       continue
     }
     if (!row.willCommit) continue
@@ -154,6 +167,16 @@ export async function plan(input: CommitInput): Promise<{
       destructive: false,
     })
     repos.push(w.name)
+    // Asked as a question now rather than read as a list of steps, and the one
+    // thing a list of steps never said out loud is where the commit lands.
+    // Which repository and which branch is the whole of what there is to get
+    // wrong here — the message is already on screen, and the diff was the
+    // screen before it.
+    landings.push({
+      repo: w.name,
+      branch: row.branch,
+      files: input.all ? row.staged + row.unstaged : row.staged,
+    })
   }
 
   if (!steps.length) {
@@ -164,6 +187,23 @@ export async function plan(input: CommitInput): Promise<{
       preview: rows,
     }
   }
+
+  // One repository: the count is already in the question, so the sentence is
+  // only about the place. Several: each needs its own number.
+  for (const l of landings) {
+    const where = l.repo + (l.branch ? ', on ' + l.branch : '')
+    warnings.push(
+      landings.length === 1
+        ? 'Into ' + where + '.'
+        : l.files + (l.files === 1 ? ' file into ' : ' files into ') + where + '.',
+    )
+  }
+
+  warnings.push(
+    input.all
+      ? 'Everything in the working tree is staged first, untracked files included.'
+      : 'Only what is already staged goes in; the rest stays in the working tree.',
+  )
 
   if (repos.length > 1) {
     warnings.push(
@@ -185,16 +225,6 @@ export async function plan(input: CommitInput): Promise<{
   }
   plans.register(p, { workspaceIds: targets.map((w) => w.id) })
   return { ok: true, detail: repos.length + ' repository(ies)', plan: p, preview: rows }
-}
-
-async function defaultBranchOf(cwd: string): Promise<string> {
-  const r = await git(cwd, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], 10_000)
-  if (r.ok && r.stdout.trim()) return r.stdout.trim().replace(/^origin\//, '')
-  for (const cand of ['main', 'master', 'develop']) {
-    const v = await git(cwd, ['rev-parse', '--verify', '--quiet', cand], 10_000)
-    if (v.ok && v.stdout.trim()) return cand
-  }
-  return 'main'
 }
 
 export { basename }

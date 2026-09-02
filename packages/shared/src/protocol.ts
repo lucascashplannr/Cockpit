@@ -11,7 +11,7 @@ import type {
   DatabasePlan,
   DiffFile, Topic,
   FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
-  SearchHit, SeedProposal, StashEntry,
+  ProjectSettings, SearchHit, SeedProposal, StashEntry,
   Workspace,
 } from './model.js'
 
@@ -259,6 +259,14 @@ export interface Rpc {
   'project.rescan': { params: { projectId: string }; result: Project }
   /** `name: null` clears the override and falls back to the manifest or folder. */
   'project.rename': { params: { projectId: string; name: string | null }; result: Project }
+  /**
+   * §15 — the machine's settings for one project. Merged, not replaced: the
+   * window sends the field it changed and nothing else.
+   */
+  'project.settings': {
+    params: { projectId: string; patch: Partial<ProjectSettings> }
+    result: Project
+  }
   /**
    * Re-points the project at another folder. With `moveFiles`, the folder is
    * moved there first. The project's id is derived from its path, so the result

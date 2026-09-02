@@ -1,9 +1,9 @@
 import { basename, dirname, join, resolve } from 'node:path'
 import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { stableId } from '@cockpit/shared'
-import type { Capability, Setup, Topic, Project, Workspace } from '@cockpit/shared'
+import type { Capability, ProjectSettings, Setup, Topic, Project, Workspace } from '@cockpit/shared'
 import * as topicStore from './topics/store.js'
-import { loadConfig, updateConfig } from './config.js'
+import { loadConfig, updateConfig, projectSettings, setProjectSettings } from './config.js'
 import { childRepos, detectCapabilities, findManifest, projectNameFor, readManifest } from './detect.js'
 import { isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
 import { run } from './exec.js'
@@ -193,6 +193,18 @@ export function liveWorkUnder(path: string): string[] {
   return out
 }
 
+/**
+ * §15 — the machine's settings for one project, merged and written to
+ * `~/.cockpit`. Journaled because a locked branch is a rule, and a rule that
+ * appears from nowhere is one nobody can account for later (§3.3).
+ */
+export function setSettings(projectId: string, patch: Partial<ProjectSettings>): Project {
+  const p = requireProject(projectId)
+  const next = setProjectSettings(p.root, patch)
+  append({ type: 'project.settings', projectId, payload: { root: p.root, settings: next } })
+  return buildProject(p.root)
+}
+
 export function renameProject(projectId: string, name: string | null): Project {
   const p = requireProject(projectId)
   const next = name?.trim() ?? ''
@@ -327,6 +339,7 @@ function buildProject(root: string): Project {
   const project: Project = {
     id: projectId,
     name,
+    settings: projectSettings(root),
     root,
     manifestPath,
     capabilities: caps,
@@ -587,7 +600,7 @@ function addTopicRoots(project: Project): void {
 
 export async function probeWorkspace(id: string): Promise<Workspace> {
   const ws = requireWorkspace(id)
-  ws.git = ws.repo ? await probeGit(ws.path) : null
+  ws.git = ws.repo ? await probeGit(ws.path, baseOverride(ws.path)) : null
   if (ws.kind === 'main' && (await isWorktree(ws.path))) ws.kind = 'worktree'
   ws.runtime = await runtimeStateFor(ws)
   ws.lease = leaseCovering(ws.path)
@@ -664,8 +677,29 @@ export function refreshAgentActivity(): void {
 export async function refreshGit(id: string): Promise<Workspace | null> {
   const ws = workspaces.get(id)
   if (!ws || !ws.repo) return null
-  ws.git = await probeGit(ws.path)
+  ws.git = await probeGit(ws.path, baseOverride(ws.path))
   ws.lease = leaseCovering(ws.path)
   ws.lastProbedAt = Date.now()
   return ws
+}
+
+
+/**
+ * §15 — the branch a workspace's project says it works against, or null.
+ *
+ * The probe is right nearly always and this is the escape hatch for when it is
+ * not: `origin/HEAD` points at a `main` nobody has merged into for a year while
+ * the work happens on `develop`. Answered by path because the callers that need
+ * it — a plan, a topic being opened — hold a path and not a project.
+ */
+export function baseOverride(path: string): string | null {
+  for (const p of projects.values()) {
+    if (path === p.root || path.startsWith(p.root + '/')) return p.settings.defaultBranch
+  }
+  return null
+}
+
+/** §16 — the branches this project refuses commits on. Empty unless set. */
+export function lockedBranches(projectId: string): string[] {
+  return projects.get(projectId)?.settings.lockedBranches ?? []
 }

@@ -4,7 +4,7 @@ import type {
   CommitPreview, CoreStatus, EngineOptions,
   DatabasePlan, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
-  ServerBoardRow, StashEntry, Workspace,
+  ProjectSettings, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
@@ -1302,6 +1302,24 @@ export async function forgetProject(projectId: string): Promise<boolean> {
   return true
 }
 
+/**
+ * §15 — this machine's settings for one project.
+ *
+ * Merged in the core, so the window sends the field it changed and nothing
+ * else. Nothing here is written into the repository: locking a branch is a
+ * handrail one person put up on one machine, not a team convention — those
+ * belong in `cockpit.yaml`, which is versioned and reviewed.
+ */
+export async function setProjectSettings(
+  projectId: string,
+  patch: Partial<ProjectSettings>,
+): Promise<boolean> {
+  const res = await guard(() => client.call('project.settings', { projectId, patch }), 'saved')
+  if (!res) return false
+  await refreshProjects()
+  return true
+}
+
 /** The only action in the app that touches the source tree — and it goes to Trash. */
 export async function trashProject(projectId: string): Promise<boolean> {
   const res = await guard(() => client.call('project.trash', { projectId }), 'moved to Trash')
@@ -1522,6 +1540,15 @@ export interface PendingConfirm {
   verb: string
   /** What the toast says afterwards. */
   done: string
+  /**
+   * The user's own words, shown back to them.
+   *
+   * A commit message is the one input in the app that becomes permanent the
+   * moment the button is pressed, and the dialog that confirms it is the last
+   * place a typo can be caught. It is quoted rather than folded into `body`
+   * because it is not the app talking.
+   */
+  quote?: string
   /** Red button, for the one that cannot be taken back. */
   danger: boolean
   plan: PlanPreview
@@ -1590,7 +1617,21 @@ export async function commit(
     toast('error', res.detail)
     return false
   }
-  state.pendingPlan = res.plan
+  // §16 — the review already happened, in the tab this was pressed from. What
+  // is left to confirm is the sentence and where it lands, not two lines of
+  // `git add` under a numbered heading.
+  const n = res.preview
+    .filter((r) => r.willCommit)
+    .reduce((sum, r) => sum + (all ? r.staged + r.unstaged : r.staged), 0)
+  state.pendingConfirm = {
+    title: 'Commit ' + n + ' file' + (n === 1 ? '' : 's') + '?',
+    body: res.plan.warnings,
+    quote: message,
+    verb: 'Commit',
+    done: 'committed',
+    danger: false,
+    plan: res.plan,
+  }
   return true
 }
 

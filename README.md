@@ -120,13 +120,29 @@ open  →  work  →  commit  →  rebase  →  merge  →  close
 ```
 
 **Commit** lives in the Diff tab, against the review it is a review of (§16), and it commits
-the repository you are standing in — that one and no other. It used to commit every
+the repository you are standing in — that one and no other. Pressing it asks a question with
+your own message quoted back at you and where it will land underneath — the review already
+happened in the tab behind the dialog, so what is left to check is the sentence and the
+branch, not two lines of `git add`. It used to commit every
 repository of the topic under one message, which was right about the gesture and wrong about
 the words: two repositories in a topic are two different diffs, a field added to the API and
 a form that reads it, and one sentence committed to both describes at most one of them. The
-topic's other repositories are listed under the box as somewhere to go instead. A repo
-sitting on its protected branch is refused: the rule that stops agents committing to `main`
-is not waived because a human clicked the button.
+topic's other repositories are listed under the box as somewhere to go instead.
+
+It commits to `main` if that is where you are. It used to refuse — §16's rule for agents
+("jamais sur la branche principale") applied to the person using the app — and that was a
+guess about how people work: plenty of repositories are committed to directly, on purpose,
+by whoever owns them. The handrail is now one you put up yourself, per project, under
+**Locked branches** in the project dialog: nothing is locked by default, `*` is allowed so
+`release/*` covers a family, and Cockpit refuses to commit on a match. Agents are untouched
+by the setting — they never commit at all, whatever it says.
+
+The same dialog holds a **Base branch** override for when the probe is wrong: `origin/HEAD`
+pointing at a `main` nobody has merged into for a year while the work happens on `develop`.
+It is what topics fork from, what Send to lands on, and what counts as the protected branch
+for an agent. Both settings live in `~/.cockpit`, never in the repository — a team
+convention belongs in `cockpit.yaml`, which is versioned and reviewed; "do not let me commit
+to main on this laptop" is not a team convention.
 
 **Push** is the topic-wide verb, on the topic's own bar beside Send and Catch up. It is the
 counterpart of the above and for the same reason: a commit message describes a diff and a
@@ -158,7 +174,8 @@ with no message of its own is named by the files it holds, not by git's `WIP on 
 <sha> <subject>` — that subject belongs to the commit the work sat on, and in a list it
 reads as though the stash contained it.
 
-These four verbs — and Push, single-repository or topic-wide — ask rather than brief. §3.7 says every operation shows its plan; it does
+These four verbs — and Commit, and Push, single-repository or topic-wide — ask rather than
+brief. §3.7 says every operation shows its plan; it does
 not say the plan has to be the first thing you read, and for a reversible one-liner a
 numbered-step dialog is machinery in front of a one-word answer. So the question comes in
 words — "Set this work aside?", "Drop this entry?" — with the commands one disclosure away

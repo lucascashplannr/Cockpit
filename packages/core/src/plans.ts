@@ -7,7 +7,7 @@ import { defaultBranch, git, listWorktrees, probeOperation } from './git.js'
 import * as restore from './restore.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
-import { getWorkspace, requireWorkspace } from './registry.js'
+import { getWorkspace, requireWorkspace, baseOverride as getBaseOverride } from './registry.js'
 import { readManifest, findManifest } from './detect.js'
 
 /**
@@ -105,7 +105,7 @@ export async function plan(
 
   const steps: PlanStep[] = []
   const warnings: string[] = []
-  const base = args.base ?? (await defaultBranch(ws.path))
+  const base = args.base ?? getBaseOverride(ws.path) ?? (await defaultBranch(ws.path))
   const branch = ws.git?.branch ?? '(detached)'
 
   if (ws.git?.headState === 'rebasing' || ws.git?.headState === 'merging') {

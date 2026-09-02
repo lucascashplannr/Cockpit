@@ -28,7 +28,12 @@ export async function isWorktree(path: string): Promise<boolean> {
 }
 
 /** Parses `git status --porcelain=v2 --branch`, the only format worth trusting. */
-export async function probeGit(cwd: string): Promise<GitState | null> {
+/**
+ * `base` is what "Catch up" pulls from and "Send to" lands on, so a project
+ * that says its base is `develop` has to be answered here — the badge, the
+ * button label and the plan all read this one field.
+ */
+export async function probeGit(cwd: string, baseOverride?: string | null): Promise<GitState | null> {
   if (!isRepo(cwd)) return null
 
   const [status, head, unpushed, base] = await Promise.all([
@@ -37,7 +42,7 @@ export async function probeGit(cwd: string): Promise<GitState | null> {
     git(cwd, ['log', '--branches', '--not', '--remotes', '--format=%H', '-1']),
     // Reads a ref file in the common case, so it costs about nothing to probe
     // it every time rather than resolving it at the moment of the action.
-    defaultBranch(cwd),
+    baseOverride ? Promise.resolve(baseOverride) : defaultBranch(cwd),
   ])
 
   if (!status.ok) return null

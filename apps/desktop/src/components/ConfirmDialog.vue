@@ -72,7 +72,12 @@ watch(
         <button class="icon-btn" title="Cancel" @click="cancel"><X class="sm" /></button>
       </header>
 
-      <div class="say">
+      <!-- Their words, not ours. Pre-wrapped: a drafted message has a subject,
+           a blank line and a body, and reflowing that into a paragraph would
+           show something other than what is about to be committed. -->
+      <blockquote v-if="c.quote" class="quote">{{ c.quote }}</blockquote>
+
+      <div v-if="c.body.length" class="say">
         <p v-for="(line, i) in c.body" :key="i" :class="{ lead: i === 0, danger: c.danger && i === 0 }">
           {{ line }}
         </p>
@@ -156,7 +161,7 @@ watch(
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 16px 14px 4px 20px;
+  padding: 16px 14px 6px 20px;
 }
 .head h2 {
   margin: 0;
@@ -166,7 +171,32 @@ watch(
 }
 .grow { flex: 1; }
 
-.say { flex: none; padding: 4px 20px 10px; }
+/* Both of these give way before the footer does: a drafted message with a
+   body, or a plan with a paragraph per repository, must not push Cancel off
+   the bottom of a short window. */
+.say { flex: 0 1 auto; min-height: 0; overflow-y: auto; padding: 4px 20px 10px; }
+/* Directly under the quote there is already its own margin, so the body does
+   not add a second one. */
+.quote + .say { padding-top: 0; }
+
+/* No rule down the side of it. The block is their text and the paragraphs
+   under it are the app's, and a fill says that on its own — a coloured bar
+   makes a quotation of something that is not a quotation, it is the thing
+   about to be committed. */
+.quote {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 6px 20px 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .say p {
   margin: 0;
   font-size: var(--fs-sm);

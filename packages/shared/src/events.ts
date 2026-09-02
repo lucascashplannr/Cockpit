@@ -45,6 +45,8 @@ export type EventType =
   | 'project.created'
   | 'project.repo_added'
   | 'project.renamed'
+  /** §15 — a rule this machine put up for one project: a locked branch, a base. */
+  | 'project.settings'
   | 'project.moved'
   | 'project.trashed'
   // topics — the durable unit of work (§4)

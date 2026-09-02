@@ -405,9 +405,43 @@ export interface ReviewRef {
   ci: 'unknown' | 'pending' | 'passing' | 'failing'
 }
 
+/**
+ * §15 — what this machine has been told about one project.
+ *
+ * Machine-local for the same reason the display name is: setting one lives in
+ * `~/.cockpit`, never in a file inside somebody's checkout. A team convention
+ * belongs in `cockpit.yaml`, which is versioned and reviewed; "do not let me
+ * commit to main on this laptop" is not a team convention, it is a handrail
+ * one person put up.
+ */
+export interface ProjectSettings {
+  /**
+   * The branch this project forks from and lands on, when the probe gets it
+   * wrong. Null means "ask git": `origin/HEAD`, then main, master, develop.
+   * A repository whose default is `develop` and whose `main` is a stale
+   * release branch is the case this exists for.
+   */
+  defaultBranch: string | null
+  /**
+   * §16 — branches Cockpit refuses to commit to, and nothing else.
+   *
+   * This used to be one hardcoded rule: never commit on the default branch,
+   * applied to agents and people alike. For an agent that is §16 and it stays
+   * absolute. For a person it was a guess about how they work, and it was
+   * wrong often enough to be worth removing — plenty of repositories are
+   * committed to directly, on purpose, by the one person who owns them.
+   *
+   * So it is opt-in and it is per project. Empty by default: nothing is locked
+   * until you lock it. `*` is allowed, so `release/*` covers a family.
+   */
+  lockedBranches: string[]
+}
+
 export interface Project {
   id: string
   name: string
+  /** §15 — this machine's settings for it. Never written into the repo. */
+  settings: ProjectSettings
   /** Root folder that contains the manifest, or that was simply pointed at. */
   root: string
   /** Null when running manifest-less on detection alone (§5). */
