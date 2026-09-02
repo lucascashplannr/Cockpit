@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { GitCompareArrows, GitMerge, Pause, Play } from '@lucide/vue'
+import { ArrowUp, GitCompareArrows, GitMerge, Pause, Play } from '@lucide/vue'
 import type { ListGroup } from '../core/store.js'
-import { startTopic, mergeTopic, stopTopic, rebaseTopic } from '../core/store.js'
+import { startTopic, mergeTopic, pushTopic, stopTopic, rebaseTopic } from '../core/store.js'
 
 /**
  * §4 — the verbs of the selected topic, on the bar of the column it is about.
@@ -70,6 +70,19 @@ const catchUpTitle = computed(() =>
     : 'Catch up every repository ' + catchUpFrom.value + ' — already up to date',
 )
 
+/**
+ * §16 — the one verb that leaves the machine, so it says how far it reaches.
+ *
+ * Committing is per repository now: one message cannot honestly describe two
+ * different diffs. A push carries no message, which is exactly why it can be
+ * the topic-wide verb the commit box stopped being.
+ */
+const pushTitle = computed(() =>
+  ahead.value
+    ? 'Push every branch of this topic to origin — ' + ahead.value + ' commit(s)'
+    : 'Push every branch of this topic — nothing to push yet',
+)
+
 async function toggle() {
   const topic = f.value
   if (!topic) return
@@ -91,6 +104,19 @@ async function toggle() {
     >
       <component :is="f!.state === 'running' ? Pause : Play" />
       <span class="vl">{{ f!.state === 'running' ? 'Stop' : 'Start' }}</span>
+    </button>
+
+    <!-- The counterpart of a per-repository commit: nothing about a push is
+         specific to one repository's diff, so it is one act across all of
+         them. -->
+    <button
+      class="btn ghost"
+      :class="{ nudge: ahead > 0 }"
+      :title="pushTitle"
+      @click="pushTopic(f!.id)"
+    >
+      <ArrowUp /><span class="vl">Push</span>
+      <span v-if="ahead" class="cnt">{{ ahead }}</span>
     </button>
 
     <!-- §4 — the step the lifecycle was missing: the branch goes onto the

@@ -10,7 +10,7 @@ import {
 import Splitter from '../Splitter.vue'
 import {
   LAYOUT_LIMITS, commit, commitPreview, draftCommitMessage, guard, layout, resetCommitHeight,
-  saveLayout, setCommitHeight, stash, stashList, toast, client, state,
+  saveLayout, selectWorkspace, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
 /**
@@ -149,12 +149,46 @@ const stageAll = ref(true)
 const committing = ref(false)
 const rows = ref<CommitPreview[]>([])
 
-/** A topic commits across every repository it spans; a lone branch does not. */
-const topicId = computed(() => props.workspace.topicId)
-
+/**
+ * The commit is this repository's, and only this repository's.
+ *
+ * It used to be the topic's: one message, one commit per repository, in one
+ * click. That was right about the gesture and wrong about the words. Two
+ * repositories in a topic are two different diffs — a field added to the API
+ * and a form that reads it — and one message committed to both describes at
+ * most one of them. The commit that got "test commit" in the backend because
+ * that is what the frontend needed to say is a commit nobody can read later,
+ * and §12's whole argument is that history has to stay readable.
+ *
+ * So the box commits where you are standing, and the topic's other
+ * repositories are listed under it as somewhere to go rather than something to
+ * sweep up. What *is* still topic-wide is Push, which carries no words and so
+ * cannot lie in any of them.
+ */
 async function refreshCommit() {
-  rows.value = await commitPreview(topicId.value, props.workspace.id, stageAll.value)
+  rows.value = await commitPreview(null, props.workspace.id, stageAll.value)
 }
+
+/**
+ * The rest of the topic, and what each of them is holding.
+ *
+ * Not an action — a door. Closing out a topic still means every repository
+ * gets committed, and the thing the topic-wide commit was really buying was
+ * not having to hunt for the next one.
+ */
+const elsewhere = computed(() => {
+  const t = props.workspace.topicId
+  if (!t) return []
+  return state.workspaces
+    .filter((w) => w.topicId === t && w.id !== props.workspace.id && w.repo && w.kind !== 'group')
+    .map((w) => ({
+      id: w.id,
+      name: w.name,
+      dirty: (w.git?.staged ?? 0) + (w.git?.unstaged ?? 0) + (w.git?.untracked ?? 0),
+      conflicted: w.git?.conflicted ?? 0,
+    }))
+    .filter((w) => w.dirty > 0 || w.conflicted > 0)
+})
 
 const willCommit = computed(() => rows.value.filter((r) => r.willCommit))
 const fileCount = computed(() =>
@@ -220,7 +254,7 @@ const canCommit = computed(
 async function doCommit() {
   if (!canCommit.value) return
   committing.value = true
-  const ok = await commit(topicId.value, props.workspace.id, message.value.trim(), stageAll.value)
+  const ok = await commit(null, props.workspace.id, message.value.trim(), stageAll.value)
   committing.value = false
   // The plan dialog takes it from here; clearing on success keeps the field
   // from re-offering a message that has already been used.
@@ -274,7 +308,7 @@ async function draftMessage() {
   // who types "fixes the TVA rounding" and presses Draft is asking for that
   // note turned into a message, not preserved beside one.
   const text = await draftCommitMessage(
-    topicId.value,
+    null,
     props.workspace.id,
     stageAll.value,
     message.value.trim() || undefined,
@@ -305,8 +339,17 @@ const stashing = ref(false)
  *  question and answers no when nothing is staged but plenty is changed. */
 const dirty = computed(() => rows.value.some((r) => r.staged + r.unstaged > 0))
 
+/**
+ * Setting work aside stayed topic-wide where committing did not, and the
+ * difference is what the words are for: a stash label names a moment you are
+ * stepping away from, not a change you are describing, and the entries are
+ * listed per repository whatever they were labelled. The button says how far
+ * it reaches, and the confirmation names every repository before it runs.
+ */
+const stashScope = computed(() => props.workspace.topicId)
+
 async function refreshStashes() {
-  stashes.value = await stashList(topicId.value, props.workspace.id)
+  stashes.value = await stashList(stashScope.value, props.workspace.id)
 }
 
 async function setAside() {
@@ -316,7 +359,7 @@ async function setAside() {
   // it: naming what you set aside is the difference between a list you can
   // read in a week and four rows of "WIP on topic/x".
   await stash({
-    topicId: topicId.value,
+    topicId: stashScope.value,
     workspaceId: props.workspace.id,
     action: 'push',
     ...(message.value.trim() ? { message: message.value.trim() } : {}),
@@ -556,20 +599,25 @@ const mark: Record<string, Component> = {
         </div>
 
         <template v-else>
-          <!-- §16 — what is about to be committed, named. The button counted
-               every repository of the topic while the list above it showed one,
-               so "Commit 2 files" sat under "files (1)" and read as a bug. The
-               number is never stated now without the rows that add up to it. -->
-          <div v-if="willCommit.length > 1" class="cscope">
-            <span class="section-label">will commit</span>
-            <div v-for="r in willCommit" :key="r.repo" class="crow">
+          <!-- The topic's other repositories: named, counted, and one click
+               away — but committed on their own terms, with their own message,
+               once you are standing in them. -->
+          <div v-if="elsewhere.length" class="cscope">
+            <span class="section-label">also in this topic</span>
+            <button
+              v-for="e in elsewhere"
+              :key="e.id"
+              class="crow"
+              :title="'Go to ' + e.name + ' to commit it'"
+              @click="selectWorkspace(e.id)"
+            >
               <GitBranch class="sm" />
-              <span class="cname">{{ r.repo }}</span>
-              <span class="num">
-                {{ stageAll ? r.staged + r.unstaged : r.staged }}
-              </span>
-            </div>
-            <p class="cnote">One message, one commit each.</p>
+              <span class="cname">{{ e.name }}</span>
+              <span v-if="e.conflicted" class="num bad">{{ e.conflicted }} unmerged</span>
+              <span v-else class="num">{{ e.dirty }}</span>
+              <ChevronRight class="go" />
+            </button>
+            <p class="cnote">Each commits with its own message. Push covers the topic.</p>
           </div>
 
           <!-- The draft button belongs to the box, not to the footer: three
@@ -637,7 +685,13 @@ const mark: Record<string, Component> = {
           <div v-if="dirty" class="caside">
             <button class="btn ghost tiny" :disabled="stashing" @click="setAside">
               <Archive />
-              {{ stashing ? 'Planning…' : 'Set aside instead' }}
+              {{
+                stashing
+                  ? 'Planning…'
+                  : elsewhere.length
+                    ? 'Set aside all ' + (elsewhere.length + 1) + ' repos'
+                    : 'Set aside instead'
+              }}
             </button>
             <span class="anote">
               {{
@@ -707,10 +761,19 @@ const mark: Record<string, Component> = {
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 22px;
+  width: 100%;
+  height: 24px;
+  padding: 0 7px;
+  margin-left: -7px;
+  border-radius: var(--radius-sm);
+  text-align: left;
   font-size: var(--fs-xs);
   color: var(--text-muted);
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
+.crow:hover { background: var(--hover); color: var(--text); }
+.crow .go { width: 12px; height: 12px; flex: none; color: var(--text-dim); }
+.crow .num.bad { color: var(--danger); }
 .crow .lucide { width: 12px; height: 12px; color: var(--text-dim); }
 .cname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crow .num { color: var(--text-dim); font-size: 11px; }

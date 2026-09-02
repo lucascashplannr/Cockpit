@@ -642,6 +642,103 @@ export async function rebasePlan(
  * branch checked out twice, and the main checkout is already sitting on the
  * base — which is precisely what the worktree layout buys.
  */
+/**
+ * §4 — the topic's branches go to the remote, in one act.
+ *
+ * The counterpart of the thing the commit box stopped doing. A message is
+ * written per repository because each repository's diff is its own; a push
+ * carries no words at all, so there is nothing to be wrong about doing them
+ * together — and "↑2" on the topic row, made of "↑1" and "↑1", was already
+ * telling you it was one number.
+ *
+ * The branch is pushed from the worktree it is checked out in, not from the
+ * main checkout: unlike `merge`, nothing here needs the base.
+ */
+export async function pushPlan(
+  topicId: string,
+): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
+  const f = store.get(topicId)
+  if (!f) throw new Error('unknown topic: ' + topicId)
+
+  const trees = workspacesOf(topicId).filter((w) => w.repo && w.kind !== 'group')
+  if (!trees.length) return { ok: false, detail: 'no repository in this topic', plan: null }
+
+  const steps: PlanStep[] = []
+  const warnings: string[] = []
+  const names: string[] = []
+  const ids: string[] = []
+
+  for (const tree of trees) {
+    const fresh = (await registry.refreshGit(tree.id)) ?? tree
+    const g = fresh.git
+    if (!g) continue
+
+    if (!g.branch) {
+      warnings.push(fresh.name + ': detached HEAD — nothing to push.')
+      continue
+    }
+    if (g.ahead === 0 && g.upstream) continue
+
+    // Diverged: the remote has commits this branch does not. Force-with-lease
+    // is what `git.plan` does for one repository and the reasoning is the same
+    // — but across a topic it is worth naming the repository it applies to.
+    const force = g.behind > 0 && g.ahead > 0
+    steps.push({
+      title: force
+        ? fresh.name + ': force-push (with lease) ' + g.branch
+        : fresh.name + ': push ' + g.branch + ' (' + g.ahead + ' commit(s))',
+      command: force
+        ? 'git push --force-with-lease origin ' + g.branch
+        : 'git push -u origin ' + g.branch,
+      cwd: fresh.path,
+      destructive: force,
+    })
+    if (force) {
+      warnings.push(
+        fresh.name + ': history diverged — this rewrites the remote branch. ' +
+          '--force-with-lease is used, so a push someone else made first aborts it.',
+      )
+    }
+    names.push(fresh.name)
+    ids.push(fresh.id)
+  }
+
+  if (!steps.length) {
+    return {
+      ok: false,
+      detail: warnings.join(' ') || 'nothing to push — every branch is level with its remote',
+      plan: null,
+    }
+  }
+
+  // §16 — a push is the one thing agents may never do, and the reason is that
+  // it is the first step that leaves this machine. A person doing it should be
+  // told the same thing.
+  warnings.push(
+    'This is the step that leaves your machine: ' + names.length +
+      (names.length === 1 ? ' repository pushes' : ' repositories push') +
+      ' to origin. Nothing is merged anywhere by it.',
+  )
+  warnings.push(
+    'Repositories push in order and it stops at the first refusal, keeping the ones that went.',
+  )
+
+  const preview: PlanPreview = {
+    planId: newId('plan_'),
+    operation: 'topic.push',
+    steps,
+    warnings,
+    // A restore point anchors local commits, and a push moves nothing local.
+    capturesRestorePoint: false,
+    repos: names,
+    // Two repositories pushed and one refused is two repositories correctly
+    // pushed. Un-pushing them to "recover" would be a rewrite of the remote.
+    onFailure: 'halt',
+  }
+  plans.register(preview, { workspaceIds: ids })
+  return { ok: true, detail: names.join(', '), plan: preview }
+}
+
 export async function mergePlan(
   topicId: string,
   opts: { push?: boolean; base?: string } = {},

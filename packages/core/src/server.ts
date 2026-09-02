@@ -381,6 +381,7 @@ const handlers: Record<string, Handler> = {
   /** §4 — and landing it is the act that makes the work count. */
   'topic.merge': (p: { topicId: string; push?: boolean; base?: string }) =>
     topics.mergePlan(p.topicId, { push: p.push, base: p.base }),
+  'topic.push': (p: { topicId: string }) => topics.pushPlan(p.topicId),
   'topic.close': async (p: { topicId: string; removeWorktrees: boolean }) => {
     const res = await topics.closePlan(p.topicId, p.removeWorktrees)
     if (!res.plan) {

@@ -119,11 +119,21 @@ goes to the Trash, never `rm -rf` (§16).
 open  →  work  →  commit  →  rebase  →  merge  →  close
 ```
 
-**Commit** lives in the Diff tab, against the review it is a review of (§16). One message,
-one commit per repository — git has no cross-repo commit and this is as close as it gets.
-A repo with nothing staged is skipped rather than made to carry an empty commit, and a repo
-sitting on its protected branch is skipped too: the rule that stops agents committing to
-`main` is not waived because a human clicked the button.
+**Commit** lives in the Diff tab, against the review it is a review of (§16), and it commits
+the repository you are standing in — that one and no other. It used to commit every
+repository of the topic under one message, which was right about the gesture and wrong about
+the words: two repositories in a topic are two different diffs, a field added to the API and
+a form that reads it, and one sentence committed to both describes at most one of them. The
+topic's other repositories are listed under the box as somewhere to go instead. A repo
+sitting on its protected branch is refused: the rule that stops agents committing to `main`
+is not waived because a human clicked the button.
+
+**Push** is the topic-wide verb, on the topic's own bar beside Send and Catch up. It is the
+counterpart of the above and for the same reason: a commit message describes a diff and a
+topic's repositories do not share one, but a push carries no words, so doing every branch at
+once invents nothing. It stops at the first refusal and keeps the branches that went — two
+pushed and one rejected is two correctly pushed, and un-pushing them would be a rewrite of
+someone else's remote.
 
 The panel is a list beside a viewer, and under about 620px there is no beside left — so it
 stops trying to show both: the list is the screen, a file opens over it, and the back arrow
@@ -148,7 +158,7 @@ with no message of its own is named by the files it holds, not by git's `WIP on 
 <sha> <subject>` — that subject belongs to the commit the work sat on, and in a list it
 reads as though the stash contained it.
 
-These four verbs ask rather than brief. §3.7 says every operation shows its plan; it does
+These four verbs — and Push, single-repository or topic-wide — ask rather than brief. §3.7 says every operation shows its plan; it does
 not say the plan has to be the first thing you read, and for a reversible one-liner a
 numbered-step dialog is machinery in front of a one-word answer. So the question comes in
 words — "Set this work aside?", "Drop this entry?" — with the commands one disclosure away
@@ -157,8 +167,10 @@ so: `git stash pop` can conflict with *nothing in progress* — markers in the t
 entries in the index, no MERGE_HEAD to continue and no rebase to abort — which is a state
 the conflict panel cannot help with. The Diff tab names those files and carries the one verb
 that clears them. Dropping is the one with a red
-button and no undo: no restore point covers work that was never committed. The full plan
-dialog stays where it belongs, in front of the operations that rewrite history.
+button and no undo: no restore point covers work that was never committed. Push keeps the red
+button for a force-push, and lands focus on Cancel there rather than on the button that
+rewrites someone else's branch. The full plan dialog stays where it belongs, in front of the
+operations that rewrite history.
 
 **Merge** is the step that used to be missing, and its absence was the hole in the middle of
 the product: a topic could be opened, worked in, rebased and closed, and nothing ever put

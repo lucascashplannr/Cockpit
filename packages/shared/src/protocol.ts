@@ -432,6 +432,18 @@ export interface Rpc {
     params: { topicId: string; push?: boolean; base?: string }
     result: { ok: boolean; detail: string; plan: PlanPreview | null }
   }
+  /**
+   * §4 — every branch of the topic to origin, in one act.
+   *
+   * The counterpart of what the commit box deliberately does not do. One
+   * message across two different diffs is a lie in one of them, so committing
+   * is per repository; a push carries no words, so there is nothing to be
+   * wrong about doing them together.
+   */
+  'topic.push': {
+    params: { topicId: string }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null }
+  }
   /** Archiving is not a one-way door; this is how a closed topic comes back. */
   'topic.reopen': { params: { topicId: string }; result: { ok: boolean; detail: string } }
   /**

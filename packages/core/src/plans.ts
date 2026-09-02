@@ -243,6 +243,14 @@ export async function plan(
         destructive: force,
       })
       if (force) warnings.push('History diverged; this rewrites the remote branch. --force-with-lease is used so a concurrent push aborts it.')
+      // The plan is asked as a question now rather than read as a briefing, and
+      // a question with no sentence in it is a dialog that only says "Apply".
+      // The branch is in the question this is the body of, so it is not named
+      // twice: "Push vat-rework to origin?" / "vat-rework goes to origin".
+      warnings.push(
+        'This is the step that leaves your machine, and the only one that does. ' +
+          'Nothing is merged anywhere by it.',
+      )
       break
     }
 

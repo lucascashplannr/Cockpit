@@ -166,7 +166,7 @@ watch(
 }
 .grow { flex: 1; }
 
-.say { flex: none; padding: 4px 20px 14px; }
+.say { flex: none; padding: 4px 20px 10px; }
 .say p {
   margin: 0;
   font-size: var(--fs-sm);
@@ -177,11 +177,22 @@ watch(
 .say .lead { color: var(--text); }
 .say .danger { color: var(--danger); }
 
+/* Its own room, above the footer rather than against it: the disclosure is
+   part of the question, and 4px of margin under it read as the footer having
+   swallowed the row.
+
+   It is also the part that gives way. The dialog is capped at 80vh and clips
+   what does not fit, so in a short window a long command list pushed the
+   footer — Cancel and the button that does the thing — off the bottom edge.
+   Everything else here is one or two sentences; this is the only piece that
+   can be any length, so this is the piece that scrolls. */
 .what {
-  flex: none;
-  margin: 0 12px 4px;
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0 12px 12px;
   border-radius: var(--radius-sm);
-  overflow: hidden;
 }
 .what summary {
   display: flex;
@@ -207,12 +218,13 @@ watch(
 .dim { color: var(--text-dim); }
 
 .cmds {
-  margin: 2px 0 8px;
+  margin: 2px 0 2px;
   padding: 0 8px 0 28px;
-  max-height: 34vh;
+  min-height: 0;
   overflow-y: auto;
   list-style: none;
 }
+.what summary { flex: none; }
 .cmds li + li { margin-top: 9px; }
 .ct { display: block; font-size: var(--fs-xs); color: var(--text-muted); }
 .cc {

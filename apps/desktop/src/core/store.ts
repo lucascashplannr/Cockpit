@@ -1444,6 +1444,11 @@ export async function requestPlan(
       await settlePlan(plan, await guard(() => client.call('git.apply', { planId: plan.planId })))
       return
     }
+    if (operation === 'push') {
+      const branch = state.workspaces.find((w) => w.id === workspaceId)?.git?.branch
+      askPush(plan, (branch ?? 'this branch') + ' to origin')
+      return
+    }
     state.pendingPlan = plan
   } finally {
     delete gitBusy[workspaceId]
@@ -1476,10 +1481,10 @@ async function settlePlan(
     // "N file(s) came back with conflict markers", say. Repeating "see the
     // journal" over the top of an explanation the plan already produced is how
     // a stash that half-applied looked like an unexplained failure.
-    const said = res.output
-      .split('\n')
-      .filter((l) => l.startsWith('[cockpit] '))
-      .pop()
+    // The first of them, not the last: the core writes what went wrong and
+    // then what it did about it ("1 step(s) not run"), and the second sentence
+    // without the first is a consequence with no cause.
+    const said = res.output.split('\n').find((l) => l.startsWith('[cockpit] '))
     toast(
       'error',
       said
@@ -1724,6 +1729,66 @@ export async function stash(
     plan: res.plan,
   }
   return true
+}
+
+/**
+ * §4 — every branch of the topic to origin, in one act.
+ *
+ * The one topic-wide verb the commit box gave up. A commit message describes a
+ * diff, and a topic's repositories do not share one — but a push says nothing
+ * at all, so doing them together invents nothing. It keeps the full plan
+ * dialog: this is the step that leaves the machine.
+ */
+export async function pushTopic(topicId: string): Promise<void> {
+  const res = await guard(() => client.call('topic.push', { topicId }))
+  if (!res) return
+  if (!res.ok || !res.plan) {
+    toast('info', res.detail)
+    return
+  }
+  // A topic forks one branch name across its repositories, so nearly always
+  // there is one name to say. Saying "2 branches" when both are `vat-rework`
+  // is technically true and reads as though they were different things.
+  const branches = new Set(
+    state.workspaces
+      .filter((w) => w.topicId === topicId && w.git?.branch)
+      .map((w) => w.git!.branch!),
+  )
+  const n = res.plan.repos?.length ?? res.plan.steps.length
+  const one = branches.size === 1 ? [...branches][0]! : null
+  askPush(
+    res.plan,
+    n > 1
+      ? one
+        ? one + ' from ' + n + ' repositories'
+        : n + ' branches to origin'
+      : (one ?? 'this branch') + ' to origin',
+  )
+}
+
+/**
+ * §16 — the verb that leaves the machine, asked rather than briefed.
+ *
+ * Push is short: one command per repository, no rollback to describe, no
+ * restore point to promise. Everything the plan dialog draws around it — the
+ * numbered steps, the all-or-nothing note, the shield saying nothing is
+ * destructive — is scaffolding around a single sentence and a single decision.
+ * The commands are still there, one disclosure down, which is what §3.7 asks
+ * for: the plan is shown before it runs, not necessarily read first.
+ *
+ * A force-push keeps the red button. It is the one push that can take
+ * something away from someone else.
+ */
+function askPush(plan: PlanPreview, subject: string): void {
+  const force = plan.steps.some((s) => s.destructive)
+  state.pendingConfirm = {
+    title: (force ? 'Force-push ' : 'Push ') + subject + '?',
+    body: plan.warnings,
+    verb: force ? 'Force-push' : 'Push',
+    done: force ? 'force-pushed' : 'pushed to origin',
+    danger: force,
+    plan,
+  }
 }
 
 /**
