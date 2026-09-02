@@ -3,8 +3,8 @@ import { computed, ref, watch } from 'vue'
 import type { Conversation } from '@cockpit/shared'
 import { CircleAlert, CircleStop, Hand, Plus, Sparkles, Trash2, X } from '@lucide/vue'
 import {
-  activeAgentScope, attentionOf, client, deleteConversation, guard, isRunning, openThreadFor,
-  pinThread, sessionsForScope, startFresh, state,
+  activeAgentScope, attentionOf, client, deleteConversation, engineName, guard, isRunning,
+  openThreadFor, pinThread, sessionsForScope, startFresh, state,
 } from '../core/store.js'
 import type { Attention } from '../core/store.js'
 
@@ -134,7 +134,7 @@ function dotClass(c: Conversation): string {
             <span class="ctitle">{{ c.title || 'untitled' }}</span>
           </span>
           <span class="crow meta">
-            <span class="ceng">{{ c.engine }}</span>
+            <span class="ceng">{{ engineName(c.engine) }}</span>
             <span class="sep">·</span>
             <span>{{ c.history.length }} turn{{ c.history.length === 1 ? '' : 's' }}</span>
             <span class="sep">·</span>

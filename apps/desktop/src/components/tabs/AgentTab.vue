@@ -10,6 +10,7 @@ import AgentMarkdown from '../agent/AgentMarkdown.vue'
 import ToolCall from '../agent/ToolCall.vue'
 import ToolGroup from '../agent/ToolGroup.vue'
 import Composer from '../agent/Composer.vue'
+import Wordmark from '../brand/Wordmark.vue'
 import {
   activeAgentScope, agentDraft, client, closeThread, guard, isRunning,
   askRevert, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
@@ -601,12 +602,16 @@ function dotClass(s: Conversation): string {
          a question and a box under it. -->
     <div v-else-if="!selected" class="hero">
       <div class="heroinner">
-        <h1 class="ask">
-          <Sparkles class="mk" />
+        <!-- The one screen in the app that is nothing but an invitation, so
+             it is the one that gets to say the app's name in full. The
+             question stays under it rather than instead of it: the wordmark
+             says where you are, and only the line says what it will act on. -->
+        <Wordmark :height="36" class="wm" />
+        <p class="ask">
           What should
           <span class="target">{{ label.name }}</span>
           do?
-        </h1>
+        </p>
 
         <Composer
           big
@@ -909,20 +914,27 @@ function dotClass(s: Conversation): string {
 /* ── the empty conversation: the question is the page ────────────────── */
 .hero { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .heroinner { width: 100%; max-width: 620px; }
+.wm {
+  margin: 0 auto 10px;
+  color: var(--brand-ink);
+  --wm-lead: var(--accent);
+}
+/* Demoted from the 26px headline it was when it *was* the hero: above it now
+   stands a mark cut on a 12-row grid, and a line of type at display size
+   beside pixel letterforms makes both look like a mistake. Quiet, and one
+   step up from the guard line under the composer. */
 .ask {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: center;
-  gap: 10px;
+  gap: 5px;
   flex-wrap: wrap;
   margin: 0 0 20px;
-  font-size: 26px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 450;
+  color: var(--text-muted);
 }
-.ask .mk { width: 24px; height: 24px; color: var(--agent); }
-.ask .target { color: var(--accent); }
+.ask .target { color: var(--accent); font-weight: 550; }
 
 .guard { margin: 12px 2px 0; text-align: center; font-size: 10px; color: var(--text-dim); }
 

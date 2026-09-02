@@ -30,16 +30,24 @@ export const ROWS = 12
    it also means a 3px stem can sit dead centre, which it cannot in an even
    width. */
 export const GLYPHS = {
+  /* The bracket at x=3 is the C's alone, and it is the one place a letter
+     here is drawn rather than ruled. Everywhere else an arm meets the stem
+     the counter is closed and the join needs no help; here the counter opens
+     to the em edge and the corner is the widest, emptiest thing in the mark —
+     which is what made this C read as a bracket rather than a letter. One
+     cell of ink in each inside corner steps the transition. The C's *outer*
+     corners are not drawn here: they are cut by `chamfer`, along with every
+     other letter's. */
   C: [
     '#########',
     '#########',
     '#########',
+    '####.....',
     '###......',
     '###......',
     '###......',
     '###......',
-    '###......',
-    '###......',
+    '####.....',
     '#########',
     '#########',
     '#########',
@@ -125,6 +133,38 @@ export const GLYPHS = {
    object. */
 export const LETTER_GAP = 2
 
+/* One cell off each corner of the em box, wherever ink reaches it.
+ *
+ * The cut started on the C, where it is doing the most work — a C is the one
+ * letter in this word whose outline is a curve in every other face, and a
+ * corner taken is as much of that curve as twelve rows will hold. But a face
+ * where one letter is cut and six are square is not a face, so it is a rule:
+ * the em box is the word's outer boundary, and the boundary is bevelled
+ * wherever it turns. Edges facing inward — the C's mouth, the counters, the
+ * inside of K's fork — stay sharp, which is what keeps the letters legible
+ * at 18px while the silhouette softens.
+ *
+ * One cell, never two. A second would round the mark, and a rounded mark
+ * does not survive being 18px tall in the rail.
+ */
+const CORNERS = [
+  [0, 0],
+  [-1, 0],
+  [0, -1],
+  [-1, -1],
+]
+function chamfer(glyph) {
+  const rows = glyph.slice()
+  const w = rows[0].length
+  for (const [cx, cy] of CORNERS) {
+    const x = cx < 0 ? w + cx : cx
+    const y = cy < 0 ? ROWS + cy : cy
+    if (rows[y][x] !== '#') continue
+    rows[y] = rows[y].slice(0, x) + '.' + rows[y].slice(x + 1)
+  }
+  return rows
+}
+
 /**
  * Lay a word out on the grid.
  *
@@ -137,8 +177,8 @@ export function compose(word) {
   const spans = []
   let x = 0
   for (const ch of word) {
-    const g = GLYPHS[ch]
-    if (!g) throw new Error('no glyph for ' + ch)
+    if (!GLYPHS[ch]) throw new Error('no glyph for ' + ch)
+    const g = chamfer(GLYPHS[ch])
     const w = g[0].length
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < w; c++) {

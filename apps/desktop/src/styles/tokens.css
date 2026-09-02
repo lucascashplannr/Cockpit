@@ -69,6 +69,18 @@
   --selected: light-dark(rgba(91, 88, 224, 0.1), rgba(139, 136, 255, 0.15));
   --focus-ring: light-dark(rgba(91, 88, 224, 0.48), rgba(139, 136, 255, 0.58));
 
+  /* The mark's own ink, and deliberately not `--text`. A logo set in the
+     body colour is a logo set in near-black on white and near-white on black,
+     and at wordmark weight — 3px strokes on a 9px em — that is the loudest
+     object on any screen it lands on.
+
+     Light enough that the accent C is the thing the eye lands on. The word is
+     the quiet half of the mark and the C is the loud half; ink at body weight
+     made them compete, and every step of grey taken out of the word is a step
+     the C gains without being turned up. The light value is `--text-dim`
+     exactly — this is the same rung of the ramp, not a colour of its own. */
+  --brand-ink: light-dark(#8c8c9c, #c9cad5);
+
   /* One accent — the periwinkle of the mark, so the app and its icon agree. */
   --accent: light-dark(#5b58e0, #8b88ff);
   --accent-hover: light-dark(#4e4bd2, #a3a1ff);

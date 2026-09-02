@@ -300,7 +300,7 @@ const servers = computed(() => {
   padding: 40px;
 }
 .wm {
-  color: var(--text-muted);
+  color: var(--brand-ink);
   --wm-lead: var(--accent);
 }
 .tag {

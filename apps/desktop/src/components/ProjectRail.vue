@@ -187,10 +187,9 @@ const themeLabel = computed(() =>
 .tile:hover { background: var(--panel-raised); border-color: var(--line-strong); color: var(--text); }
 .tile:active { transform: scale(0.94); }
 
-/* Same tile as a project, one step quieter in ink: it belongs to the column
-   but it is the way out, not one of the things in it. */
-.tile.mark { color: var(--text-dim); }
-.tile.mark:hover { color: var(--text); }
+/* The mark carries its own ink wherever it is drawn, and does not darken on
+   hover the way a monogram does — the tile under it already answers. */
+.tile.mark { color: var(--brand-ink); }
 
 .tiles {
   display: flex;

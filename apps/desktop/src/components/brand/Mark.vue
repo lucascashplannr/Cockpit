@@ -35,18 +35,18 @@ const w = computed(() => (h.value * 9) / GRID)
     aria-label="C"
   >
     <g class="lead">
-      <rect x="0" y="0" width="9" height="1" />
+      <rect x="1" y="0" width="7" height="1" />
       <rect x="0" y="1" width="9" height="1" />
       <rect x="0" y="2" width="9" height="1" />
-      <rect x="0" y="3" width="3" height="1" />
+      <rect x="0" y="3" width="4" height="1" />
       <rect x="0" y="4" width="3" height="1" />
       <rect x="0" y="5" width="3" height="1" />
       <rect x="0" y="6" width="3" height="1" />
       <rect x="0" y="7" width="3" height="1" />
-      <rect x="0" y="8" width="3" height="1" />
+      <rect x="0" y="8" width="4" height="1" />
       <rect x="0" y="9" width="9" height="1" />
       <rect x="0" y="10" width="9" height="1" />
-      <rect x="0" y="11" width="9" height="1" />
+      <rect x="1" y="11" width="7" height="1" />
     </g>
   </svg>
 </template>

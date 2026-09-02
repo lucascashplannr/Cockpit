@@ -35,27 +35,27 @@ const w = computed(() => (h.value * 75) / GRID)
     aria-label="COCKPIT"
   >
     <g class="lead">
-      <rect x="0" y="0" width="9" height="1" />
+      <rect x="1" y="0" width="7" height="1" />
       <rect x="0" y="1" width="9" height="1" />
       <rect x="0" y="2" width="9" height="1" />
-      <rect x="0" y="3" width="3" height="1" />
+      <rect x="0" y="3" width="4" height="1" />
       <rect x="0" y="4" width="3" height="1" />
       <rect x="0" y="5" width="3" height="1" />
       <rect x="0" y="6" width="3" height="1" />
       <rect x="0" y="7" width="3" height="1" />
-      <rect x="0" y="8" width="3" height="1" />
+      <rect x="0" y="8" width="4" height="1" />
       <rect x="0" y="9" width="9" height="1" />
       <rect x="0" y="10" width="9" height="1" />
-      <rect x="0" y="11" width="9" height="1" />
+      <rect x="1" y="11" width="7" height="1" />
     </g>
     <g class="ink">
-      <rect x="11" y="0" width="9" height="1" />
-      <rect x="22" y="0" width="9" height="1" />
-      <rect x="33" y="0" width="3" height="1" />
-      <rect x="39" y="0" width="3" height="1" />
-      <rect x="44" y="0" width="9" height="1" />
-      <rect x="55" y="0" width="9" height="1" />
-      <rect x="66" y="0" width="9" height="1" />
+      <rect x="12" y="0" width="7" height="1" />
+      <rect x="23" y="0" width="7" height="1" />
+      <rect x="34" y="0" width="2" height="1" />
+      <rect x="39" y="0" width="2" height="1" />
+      <rect x="45" y="0" width="7" height="1" />
+      <rect x="56" y="0" width="7" height="1" />
+      <rect x="67" y="0" width="7" height="1" />
       <rect x="11" y="1" width="9" height="1" />
       <rect x="22" y="1" width="9" height="1" />
       <rect x="33" y="1" width="3" height="1" />
@@ -72,7 +72,7 @@ const w = computed(() => (h.value * 75) / GRID)
       <rect x="66" y="2" width="9" height="1" />
       <rect x="11" y="3" width="3" height="1" />
       <rect x="17" y="3" width="3" height="1" />
-      <rect x="22" y="3" width="3" height="1" />
+      <rect x="22" y="3" width="4" height="1" />
       <rect x="33" y="3" width="3" height="1" />
       <rect x="37" y="3" width="3" height="1" />
       <rect x="44" y="3" width="3" height="1" />
@@ -111,7 +111,7 @@ const w = computed(() => (h.value * 75) / GRID)
       <rect x="69" y="7" width="3" height="1" />
       <rect x="11" y="8" width="3" height="1" />
       <rect x="17" y="8" width="3" height="1" />
-      <rect x="22" y="8" width="3" height="1" />
+      <rect x="22" y="8" width="4" height="1" />
       <rect x="33" y="8" width="3" height="1" />
       <rect x="37" y="8" width="3" height="1" />
       <rect x="44" y="8" width="9" height="1" />
@@ -131,12 +131,12 @@ const w = computed(() => (h.value * 75) / GRID)
       <rect x="44" y="10" width="3" height="1" />
       <rect x="55" y="10" width="9" height="1" />
       <rect x="69" y="10" width="3" height="1" />
-      <rect x="11" y="11" width="9" height="1" />
-      <rect x="22" y="11" width="9" height="1" />
-      <rect x="33" y="11" width="3" height="1" />
-      <rect x="39" y="11" width="3" height="1" />
-      <rect x="44" y="11" width="3" height="1" />
-      <rect x="55" y="11" width="9" height="1" />
+      <rect x="12" y="11" width="7" height="1" />
+      <rect x="23" y="11" width="7" height="1" />
+      <rect x="34" y="11" width="2" height="1" />
+      <rect x="39" y="11" width="2" height="1" />
+      <rect x="45" y="11" width="2" height="1" />
+      <rect x="56" y="11" width="7" height="1" />
       <rect x="69" y="11" width="3" height="1" />
     </g>
   </svg>

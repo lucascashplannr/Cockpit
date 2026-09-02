@@ -1948,6 +1948,18 @@ export async function applyPendingRevert(): Promise<void> {
   toast(r.ok ? 'ok' : 'error', r.detail)
 }
 
+/**
+ * An engine's name as it is written, not as it is keyed.
+ *
+ * The ids are lowercase because they are ids — they key a binary on PATH and
+ * a row in the database. Claude and Codex are products with names, and a chip
+ * that says `claude` reads as a command someone forgot to capitalise. The id
+ * is untouched; only what the window prints changes.
+ */
+export function engineName(id: string): string {
+  return id.charAt(0).toUpperCase() + id.slice(1)
+}
+
 /** What the composer currently says, in the shape the core takes. */
 export function engineOptions(): EngineOptions {
   const o = state.engineOptions

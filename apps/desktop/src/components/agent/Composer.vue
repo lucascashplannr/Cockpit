@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { FileCode, Map as MapIcon } from '@lucide/vue'
-import { agentDraft, client, guard, saveComposer, state } from '../../core/store.js'
+import { agentDraft, client, engineName, guard, saveComposer, state } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
 import type { Option } from './Picker.vue'
@@ -65,7 +65,7 @@ function pickEffort(id: string): void {
 const engineOptions = computed<Option[]>(() =>
   (props.engines ?? []).map((e) => ({
     id: e.id,
-    label: e.id,
+    label: engineName(e.id),
     hint: e.available ? undefined : 'not installed',
     disabled: !e.available,
   })),
@@ -272,7 +272,6 @@ defineExpose({ focus: () => box.value?.focus() })
   background: var(--panel-raised);
   padding: 10px 10px 9px;
 }
-.composer.big { box-shadow: var(--shadow-sm); }
 /* Plan mode changes what pressing Start *does*, so it is worth a whole-box
    signal rather than one lit chip among eleven. */
 .composer.planning { border-color: var(--accent); }

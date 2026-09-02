@@ -386,7 +386,7 @@ onMounted(() => void nextTick(() => input.value?.focus()))
    the one place in the app where the accent is decoration rather than
    meaning, and the only place it is allowed to be. */
 .wm {
-  color: var(--text);
+  color: var(--brand-ink);
   --wm-lead: var(--accent);
 }
 .tag {

@@ -115,8 +115,10 @@ ${l.body('    ')}
 }
 
 /* The standalone files are read outside the app, where no custom property
-   resolves — so they carry the light-theme inks literally. */
-const INK = '#5f5f6b'
+   resolves — so they carry the light-theme inks literally. These are the
+   light values of `--brand-ink` and `--accent`; change one and change the
+   other. */
+const INK = '#8c8c9c'
 const LEAD = '#5b58e0'
 
 function svg(word) {
