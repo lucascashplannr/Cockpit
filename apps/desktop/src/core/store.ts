@@ -183,15 +183,10 @@ export const state = reactive({
    */
   pendingRevert: null as PendingRevert | null,
 
-  /** The start page. It owns the window on launch and whenever the mark is
-   *  clicked; §12's "zero click" target starts from a search field, not from
-   *  whatever workspace happened to be selected last session. */
-  homeOpen: true,
-
   paletteOpen: false,
   /** §7 — the sheet that creates a project rather than finding one. */
   newProjectOpen: false,
-  /** Which of the three sources it opens on — chosen on the start page (§12). */
+  /** Which of the three sources the sheet opens on. */
   newProjectMode: 'scratch' as NewProjectSource['kind'],
   /** §7 — the sheet that adds a repository to a project that already exists. */
   addRepoProjectId: null as string | null,
@@ -458,7 +453,6 @@ export function openAgentOn(scope: AgentScope): void {
     state.activeProjectId = w.projectId
   }
   state.agentScope = scope
-  state.homeOpen = false
   state.memoryOpen = false
   state.historyOpen = false
   state.paletteOpen = false
@@ -1127,7 +1121,7 @@ export async function pickFolder(opts: PickFolderOptions = {}): Promise<string |
 /**
  * §7 — creating a project is a sheet, not a folder picker (see
  * NewProjectDialog). Which of the three sources it opens on is chosen before
- * the sheet, on the start page, so the first click already says something.
+ * the sheet, so the first click already says something.
  */
 export function newProject(mode: NewProjectSource['kind'] = 'scratch'): void {
   state.newProjectMode = mode
@@ -1315,13 +1309,13 @@ export function selectWorkspace(id: string): void {
   const w = state.workspaces.find((x) => x.id === id)
   if (w && w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
   remember(id)
-  state.homeOpen = false
 }
 
-/* ── the start page ────────────────────────────────────────────────────
- * Recency is the one thing the start page needs that the core does not
- * store: it is a property of this machine's habits, not of the projects.
- * Ids only, so a workspace that disappears simply drops out of the list.
+/* ── recency ───────────────────────────────────────────────────────────
+ * Which workspace you were last in, per project, so `selectProject` resumes
+ * one rather than restarting it. A property of this machine's habits, not of
+ * the projects, so the core does not store it. Ids only, so a workspace that
+ * disappears simply drops out of the list.
  */
 const RECENT_KEY = 'cockpit.recent'
 const RECENT_MAX = 8
@@ -1341,25 +1335,6 @@ function remember(id: string): void {
   const next = [id, ...recentIds.value.filter((x) => x !== id)].slice(0, RECENT_MAX)
   recentIds.value = next
   localStorage.setItem(RECENT_KEY, JSON.stringify(next))
-}
-
-/** The recent list, resolved against what actually exists right now. */
-export const recentWorkspaces = computed<Workspace[]>(() =>
-  recentIds.value
-    .map((id) => state.workspaces.find((w) => w.id === id))
-    .filter((w): w is Workspace => !!w && w.kind !== 'group'),
-)
-
-export function openHome(): void {
-  state.homeOpen = true
-  state.paletteOpen = false
-}
-
-/** Leaving the start page needs somewhere to go; with no project there is not. */
-export const canLeaveHome = computed(() => state.projects.length > 0)
-
-export function closeHome(): void {
-  if (canLeaveHome.value) state.homeOpen = false
 }
 
 export function applyTheme(): void {

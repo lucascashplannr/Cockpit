@@ -13,12 +13,11 @@ import SettingsDialog from './components/SettingsDialog.vue'
 import TopicDialog from './components/TopicDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
-import HomeView from './components/HomeView.vue'
 import ReviewTools from './components/ReviewTools.vue'
 import TrafficLights from './components/TrafficLights.vue'
 import ColumnSplitter from './components/ColumnSplitter.vue'
 import {
-  LAYOUT_LIMITS, activeWorkspace, canLeaveHome, client, state, goTo, guard, keyTargets, layout,
+  LAYOUT_LIMITS, activeWorkspace, client, state, goTo, guard, keyTargets, layout,
   requestPlan, resetColumnWidth, saveLayout, setColumnWidth,
 } from './core/store.js'
 
@@ -55,14 +54,9 @@ function onKey(e: KeyboardEvent) {
     else if (state.historyOpen) state.historyOpen = false
     else if (state.memoryOpen) state.memoryOpen = false
     else if (state.reviewOpen) state.reviewOpen = false
-    else if (state.homeOpen && canLeaveHome.value) state.homeOpen = false
     return
   }
   if (typing) return
-
-  // The start page covers the shell, so the shell's shortcuts would act on
-  // something nobody can see. Only ⌘K and Escape, handled above, cross it.
-  if (state.homeOpen) return
 
   // ⌘1 is the Agent, because the Agent is what the window is for; the review
   // tools follow it. Read from the same list the strips draw, so a number can
@@ -180,12 +174,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <ConnectionBanner />
     <Toast />
 
-    <!-- Last, and over everything: the start page is the whole window. -->
-    <HomeView v-if="state.homeOpen" />
-
-
-    <!-- Over even that: the native buttons floated above the start page, and
-         these stand in for them (see TrafficLights). -->
+    <!-- Over everything: the native buttons are drawn rather than laid out,
+         so they float above whatever the window is showing (TrafficLights). -->
     <TrafficLights />
   </div>
 </template>

@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { MonitorCog, Moon, Plus, Search, SlidersHorizontal, Sun } from '@lucide/vue'
-import Mark from './brand/Mark.vue'
-import { activityFor, cycleTheme, newProject, openHome, selectProject, state } from '../core/store.js'
+import { activityFor, cycleTheme, newProject, selectProject, state } from '../core/store.js'
 
 /**
- * The far-left rail: the mark, then one square per project, then add.
+ * The far-left rail: one square per project, then add.
  * Deliberately iconless for the projects themselves — a two-letter monogram
  * reads faster than a generic folder glyph and never needs an icon set.
  */
@@ -60,18 +59,6 @@ const themeLabel = computed(() =>
 
 <template>
   <nav class="rail">
-    <!-- The mark reads as the zeroth project: same tile, same vertical axis,
-         and it selects the start page the way the others select a project.
-         Not `.brand` — that is Mark's own root class, and this component's
-         scope id lands on it too. -->
-    <button class="tile mark" title="Start page" @click="openHome">
-      <Mark :height="27" />
-    </button>
-
-    <!-- Under it: what is above the rule belongs to the app, what is below
-         belongs to your projects. -->
-    <div class="rule" />
-
     <div class="tiles">
       <button
         v-for="p in projects"
@@ -108,11 +95,10 @@ const themeLabel = computed(() =>
     <!-- ⌘K reaches every project, so it belongs to the one column that does
          too. It spent a moment at the head of the workspace list, which was
          wrong for the same reason the title band was wrong for the workspace's
-         name: that column is one project's, and this search is not.
-         At the *head* of this column it was wrong differently: an icon-btn on
-         its own between the mark and the rule, in a band that holds nothing
-         else — a group of one, which the eye reads as a leftover. It is an act
-         and not a destination, and every other act in this rail is down here. -->
+         name: that column is one project's, and this search is not. It spent
+         another at the head of *this* column, alone above the projects, where
+         it read as a group of one. It is an act and not a destination, and
+         every other act in this rail is down here. -->
     <button class="icon-btn find" title="Search or run a command  ⌘K" @click="state.paletteOpen = true">
       <Search />
     </button>
@@ -136,10 +122,9 @@ const themeLabel = computed(() =>
   align-items: center;
   /* The window's three buttons are drawn at (10, 19) and float over whatever
      is under them (TrafficLights). Nothing else in this column may start above
-     them, so the rail begins where they end rather than at --col-top — and
-     then a gap again, because ending where they end put the mark flush against
-     them and the two read as one cluster of round things. */
-  padding: calc(var(--lights-h) + 10px) 0 12px;
+     them, so the rail begins where they end rather than at --col-top, and
+     then a gap again so the first tile is not flush against them. */
+  padding: calc(var(--lights-h) + 12px) 0 12px;
   /* The strip the lights sit in is the window's own, so dragging it moves the
      window; every tile below opts back out. */
   -webkit-app-region: drag;
@@ -155,11 +140,10 @@ const themeLabel = computed(() =>
    palette — the field it used to be was an affordance for a keystroke, never
    the search itself.
    And an `icon-btn` rather than a `tile`, which is the whole of the polish: a
-   tile is a *destination* — the mark and the projects are places you go, and
-   they are filled and 44px square to say so. Search is an act. Giving it a
-   tile made it read as a fourth project sitting above the rule, at exactly the
-   weight of the app's own mark. It is the same family as the settings and
-   theme buttons, unfilled until touched — and now it stands with them. */
+   tile is a *destination* — the projects are places you go, and they are
+   filled and 44px square to say so. Search is an act. Given a tile it read as
+   one more project. It is the same family as the settings and theme buttons,
+   unfilled until touched, and it stands with them. */
 .find { color: var(--text-dim); }
 .find:hover { color: var(--text); background: var(--hover); }
 
@@ -187,10 +171,6 @@ const themeLabel = computed(() =>
 .tile:hover { background: var(--panel-raised); border-color: var(--line-strong); color: var(--text); }
 .tile:active { transform: scale(0.94); }
 
-/* The mark carries its own ink wherever it is drawn, and does not darken on
-   hover the way a monogram does — the tile under it already answers. */
-.tile.mark { color: var(--brand-ink); }
-
 .tiles {
   display: flex;
   flex-direction: column;
@@ -212,13 +192,6 @@ const themeLabel = computed(() =>
 /* Adding a project is a different kind of act from switching to one. */
 .tile.add { margin-top: 4px; }
 
-.rule {
-  flex: none;
-  width: 28px;
-  height: 1px;
-  margin: 14px 0 14px;
-  background: var(--line);
-}
 
 /* tokens.css: "one restrained accent, and colour reserved for meaning rather
    than decoration". A hue per project was decoration — the monogram already

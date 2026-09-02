@@ -91,17 +91,16 @@ function close(c: Conversation): void {
  * Having a finished thread on screen is having read it — that is what clears
  * the "waiting for you" marks in the rail and the list.
  *
- * On screen, and not merely mounted: the panel is built under the start page,
- * which covers the whole window, so without the `homeOpen` guard a launch
- * would quietly mark the last thread read over a page nobody can see through.
- * The same guard is why the start page is in the dependency list: leaving it
- * is the moment the thread actually becomes visible.
+ * This carried a `homeOpen` guard while a start page covered the whole window
+ * on launch: without it the last thread was marked read behind a page nobody
+ * could see through. The panel is the window now, so mounted and on screen are
+ * the same thing and the guard has nothing left to guard.
  */
 watch(
-  () => [selected.value?.id, selected.value?.status, selected.value?.endedAt, state.homeOpen],
+  () => [selected.value?.id, selected.value?.status, selected.value?.endedAt],
   () => {
     const c = selected.value
-    if (c && !state.homeOpen) markThreadRead(c)
+    if (c) markThreadRead(c)
   },
   { immediate: true },
 )
@@ -606,7 +605,7 @@ function dotClass(s: Conversation): string {
              it is the one that gets to say the app's name in full. The
              question stays under it rather than instead of it: the wordmark
              says where you are, and only the line says what it will act on. -->
-        <Wordmark :height="36" class="wm" />
+        <Wordmark :height="48" class="wm" />
         <p class="ask">
           What should
           <span class="target">{{ label.name }}</span>
@@ -915,7 +914,10 @@ function dotClass(s: Conversation): string {
 .hero { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .heroinner { width: 100%; max-width: 620px; }
 .wm {
-  margin: 0 auto 10px;
+  /* The gap tracks the mark: at 48 the wordmark is its own block rather than a
+     heading, and 10px under it read as the line being a subtitle glued to the
+     logo instead of the question it is. */
+  margin: 0 auto 16px;
   color: var(--brand-ink);
   --wm-lead: var(--accent);
 }
