@@ -14,9 +14,16 @@ import { startTopic, mergeTopic, pushTopic, stopTopic, rebaseTopic } from '../co
  * you were going for was in the menu this time, because a probe had decided
  * you were level with the base.
  *
- * They are never disabled, only quiet: the count and the colour say whether
- * there is anything to do, and clicking with nothing to do produces a plan
- * that says so, which is the honest answer and costs one dialog (§3.7).
+ * Send and Push go quiet *and* stop taking clicks when there is nothing to
+ * send or push. They used to stay live on the argument that a plan saying
+ * "nothing to do" is the honest answer and costs one dialog — true, and it
+ * turned out to be one dialog too many: these two sit next to Start, they are
+ * pressed on reflex, and a modal that exists only to say "no" trains people to
+ * dismiss modals. The count and the colour already said it; the button now
+ * agrees with them.
+ *
+ * The tooltip is on the wrapper rather than the button: a disabled button
+ * fires no mouse events, so a `title` on it is a reason nobody can read.
  *
  * The agent is not among them: selecting the topic already aimed the
  * conversation at it.
@@ -28,6 +35,18 @@ const f = computed(() => props.group.topic)
 const ws = computed(() => props.group.workspaces)
 
 const ahead = computed(() => ws.value.reduce((n, w) => n + (w.git?.ahead ?? 0), 0))
+/**
+ * §4 — what Send would land, summed. `ahead` is against each branch's own
+ * remote and says nothing about the base: push the topic and it reads zero
+ * while every commit in it is still unmerged.
+ */
+const toLand = computed(() =>
+  ws.value.reduce((n, w) => n + (w.git?.aheadOfBase ?? 0), 0),
+)
+/** A repository that cannot tell keeps the button live — see `aheadOfBase`. */
+const landUnknown = computed(() =>
+  ws.value.some((w) => !!w.repo && !!w.git && w.git.aheadOfBase === null),
+)
 const behind = computed(() => ws.value.reduce((n, w) => n + (w.git?.behind ?? 0), 0))
 /** Uncommitted work: merging refuses over it, so the button says so up front. */
 const dirty = computed(() =>
@@ -59,10 +78,25 @@ const sendLabel = computed(() => (base.value ? 'Send to ' + base.value : 'Send t
 const catchUpFrom = computed(() => (base.value ? 'from ' + base.value : 'from the base'))
 
 const mergeTitle = computed(() => {
+  if (!canMerge.value) return 'Nothing to send: ' + (base.value ?? 'the base') + ' already has it all'
   if (dirty.value) return 'Commit first — sending refuses over uncommitted changes'
-  if (!ahead.value) return sendLabel.value + ' — nothing committed to send yet'
-  return sendLabel.value + ' — ' + ahead.value + ' commit(s), one --no-ff merge per repository'
+  return sendLabel.value + ' — ' + toLand.value + ' commit(s), one --no-ff merge per repository'
 })
+
+/**
+ * §16 — `topic.push` skips a repository that is level with its remote, and
+ * pushes one that has no upstream yet whatever its count says: a branch nobody
+ * has ever pushed is not "nothing to push", it is the first push. This has to
+ * agree with that or the button lies about what the plan would do.
+ */
+const canPush = computed(() =>
+  ws.value.some((w) => !!w.repo && !!w.git && (w.git.ahead > 0 || !w.git.upstream)),
+)
+
+/** Nothing committed yet is nothing to land. Uncommitted work is a different
+ *  answer — there *is* something to send, and the plan says what is in the way,
+ *  which is worth a dialog in a way that "no" is not. */
+const canMerge = computed(() => toLand.value > 0 || landUnknown.value)
 
 const catchUpTitle = computed(() =>
   behind.value
@@ -78,9 +112,10 @@ const catchUpTitle = computed(() =>
  * the topic-wide verb the commit box stopped being.
  */
 const pushTitle = computed(() =>
-  ahead.value
-    ? 'Push every branch of this topic to origin — ' + ahead.value + ' commit(s)'
-    : 'Push every branch of this topic — nothing to push yet',
+  canPush.value
+    ? 'Push every branch of this topic to origin' +
+      (ahead.value ? ' — ' + ahead.value + ' commit(s)' : ' — one has never been pushed')
+    : 'Nothing to push: every branch is level with its remote',
 )
 
 async function toggle() {
@@ -109,28 +144,32 @@ async function toggle() {
     <!-- The counterpart of a per-repository commit: nothing about a push is
          specific to one repository's diff, so it is one act across all of
          them. -->
-    <button
-      class="btn ghost"
-      :class="{ nudge: ahead > 0 }"
-      :title="pushTitle"
-      @click="pushTopic(f!.id)"
-    >
-      <ArrowUp /><span class="vl">Push</span>
-      <span v-if="ahead" class="cnt">{{ ahead }}</span>
-    </button>
+    <span class="verb" :title="pushTitle">
+      <button
+        class="btn ghost"
+        :class="{ nudge: canPush }"
+        :disabled="!canPush"
+        @click="pushTopic(f!.id)"
+      >
+        <ArrowUp /><span class="vl">Push</span>
+        <span v-if="ahead" class="cnt">{{ ahead }}</span>
+      </button>
+    </span>
 
     <!-- §4 — the step the lifecycle was missing: the branch goes onto the
          base, in every repository the topic spans. Green once there is
          something committed to send and nothing in the way of sending it. -->
-    <button
-      class="btn ghost"
-      :class="{ ready: ahead && !dirty }"
-      :title="mergeTitle"
-      @click="mergeTopic(f!.id, false)"
-    >
-      <GitMerge /><span class="vl">{{ sendLabel }}</span>
-      <span v-if="ahead" class="cnt">{{ ahead }}</span>
-    </button>
+    <span class="verb" :title="mergeTitle">
+      <button
+        class="btn ghost"
+        :class="{ ready: canMerge && !dirty }"
+        :disabled="!canMerge"
+        @click="mergeTopic(f!.id, false)"
+      >
+        <GitMerge /><span class="vl">{{ sendLabel }}</span>
+        <span v-if="toLand" class="cnt">{{ toLand }}</span>
+      </button>
+    </span>
     <!-- One plan across every repository it spans, stopping at the first
          conflict and keeping what already replayed. -->
     <button
@@ -155,6 +194,9 @@ async function toggle() {
   gap: 2px;
   flex: none;
 }
+/* Carries the tooltip for the button inside it, which may be disabled and
+   would then never be hovered at all. */
+.verb { display: inline-flex; }
 .verbs .btn {
   height: 26px;
   padding: 0 9px;

@@ -96,8 +96,23 @@ export interface GitState {
    * cannot be written without knowing it is dev.
    */
   base: string | null
+  /** Ahead of `upstream` — this branch against its own tracking ref. */
   ahead: number
   behind: number
+  /**
+   * Commits on this branch that `base` does not have — what Send would land.
+   *
+   * Distinct from `ahead`, and the distinction is not academic: push a topic
+   * branch and `ahead` drops to zero while everything it holds is still
+   * unmerged. The Send button counted `ahead` for a long time and so read
+   * "nothing to send" the moment you pushed, which was survivable while it was
+   * only a label and is not once the button is disabled by it.
+   *
+   * Null when it cannot be told — no base, or a base that does not resolve
+   * locally. Unknown is not zero: the button stays live rather than blocking
+   * on ignorance.
+   */
+  aheadOfBase: number | null
   staged: number
   unstaged: number
   untracked: number

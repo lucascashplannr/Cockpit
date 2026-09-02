@@ -54,6 +54,7 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     base,
     ahead: 0,
     behind: 0,
+    aheadOfBase: null,
     staged: 0,
     unstaged: 0,
     untracked: 0,
@@ -92,6 +93,15 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     } else if (line.startsWith('? ')) {
       state.untracked++
     }
+  }
+
+  // §4 — what Send would land, which is not what `ahead` counts. Skipped
+  // when there is nothing to compare against, and when the branch *is* the
+  // base: a base branch has nothing to send to itself.
+  if (state.base && state.branch && state.branch !== state.base) {
+    state.aheadOfBase = await countAhead(cwd, state.base)
+  } else if (state.branch && state.branch === state.base) {
+    state.aheadOfBase = 0
   }
 
   if (head.ok && head.stdout.trim()) {
@@ -372,4 +382,23 @@ export async function log(cwd: string, limit = 40) {
         refs: refs ?? '',
       }
     })
+}
+
+
+/**
+ * Commits on HEAD that `base` does not have. `origin/<base>` first — the base
+ * a topic is measured against is the shared one, and a local `main` left
+ * behind months ago would flatter every count on the machine.
+ */
+async function countAhead(cwd: string, base: string): Promise<number | null> {
+  for (const ref of ['origin/' + base, base]) {
+    const r = await git(cwd, ['rev-list', '--count', ref + '..HEAD'], 15_000)
+    if (r.ok) {
+      const n = Number(r.stdout.trim())
+      if (Number.isFinite(n)) return n
+    }
+  }
+  // Neither ref resolved: a repository with no remote and no local base, or a
+  // base that has never existed here. Unknown, and unknown is not zero.
+  return null
 }

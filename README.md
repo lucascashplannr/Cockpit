@@ -144,7 +144,10 @@ for an agent. Both settings live in `~/.cockpit`, never in the repository — a 
 convention belongs in `cockpit.yaml`, which is versioned and reviewed; "do not let me commit
 to main on this laptop" is not a team convention.
 
-**Push** is the topic-wide verb, on the topic's own bar beside Send and Catch up. It is the
+**Push** is the topic-wide verb, on the topic's own bar beside Send and Catch up. Both it and
+Send go dead when there is nothing to do — a modal whose only job is to say "no" trains
+people to dismiss modals — with the reason on the wrapper rather than the button, because a
+disabled button fires no mouse events and a `title` on one is a reason nobody can read. It is the
 counterpart of the above and for the same reason: a commit message describes a diff and a
 topic's repositories do not share one, but a push carries no words, so doing every branch at
 once invents nothing. It stops at the first refusal and keeps the branches that went — two
@@ -192,7 +195,10 @@ operations that rewrite history.
 **Merge** is the step that used to be missing, and its absence was the hole in the middle of
 the product: a topic could be opened, worked in, rebased and closed, and nothing ever put
 it back on `main`. `merge` goes the other way — it brings the base *into* the branch to catch
-it up. Merging runs in each repository itself, never in the branch's own folder: git will
+it up. What it counts is `aheadOfBase`, not `ahead`: the second is measured against each
+branch's own remote, so pushing a topic dropped it to zero while everything in it was still
+unmerged — survivable while it was only a label on a button, and not once the button is
+disabled by it. Merging runs in each repository itself, never in the branch's own folder: git will
 not hold one branch in two checkouts, and the main checkout is already sitting on the base,
 which is exactly what the layout buys you.
 
