@@ -51,21 +51,42 @@ const git = computed(() => (w.value?.git?.operation ? null : (w.value?.git ?? nu
  * code moves, which "Rebase" never did. Falls back to the generic noun rather
  * than inventing a branch name when the probe has not answered yet.
  */
-/** Honest in both states, because it is now visible in both. */
+/**
+ * §3.9 — the same rule the topic bar got: nothing to push, nothing to press.
+ *
+ * A branch with no upstream is not "nothing to push" even at zero commits
+ * ahead — it has never been sent anywhere, and `git push -u` is what sends it.
+ * That is the one case where the counter reads 0 and the verb still means
+ * something.
+ */
+const canPush = computed(() => {
+  const g = git.value
+  return !!g && (g.ahead > 0 || !g.upstream)
+})
+
+/** Honest in both states, and when it is off it says why. */
 const pushTitle = computed(() => {
   const g = w.value?.git
   if (!g) return 'Push this branch'
   if (g.ahead) return 'Push this branch — ' + g.ahead + ' commit(s) ahead'
   return g.upstream
-    ? 'Push this branch — nothing to push, ' + g.upstream + ' is up to date'
+    ? 'Nothing to push: ' + g.upstream + ' already has this branch'
     : 'Push this branch — no upstream yet, this would set one'
 })
+
+/**
+ * `behindBase`, not `behind`: the second is this branch against its own remote,
+ * which is a different question and stops being the base's distance the moment
+ * the branch is pushed. Catch up replays onto the base, so it counts the base.
+ */
+const behindBase = computed(() => git.value?.behindBase ?? 0)
 
 const catchUpTitle = computed(() => {
   const g = w.value?.git
   const from = g?.base ? 'Catch up from ' + g.base : 'Catch up with the base'
   if (!g) return from
-  return g.behind ? from + ' — ' + g.behind + ' commit(s) behind' : from + ' — already up to date'
+  const n = g.behindBase ?? 0
+  return n ? from + ' — ' + n + ' commit(s) behind' : from + ' — already up to date'
 })
 
 const running = computed(
@@ -118,32 +139,36 @@ async function undo() {
          — you reach for it because you decided to, not because the window
          noticed something. Hiding it until the app agreed there was something
          to send made it the only verb you had to go looking for, in a menu
-         labelled "everything else". It lights up when there is something
-         ahead; it is present either way. -->
-    <button
-      v-if="git"
-      class="btn ghost"
-      :class="{ ready: git.ahead > 0 }"
-      :disabled="busy"
-      :title="pushTitle"
-      @click="requestPlan(w.id, 'push')"
-    >
-      <ArrowUpFromLine /><span class="vl">Push</span>
-      <span v-if="git.ahead" class="cnt">{{ git.ahead }}</span>
-    </button>
+         labelled "everything else". It is present either way — and inert when
+         there is nothing to send, because a verb that is always live is one
+         whose only answer half the time is a dialog saying "no".
+
+         The tooltip is on the wrapper: a disabled button fires no mouse
+         events, so a `title` on it is a reason nobody can read. -->
+    <span v-if="git" class="verb" :title="pushTitle">
+      <button
+        class="btn ghost"
+        :class="{ ready: canPush }"
+        :disabled="busy || !canPush"
+        @click="requestPlan(w.id, 'push')"
+      >
+        <ArrowUpFromLine /><span class="vl">Push</span>
+        <span v-if="git.ahead" class="cnt">{{ git.ahead }}</span>
+      </button>
+    </span>
     <!-- Permanent, like Push and for the same reason: a verb reached for this
          often must not move, and a bar that changes shape as probes come back
          is one you cannot aim at without looking. -->
     <button
       v-if="git"
       class="btn ghost"
-      :class="{ nudge: git.behind > 0 }"
+      :class="{ nudge: behindBase > 0 }"
       :disabled="busy"
       :title="catchUpTitle"
       @click="requestPlan(w.id, 'rebase')"
     >
       <GitCompareArrows /><span class="vl">Catch up</span>
-      <span v-if="git.behind" class="cnt">{{ git.behind }}</span>
+      <span v-if="behindBase" class="cnt">{{ behindBase }}</span>
     </button>
 
     <OverflowMenu label="Everything else you can do here" :disabled="busy">
@@ -170,6 +195,9 @@ async function undo() {
   gap: 2px;
   flex: none;
 }
+/* Carries the tooltip for the button inside it, which may be disabled and
+   would then never be hovered at all. */
+.verb { display: inline-flex; }
 /* Sized for the column bar rather than for a 50px band: the same height as the
    instruments beside them, so the row reads as one strip of controls and not
    as verbs visiting from somewhere else. */

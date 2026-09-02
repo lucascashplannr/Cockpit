@@ -90,8 +90,16 @@ const kindLabel = computed(() =>
         <span v-if="w.git.ahead" class="c ahead" :title="w.git.ahead + ' commit(s) ahead'">
           <ArrowUp class="sm" />{{ w.git.ahead }}
         </span>
-        <span v-if="w.git.behind" class="c behind" :title="w.git.behind + ' commit(s) behind'">
-          <ArrowDown class="sm" />{{ w.git.behind }}
+        <!-- Behind the *base*, not behind `upstream`: this is the number Catch
+             up acts on, and the two stop agreeing the moment the branch is
+             pushed. What the branch's own remote holds is a different fact and
+             belongs to a verb that does not exist yet. -->
+        <span
+          v-if="w.git.behindBase"
+          class="c behind"
+          :title="w.git.behindBase + ' commit(s) behind ' + (w.git.base ?? 'the base')"
+        >
+          <ArrowDown class="sm" />{{ w.git.behindBase }}
         </span>
         <span v-if="dirty" class="c dirty" :title="dirty + ' uncommitted change(s)'">
           <i class="pip" />{{ dirty }}

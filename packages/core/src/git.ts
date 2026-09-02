@@ -55,6 +55,7 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     ahead: 0,
     behind: 0,
     aheadOfBase: null,
+    behindBase: null,
     staged: 0,
     unstaged: 0,
     untracked: 0,
@@ -102,6 +103,14 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     state.aheadOfBase = await countAhead(cwd, state.base)
   } else if (state.branch && state.branch === state.base) {
     state.aheadOfBase = 0
+  }
+
+  // §4 — and what Catch up would replay this branch on top of, which is not
+  // what `behind` counts either. No `!== base` exception here: a checkout
+  // sitting *on* the base is behind it by exactly the commits its remote has
+  // and it does not, which is the true answer and the one Catch up acts on.
+  if (state.base && state.branch) {
+    state.behindBase = await countBehind(cwd, state.base)
   }
 
   if (head.ok && head.stdout.trim()) {
@@ -391,8 +400,21 @@ export async function log(cwd: string, limit = 40) {
  * behind months ago would flatter every count on the machine.
  */
 async function countAhead(cwd: string, base: string): Promise<number | null> {
+  return countRange(cwd, base, (ref) => ref + '..HEAD')
+}
+
+/** The other direction, and the same two refs tried in the same order. */
+async function countBehind(cwd: string, base: string): Promise<number | null> {
+  return countRange(cwd, base, (ref) => 'HEAD..' + ref)
+}
+
+async function countRange(
+  cwd: string,
+  base: string,
+  range: (ref: string) => string,
+): Promise<number | null> {
   for (const ref of ['origin/' + base, base]) {
-    const r = await git(cwd, ['rev-list', '--count', ref + '..HEAD'], 15_000)
+    const r = await git(cwd, ['rev-list', '--count', range(ref)], 15_000)
     if (r.ok) {
       const n = Number(r.stdout.trim())
       if (Number.isFinite(n)) return n

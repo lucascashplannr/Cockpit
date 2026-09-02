@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  ArrowDown, ArrowUp, BookMarked, FileDiff, GitBranch, History, Layers, MousePointerClick,
-  PanelRight,
+  BookMarked, FileDiff, GitBranch, History, Layers, MousePointerClick, PanelRight,
 } from '@lucide/vue'
 import AgentTab from './tabs/AgentTab.vue'
 import ConflictPanel from './ConflictPanel.vue'
@@ -49,16 +48,27 @@ const covered = computed(() =>
 /**
  * The branch is named only when there is exactly one of it. Across a topic
  * there is no single branch to name, and picking one would be arbitrary.
+ *
+ * Ahead and behind used to be summed here too, and drawn as an ↑/↓ pair in the
+ * run below. They are gone from this line — not from the bar. The same two
+ * numbers ride on Push and on Catch up, three inches to the right, on the very
+ * buttons that act on them; printing them twice on one 52px row made the bar
+ * read as crowded while saying nothing it had not already said. A count next
+ * to its verb is worth more than a count next to a glyph.
  */
 const git = computed(() => {
   const ws = covered.value.filter((x) => x.git)
   if (!ws.length) return null
-  return {
-    branch: ws.length === 1 ? (ws[0]!.git!.branch ?? 'detached') : null,
-    ahead: ws.reduce((n, x) => n + (x.git?.ahead ?? 0), 0),
-    behind: ws.reduce((n, x) => n + (x.git?.behind ?? 0), 0),
-  }
+  return { branch: ws.length === 1 ? (ws[0]!.git!.branch ?? 'detached') : null }
 })
+
+/**
+ * Named only when there is one to name, and not when it is already the word
+ * beside it.
+ */
+const branchName = computed(() =>
+  git.value?.branch && git.value.branch !== label.value.name ? git.value.branch : null,
+)
 
 const changed = computed(() =>
   covered.value.reduce((n, x) => {
@@ -148,13 +158,25 @@ const servers = computed(() => {
           <!-- §2 — and the one control that moves this checkout. Named only
                when there is one to name, and not when it is already the name
                beside it: on a branch the two are the same word. Across a topic
-               there is no single branch at all. -->
+               there is no single branch at all.
+
+               Pressable only outside a topic, which is the case it was built
+               for: "I work on dev and merge to main" is one checkout moving
+               between two branches that already exist. Inside a topic the
+               branch is not a choice — it *is* the topic, one per repository,
+               in a folder the topic owns — so offering a switch there offers to
+               take the checkout out of the thing it belongs to. The name stays,
+               because "which branch is this" is still a fair question; only the
+               invitation goes. -->
           <BranchMenu
-            v-if="git?.branch && git.branch !== label.name"
+            v-if="branchName && !w.topicId"
             class="br"
             :workspace-id="w.id"
-            :branch="git.branch"
+            :branch="branchName"
           />
+          <span v-else-if="branchName" class="br brf" :title="'On ' + branchName + ' — this topic’s branch'">
+            <GitBranch class="sm" /><span class="bn">{{ branchName }}</span>
+          </span>
         </span>
 
         <span class="rule" />
@@ -174,15 +196,11 @@ const servers = computed(() => {
             <span class="v">{{ covered.length }}</span>
           </span>
 
+          <!-- The count is the way into the review layer: what changed is the
+               reason you would open it at all. It is the one number here with
+               no verb of its own to ride on — ahead and behind have Push and
+               Catch up, and were dropped from this run for it. -->
           <template v-if="git">
-            <span class="stat num">
-              <span class="v sync">
-                <span :class="{ on: git.ahead }"><ArrowUp class="sm" />{{ git.ahead }}</span>
-                <span :class="{ warn: git.behind }"><ArrowDown class="sm" />{{ git.behind }}</span>
-              </span>
-            </span>
-            <!-- The count is the way into the review layer: what changed is the
-                 reason you would open it at all. -->
             <button
               class="stat num act"
               :title="changed + ' uncommitted change(s) — open the diff'"
@@ -413,6 +431,21 @@ const servers = computed(() => {
  * chip up instead is its own furniture: the icon, the chevron and the padding
  * are all `flex: none`, so it cannot collapse to nothing. */
 .br { flex: 0 200 auto; min-width: 44px; max-width: 26ch; }
+/* The branch as a fact: the chip's shape and colour, minus the invitation —
+   no chevron, no hover, no press. Same box, so the row does not move when the
+   same repository is looked at from inside a topic and from outside one. */
+.brf {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 5px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.brf .lucide { flex: none; width: 12px; height: 12px; opacity: 0.85; }
+.brf .bn { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Baseline, not centre. Centred, the 10px kicker floats a couple of pixels
    above the line the name sits on and the pair reads as two things that missed
@@ -474,13 +507,6 @@ const servers = computed(() => {
   white-space: nowrap;
 }
 .stat .v.warn { color: var(--warn); }
-.sync { gap: 8px; }
-.sync span { display: inline-flex; align-items: center; gap: 2px; color: var(--text-dim); font-weight: 500; }
-.sync .lucide { width: 12px; height: 12px; stroke-width: 2.4; }
-/* Zero stays dim: a count of nothing is not news. */
-.sync span.on { color: var(--ok); }
-.sync span.warn { color: var(--warn); }
-
 /* The changed count is a button, because it is the reason you would open the
    review layer at all: what moved is what there is to read. */
 .stat.act { padding: 0 6px; }

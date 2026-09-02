@@ -3,7 +3,14 @@
  * MAJOR must match exactly: a mismatch means the UI refuses to talk to the
  * core rather than mis-decoding it. MINOR may differ (additive changes only).
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 4 } as const
+/**
+ * 2.5 — `GitState.behindBase`. Not a new method, but the same failure it
+ * guards against: a core that has not been restarted sends no such field, the
+ * window reads it as zero, and Catch up says "already up to date" while the
+ * base has moved on. A missing number that looks like a real one is worse than
+ * a missing method, which at least names itself.
+ */
+export const PROTOCOL_VERSION = { major: 2, minor: 5 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

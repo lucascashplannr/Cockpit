@@ -145,7 +145,8 @@ convention belongs in `cockpit.yaml`, which is versioned and reviewed; "do not l
 to main on this laptop" is not a team convention.
 
 **Push** is the topic-wide verb, on the topic's own bar beside Send and Catch up. Both it and
-Send go dead when there is nothing to do — a modal whose only job is to say "no" trains
+Send go dead when there is nothing to do — as does the per-repository Push on the workspace
+bar, on the same rule — a modal whose only job is to say "no" trains
 people to dismiss modals — with the reason on the wrapper rather than the button, because a
 disabled button fires no mouse events and a `title` on one is a reason nobody can read. It is the
 counterpart of the above and for the same reason: a commit message describes a diff and a

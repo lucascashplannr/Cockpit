@@ -233,7 +233,14 @@ export async function plan(
         warnings.push('Detached HEAD: nothing to push.')
         break
       }
-      const force = ws.git.behind > 0 && ws.git.ahead > 0
+      // Diverged from *its own* remote, which is the only divergence a push
+      // can rewrite. `behind` answers against whatever `upstream` happens to
+      // be, and for a topic branch that is `origin/<base>` until the first
+      // push — so a fresh branch with two commits, on a base that had moved,
+      // planned a `--force-with-lease` over a ref that did not exist yet and
+      // dropped the `-u` that would have created it.
+      const own = ws.git.upstream === 'origin/' + branch
+      const force = own && ws.git.behind > 0 && ws.git.ahead > 0
       steps.push({
         title: force ? 'Force-push (with lease) ' + branch : 'Push ' + branch,
         command: force

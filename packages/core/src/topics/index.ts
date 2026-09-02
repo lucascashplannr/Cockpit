@@ -682,7 +682,12 @@ export async function pushPlan(
     // Diverged: the remote has commits this branch does not. Force-with-lease
     // is what `git.plan` does for one repository and the reasoning is the same
     // — but across a topic it is worth naming the repository it applies to.
-    const force = g.behind > 0 && g.ahead > 0
+    //
+    // `own` for the same reason it is there: a topic branch tracks
+    // `origin/<base>` until it is pushed, so `behind` is the base's distance
+    // and forcing on it would rewrite a remote branch that does not exist.
+    const own = g.upstream === 'origin/' + g.branch
+    const force = own && g.behind > 0 && g.ahead > 0
     steps.push({
       title: force
         ? fresh.name + ': force-push (with lease) ' + g.branch

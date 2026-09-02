@@ -47,7 +47,14 @@ const toLand = computed(() =>
 const landUnknown = computed(() =>
   ws.value.some((w) => !!w.repo && !!w.git && w.git.aheadOfBase === null),
 )
-const behind = computed(() => ws.value.reduce((n, w) => n + (w.git?.behind ?? 0), 0))
+/**
+ * §4 — what Catch up would replay onto, summed, and `behindBase` rather than
+ * `behind` for the same reason Send counts `aheadOfBase`: `behind` is measured
+ * against whatever `upstream` happens to be, and a topic branch tracks
+ * `origin/<base>` only until the first push. After it this read zero while the
+ * base had moved on — the one button whose job is to notice.
+ */
+const behind = computed(() => ws.value.reduce((n, w) => n + (w.git?.behindBase ?? 0), 0))
 /** Uncommitted work: merging refuses over it, so the button says so up front. */
 const dirty = computed(() =>
   ws.value.reduce((n, w) => n + (w.git?.staged ?? 0) + (w.git?.unstaged ?? 0), 0),

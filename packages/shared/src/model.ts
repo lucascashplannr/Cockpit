@@ -96,7 +96,18 @@ export interface GitState {
    * cannot be written without knowing it is dev.
    */
   base: string | null
-  /** Ahead of `upstream` — this branch against its own tracking ref. */
+  /**
+   * Ahead of and behind `upstream` — this branch against its own tracking ref,
+   * and nothing else.
+   *
+   * Which ref that *is* changes under you, and that is the trap: a topic branch
+   * is created with `git branch <slug> origin/<base>`, so until it is pushed
+   * git tracks `origin/main` and these two read against the base. `git push -u`
+   * then repoints the upstream at `origin/<slug>` and the same two fields
+   * silently start answering a different question. Anything about the base must
+   * read `aheadOfBase` / `behindBase`; these two are for the branch's own
+   * remote — what a push sends, and what a pull would bring.
+   */
   ahead: number
   behind: number
   /**
@@ -113,6 +124,20 @@ export interface GitState {
    * on ignorance.
    */
   aheadOfBase: number | null
+  /**
+   * Commits `base` has that this branch does not — what Catch up would replay
+   * this branch on top of.
+   *
+   * The counterpart of `aheadOfBase`, and needed for the same reason. Catch up
+   * counted `behind` for a long time, which is right only for as long as the
+   * upstream happens to be `origin/<base>` — that is to say, until the first
+   * push. After it the count reads zero while the base has moved on, and the
+   * one button whose whole job is to notice that says "already up to date".
+   *
+   * Null when it cannot be told — no base, or a base that does not resolve
+   * locally. Unknown is not zero.
+   */
+  behindBase: number | null
   staged: number
   unstaged: number
   untracked: number

@@ -495,10 +495,12 @@ export function scopeLabel(scope: AgentScope | null): { kind: string; name: stri
     }
     default: {
       const w = state.workspaces.find((x) => x.id === scope.workspaceId)
-      // A checkout of a branch is a branch; a repository at its default
-      // branch is the repository; anything with no git in it is just a folder.
-      const kind = !w?.repo ? 'Folder' : w.kind === 'worktree' ? 'Branch' : 'Repository'
-      return { kind, name: w?.name ?? '' }
+      // A repository is a repository wherever it is checked out. The kicker
+      // labels the *name* beside it, and that name is the repository's in both
+      // cases — so "BRANCH Init" put a category on a word that was never in it,
+      // while the branch it meant was the chip to its right saying something
+      // else entirely. Anything with no git in it is just a folder.
+      return { kind: w?.repo ? 'Repository' : 'Folder', name: w?.name ?? '' }
     }
   }
 }
