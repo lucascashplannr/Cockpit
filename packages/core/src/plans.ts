@@ -367,7 +367,42 @@ export async function apply(planId: string): Promise<ApplyResult> {
       // The one failure that is not one. Git exits non-zero on a conflict
       // exactly as it does on a real error, so the exit code cannot tell them
       // apart — the repository can: an operation is now in progress there.
+      //
+      // Except when there is none. `git stash pop` writes markers into the
+      // working tree and unmerged entries into the index without starting
+      // anything: nothing to continue, nothing to abort, and the generic
+      // "stopped — see the journal" sent people looking for a failure that had
+      // not happened. The state is named here instead, and the Diff tab is
+      // where it is cleared.
       const operation = await probeOperation(step.cwd)
+      if (!operation) {
+        const unmerged = await git(step.cwd, ['diff', '--name-only', '--diff-filter=U'], 30_000)
+        const paths = unmerged.stdout.split('\n').filter(Boolean)
+        if (paths.length) {
+          const workspaceId = stored.stepOwner[i] ?? stored.workspaceIds[0] ?? null
+          const repo = workspaceId
+            ? (getWorkspace(workspaceId)?.name ?? basename(step.cwd))
+            : basename(step.cwd)
+          append({
+            type: 'git.conflict',
+            level: 'warn',
+            workspaceId,
+            payload: { operation: stored.operation, kind: 'merge', repo, paths },
+          })
+          lines.push('')
+          lines.push(
+            '[cockpit] ' + repo + ': ' + paths.length + ' file(s) came back with conflict ' +
+              'markers — ' + paths.join(', ') + '. Nothing is mid-operation: resolve them, then ' +
+              'mark them resolved in the Diff tab.',
+          )
+          return {
+            ok: false,
+            output: lines.join('\n'),
+            restorePoint,
+            remaining: stored.steps.length - i - 1,
+          }
+        }
+      }
       if (operation) {
         const workspaceId = stored.stepOwner[i] ?? stored.workspaceIds[0] ?? null
         const repo = workspaceId ? (getWorkspace(workspaceId)?.name ?? basename(step.cwd)) : basename(step.cwd)

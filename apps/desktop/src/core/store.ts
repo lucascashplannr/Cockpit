@@ -1472,11 +1472,21 @@ async function settlePlan(
     return
   }
   if (!res.ok) {
+    // The core writes a sentence into the output when it knows what happened —
+    // "N file(s) came back with conflict markers", say. Repeating "see the
+    // journal" over the top of an explanation the plan already produced is how
+    // a stash that half-applied looked like an unexplained failure.
+    const said = res.output
+      .split('\n')
+      .filter((l) => l.startsWith('[cockpit] '))
+      .pop()
     toast(
       'error',
-      plan.onFailure === 'halt'
-        ? 'stopped — what already succeeded was kept; see the journal'
-        : 'stopped — nothing was left behind; see the journal',
+      said
+        ? said.slice('[cockpit] '.length)
+        : plan.onFailure === 'halt'
+          ? 'stopped — what already succeeded was kept; see the journal'
+          : 'stopped — nothing was left behind; see the journal',
     )
     return
   }
@@ -1618,10 +1628,29 @@ export async function stashList(
   workspaceId: string,
 ): Promise<StashEntry[]> {
   try {
-    return await client.call('git.stashList', topicId ? { topicId } : { workspaceIds: [workspaceId] })
+    const rows = await client.call(
+      'git.stashList',
+      topicId ? { topicId } : { workspaceIds: [workspaceId] },
+    )
+    // The daemon outlives the window it was started from: `pnpm dev` reloads
+    // the renderer, the core keeps running, and a field added on one side
+    // arrives undefined on the other for as long as that process lives.
+    //
+    // This is not a theoretical concern. `titled` and `paths` were added after
+    // a running core, so `paths.length` threw inside a render — which does not
+    // fail like a missing feature, it fails like a broken app: the whole review
+    // column goes blank and every later update is dropped. A version seam is
+    // filled in here, once, rather than trusted in a template.
+    return rows.map((e) => ({
+      ...e,
+      titled: e.titled ?? true,
+      paths: e.paths ?? [],
+      files: e.files ?? 0,
+    }))
   } catch {
-    // A core older than this window has no stash; the diff and the commit are
-    // unaffected, so this stays quiet rather than raising a toast per refresh.
+    // A core older than this window has no stash at all; the diff and the
+    // commit are unaffected, so this stays quiet rather than raising a toast
+    // on every refresh.
     return []
   }
 }

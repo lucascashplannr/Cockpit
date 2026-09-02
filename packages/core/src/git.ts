@@ -53,6 +53,7 @@ export async function probeGit(cwd: string): Promise<GitState | null> {
     unstaged: 0,
     untracked: 0,
     conflicted: 0,
+    conflictedPaths: [],
     lastCommit: null,
     hasUnpushedWork: unpushed.ok && unpushed.stdout.trim().length > 0,
     operation: null,
@@ -78,6 +79,11 @@ export async function probeGit(cwd: string): Promise<GitState | null> {
       if (xy[1] !== '.') state.unstaged++
     } else if (line.startsWith('u ')) {
       state.conflicted++
+      // `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>` — ten fields
+      // before the path, and a path may contain spaces, so the rest is taken
+      // whole rather than split.
+      const path = line.split(' ').slice(10).join(' ')
+      if (path) state.conflictedPaths.push(path)
     } else if (line.startsWith('? ')) {
       state.untracked++
     }

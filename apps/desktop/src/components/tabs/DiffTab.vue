@@ -3,14 +3,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { CommitPreview, DiffFile, FileDiff, StashEntry, Workspace } from '@cockpit/shared'
 import type { Component } from 'vue'
 import {
-  Archive, ArchiveRestore, ChevronRight, CircleDashed, FileCode, GitBranch,
+  Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, FileCode, GitBranch,
   GitCommitHorizontal, ArrowLeft, Sparkles, SquareArrowOutUpRight, Trash2, TriangleAlert,
   User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import {
   LAYOUT_LIMITS, commit, commitPreview, draftCommitMessage, guard, layout, resetCommitHeight,
-  saveLayout, setCommitHeight, stash, stashList, client, state,
+  saveLayout, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
 /**
@@ -160,7 +160,59 @@ const willCommit = computed(() => rows.value.filter((r) => r.willCommit))
 const fileCount = computed(() =>
   willCommit.value.reduce((n, r) => n + (stageAll.value ? r.staged + r.unstaged : r.staged), 0),
 )
-const blocked = computed(() => rows.value.filter((r) => r.conflicted > 0))
+/**
+ * §3.7 — a conflict is a state to work in, and this one had no way out.
+ *
+ * The bar refused over `conflicted > 0` and said only "resolve the conflict
+ * first", which is fine advice while a rebase is in progress: the conflict
+ * panel is right there with continue, abort and skip. `git stash pop` reaches
+ * the same state with *nothing* in progress — markers in the tree, unmerged
+ * entries in the index, no MERGE_HEAD to continue and no rebase to abort — and
+ * from there the sentence was a wall. Cockpit blocked the commit, offered no
+ * verb, and the only way on was a terminal.
+ *
+ * So the block names the files and carries the one verb that clears them.
+ */
+const blocked = computed(() =>
+  rows.value
+    .filter((r) => r.conflicted > 0)
+    .map((r) => {
+      const g = state.workspaces.find((w) => w.id === r.workspaceId)?.git ?? null
+      return {
+        workspaceId: r.workspaceId,
+        repo: r.repo,
+        count: r.conflicted,
+        // Mid-rebase, the conflict panel owns this and says so; the paths are
+        // listed there with the verbs that end the operation.
+        operation: g?.operation?.kind ?? null,
+        paths: g?.conflictedPaths ?? [],
+      }
+    }),
+)
+
+const marking = ref('')
+
+/**
+ * `git add` on the paths, which is what "resolved" means to git.
+ *
+ * It stages the file as it stands — the same escape hatch the palette offers,
+ * and the same one `continue` deliberately is not: a file that is *meant* to
+ * contain conflict markers has to be markable too. Which is why the button
+ * says to look at the file first, and why the file is one click above it.
+ */
+async function markResolved(b: { workspaceId: string; paths: string[] }) {
+  if (!b.paths.length || marking.value) return
+  marking.value = b.workspaceId
+  const res = await guard(() =>
+    client.call('git.stage', { workspaceId: b.workspaceId, paths: b.paths }),
+  )
+  marking.value = ''
+  if (res && !res.ok) {
+    toast('error', res.detail)
+    return
+  }
+  await Promise.all([refreshCommit(), load()])
+}
 const canCommit = computed(
   () => !!message.value.trim() && fileCount.value > 0 && !blocked.value.length && !committing.value,
 )
@@ -283,10 +335,13 @@ async function setAside() {
  * shows what it holds.
  */
 function nameOf(e: StashEntry): string {
-  if (e.titled) return e.subject
-  if (!e.paths.length) return 'Uncommitted work'
-  const more = e.files - e.paths.length
-  return e.paths.join(', ') + (more > 0 ? ' +' + more : '')
+  // Belt as well as braces — `stashList` fills these in for an older core, and
+  // a name is not worth a render error whatever arrives here.
+  const paths = e.paths ?? []
+  if (e.titled ?? true) return e.subject
+  if (!paths.length) return 'Uncommitted work'
+  const more = (e.files ?? paths.length) - paths.length
+  return paths.join(', ') + (more > 0 ? ' +' + more : '')
 }
 
 function actOnStash(entry: StashEntry, action: 'pop' | 'drop') {
@@ -418,43 +473,89 @@ const mark: Record<string, Component> = {
            repository of the topic at once because that is the unit the work
            was done in. -->
       <div ref="bar" class="commitbar" :style="layout.commit ? { height: layout.commit + 'px' } : undefined">
-        <div v-if="blocked.length" class="cblock">
-          <TriangleAlert class="sm" />
-          <span>{{ blocked.map((r) => r.repo).join(', ') }}: resolve the conflict first.</span>
-        </div>
-        <template v-else>
-          <!-- §16 — work that is parked, where the work it was taken from
-               would be. A stash nothing mentions is the failure mode this
-               feature is built around; see `stash.ts` in the core. -->
-          <div v-if="stashes.length" class="cstash">
-            <span class="section-label">set aside ({{ stashes.length }})</span>
-            <div v-for="e in stashes" :key="e.workspaceId + e.ref" class="srow">
-              <Archive class="sm" />
-              <span class="sbody">
-                <span class="ssub" :class="{ untitled: !e.titled }">{{ nameOf(e) }}</span>
-                <span class="smeta">
-                  {{ e.repo }}<template v-if="e.branch"> · {{ e.branch }}</template>
-                  · {{ e.files }} file{{ e.files === 1 ? '' : 's' }}
-                  <template v-if="since(e.ts)"> · {{ since(e.ts) }}</template>
-                </span>
+        <!-- §16 — work that is parked, where the work it was taken from would
+             be. A stash nothing mentions is the failure mode this feature is
+             built around; see `stash.ts` in the core. It stays on screen
+             through a conflict: a pop that half-applied is exactly when you
+             need to see that the entry is still there. -->
+        <div v-if="stashes.length" class="cstash">
+          <span class="section-label">set aside ({{ stashes.length }})</span>
+          <div v-for="e in stashes" :key="e.workspaceId + e.ref" class="srow">
+            <Archive class="sm" />
+            <span class="sbody">
+              <span class="ssub" :class="{ untitled: !e.titled }">{{ nameOf(e) }}</span>
+              <span class="smeta">
+                {{ e.repo }}<template v-if="e.branch"> · {{ e.branch }}</template>
+                · {{ e.files }} file{{ e.files === 1 ? '' : 's' }}
+                <template v-if="since(e.ts)"> · {{ since(e.ts) }}</template>
               </span>
+            </span>
+            <button
+              class="icon-btn"
+              title="Put it back — replays this onto the working tree"
+              @click="actOnStash(e, 'pop')"
+            >
+              <ArchiveRestore class="sm" />
+            </button>
+            <button
+              class="icon-btn drop"
+              title="Throw it away — there is no undo for this"
+              @click="actOnStash(e, 'drop')"
+            >
+              <Trash2 class="sm" />
+            </button>
+          </div>
+        </div>
+
+        <div v-if="blocked.length" class="cblock">
+          <div v-for="b in blocked" :key="b.workspaceId" class="brepo">
+            <div class="bhead">
+              <TriangleAlert class="sm" />
+              <span class="bname">
+                {{ b.repo }}: {{ b.count }} unmerged file{{ b.count === 1 ? '' : 's' }}
+              </span>
+              <span class="grow" />
               <button
-                class="icon-btn"
-                title="Put it back — replays this onto the working tree"
-                @click="actOnStash(e, 'pop')"
+                v-if="!b.operation && b.paths.length"
+                class="btn ghost tiny"
+                :disabled="!!marking"
+                title="Runs git add on these paths — look at the file first, it is staged as it stands"
+                @click="markResolved(b)"
               >
-                <ArchiveRestore class="sm" />
-              </button>
-              <button
-                class="icon-btn drop"
-                title="Throw it away — there is no undo for this"
-                @click="actOnStash(e, 'drop')"
-              >
-                <Trash2 class="sm" />
+                <Check />
+                {{ marking === b.workspaceId ? 'Marking…' : 'Mark resolved' }}
               </button>
             </div>
+            <button
+              v-for="p in b.paths"
+              :key="p"
+              class="bfile mono"
+              :title="'Open ' + p"
+              @click="select(p)"
+            >
+              {{ p }}
+            </button>
+            <p class="bnote">
+              <template v-if="b.operation">
+                A {{ b.operation }} is in progress — finish or abort it in the conflict panel.
+              </template>
+              <template v-else-if="b.paths.length">
+                Nothing is mid-operation here — no rebase to continue, no merge to abort.
+                This is what a stash coming back over a change leaves behind: fix the
+                markers, then mark it resolved.
+              </template>
+              <template v-else>
+                <!-- A service older than this window sends the count and not the
+                     paths. Saying so beats a button that cannot name what it
+                     would stage. -->
+                The running service did not say which files — restart Cockpit, or open
+                {{ b.repo }} and resolve them there.
+              </template>
+            </p>
           </div>
+        </div>
 
+        <template v-else>
           <!-- §16 — what is about to be committed, named. The button counted
                every repository of the topic while the list above it showed one,
                so "Commit 2 files" sat under "files (1)" and read as a bug. The
@@ -704,15 +805,40 @@ const mark: Record<string, Component> = {
   color: var(--text-dim);
 }
 
-.cblock {
+.cblock { display: flex; flex-direction: column; gap: 10px; }
+.brepo { display: flex; flex-direction: column; gap: 3px; }
+.bhead {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 7px;
   font-size: var(--fs-xs);
   color: var(--danger);
-  line-height: 1.5;
 }
-.cblock .lucide { margin-top: 1px; flex: none; }
+.bhead .lucide { flex: none; }
+.bhead .grow { flex: 1; }
+.bname { font-weight: 550; }
+.bhead .tiny { color: var(--text-muted); }
+.bfile {
+  display: block;
+  width: 100%;
+  padding: 3px 7px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  unicode-bidi: plaintext;
+}
+.bfile:hover { background: var(--hover); color: var(--text); }
+.bnote {
+  margin: 2px 0 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
 
 .diff { display: grid; grid-template-columns: 320px minmax(0, 1fr); height: 100%; }
 /* One column at a time: the list, or the file opened over it. Both are laid

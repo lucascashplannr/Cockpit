@@ -152,7 +152,11 @@ These four verbs ask rather than brief. §3.7 says every operation shows its pla
 not say the plan has to be the first thing you read, and for a reversible one-liner a
 numbered-step dialog is machinery in front of a one-word answer. So the question comes in
 words — "Set this work aside?", "Drop this entry?" — with the commands one disclosure away
-in the same box, before the button rather than after it. Dropping is the one with a red
+in the same box, before the button rather than after it. A pop that lands on a change says
+so: `git stash pop` can conflict with *nothing in progress* — markers in the tree, unmerged
+entries in the index, no MERGE_HEAD to continue and no rebase to abort — which is a state
+the conflict panel cannot help with. The Diff tab names those files and carries the one verb
+that clears them. Dropping is the one with a red
 button and no undo: no restore point covers work that was never committed. The full plan
 dialog stays where it belongs, in front of the operations that rewrite history.
 

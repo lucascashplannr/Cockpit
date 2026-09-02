@@ -102,6 +102,17 @@ export interface GitState {
   unstaged: number
   untracked: number
   conflicted: number
+  /**
+   * Which files are unmerged, not merely how many.
+   *
+   * `operation.conflictedPaths` covers a rebase or a merge, and for a long time
+   * that was every way to get one. `git stash pop` is not: it can leave markers
+   * in the index with nothing in progress at all — no MERGE_HEAD, no rebase
+   * directory, so no operation to continue or abort. The window still has to be
+   * able to name those files and mark them resolved, and this is the only place
+   * that knows them.
+   */
+  conflictedPaths: string[]
   lastCommit: { hash: string; subject: string; author: string; ts: number } | null
   /** §16 — refuse to tear down a workspace holding unpushed commits. */
   hasUnpushedWork: boolean
