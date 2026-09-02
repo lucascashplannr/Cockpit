@@ -125,6 +125,37 @@ A repo with nothing staged is skipped rather than made to carry an empty commit,
 sitting on its protected branch is skipped too: the rule that stops agents committing to
 `main` is not waived because a human clicked the button.
 
+The panel is a list beside a viewer, and under about 620px there is no beside left — so it
+stops trying to show both: the list is the screen, a file opens over it, and the back arrow
+returns. The line between the file list and the commit box is draggable like the columns are,
+with a double-click for the height the box works out for itself.
+
+**Draft** writes the first sentence for you. It reads the diff that is about to be committed
+plus the repository's last ten subjects — so the message follows the convention the log
+already has — and puts what comes back in the box a person types in. It never commits: §16
+says an agent does not, and §12 could not attribute a commit nobody read. The box is marked
+as drafted until the text is touched, and the journal keeps the fact afterwards. Anything
+already typed is passed along as a hint rather than protected.
+
+**Set aside** is the answer to "not this, not now". Committing is not the only way out of a
+dirty tree, and until now it was the only one Cockpit offered — which meant a commit you did
+not mean, or a terminal. It stashes across the repositories of the topic in one act, the
+message field doubling as the label, and every entry is listed under the diff with the
+repository, the branch, the file count and its age until you put it back or drop it. That
+list is the whole design: a stash the app never mentions is how a day's work goes missing,
+and it is the reason `rebase` uses `--autostash` rather than a stash of its own. An entry
+with no message of its own is named by the files it holds, not by git's `WIP on <branch>:
+<sha> <subject>` — that subject belongs to the commit the work sat on, and in a list it
+reads as though the stash contained it.
+
+These four verbs ask rather than brief. §3.7 says every operation shows its plan; it does
+not say the plan has to be the first thing you read, and for a reversible one-liner a
+numbered-step dialog is machinery in front of a one-word answer. So the question comes in
+words — "Set this work aside?", "Drop this entry?" — with the commands one disclosure away
+in the same box, before the button rather than after it. Dropping is the one with a red
+button and no undo: no restore point covers work that was never committed. The full plan
+dialog stays where it belongs, in front of the operations that rewrite history.
+
 **Merge** is the step that used to be missing, and its absence was the hole in the middle of
 the product: a topic could be opened, worked in, rebased and closed, and nothing ever put
 it back on `main`. `merge` goes the other way — it brings the base *into* the branch to catch

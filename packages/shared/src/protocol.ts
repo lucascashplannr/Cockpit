@@ -11,7 +11,7 @@ import type {
   DatabasePlan,
   DiffFile, Topic,
   FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
-  SearchHit, SeedProposal,
+  SearchHit, SeedProposal, StashEntry,
   Workspace,
 } from './model.js'
 
@@ -482,6 +482,40 @@ export interface Rpc {
   'git.commit': {
     params: { topicId?: string; workspaceIds?: string[]; message: string; all: boolean }
     result: { ok: boolean; detail: string; plan: PlanPreview | null; preview: CommitPreview[] }
+  }
+
+  /**
+   * §16 — the message is drafted, never committed. The engine reads the diff
+   * and proposes a sentence into the same field a person types in; what gets
+   * committed is whatever stands there after they have read it. A draft that
+   * arrives already committed would be an agent committing, which §16 forbids
+   * and §12 could not attribute.
+   */
+  'git.draftMessage': {
+    params: { topicId?: string; workspaceIds?: string[]; all: boolean; hint?: string }
+    result: { ok: boolean; detail: string; message: string; engine: string; truncated: boolean }
+  }
+
+  /**
+   * §16 — every stash this app makes, listed where the work was taken from.
+   * A stash nothing mentions is how uncommitted work disappears, which is the
+   * reason the rebase plan uses `--autostash` and not a push/pop pair.
+   */
+  'git.stashList': { params: { topicId?: string; workspaceIds?: string[] }; result: StashEntry[] }
+  'git.stash': {
+    params: {
+      topicId?: string
+      workspaceIds?: string[]
+      action: 'push' | 'pop' | 'apply' | 'drop'
+      /** push only. */
+      message?: string
+      /** push only — untracked files come along, which is what "set aside" means. */
+      includeUntracked?: boolean
+      /** pop/apply/drop — the entry, in the workspace it belongs to. */
+      workspaceId?: string
+      ref?: string
+    }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null }
   }
 
   /**

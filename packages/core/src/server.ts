@@ -21,6 +21,7 @@ import * as conflict from './conflict.js'
 import * as seed from './seed.js'
 import * as database from './database.js'
 import * as commit from './commit.js'
+import * as stash from './stash.js'
 import * as terminals from './terminals.js'
 import * as runtime from './runtime/index.js'
 import * as supervisor from './supervisor.js'
@@ -404,6 +405,11 @@ const handlers: Record<string, Handler> = {
 
   'git.commitPreview': (p: commit.CommitInput) => commit.preview(p),
   'git.commit': (p: commit.CommitInput) => commit.plan(p),
+  /** §16 — a draft for the box, never a commit. See `commit.draftMessage`. */
+  'git.draftMessage': (p: commit.DraftInput) => commit.draftMessage(p),
+
+  'git.stashList': (p: stash.StashScope) => stash.list(p),
+  'git.stash': (p: stash.StashInput) => stash.plan(p),
 
   /**
    * §2 — every branch this checkout could be put on. Probed, never cached

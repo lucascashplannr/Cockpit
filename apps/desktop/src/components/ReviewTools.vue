@@ -158,8 +158,12 @@ const tools = computed(() =>
   .tool:not(.on) { padding: 0 9px; }
 }
 
+/* The Code tab still stacks its list over its viewer here. The Diff tab used
+   to as well, and stopped: a hunk in the bottom two fifths of a narrow column
+   was a few clipped lines under the two blocks you were actually reading. It
+   measures itself now and opens a file over its list instead, which is why
+   this rule no longer names it. */
 @container (max-width: 620px) {
-  .body :deep(.diff),
   .body :deep(.code) {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 40%) minmax(0, 1fr);

@@ -62,6 +62,13 @@ export type EventType =
   | 'git.undone'
   /** A plan stopped on a conflict rather than an error — a state, not a failure. */
   | 'git.conflict'
+  /**
+   * §12 — a commit message an engine wrote is not a commit an engine made, but
+   * it is not nothing either: the journal records that the sentence in the box
+   * was drafted rather than typed, so the attribution of a message nobody
+   * rewrote is recoverable later.
+   */
+  | 'git.message_drafted'
   | 'git.conflict.resolved'
   | 'git.conflict.aborted'
   // §7 — the gitignored local config carried into a new worktree

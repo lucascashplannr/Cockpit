@@ -4,7 +4,7 @@ import type {
   CommitPreview, CoreStatus, EngineOptions,
   DatabasePlan, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
-  ServerBoardRow, Workspace,
+  ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
@@ -200,6 +200,7 @@ export const state = reactive({
   /** §4 — the sheet that opens a topic across N repositories. */
   topicDialogOpen: false,
   pendingPlan: null as PlanPreview | null,
+  pendingConfirm: null as PendingConfirm | null,
   planBusy: false,
   toast: null as { kind: 'ok' | 'error' | 'info'; text: string } | null,
   theme: (localStorage.getItem('cockpit.theme') ?? 'system') as 'system' | 'dark' | 'light',
@@ -676,6 +677,17 @@ export const LAYOUT_LIMITS = {
    * rather than a broken one.
    */
   review: { min: 320, max: 900 },
+  /**
+   * The commit box under the file list in the Diff tab.
+   *
+   * A boundary one level down from the columns, and it earned a handle for the
+   * same reason they did: forty changed files want the list, a message with a
+   * drafted body and three stashes wants the box, and neither of those is a
+   * property of the app. The floor leaves the message and its two buttons
+   * standing — below that the box would be a scroll region pretending to be a
+   * form.
+   */
+  commit: { min: 132, max: 560 },
 }
 
 /** What a fresh install starts from, and what a double-click goes back to. */
@@ -683,14 +695,23 @@ export const LAYOUT_DEFAULTS = { list: 340, review: 440 }
 
 export const layout = reactive(readLayout())
 
-function readLayout(): { list: number; review: number } {
-  const fallback = { ...LAYOUT_DEFAULTS }
+/**
+ * The commit box is the one pane with no default height: left alone it is as
+ * tall as what is in it, which is right nearly always — a number here would
+ * mean padding an empty box out or scrolling a full one for no reason. Null is
+ * therefore a real value and not a missing one, and it is what a double-click
+ * on the handle goes back to.
+ */
+function readLayout(): { list: number; review: number; commit: number | null } {
+  const fallback = { ...LAYOUT_DEFAULTS, commit: null as number | null }
   try {
     const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<typeof fallback> | null
     if (!raw) return fallback
     return {
       list: clampTo(raw.list ?? fallback.list, LAYOUT_LIMITS.list),
       review: clampTo(raw.review ?? fallback.review, LAYOUT_LIMITS.review),
+      commit:
+        typeof raw.commit === 'number' ? clampTo(raw.commit, LAYOUT_LIMITS.commit) : null,
     }
   } catch {
     return fallback
@@ -704,6 +725,16 @@ function clampTo(n: number, l: { min: number; max: number }): number {
 /** Live during a drag; only written to disk when the pointer is let go. */
 export function setColumnWidth(which: 'list' | 'review', px: number): void {
   layout[which] = clampTo(px, LAYOUT_LIMITS[which])
+}
+
+export function setCommitHeight(px: number): void {
+  layout.commit = clampTo(px, LAYOUT_LIMITS.commit)
+}
+
+/** Back to a box the size of its contents — see `readLayout`. */
+export function resetCommitHeight(): void {
+  layout.commit = null
+  saveLayout()
 }
 
 export function saveLayout(): void {
@@ -1420,7 +1451,13 @@ export async function requestPlan(
 }
 
 /** What an apply came to, wherever it was applied from. */
-async function settlePlan(plan: PlanPreview, res: ApplyResult | null): Promise<void> {
+async function settlePlan(
+  plan: PlanPreview,
+  res: ApplyResult | null,
+  /** What to say when it worked, for a caller whose button had its own word
+   *  for it — "put back" beats "stash pop applied". */
+  okMessage?: string,
+): Promise<void> {
   if (!res) return
   // The topic row is written by the plan's own apply hook, so the list is
   // only true again once that has run.
@@ -1443,7 +1480,48 @@ async function settlePlan(plan: PlanPreview, res: ApplyResult | null): Promise<v
     )
     return
   }
-  toast('ok', plan.operation + ' applied')
+  toast('ok', okMessage ?? plan.operation + ' applied')
+}
+
+/* ── a plan you do not need to read ──────────────────────────────────
+ *
+ * §3.7 says every operation shows its plan. It does not say the plan has to be
+ * the thing you read first, and for the small reversible ones it should not be:
+ * two lines of `git stash push` under a numbered-step heading is a wall of
+ * machinery in front of a question with a one-word answer.
+ *
+ * So this asks the question in words — what will happen, and what it is called
+ * — and keeps the commands one disclosure away, where anyone who wants to know
+ * exactly what runs still finds them before pressing the button. Nothing about
+ * the plan itself changes: it is the same object, applied through the same
+ * `git.apply`, journaled the same way.
+ *
+ * The heavy dialog stays for the operations that rewrite history.
+ */
+export interface PendingConfirm {
+  /** The question, asked as one. */
+  title: string
+  /** What it does, in sentences — the plan's own warnings, usually. */
+  body: string[]
+  /** The button that says yes, in the words of the thing it does. */
+  verb: string
+  /** What the toast says afterwards. */
+  done: string
+  /** Red button, for the one that cannot be taken back. */
+  danger: boolean
+  plan: PlanPreview
+}
+
+export async function applyPendingConfirm(): Promise<void> {
+  const c = state.pendingConfirm
+  if (!c) return
+  state.planBusy = true
+  const res = await guard(() => client.call('git.apply', { planId: c.plan.planId }))
+  state.planBusy = false
+  state.pendingConfirm = null
+  // Its own wording rather than settlePlan's "<operation> applied": the button
+  // said "Put it back", and the toast that follows should agree with it.
+  await settlePlan(c.plan, res, c.done)
 }
 
 export async function applyPendingPlan(): Promise<void> {
@@ -1498,6 +1576,124 @@ export async function commit(
     return false
   }
   state.pendingPlan = res.plan
+  return true
+}
+
+/**
+ * §16 — a first sentence out of the diff, into the box a person types in.
+ *
+ * It returns the draft rather than setting it: the field is the user's, and a
+ * function that wrote into it directly would be one keystroke away from
+ * overwriting a message someone had already begun.
+ */
+export async function draftCommitMessage(
+  topicId: string | null,
+  workspaceId: string,
+  all: boolean,
+  hint?: string,
+): Promise<string | null> {
+  const res = await guard(() =>
+    client.call('git.draftMessage', {
+      ...(topicId ? { topicId } : { workspaceIds: [workspaceId] }),
+      all,
+      ...(hint ? { hint } : {}),
+    }),
+  )
+  if (!res) return null
+  if (!res.ok) {
+    toast('error', res.detail)
+    return null
+  }
+  if (res.truncated) toast('info', 'The diff was too large to send whole — read the draft closely.')
+  return res.message
+}
+
+/* ── stash ───────────────────────────────────────────────────────────────
+ * §16 — the list is the feature. See `stash.ts` in the core for why: a stash
+ * the app does not mention is how uncommitted work goes missing.
+ */
+
+export async function stashList(
+  topicId: string | null,
+  workspaceId: string,
+): Promise<StashEntry[]> {
+  try {
+    return await client.call('git.stashList', topicId ? { topicId } : { workspaceIds: [workspaceId] })
+  } catch {
+    // A core older than this window has no stash; the diff and the commit are
+    // unaffected, so this stays quiet rather than raising a toast per refresh.
+    return []
+  }
+}
+
+/** What each verb is called, in the question and on the button. */
+const STASH_WORDS: Record<
+  'push' | 'pop' | 'apply' | 'drop',
+  { title: (label?: string) => string; verb: string; done: string; danger: boolean }
+> = {
+  push: {
+    title: () => 'Set this work aside?',
+    verb: 'Set aside',
+    done: 'set aside — listed under the files',
+    danger: false,
+  },
+  pop: {
+    title: (l) => (l ? 'Put back “' + l + '”?' : 'Put this back?'),
+    verb: 'Put it back',
+    done: 'put back into the working tree',
+    danger: false,
+  },
+  apply: {
+    title: (l) => (l ? 'Copy back “' + l + '”?' : 'Copy this back?'),
+    verb: 'Copy it back',
+    done: 'copied back — the entry is still there',
+    danger: false,
+  },
+  drop: {
+    title: (l) => (l ? 'Drop “' + l + '”?' : 'Drop this entry?'),
+    verb: 'Drop it',
+    done: 'entry dropped',
+    danger: true,
+  },
+}
+
+export async function stash(
+  params: {
+    topicId: string | null
+    workspaceId: string
+    action: 'push' | 'pop' | 'apply' | 'drop'
+    message?: string
+    includeUntracked?: boolean
+    ref?: string
+    /** The entry's own name, so the question can say which one it means. */
+    label?: string
+  },
+): Promise<boolean> {
+  const { topicId, workspaceId, action, label, ...rest } = params
+  const res = await guard(() =>
+    client.call('git.stash', {
+      // push sweeps the whole topic; pop, apply and drop name one entry in one
+      // repository, so they carry the workspace and never the topic.
+      ...(action === 'push' && topicId ? { topicId } : { workspaceIds: [workspaceId] }),
+      workspaceId,
+      action,
+      ...rest,
+    }),
+  )
+  if (!res) return false
+  if (!res.ok || !res.plan) {
+    toast('error', res.detail)
+    return false
+  }
+  const w = STASH_WORDS[action]
+  state.pendingConfirm = {
+    title: w.title(label),
+    body: res.plan.warnings,
+    verb: w.verb,
+    done: w.done,
+    danger: w.danger,
+    plan: res.plan,
+  }
   return true
 }
 

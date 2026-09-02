@@ -15,6 +15,16 @@ const plan = computed(() => state.pendingPlan)
 const destructive = computed(() => plan.value?.steps.some((s) => s.destructive) ?? false)
 
 /**
+ * What the red mark means, which is not always the same thing. Every
+ * destructive plan there had ever been rewrote history, so the chip said so
+ * flatly; dropping a stash destroys work without touching a single commit,
+ * and a warning that describes the wrong danger is one people learn to skip.
+ */
+const dangerLabel = computed(() =>
+  plan.value?.operation === 'stash drop' ? 'throws work away' : 'rewrites history',
+)
+
+/**
  * §3.7 — a plan is all-or-nothing unless it says otherwise, and the difference
  * matters enough to be on screen before Apply rather than discovered after it.
  */
@@ -31,7 +41,7 @@ function cancel() {
       <header class="head">
         <h2>{{ plan.operation }}</h2>
         <span v-if="destructive" class="chip danger">
-          <TriangleAlert />rewrites history
+          <TriangleAlert />{{ dangerLabel }}
         </span>
         <span class="grow" />
         <span class="count num">{{ plan.steps.length }} steps</span>
@@ -71,6 +81,14 @@ function cancel() {
         <span v-if="plan.capturesRestorePoint" class="rp">
           <ShieldCheck class="sm ok" />
           A restore point is captured first — undo stays available.
+        </span>
+        <!-- §16 — a restore point anchors HEAD, so there are operations it
+             cannot cover. Saying "nothing destructive" over a step marked red
+             would be the dialog contradicting itself. -->
+        <span v-else-if="destructive" class="rp warn">
+          <ShieldOff class="sm" />
+          No restore point covers this — a restore point anchors commits, and this
+          discards work that was never committed.
         </span>
         <span v-else class="rp dim">
           <ShieldOff class="sm" />
@@ -214,4 +232,6 @@ function cancel() {
 }
 .rp .ok { color: var(--ok); }
 .rp.dim { color: var(--text-dim); }
+.rp.warn { color: var(--warn); line-height: 1.4; align-items: flex-start; }
+.rp.warn .lucide { margin-top: 2px; flex: none; }
 </style>

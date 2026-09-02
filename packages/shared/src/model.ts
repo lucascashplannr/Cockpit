@@ -210,6 +210,38 @@ export interface CommitPreview {
   conflicted: number
 }
 
+/**
+ * §16 — a stash git took and the app never mentioned was the failure mode that
+ * kept `--autostash` in the rebase plan instead of a push/pop pair. If Cockpit
+ * is going to make stashes of its own, every one of them has to be listed
+ * where the work it holds was taken from.
+ */
+export interface StashEntry {
+  workspaceId: string
+  repo: string
+  /** `stash@{0}` — the ref as git names it, and as the plan will pass it. */
+  ref: string
+  /** The subject line git recorded, message and all. */
+  subject: string
+  /**
+   * Whether a person named this entry.
+   *
+   * Git writes "On <branch>: <message>" when it was given one and "WIP on
+   * <branch>: <sha> <subject of HEAD>" when it was not — and that second
+   * form is a trap in a list: it is the subject of the commit the work was
+   * sitting on, so an unnamed stash reads as though it contains that commit.
+   * The window shows what it holds instead. See `files` and `paths`.
+   */
+  titled: boolean
+  /** The first few paths in the entry, for naming one that has no name. */
+  paths: string[]
+  /** The branch the work was taken from. */
+  branch: string | null
+  ts: number
+  /** Files the entry holds, so a stash is never an opaque parcel. */
+  files: number
+}
+
 export interface RuntimeState {
   impl: string
   status: 'unknown' | 'down' | 'starting' | 'up' | 'unhealthy'

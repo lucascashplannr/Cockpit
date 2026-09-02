@@ -4,6 +4,7 @@ import ProjectRail from './components/ProjectRail.vue'
 import WorkspaceList from './components/WorkspaceList.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import CommandPalette from './components/CommandPalette.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
 import PlanDialog from './components/PlanDialog.vue'
 import RevertDialog from './components/RevertDialog.vue'
 import ProjectDialog from './components/ProjectDialog.vue'
@@ -15,7 +16,7 @@ import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import ReviewTools from './components/ReviewTools.vue'
 import TrafficLights from './components/TrafficLights.vue'
-import ColumnSplitter from './components/ColumnSplitter.vue'
+import Splitter from './components/Splitter.vue'
 import {
   LAYOUT_LIMITS, activeWorkspace, client, state, goTo, guard, keyTargets, layout,
   requestPlan, resetColumnWidth, saveLayout, setColumnWidth,
@@ -137,10 +138,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <!-- The lines between the columns, over the borders they thicken. Placed
          here rather than inside each column because a splitter belongs to the
          boundary, not to either side of it. -->
-    <ColumnSplitter
+    <Splitter
       class="sp"
       :style="{ left: `calc(var(--rail-w) + ${layout.list}px - 3px)` }"
-      :width="layout.list"
+      :size="layout.list"
       :min="LAYOUT_LIMITS.list.min"
       :max="LAYOUT_LIMITS.list.max"
       grows="right"
@@ -149,11 +150,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       @done="saveLayout"
       @reset="resetColumnWidth('list')"
     />
-    <ColumnSplitter
+    <Splitter
       v-if="state.reviewOpen && activeWorkspace"
       class="sp"
       :style="{ right: `${layout.review - 3}px` }"
-      :width="layout.review"
+      :size="layout.review"
       :min="LAYOUT_LIMITS.review.min"
       :max="LAYOUT_LIMITS.review.max"
       grows="left"
@@ -165,6 +166,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
     <CommandPalette v-if="state.paletteOpen" />
     <PlanDialog v-if="state.pendingPlan" />
+    <ConfirmDialog v-if="state.pendingConfirm" />
     <RevertDialog />
     <ProjectDialog />
     <NewProjectDialog />
