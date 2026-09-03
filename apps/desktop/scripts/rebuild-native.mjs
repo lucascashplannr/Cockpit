@@ -26,7 +26,11 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const APP = resolve(HERE, '..')
-const ELECTRON = join(APP, 'node_modules', '.bin', 'electron')
+// npm shims carry an extension on Windows and none anywhere else. Probing for
+// the bare name there finds nothing and this script would skip in silence,
+// leaving a developer with a core that cannot open its database.
+const BIN = (name) => join(APP, 'node_modules', '.bin', process.platform === 'win32' ? name + '.cmd' : name)
+const ELECTRON = BIN('electron')
 
 if (!existsSync(ELECTRON)) {
   // Nothing to align with yet; `pnpm install` has not finished laying out the
@@ -49,11 +53,12 @@ const ok = spawnSync(ELECTRON, [probe], {
 if (ok) process.exit(0)
 
 console.log('[cockpit] native modules are built for the wrong runtime — rebuilding for Electron')
-const rebuilt = spawnSync(
-  join(APP, 'node_modules', '.bin', 'electron-rebuild'),
-  ['-m', '.', '-o', 'better-sqlite3', '--force'],
-  { cwd: APP, stdio: 'inherit' },
-)
+const rebuilt = spawnSync(BIN('electron-rebuild'), ['-m', '.', '-o', 'better-sqlite3', '--force'], {
+  cwd: APP,
+  stdio: 'inherit',
+  // A .cmd is not an executable the OS can launch on its own.
+  shell: process.platform === 'win32',
+})
 
 if (rebuilt.status !== 0) {
   console.error(
