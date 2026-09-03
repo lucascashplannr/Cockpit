@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  AppWindow, ArrowUpFromLine, CirclePlay, CircleStop, FileCode, GitCompareArrows, Undo2,
+  AppWindow, ArrowDownToLine, ArrowUpFromLine, CirclePlay, CircleStop, FileCode,
+  GitCompareArrows, Undo2,
 } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
 import {
@@ -75,11 +76,54 @@ const pushTitle = computed(() => {
 })
 
 /**
- * `behindBase`, not `behind`: the second is this branch against its own remote,
- * which is a different question and stops being the base's distance the moment
- * the branch is pushed. Catch up replays onto the base, so it counts the base.
+ * §4 — which of the two "you are behind" this checkout can actually be, and
+ * they are not alternatives to choose between so much as two different facts.
+ *
+ *   the base moved     → Catch up, `behindBase` commits
+ *   your remote moved  → Pull, `behind` commits
+ *
+ * Both at once is a real state — a pushed branch a colleague added to, on a
+ * base that also moved — and then both are offered, each with its own number.
+ * What is *not* a state is being on the base and offered a Catch up: you
+ * cannot replay a branch onto itself, and the commits `origin/main` has that
+ * `main` does not are a pull. The core answers `behindBase: null` there, and
+ * absent rather than disabled is §3.9.
  */
+/** Catch up has a distance to close: a base, and one that is not this branch. */
+const canCatchUp = computed(() => git.value?.behindBase != null)
 const behindBase = computed(() => git.value?.behindBase ?? 0)
+
+/**
+ * §4 — the other direction of "behind", and the reason `behind` had to stop
+ * being the number Catch up reads.
+ *
+ * Somebody else pushed to *this* branch: nothing to do with the base, and no
+ * verb covered it. Offered only when there is something to pull, and only when
+ * the upstream really is this branch's own remote — a topic branch tracks
+ * `origin/<base>` until its first push, and pulling *that* is Catch up wearing
+ * a wrong name.
+ *
+ * In the menu rather than on the bar because it is occasional: a branch two
+ * people work on at once is the exception, and the bar is for the verbs of
+ * every day.
+ */
+const canPull = computed(() => {
+  const g = git.value
+  return !!g && !!g.branch && g.upstream === 'origin/' + g.branch && g.behind > 0
+})
+
+const pullLabel = computed(() => {
+  const g = git.value
+  return 'Pull ' + (g?.branch ?? 'this branch') + ' from origin'
+})
+
+/** Only ever drawn while there is something to pull, so it says how much and
+ *  from where rather than why it is not there. */
+const pullTitle = computed(() => {
+  const g = git.value
+  if (!g) return pullLabel.value
+  return pullLabel.value + ' — ' + g.behind + ' commit(s) on ' + g.upstream + ' you do not have'
+})
 
 const catchUpTitle = computed(() => {
   const g = w.value?.git
@@ -160,7 +204,7 @@ async function undo() {
          often must not move, and a bar that changes shape as probes come back
          is one you cannot aim at without looking. -->
     <button
-      v-if="git"
+      v-if="git && canCatchUp"
       class="btn ghost"
       :class="{ nudge: behindBase > 0 }"
       :disabled="busy"
@@ -169,6 +213,23 @@ async function undo() {
     >
       <GitCompareArrows /><span class="vl">Catch up</span>
       <span v-if="behindBase" class="cnt">{{ behindBase }}</span>
+    </button>
+    <!-- §3.9 — beside Catch up, and only while there is something to pull.
+         The other two verbs here are permanent on purpose: you reach for Push
+         and Catch up because you decided to, so they must not move. Pull is not
+         that kind of verb — nobody decides to pull, you pull *because*
+         something arrived, and until it has there is nothing to aim at. So it
+         is absent rather than inert, and its number is the whole of its
+         reason for being on the bar. -->
+    <button
+      v-if="git && canPull"
+      class="btn ghost nudge"
+      :disabled="busy"
+      :title="pullTitle"
+      @click="requestPlan(w.id, 'pull')"
+    >
+      <ArrowDownToLine /><span class="vl">Pull</span>
+      <span class="cnt">{{ git.behind }}</span>
     </button>
 
     <OverflowMenu label="Everything else you can do here" :disabled="busy">

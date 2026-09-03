@@ -92,7 +92,8 @@ export function register(preview: PlanPreview, opts: RegisterOptions): PlanPrevi
   return preview
 }
 
-export type Operation = 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'sync'
+export type Operation =
+  | 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'pull' | 'sync'
 
 export async function plan(
   workspaceId: string,
@@ -112,21 +113,102 @@ export async function plan(
     warnings.push('This repository is in the middle of a ' + ws.git.headState + '. Finish or abort it first.')
   }
 
-  // Rebasing or merging a branch onto itself is a no-op the user did not mean;
-  // say so rather than printing a plan that does nothing.
-  if ((operation === 'rebase' || operation === 'merge') && branch === base) {
-    warnings.push('Already on "' + base + '" — there is nothing to ' + operation + ' onto.')
+  // Merging a branch into itself is a no-op the user did not mean; say so
+  // rather than printing a plan that does nothing. Catching up is different —
+  // see `case 'rebase'`, where being *on* the base is a fast-forward and not a
+  // mistake.
+  if (operation === 'merge' && branch === base) {
+    warnings.push('Already on "' + base + '" — there is nothing to merge onto.')
   }
 
   switch (operation) {
     case 'rebase': {
       steps.push({ title: 'Fetch ' + base, command: 'git fetch origin ' + base, cwd: ws.path, destructive: false })
-      steps.push(...rebaseStep(ws.path, branch, base))
-      if ((ws.git?.unstaged ?? 0) + (ws.git?.staged ?? 0) > 0) {
-        warnings.push('Uncommitted changes are set aside by --autostash and put back when the rebase ends — including when it is aborted. Git owns that stash, so a conflict cannot strand it.')
+      /**
+       * §4 — catching up *on* the base is a fast-forward, and it was drawn as
+       * "Rebase main onto main" over a warning saying there was nothing to do.
+       * Both were wrong: `git rebase origin/main` from `main` does move you, so
+       * the warning lied, and it lied while a red "rewrites history" chip sat
+       * at the top of a plan that rewrites nothing.
+       *
+       * A branch that *is* the base has no work of its own to replay by
+       * definition — anything it holds is the base's. So there is nothing to
+       * put back on top, and the honest command is the one that says so.
+       */
+      if (branch === base) {
+        steps.push({
+          title: 'Fast-forward ' + branch + ' to origin/' + base,
+          command: 'git merge --ff-only origin/' + base,
+          cwd: ws.path,
+          destructive: false,
+        })
+      } else {
+        steps.push(...rebaseStep(ws.path, branch, base))
       }
-      if ((ws.git?.ahead ?? 0) > 0 && ws.git?.upstream) {
-        warnings.push('This branch is ' + ws.git.ahead + ' commit(s) ahead of ' + ws.git.upstream + '; a rebase rewrites them and a force-push will be required.')
+      // Both of these are about the replay, so neither applies to the
+      // fast-forward: nothing is stashed and nothing is rewritten.
+      if (branch !== base) {
+        if ((ws.git?.unstaged ?? 0) + (ws.git?.staged ?? 0) > 0) {
+          warnings.push('Uncommitted changes are set aside by --autostash and put back when the rebase ends — including when it is aborted. Git owns that stash, so a conflict cannot strand it.')
+        }
+        if ((ws.git?.ahead ?? 0) > 0 && ws.git?.upstream) {
+          warnings.push('This branch is ' + ws.git.ahead + ' commit(s) ahead of ' + ws.git.upstream + '; a rebase rewrites them and a force-push will be required.')
+        }
+      } else if ((ws.git?.unstaged ?? 0) + (ws.git?.staged ?? 0) > 0) {
+        warnings.push('A fast-forward refuses over changes git would have to overwrite; commit or stash them if it stops.')
+      }
+      break
+    }
+
+    /**
+     * §4 — the other direction of "behind", and the one Catch up does not
+     * cover: somebody else pushed to *this* branch.
+     *
+     * Catch up replays onto the base; this brings in what the branch's own
+     * remote holds. Two different distances, two different verbs — and the
+     * reason `behind` and `behindBase` had to stop being one number.
+     *
+     * Fast-forward while there is nothing of your own in the way, because that
+     * cannot lose or rewrite anything. With local commits there is no
+     * fast-forward to be had, and the honest move is the same one Catch up
+     * makes: replay yours on top, and say that it rewrites them.
+     */
+    case 'pull': {
+      if (!ws.git?.branch) {
+        warnings.push('Detached HEAD: there is no branch to pull.')
+        break
+      }
+      const remote = ws.git.upstream
+      if (!remote || remote !== 'origin/' + branch) {
+        warnings.push(
+          remote
+            ? 'This branch tracks ' + remote + ', not a branch of its own on origin — there is nothing to pull into it. Catch up is the verb for the base.'
+            : 'This branch has never been pushed, so origin has nothing to send back. Push it first.',
+        )
+        break
+      }
+      steps.push({ title: 'Fetch ' + remote, command: 'git fetch origin ' + branch, cwd: ws.path, destructive: false })
+      if ((ws.git.ahead ?? 0) === 0) {
+        steps.push({
+          title: 'Fast-forward ' + branch + ' to ' + remote,
+          command: 'git merge --ff-only ' + remote,
+          cwd: ws.path,
+          destructive: false,
+        })
+      } else {
+        steps.push({
+          title: 'Replay your ' + ws.git.ahead + ' commit(s) on top of ' + remote,
+          command: 'git rebase --autostash ' + remote,
+          cwd: ws.path,
+          destructive: true,
+        })
+        warnings.push(
+          'You and origin have both moved: your ' + ws.git.ahead + ' commit(s) are replayed on top of ' +
+            remote + ' and get new hashes, so the next push is a force-push.',
+        )
+      }
+      if ((ws.git.unstaged ?? 0) + (ws.git.staged ?? 0) > 0) {
+        warnings.push('Uncommitted changes are set aside by --autostash and put back when it ends — including if it is aborted.')
       }
       break
     }

@@ -1,18 +1,84 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Flag, Layers, ShieldCheck, ShieldOff, TriangleAlert, X } from '@lucide/vue'
+import { computed, ref } from 'vue'
+import {
+  ChevronRight, Flag, Layers, ShieldCheck, ShieldOff, TriangleAlert, X,
+} from '@lucide/vue'
 import { applyPendingPlan, state } from '../core/store.js'
 
 /**
  * §3.7 — "Toute opération affiche son plan avant de s'exécuter et laisse une
- * trace annulable." This dialog is that rule made visible: every command that
- * will run, in order, with the destructive ones marked before anything starts.
+ * trace annulable", satisfied the way `ConfirmDialog` satisfies it: the plan is
+ * *there*, one click away, rather than being the first thing on screen.
  *
- * §12 budget — rebase is two clicks: the button, then this confirmation.
+ * It used to open on the argv. Four numbered steps of `git fetch origin main`
+ * meant the question — do you want to catch up — had to be reconstructed from
+ * the commands that would answer it, and the two things worth reading in the
+ * box (the warnings, and which branch you are catching up from) sat below a
+ * list nobody reads twice. The words come first now, the commands fold away
+ * behind a summary, and the warnings stay out in the open where they were
+ * always the point.
+ *
+ * §12 budget — Catch up is still two clicks: the button, then this.
  */
 
 const plan = computed(() => state.pendingPlan)
+
+/**
+ * §4 — the dialog says the verb you pressed, not the RPC that built it.
+ *
+ * The title rendered the operation id through `text-transform: capitalize`,
+ * which is how the confirmation for **Catch up** came to be headed
+ * "Topic.Rebase" — the word the lexicon renamed, plus a method name, in the
+ * one place the act is named at full size. Anything unmapped falls back to the
+ * raw id rather than to a guess: a new operation with an honest ugly title is
+ * better than a wrong pretty one.
+ */
+const TITLES: Record<string, string> = {
+  rebase: 'Catch up',
+  'topic.rebase': 'Catch up',
+  merge: 'Send to the base',
+  'topic.merge': 'Send to the base',
+  push: 'Push',
+  'topic.push': 'Push',
+  pull: 'Pull',
+  switch: 'Switch branch',
+  branch: 'New branch',
+  worktree: 'New branch folder',
+  'topic.open': 'Open topic',
+  'topic.close': 'Close topic',
+  'topic.delete': 'Delete topic',
+  sync: 'Sync',
+}
+const title = computed(() => {
+  const op = plan.value?.operation ?? ''
+  return TITLES[op] ?? op
+})
+/**
+ * The question, in the app's words. One sentence, and the commands say the
+ * rest — the point of folding them away is that this has to stand without
+ * them. An operation with no sentence here gets none rather than a generic
+ * one: "This will run 4 commands" is what the summary already says.
+ */
+const LEADS: Record<string, string> = {
+  merge: 'The branch goes onto the base as one --no-ff merge.',
+  'topic.merge': 'Every branch in this topic goes onto its base, one --no-ff merge per repository.',
+  switch: 'This checkout moves to another branch. Uncommitted work comes with it, or git refuses.',
+  branch: 'A new branch from where you are. Uncommitted work comes with it.',
+  sync: 'Every remote is fetched and pruned. Nothing local is touched.',
+}
+const lead = computed(() => LEADS[plan.value?.operation ?? ''] ?? null)
+
+/** How wide it reaches, when that is more than one repository. */
+const reach = computed(() => {
+  const r = plan.value?.repos ?? []
+  return r.length > 1 ? r.join(', ') : null
+})
+
 const destructive = computed(() => plan.value?.steps.some((s) => s.destructive) ?? false)
+
+/** Folded by default, and per opening: a plan read once is not one you want to
+ *  keep re-reading. */
+const showSteps = ref(false)
 
 /**
  * What the red mark means, which is not always the same thing. Every
@@ -39,25 +105,58 @@ function cancel() {
   <div v-if="plan" class="scrim" @mousedown.self="cancel">
     <div class="dlg" role="dialog" :aria-label="plan.operation + ' plan'">
       <header class="head">
-        <h2>{{ plan.operation }}</h2>
+        <h2>{{ title }}</h2>
         <span v-if="destructive" class="chip danger">
           <TriangleAlert />{{ dangerLabel }}
         </span>
         <span class="grow" />
-        <span class="count num">{{ plan.steps.length }} steps</span>
         <button class="icon-btn" title="Cancel" @click="cancel"><X class="sm" /></button>
       </header>
 
-      <div class="steps">
-        <div v-for="(s, i) in plan.steps" :key="i" class="step" :class="{ bad: s.destructive }">
-          <span class="n num">{{ i + 1 }}</span>
-          <div class="body">
-            <div class="title">{{ s.title }}</div>
-            <code class="cmd mono selectable">{{ s.command }}</code>
-          </div>
-        </div>
+      <!-- The question. Everything below it is either a caveat or the argv. -->
+      <div v-if="lead || reach" class="say">
+        <p v-if="lead" class="p lead">{{ lead }}</p>
+        <p v-if="reach" class="p">In {{ reach }}.</p>
       </div>
 
+      <!-- Everything from here to the footer scrolls as one, rather than each
+           band fighting for the height. `details` cannot be relied on to
+           shrink: Chromium wraps its content in a `::details-content` box of
+           its own, so a `min-height: 0` flex chain through it silently stops
+           working and the steps paint straight over the warnings under them.
+           One scroller, outside the disclosure, has no such seam.
+
+           The base row stays above it on purpose — its list is a popover, and
+           a popover inside a scrolling box is a popover with a scrollbar
+           through it. -->
+      <div class="mid">
+      <!-- The plan, kept but not insisted upon — the same disclosure the stash
+           confirmations use, and for the same reason. `details` rather than a
+           hand-rolled toggle: it is a disclosure, the platform has one, and
+           this one is reachable by keyboard without anything being wired. -->
+      <details
+        class="what"
+        :open="showSteps"
+        @toggle="showSteps = ($event.target as HTMLDetailsElement).open"
+      >
+        <summary>
+          <ChevronRight class="chev sm" />
+          <span>{{ plan.steps.length }} command{{ plan.steps.length === 1 ? '' : 's' }}</span>
+          <span class="dim">— what this runs</span>
+        </summary>
+        <div class="steps">
+          <div v-for="(s, i) in plan.steps" :key="i" class="step" :class="{ bad: s.destructive }">
+            <span class="n num">{{ i + 1 }}</span>
+            <div class="body">
+              <div class="title">{{ s.title }}</div>
+              <code class="cmd mono selectable">{{ s.command }}</code>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- Never folded. A warning behind a disclosure is a warning nobody
+           reads, and these are the reason the confirmation exists at all. -->
       <div v-if="plan.warnings.length" class="warns">
         <div v-for="(w, i) in plan.warnings" :key="i" class="warn">
           <TriangleAlert class="sm" />
@@ -74,6 +173,7 @@ function cancel() {
         <span v-else>
           All or nothing: if a step fails, the ones before it are undone in reverse.
         </span>
+      </div>
       </div>
 
       <footer class="foot">
@@ -105,6 +205,7 @@ function cancel() {
 </template>
 
 <style scoped>
+
 .scrim {
   position: fixed;
   inset: 0;
@@ -121,7 +222,11 @@ function cancel() {
   to { opacity: 1; }
 }
 .dlg {
-  width: min(660px, 92vw);
+  /* Narrower than it was, and for the reason `ConfirmDialog` is narrower
+     still: it is a question now, and a question the width of a terminal reads
+     as a report. Wider than that one because when the plan *is* unfolded it is
+     argv, and argv that wraps is argv nobody can check. */
+  width: min(560px, 92vw);
   max-height: 80vh;
   display: flex;
   flex-direction: column;
@@ -150,12 +255,54 @@ function cancel() {
   font-size: var(--fs-lg);
   font-weight: 640;
   letter-spacing: -0.01em;
-  text-transform: capitalize;
 }
 .grow { flex: 1; }
 .count { font-size: var(--fs-xs); color: var(--text-dim); }
 
-.steps { flex: 1; overflow-y: auto; padding: 8px 20px 12px; }
+/* The question, and how wide it reaches. Gives way before the footer does: a
+   plan with a paragraph per repository must not push Cancel off a short
+   window. */
+.say { flex: none; padding: 2px 20px 12px; }
+.say .p { margin: 0; font-size: var(--fs-sm); line-height: 1.55; color: var(--text-muted); }
+.say .p + .p { margin-top: 6px; }
+.say .lead { color: var(--text); }
+
+/* The disclosure that holds the plan. Same shape as the one on the stash
+   confirmations, deliberately: two dialogs that fold the same thing away
+   should fold it away the same way. */
+/* The one scrolling region: the plan, its warnings and its failure mode. */
+.mid { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+.what {
+  display: block;
+  margin: 0 12px 10px;
+  border-radius: var(--radius-sm);
+}
+.what summary {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: default;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  list-style: none;
+  transition: background var(--dur-1) var(--ease-soft);
+}
+.what summary::-webkit-details-marker { display: none; }
+.what summary:hover { background: var(--hover); }
+.what[open] summary { color: var(--text); }
+.chev {
+  flex: none;
+  color: var(--text-dim);
+  transition: transform var(--dur-2) var(--ease-soft);
+}
+.what[open] .chev { transform: rotate(90deg); }
+.dim { color: var(--text-dim); }
+
+.steps { padding: 2px 8px 4px; }
 .step { display: flex; gap: 13px; padding: 11px 0; }
 .step + .step { border-top: 1px solid var(--line-soft); }
 .n {
@@ -228,7 +375,10 @@ function cancel() {
   gap: 8px;
   font-size: var(--fs-xs);
   color: var(--text-muted);
-  max-width: 58%;
+  /* Was 58%, which fitted one line at 660px and wrapped to two at 560. The
+     buttons are `flex: none` and take what they need; this takes the rest. */
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .rp .ok { color: var(--ok); }
 .rp.dim { color: var(--text-dim); }

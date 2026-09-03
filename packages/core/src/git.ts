@@ -106,10 +106,14 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
   }
 
   // §4 — and what Catch up would replay this branch on top of, which is not
-  // what `behind` counts either. No `!== base` exception here: a checkout
-  // sitting *on* the base is behind it by exactly the commits its remote has
-  // and it does not, which is the true answer and the one Catch up acts on.
-  if (state.base && state.branch) {
+  // what `behind` counts either.
+  //
+  // Skipped when the branch *is* the base, and that is the whole rule: you
+  // cannot catch up with yourself. Being behind `origin/main` while standing
+  // on `main` is not a rebase with nothing to replay, it is a pull — a
+  // different verb, already counted by `behind`. Answering both left the
+  // window offering two buttons for one act, each with the same number on it.
+  if (state.base && state.branch && state.branch !== state.base) {
     state.behindBase = await countBehind(cwd, state.base)
   }
 
@@ -145,6 +149,39 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
   }
 
   return state
+}
+
+/**
+ * §3.4 — the one thing the probe could not learn by looking at the disk.
+ *
+ * Every "behind" in this app — `behind`, `behindBase`, and so the Catch up
+ * count, the Pull entry and the ↓ on every row — is measured against a
+ * remote-tracking ref, and those refs move only when something fetches. The
+ * only fetches Cockpit had were *inside plans*: `git fetch origin <base>` as
+ * the first step of a Catch up. So a commit pushed to origin was invisible
+ * until you ran the very operation whose count was supposed to tell you to run
+ * it, and Refresh — which re-probed everything faithfully — re-read the same
+ * stale refs and reported no change. The window was not wrong; it was reading
+ * a photograph of the remote taken the last time a plan ran.
+ *
+ * Throttled rather than free: `reconcile` runs on a 60s timer and after every
+ * apply, and none of those are worth a network round trip per repository.
+ * `force` is the Refresh button, which is a person asking on purpose.
+ *
+ * Failure is not an error. Offline, no `origin`, credentials not loaded — all
+ * of them mean the counts stay as they were, which is what they would have
+ * done anyway. The timestamp is written *before* the fetch so a hanging one
+ * does not queue another behind it on the next tick.
+ */
+const FETCH_MIN_INTERVAL = 120_000
+const lastFetch = new Map<string, number>()
+
+export async function fetchRemote(cwd: string, opts: { force?: boolean } = {}): Promise<boolean> {
+  const now = Date.now()
+  if (!opts.force && now - (lastFetch.get(cwd) ?? 0) < FETCH_MIN_INTERVAL) return false
+  lastFetch.set(cwd, now)
+  const r = await git(cwd, ['fetch', '--prune', 'origin'], 30_000)
+  return r.ok
 }
 
 export async function gitDir(cwd: string): Promise<string> {

@@ -5,7 +5,7 @@ import type { Capability, ProjectSettings, Setup, Topic, Project, Workspace } fr
 import * as topicStore from './topics/store.js'
 import { loadConfig, updateConfig, projectSettings, setProjectSettings } from './config.js'
 import { childRepos, detectCapabilities, findManifest, projectNameFor, readManifest } from './detect.js'
-import { isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
+import { fetchRemote, isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
 import { leaseCovering } from './leases.js'
@@ -614,45 +614,86 @@ export async function probeWorkspace(id: string): Promise<Workspace> {
   return ws
 }
 
-let reconciling = false
+/**
+ * The pass currently running, so a second caller can wait for it rather than
+ * be told there was nothing to do.
+ *
+ * A flag was enough while a pass was pure local probing and took milliseconds.
+ * It now goes to the network first, and the window is long enough that Refresh
+ * lands inside a timer tick often — where `if (reconciling) return 0` meant the
+ * button did nothing at all and said "refreshed". A person pressing it is the
+ * one caller that must not be swallowed.
+ */
+let inFlight: Promise<number> | null = null
 
 /** The single entry point that brings the in-memory view back in line with
  *  reality. Idempotent and replayable, so it doubles as diagnostics (§13). */
-export async function reconcile(projectId?: string): Promise<number> {
-  if (reconciling) return 0
-  reconciling = true
-  try {
-    const cfg = loadConfig()
-    const roots = projectId
-      ? [projects.get(projectId)?.root].filter((x): x is string => !!x)
-      : cfg.projects.map((p) => p.root)
-
-    // Drop workspaces whose folder no longer exists — a manual `rm -rf` must
-    // not leave the UI lying (§3.4).
-    for (const [id, w] of [...workspaces]) {
-      if (!existsSync(w.path)) {
-        workspaces.delete(id)
-        append({ type: 'workspace.forgotten', projectId: w.projectId, workspaceId: id, payload: { path: w.path } })
-      }
-    }
-
-    let changed = 0
-    for (const root of roots) {
-      if (!existsSync(root)) continue
-      const project = buildProject(root)
-      addTopicRoots(project)
-      await discoverWorktrees(project)
-      for (const wid of project.workspaceIds) {
-        await probeWorkspace(wid)
-        changed++
-      }
-      deriveTopics(project)
-    }
-    append({ type: 'core.reconciled', payload: { projects: roots.length, workspaces: changed } })
-    return changed
-  } finally {
-    reconciling = false
+export async function reconcile(
+  projectId?: string,
+  /**
+   * Whether to go and ask origin before re-probing. `throttled` is the default
+   * and is what the 60s timer and every post-apply reconcile want; `force` is
+   * the Refresh button — a person asking on purpose, who should not be told
+   * "nothing changed" because a 120-second window had not elapsed.
+   */
+  opts: { fetch?: 'throttled' | 'force' | 'never' } = {},
+): Promise<number> {
+  if (inFlight) {
+    // A timer tick or a post-apply pass can be dropped; the button cannot.
+    if (opts.fetch !== 'force') return 0
+    await inFlight.catch(() => 0)
   }
+  const pass = runReconcile(projectId, opts)
+  inFlight = pass
+  try {
+    return await pass
+  } finally {
+    inFlight = null
+  }
+}
+
+async function runReconcile(
+  projectId: string | undefined,
+  opts: { fetch?: 'throttled' | 'force' | 'never' },
+): Promise<number> {
+  const cfg = loadConfig()
+  const roots = projectId
+    ? [projects.get(projectId)?.root].filter((x): x is string => !!x)
+    : cfg.projects.map((p) => p.root)
+
+  // Drop workspaces whose folder no longer exists — a manual `rm -rf` must
+  // not leave the UI lying (§3.4).
+  for (const [id, w] of [...workspaces]) {
+    if (!existsSync(w.path)) {
+      workspaces.delete(id)
+      append({ type: 'workspace.forgotten', projectId: w.projectId, workspaceId: id, payload: { path: w.path } })
+    }
+  }
+
+  let changed = 0
+  for (const root of roots) {
+    if (!existsSync(root)) continue
+    const project = buildProject(root)
+    addTopicRoots(project)
+    await discoverWorktrees(project)
+    // Before the probe, not after: the probe reads the refs this moves, and
+    // in parallel because these are network calls and they are independent.
+    if (opts.fetch !== 'never') {
+      await Promise.all(
+        project.workspaceIds.map((wid) => {
+          const w = workspaces.get(wid)
+          return w?.repo ? fetchRemote(w.path, { force: opts.fetch === 'force' }) : null
+        }),
+      )
+    }
+    for (const wid of project.workspaceIds) {
+      await probeWorkspace(wid)
+      changed++
+    }
+    deriveTopics(project)
+  }
+  append({ type: 'core.reconciled', payload: { projects: roots.length, workspaces: changed } })
+  return changed
 }
 
 /**

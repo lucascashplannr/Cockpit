@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  ArrowDown, ArrowUp, CircleAlert, CirclePlay, CircleStop, GitBranch, Hand, Lock, Sparkles,
+  ArrowDownToLine, ArrowUp, CircleAlert, CirclePlay, CircleStop, GitBranch, GitCompareArrows,
+  Hand, Lock, Sparkles,
   SquareDot, TriangleAlert,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
@@ -40,6 +41,34 @@ async function startHere() {
 const dirty = computed(() => {
   const g = w.value.git
   return g ? g.staged + g.unstaged + g.untracked : 0
+})
+
+/**
+ * §4 — the two distances a row can be behind, drawn separately because they
+ * are closed by two different verbs.
+ *
+ *   the base moved     → Catch up, `behindBase`
+ *   its own remote     → Pull, `behind`
+ *
+ * One counter tried to serve both and could not: `behindBase ?? behind` falls
+ * back only on null, so a topic branch level with its base (`behindBase: 0`)
+ * and one commit behind its own remote showed nothing at all — while the bar
+ * beside it offered `Pull 1`. `||` would have fixed that case and lost the
+ * other, hiding the base's count whenever both were live.
+ *
+ * So: the same two glyphs the bar uses for the same two verbs, each drawn only
+ * when it has something to say. In the ordinary case that is still one number.
+ */
+const behindBase = computed(() => w.value.git?.behindBase ?? 0)
+
+/**
+ * Only against this branch's *own* remote. A topic branch tracks
+ * `origin/<base>` until its first push, and `behind` there is the base's
+ * distance wearing the wrong name — already counted to the left.
+ */
+const toPull = computed(() => {
+  const g = w.value.git
+  return g && g.branch && g.upstream === 'origin/' + g.branch ? g.behind : 0
 })
 
 /**
@@ -90,16 +119,25 @@ const kindLabel = computed(() =>
         <span v-if="w.git.ahead" class="c ahead" :title="w.git.ahead + ' commit(s) ahead'">
           <ArrowUp class="sm" />{{ w.git.ahead }}
         </span>
-        <!-- Behind the *base*, not behind `upstream`: this is the number Catch
-             up acts on, and the two stop agreeing the moment the branch is
-             pushed. What the branch's own remote holds is a different fact and
-             belongs to a verb that does not exist yet. -->
+        <!-- One ↓, and it counts whichever distance this row can actually act
+             on: the base while there is a base to catch up from, and otherwise
+             its own remote, which is what a row sitting on the base is behind.
+             Two arrows for the two would say the row has twice as much wrong
+             with it as it does; the verb that closes each is on the bar, with
+             its own number. -->
         <span
-          v-if="w.git.behindBase"
+          v-if="behindBase"
           class="c behind"
-          :title="w.git.behindBase + ' commit(s) behind ' + (w.git.base ?? 'the base')"
+          :title="behindBase + ' commit(s) behind ' + (w.git.base ?? 'the base') + ' — Catch up brings them in'"
         >
-          <ArrowDown class="sm" />{{ w.git.behindBase }}
+          <GitCompareArrows class="sm" />{{ behindBase }}
+        </span>
+        <span
+          v-if="toPull"
+          class="c behind"
+          :title="toPull + ' commit(s) on ' + w.git.upstream + ' you do not have — Pull brings them in'"
+        >
+          <ArrowDownToLine class="sm" />{{ toPull }}
         </span>
         <span v-if="dirty" class="c dirty" :title="dirty + ' uncommitted change(s)'">
           <i class="pip" />{{ dirty }}

@@ -547,7 +547,7 @@ export interface Rpc {
   'git.plan': {
     params: {
       workspaceId: string
-      operation: 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'sync'
+      operation: 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'pull' | 'sync'
       args?: Record<string, string>
     }
     result: PlanPreview

@@ -9,8 +9,13 @@
  * window reads it as zero, and Catch up says "already up to date" while the
  * base has moved on. A missing number that looks like a real one is worse than
  * a missing method, which at least names itself.
+ *
+ * 2.6 — the `pull` operation. `git.plan` is one method whatever the verb, so an
+ * older core does not answer `unknown_method`: it falls through its own switch
+ * and returns a plan with no steps at all, which reads as "there is nothing to
+ * do" rather than as a daemon nobody restarted.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 5 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 6 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

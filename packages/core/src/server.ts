@@ -196,8 +196,14 @@ type Handler = (params: never) => unknown | Promise<unknown>
 
 const handlers: Record<string, Handler> = {
   'core.status': () => status(),
+  /**
+   * Refresh, and a person pressing it means "go and look now" — so this is the
+   * one caller that fetches whatever the throttle says. Pressing it and being
+   * told nothing changed, because origin had last been asked 90 seconds ago,
+   * is the failure this button exists to not have.
+   */
   'core.reconcile': async (p: { projectId?: string }) => {
-    const changed = await registry.reconcile(p?.projectId)
+    const changed = await registry.reconcile(p?.projectId, { fetch: 'force' })
     pushAll()
     return { changed }
   },

@@ -2,7 +2,8 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
-  AppWindow, ArrowRight, ArrowUpFromLine, BookMarked, Check, CloudDownload, CornerDownLeft, FileCode,
+  AppWindow, ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookMarked, Check, CloudDownload,
+  CornerDownLeft, FileCode,
   FolderOpen,
   FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, TextSearch,
@@ -303,20 +304,34 @@ const commands = computed<Item[]>(() => {
         })
       }
     } else if (w.git) {
-      const gitIcon: Record<string, Component> = {
-        rebase: GitCompareArrows,
-        merge: GitMerge,
-        push: ArrowUpFromLine,
-        sync: RefreshCw,
+      /**
+       * §4 — the verbs by the names on the bar, not by the RPC ids. These read
+       * "Rebase onto the base branch" and "Merge onto the base branch", which
+       * are the two words the lexicon renamed, in the one list built for
+       * finding a thing by typing its name.
+       *
+       * Catch up is absent on the base branch for the same reason it is absent
+       * from the bar there: a branch cannot be replayed onto itself, and what
+       * you are behind is your own remote, which is Pull.
+       */
+      const ops: { op: 'rebase' | 'pull' | 'merge' | 'push' | 'sync'; label: string; icon: Component }[] = []
+      if (w.git.behindBase != null) {
+        ops.push({ op: 'rebase', label: 'Catch up from the base branch', icon: GitCompareArrows })
       }
-      for (const op of ['rebase', 'merge', 'push', 'sync'] as const) {
+      ops.push(
+        { op: 'pull', label: 'Pull this branch from origin', icon: ArrowDownToLine },
+        { op: 'merge', label: 'Send this branch to the base branch', icon: GitMerge },
+        { op: 'push', label: 'Push this branch to origin', icon: ArrowUpFromLine },
+        { op: 'sync', label: 'Fetch every remote', icon: RefreshCw },
+      )
+      for (const o of ops) {
         out.push({
-          id: 'git:' + op,
-          label: op[0]!.toUpperCase() + op.slice(1) + (op === 'rebase' || op === 'merge' ? ' onto the base branch' : ''),
+          id: 'git:' + o.op,
+          label: o.label,
           hint: 'shows a plan first',
           group: 'Git',
-          icon: gitIcon[op]!,
-          run: act(() => requestPlan(w.id, op)),
+          icon: o.icon,
+          run: act(() => requestPlan(w.id, o.op)),
         })
       }
       out.push({

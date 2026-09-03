@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChevronRight, X } from '@lucide/vue'
+import BasePicker from './BasePicker.vue'
 import { applyPendingConfirm, state } from '../core/store.js'
 
 /**
@@ -24,6 +25,9 @@ const open = ref(false)
 
 function cancel(): void {
   state.pendingConfirm = null
+  // §4 — the base a Catch up was going to use goes with the question it
+  // belonged to; left behind it would furnish the next one.
+  state.pendingPlanFrom = null
   open.value = false
 }
 
@@ -82,6 +86,10 @@ watch(
           {{ line }}
         </p>
       </div>
+
+      <!-- §4 — only on a Catch up, and only under the sentence it qualifies:
+           the branch is the one word in the question that is a choice. -->
+      <BasePicker class="base" />
 
       <!-- The plan, kept but not insisted upon. `details` rather than a
            hand-rolled toggle: it is a disclosure, the platform has one, and
@@ -204,6 +212,9 @@ watch(
   color: var(--text-muted);
 }
 .say p + p { margin-top: 7px; }
+/* Sits with the sentences it qualifies rather than in a band of its own: the
+   dialog is a paragraph and a question, and a rule across it would make two. */
+.base { margin: 0 20px 12px; }
 .say .lead { color: var(--text); }
 .say .danger { color: var(--danger); }
 

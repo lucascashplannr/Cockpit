@@ -200,6 +200,20 @@ export const state = reactive({
   /** §4 — the sheet that opens a topic across N repositories. */
   topicDialogOpen: false,
   pendingPlan: null as PlanPreview | null,
+  /**
+   * §4 — what produced the plan on screen, and against which base.
+   *
+   * Only Catch up needs it, and it is the whole of "catch up from another
+   * branch this time": the base is not a setting you go and change, it is a
+   * word in the plan you are already reading. `workspaceId` is the checkout
+   * whose branch list gets offered — for a topic, the first repository it
+   * spans, since they are all forked from the same base.
+   */
+  pendingPlanFrom: null as
+    | { scope: { kind: 'workspace'; id: string } | { kind: 'topic'; id: string }
+        workspaceId: string
+        base: string }
+    | null,
   pendingConfirm: null as PendingConfirm | null,
   planBusy: false,
   toast: null as { kind: 'ok' | 'error' | 'info'; text: string } | null,
@@ -1440,7 +1454,7 @@ export const gitBusy = reactive<Record<string, string>>({})
 
 export async function requestPlan(
   workspaceId: string,
-  operation: 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'sync',
+  operation: 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'pull' | 'sync',
   args: Record<string, string> = {},
   /**
    * `always` is the default and stays the default: every verb that reaches
@@ -1464,11 +1478,22 @@ export async function requestPlan(
       await settlePlan(plan, await guard(() => client.call('git.apply', { planId: plan.planId })))
       return
     }
+    const w = state.workspaces.find((x) => x.id === workspaceId)
     if (operation === 'push') {
-      const branch = state.workspaces.find((w) => w.id === workspaceId)?.git?.branch
-      askPush(plan, (branch ?? 'this branch') + ' to origin')
+      askPush(plan, (w?.git?.branch ?? 'this branch') + ' to origin')
       return
     }
+    if (operation === 'pull') {
+      askPull(plan, w?.git?.branch ?? 'this branch')
+      return
+    }
+    if (operation === 'rebase') {
+      const base = args.base ?? w?.git?.base ?? ''
+      state.pendingPlanFrom = { scope: { kind: 'workspace', id: workspaceId }, workspaceId, base }
+      askCatchUp(plan, base, null)
+      return
+    }
+    state.pendingPlanFrom = null
     state.pendingPlan = plan
   } finally {
     delete gitBusy[workspaceId]
@@ -1563,6 +1588,8 @@ export async function applyPendingConfirm(): Promise<void> {
   const res = await guard(() => client.call('git.apply', { planId: c.plan.planId }))
   state.planBusy = false
   state.pendingConfirm = null
+  // §4 — it belonged to the question, and the question is answered.
+  state.pendingPlanFrom = null
   // Its own wording rather than settlePlan's "<operation> applied": the button
   // said "Put it back", and the toast that follows should agree with it.
   await settlePlan(c.plan, res, c.done)
@@ -1575,6 +1602,7 @@ export async function applyPendingPlan(): Promise<void> {
   const res = await guard(() => client.call('git.apply', { planId: plan.planId }))
   state.planBusy = false
   state.pendingPlan = null
+  state.pendingPlanFrom = null
   await settlePlan(plan, res)
 }
 
@@ -1835,6 +1863,69 @@ function askPush(plan: PlanPreview, subject: string): void {
 }
 
 /**
+ * §4 — Catch up, asked rather than briefed, and for the same reason Push is.
+ *
+ * It was the heavy dialog: four numbered commands, an all-or-nothing note and
+ * a shield, above the one thing anybody wanted to change (which branch) and the
+ * one thing anybody had to read (the warnings). Nothing there was wrong and all
+ * of it was scaffolding around a single decision. The commands are one
+ * disclosure down, which is what §3.7 asks for — the plan is shown before it
+ * runs, not necessarily read first.
+ *
+ * Not `danger`, deliberately, even though it rewrites history: a Catch up takes
+ * a restore point, so it is the kind of thing you can take back, and the red
+ * button is reserved for the kind you cannot. The sentence says so instead.
+ */
+function askCatchUp(plan: PlanPreview, base: string, repos: string[] | null): void {
+  // A Catch up with nothing destructive in it is the fast-forward the planner
+  // builds when the branch *is* the base — a different sentence, because
+  // nothing is replayed and nothing is rewritten.
+  const replays = plan.steps.some((s) => s.destructive)
+  const body = [
+    replays
+      ? (repos && repos.length > 1 ? 'Every branch in this topic is' : 'Your work is') +
+        ' replayed on top of ' + base + '. Nothing is discarded — a conflict is where both' +
+        ' sides changed the same lines.'
+      : base + ' has moved on and you have not. This only moves you forward — nothing of' +
+        ' yours is replayed or rewritten.',
+  ]
+  if (repos && repos.length > 1) body.push('In ' + repos.join(', ') + '.')
+  body.push(...plan.warnings)
+  if (plan.capturesRestorePoint) body.push('A restore point is captured first, so this can be undone.')
+
+  state.pendingConfirm = {
+    title: 'Catch up from ' + base + '?',
+    body,
+    verb: 'Catch up',
+    done: 'caught up with ' + base,
+    danger: false,
+    plan,
+  }
+}
+
+/**
+ * §4 — the other direction, and the one nothing covered: what origin holds for
+ * *this* branch. Short enough to be a question, like Push and Catch up.
+ */
+function askPull(plan: PlanPreview, branch: string): void {
+  const rewrites = plan.steps.some((s) => s.destructive)
+  const body = [
+    rewrites
+      ? 'You and origin have both moved, so there is no fast-forward to be had: your commits are replayed on top of what origin has.'
+      : 'What origin holds for ' + branch + ' comes in. Nothing of yours is rewritten.',
+    ...plan.warnings,
+  ]
+  state.pendingConfirm = {
+    title: 'Pull ' + branch + ' from origin?',
+    body,
+    verb: 'Pull',
+    done: 'pulled from origin',
+    danger: false,
+    plan,
+  }
+}
+
+/**
  * §4 — the step the lifecycle was missing. The topic branch goes onto the
  * base in each repository's main checkout, as one `--no-ff` merge.
  */
@@ -1898,14 +1989,39 @@ export async function openConflictFile(path: string): Promise<void> {
  * again after resolving picks up the rest, because a branch already rebased
  * costs only a fetch.
  */
-export async function rebaseTopic(topicId: string): Promise<void> {
-  const res = await guard(() => client.call('topic.rebase', { topicId }))
+export async function rebaseTopic(topicId: string, base?: string): Promise<void> {
+  const res = await guard(() => client.call('topic.rebase', { topicId, base }))
   if (!res) return
   if (!res.ok || !res.plan) {
     toast('error', res.detail)
     return
   }
-  state.pendingPlan = res.plan
+  // The first repository that has a base: they are forked from the same one,
+  // and its branch list is the one to offer if the base is changed.
+  const anchor = state.workspaces.find((w) => w.topicId === topicId && !!w.git?.base)
+  const onto = base ?? anchor?.git?.base ?? ''
+  state.pendingPlanFrom = {
+    scope: { kind: 'topic', id: topicId },
+    workspaceId: anchor?.id ?? '',
+    base: onto,
+  }
+  askCatchUp(res.plan, onto, res.plan.repos ?? null)
+}
+
+/**
+ * §4 — the same act, onto a different branch, without leaving the dialog.
+ *
+ * "Always catch up from `main`" is the project's setting and stays the answer
+ * nearly always; this is the exception you take once, on the plan you are
+ * already looking at, and it does not change the setting.
+ */
+export async function replanBase(base: string): Promise<void> {
+  const from = state.pendingPlanFrom
+  if (!from || base === from.base) return
+  state.pendingPlan = null
+  state.pendingPlanFrom = null
+  if (from.scope.kind === 'topic') await rebaseTopic(from.scope.id, base)
+  else await requestPlan(from.scope.id, 'rebase', { base })
 }
 
 /* ── topics ────────────────────────────────────────────────────────────

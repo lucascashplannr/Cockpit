@@ -134,8 +134,11 @@ export interface GitState {
    * push. After it the count reads zero while the base has moved on, and the
    * one button whose whole job is to notice that says "already up to date".
    *
-   * Null when it cannot be told — no base, or a base that does not resolve
-   * locally. Unknown is not zero.
+   * Null when there is no such distance to give: no base, a base that does not
+   * resolve locally, or — the common one — a branch that *is* the base. You
+   * cannot catch up with yourself; being behind `origin/main` while standing on
+   * `main` is a pull, and `behind` is already counting it. Anything reading
+   * this must treat null as "Catch up does not apply here", not as zero.
    */
   behindBase: number | null
   staged: number

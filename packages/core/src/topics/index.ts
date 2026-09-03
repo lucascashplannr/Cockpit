@@ -10,6 +10,20 @@ import * as plans from '../plans.js'
 import * as registry from '../registry.js'
 import { moveToTrash } from '../files.js'
 import * as runtime from '../runtime/index.js'
+
+/**
+ * §15 — the branch this path's project says it works against, and only then
+ * what git guesses.
+ *
+ * The single-repository planner has read it through `baseOverride` since the
+ * setting existed; the topic planners called `defaultBranch` directly and so
+ * ignored it — a project set to work against `develop` still had its topics
+ * fetch and rebase onto `main`, silently, which is the exact failure the
+ * setting exists to prevent.
+ */
+async function baseFor(path: string): Promise<string> {
+  return registry.baseOverride(path) ?? (await defaultBranch(path))
+}
 import * as database from '../database.js'
 import * as seed from '../seed.js'
 import * as store from './store.js'
@@ -88,7 +102,7 @@ export async function openPlan(
     input.setup === 'branch' ? null : plans.topicRootPath(repos[0]!.path, slug)
 
   for (const repo of repos) {
-    const base = input.base ?? (await defaultBranch(repo.path))
+    const base = input.base ?? (await baseFor(repo.path))
     const branchTaken = await hasBranch(repo.path, slug)
     if (branchTaken) {
       warnings.push(repo.name + ': branch "' + slug + '" already exists and will be reused as-is.')
@@ -587,7 +601,7 @@ export async function rebasePlan(
   const names: string[] = []
 
   for (const w of repos) {
-    const onto = base ?? (await defaultBranch(w.path))
+    const onto = base ?? (await baseFor(w.path))
     const branch = w.git?.branch ?? f.slug
     names.push(w.name)
     steps.push({
@@ -783,7 +797,7 @@ export async function mergePlan(
       blockers.push(main.name + ' (main checkout): uncommitted changes')
     }
 
-    const base = opts.base ?? (await defaultBranch(main.path))
+    const base = opts.base ?? (await baseFor(main.path))
     const branch = tree.git?.branch ?? f.slug
     if (branch === base) {
       warnings.push(tree.name + ' is already on ' + base + ' — nothing to land.')
@@ -1110,7 +1124,7 @@ export async function deletePlan(
   if (input.deleteBranches) {
     const unmerged: string[] = []
     for (const repo of repos) {
-      const base = await defaultBranch(repo.path)
+      const base = await baseFor(repo.path)
       const merged = await isMerged(repo.path, f.slug, base)
       if (merged === null) continue // no such branch here; nothing to delete
       if (!merged) unmerged.push(repo.name)
