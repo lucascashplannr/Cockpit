@@ -1,0 +1,105 @@
+name: Release
+
+# Tags only. A push to main builds nothing: a release is a deliberate act, and
+# `v0.2.0` is how it is spelled.
+on:
+  push:
+    tags: ['v*']
+  # Kept for dry runs — builds the installers and uploads them as workflow
+  # artifacts without touching a release.
+  workflow_dispatch:
+
+# Needed by electron-builder to create the release and upload to it.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      # One platform failing must not bin the other's artifacts: a broken
+      # Windows build should still leave a working macOS one to download.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+          - os: windows-latest
+            name: Windows
+
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Native modules are rebuilt against Electron's ABI, not this Node's —
+      # electron-builder does it during packaging. This Node only has to be new
+      # enough to run the toolchain.
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          pkg=$(node -p "require('./apps/desktop/package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match apps/desktop/package.json ($pkg)."
+            echo "The updater compares versions, so a release built under the wrong"
+            echo "number is a release nobody is offered. Bump the package first."
+            exit 1
+          fi
+
+      - name: Build and publish
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing. Absent, electron-builder skips signing and says so —
+          # the build still succeeds, it just cannot auto-update on macOS.
+          # Present, it signs and notarizes with no change to any file here.
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # The steps of `pnpm dist`, spelled out rather than run through it:
+          # appending flags to a `&&` chain relies on where the package manager
+          # decides to put them, and this one has to land on electron-builder.
+          pnpm run build
+          pnpm run bundle:core
+
+          args=""
+          # Notarization is asked for only when there is a certificate to notarise
+          # against; requesting it without one fails the build instead of
+          # degrading to an unsigned artifact.
+          if [ -n "$CSC_LINK" ] && [ -n "$APPLE_ID" ]; then
+            args="--config.mac.notarize=true"
+          fi
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            pnpm exec electron-builder --publish always $args
+          else
+            pnpm exec electron-builder --publish never $args
+          fi
+
+      # Dry runs keep their output somewhere reachable; tagged runs already have
+      # it on the release.
+      - name: Upload installers
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: cockpit-${{ matrix.name }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.yml
+          if-no-files-found: warn

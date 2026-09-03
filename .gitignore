@@ -12,3 +12,8 @@ apps/desktop/build/icon.iconset/
 # §15 — the memory is versioned; the journal and sessions are local.
 .cockpit/journal.jsonl
 .cockpit/sessions/
+
+# The core bundle is a build output of scripts/bundle-core.mjs, rebuilt on every
+# package. Committing it would mean a second copy of the core that can disagree
+# with packages/core/src.
+apps/desktop/resources/

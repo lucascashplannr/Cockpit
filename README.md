@@ -94,6 +94,52 @@ cockpit agent list                       # ↻ marks the resumable ones
 cockpit agent resume <id> "what next"
 ```
 
+## Distribution
+
+Installers are built by CI, never by hand: `.github/workflows/release.yml` runs the
+same packaging on `macos-latest` and `windows-latest` and publishes both to a GitHub
+release. Cross-building the Windows app from a Mac is not possible here —
+`better-sqlite3` is compiled C++ and would need MSVC — so the Windows runner is not a
+convenience, it is the only way that target exists.
+
+```bash
+pnpm release 0.2.0          # bumps apps/desktop/package.json, commits, tags
+git push origin main v0.2.0 # this is what starts the build
+```
+
+The version in `apps/desktop/package.json` is the one that decides everything: it is
+stamped into the artifacts and it is what electron-updater compares. The workflow
+refuses a tag that disagrees with it.
+
+An installed app checks the release feed ten seconds after launch and every six hours,
+downloads in the background, and asks once — restart now, or at the next launch. On
+macOS this needs a signed and notarised build: without a Developer ID the app still
+builds and runs, it simply cannot update itself. The workflow signs when
+`MAC_CERT_P12_BASE64`, `MAC_CERT_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`
+and `APPLE_TEAM_ID` are present as repository secrets, and skips signing when they are
+not — no file here changes either way.
+
+### One runtime
+
+The core runs under Electron's embedded Node, in development as well as packaged
+(`coreLauncher` in `apps/desktop/electron/main.cjs`). This is not a packaging detail.
+`better-sqlite3` binds to exactly one Node ABI: Electron 33 embeds Node 20, a developer
+shell is usually on Node 22, and a module built for either is refused by the other.
+Running the core under the same binary that runs the window leaves one ABI to build
+for, and the shipped app needs no Node installed at all.
+
+Two consequences worth knowing before they surprise you:
+
+- Nothing may run the core through the shell's own Node. `pnpm daemon` goes through
+  `scripts/daemon.mjs`, which borrows the app's Electron binary.
+- `apps/desktop/scripts/rebuild-native.mjs` runs on install, and again after `dist` and
+  `pack`. It opens a database under Electron and rebuilds only if that fails, so a fresh
+  clone is correct without a wait on every install. The hook after a build is not
+  redundant: packaging the macOS x64 target rebuilds this repository's native modules as
+  Intel, which leaves the development core unable to start on an Apple Silicon machine —
+  and the error it raises talks about the ABI without ever mentioning architecture.
+
+
 ## Topics, conversations, and the difference
 
 A **topic** is the durable thing: a name, a branch of that name in every repository

@@ -1,8 +1,9 @@
 const { app, BrowserWindow, dialog, ipcMain, shell, nativeTheme } = require('electron')
 const { execFileSync, spawn } = require('node:child_process')
-const { join, resolve } = require('node:path')
+const { dirname, join, resolve } = require('node:path')
 const { existsSync } = require('node:fs')
 const { createConnection } = require('node:net')
+const { startUpdater } = require('./updater.cjs')
 
 /**
  * §13 — "Le noyau tourne en permanence, indépendamment de l'interface."
@@ -41,21 +42,66 @@ function probeCore(port) {
   })
 }
 
+/**
+ * How to start a core, which is two questions: what runs it, and what it runs.
+ *
+ * The first answer is the same in both modes and it is not a convenience —
+ * `process.execPath` is Electron, and `ELECTRON_RUN_AS_NODE` makes it behave as
+ * the Node it embeds. The core loads better-sqlite3, a compiled module that
+ * binds to one ABI: Electron 33 embeds Node 20 (ABI 130) while a developer's
+ * shell is on Node 22 (ABI 127), and a module built for either is refused by
+ * the other. Running the core under the same binary that runs this file means
+ * there is one ABI to build for instead of two, and a packaged app that needs
+ * no Node installed on the machine at all.
+ *
+ * The second answer is what differs. Packaged there is no repository and no
+ * TypeScript: the core is one bundled ESM file built by scripts/bundle-core.mjs.
+ * Unpackaged it is still the source tree, run through tsx, so editing the core
+ * stays a matter of saving a file.
+ */
+function coreLauncher() {
+  if (!DEV) {
+    // Shipped unpacked rather than inside the asar: the archive is not a
+    // filesystem, and the native modules this file loads have to be real paths
+    // the dynamic loader can open (electron-builder's `asarUnpack`).
+    const bundle = resolve(__dirname, '..', 'resources', 'core.mjs')
+    return existsSync(bundle) ? { args: [bundle], what: bundle } : null
+  }
+  const entry = resolve(__dirname, '..', '..', '..', 'packages', 'core', 'src', 'index.ts')
+  if (!existsSync(entry)) return null
+  // tsx's CLI rather than the `tsx` shim on PATH: the shim is a Node script, so
+  // it would start a second runtime — the wrong one — to launch the right one.
+  // Read through the package's own `bin` rather than reaching for dist/cli.mjs:
+  // tsx does not export that subpath, and `require.resolve` honours `exports`.
+  let tsx
+  try {
+    const manifest = require.resolve('tsx/package.json', { paths: [resolve(__dirname, '..')] })
+    tsx = resolve(dirname(manifest), require(manifest).bin)
+  } catch {
+    return null
+  }
+  if (!existsSync(tsx)) return null
+  return { args: [tsx, entry], what: entry }
+}
+
 async function ensureCore() {
   if (await probeCore(CORE_PORT)) {
     console.log('[cockpit] core already running on ' + CORE_PORT)
     return
   }
-  const entry = resolve(__dirname, '..', '..', '..', 'packages', 'core', 'src', 'index.ts')
-  if (!existsSync(entry)) {
-    console.error('[cockpit] core entry not found at ' + entry)
+  const launcher = coreLauncher()
+  if (!launcher) {
+    console.error('[cockpit] no core to start (' + (DEV ? 'dev' : 'packaged') + ')')
     return
   }
   // Detached: the core outlives this window, and this app on quit.
-  const child = spawn('npx', ['tsx', entry], {
+  const child = spawn(process.execPath, launcher.args, {
     detached: true,
     stdio: 'ignore',
-    env: Object.assign({}, process.env, { COCKPIT_PORT: String(CORE_PORT) }),
+    env: Object.assign({}, process.env, {
+      COCKPIT_PORT: String(CORE_PORT),
+      ELECTRON_RUN_AS_NODE: '1',
+    }),
   })
   child.unref()
   for (let i = 0; i < 40; i++) {
@@ -208,6 +254,9 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && DEV && existsSync(ICON)) app.dock?.setIcon(ICON)
   await ensureCore()
   createWindow()
+  // Given a getter rather than the window: the one it should parent its dialog
+  // to is whichever exists when an update lands, which is not this one.
+  startUpdater(() => BrowserWindow.getAllWindows()[0] ?? null)
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

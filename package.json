@@ -11,9 +11,10 @@
     "postinstall": "node scripts/postinstall.mjs",
     "build": "pnpm -r --filter @cockpit/shared build && pnpm -r --filter @cockpit/core build && pnpm -r --filter @cockpit/cli build",
     "dev": "pnpm --filter @cockpit/desktop dev",
-    "daemon": "pnpm --filter @cockpit/core dev",
+    "daemon": "node scripts/daemon.mjs",
     "cli": "pnpm --filter @cockpit/cli exec tsx src/index.ts",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "tsx": "^4.19.2",

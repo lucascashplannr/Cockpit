@@ -1,0 +1,61 @@
+appId: com.cashplannr.cockpit
+productName: Cockpit
+copyright: Lucas Delaunoit
+
+directories:
+  buildResources: build
+  output: release
+
+# What goes into the application. Deliberately a list of what belongs rather
+# than the default sweep minus exclusions: `electron/` is the main process,
+# `dist/` is the renderer built by Vite, `resources/` is the core bundle.
+files:
+  - electron/**
+  - dist/**
+  - resources/**
+  - package.json
+  # @cockpit/shared is a workspace package, and both consumers already inline it
+  # — Vite into dist/, esbuild into resources/core.mjs. Shipping the symlink as
+  # well would put a second, unused copy in the asar.
+  - '!node_modules/@cockpit/**'
+
+# Everything the dynamic loader has to open by real path. An asar is an archive,
+# not a filesystem: a .node inside one cannot be dlopen'd, and `import` cannot
+# reach a .mjs through it either. Unpacking `resources/**` alongside the two
+# native packages is also what keeps module resolution working — core.mjs lands
+# in app.asar.unpacked/resources/, so walking up for node_modules finds the
+# unpacked better-sqlite3 rather than the archived one.
+asarUnpack:
+  - resources/**
+  - node_modules/better-sqlite3/**
+  - node_modules/node-pty/**
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  target:
+    # zip is not a convenience here: Squirrel.Mac, which is what electron-updater
+    # drives on macOS, can only consume a zip. A dmg-only release is a release
+    # that cannot auto-update.
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  # A per-user install needs no administrator, which keeps the app updatable
+  # without a UAC prompt on every release.
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+publish:
+  provider: github
+  owner: lucascashplannr
+  repo: Cockpit
