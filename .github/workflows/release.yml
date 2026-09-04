@@ -62,14 +62,18 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing. Absent, electron-builder skips signing and says so —
-          # the build still succeeds, it just cannot auto-update on macOS.
-          # Present, it signs and notarizes with no change to any file here.
-          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Carried under their own names, not electron-builder's. A secret that
+          # does not exist expands to the empty string rather than to nothing at
+          # all, and electron-builder reads an empty CSC_LINK as a certificate
+          # path it then resolves against the project directory — which is a
+          # directory, so it fails with "not a file" and no mention of signing.
+          # Its variables are exported below only when there is something to put
+          # in them.
+          MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          MAC_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MAC_APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          MAC_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           # The steps of `pnpm dist`, spelled out rather than run through it:
           # appending flags to a `&&` chain relies on where the package manager
@@ -78,12 +82,20 @@ jobs:
           pnpm run bundle:core
 
           args=""
-          # Notarization is asked for only when there is a certificate to notarise
-          # against; requesting it without one fails the build instead of
-          # degrading to an unsigned artifact.
-          if [ -n "$CSC_LINK" ] && [ -n "$APPLE_ID" ]; then
-            args="--config.mac.notarize=true"
+          if [ -n "$MAC_CERT_P12_BASE64" ]; then
+            export CSC_LINK="$MAC_CERT_P12_BASE64"
+            export CSC_KEY_PASSWORD="$MAC_CERT_PASSWORD"
+            # Notarization is asked for only when there is both a certificate to
+            # sign with and an account to notarise through; requesting it without
+            # either fails the build rather than degrading to an unsigned build.
+            if [ -n "$MAC_APPLE_ID" ]; then
+              export APPLE_ID="$MAC_APPLE_ID"
+              export APPLE_APP_SPECIFIC_PASSWORD="$MAC_APPLE_APP_PASSWORD"
+              export APPLE_TEAM_ID="$MAC_APPLE_TEAM_ID"
+              args="--config.mac.notarize=true"
+            fi
           fi
+
           if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
             pnpm exec electron-builder --publish always $args
           else
