@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { Conversation } from '@cockpit/shared'
 import { CircleAlert, CircleStop, Hand, Plus, Sparkles, Trash2, X } from '@lucide/vue'
 import {
-  activeAgentScope, attentionOf, client, deleteConversation, engineName, guard, isRunning,
+  activeAgentScope, attentionOf, client, deleteConversation, engineName, guard, isBusy, isLive,
   openThreadFor, pinThread, sessionsForScope, startFresh, state,
 } from '../core/store.js'
 import type { Attention } from '../core/store.js'
@@ -91,8 +91,14 @@ function ago(ts: number): string {
   return h < 24 ? h + 'h ago' : Math.floor(h / 24) + 'd ago'
 }
 
+/**
+ * Three states, not two: working, open, and gone. The middle one used to be
+ * painted as the first — a conversation that had answered and was still
+ * holding its process pulsed exactly like one mid-turn.
+ */
 function dotClass(c: Conversation): string {
-  if (isRunning(c)) return 'working'
+  if (isBusy(c)) return 'working'
+  if (isLive(c)) return 'idle'
   if (c.status === 'failed') return 'unhealthy'
   return 'down'
 }
@@ -139,6 +145,8 @@ function dotClass(c: Conversation): string {
             <span>{{ c.history.length }} turn{{ c.history.length === 1 ? '' : 's' }}</span>
             <span class="sep">·</span>
             <span>{{ ago(c.startedAt) }}</span>
+            <span v-if="isBusy(c)" class="state on">working</span>
+            <span v-else-if="isLive(c)" class="state">open</span>
             <span
               v-if="attentionOf(c) !== 'none'"
               class="needs"
@@ -154,17 +162,19 @@ function dotClass(c: Conversation): string {
              cursor: a list of twenty with sixty buttons lit is a toolbar. -->
         <span class="acts">
           <button
-            v-if="isRunning(c)"
+            v-if="isLive(c)"
             class="icon-btn small"
-            title="Stop this conversation"
+            :title="isBusy(c)
+              ? 'Stop what it is doing'
+              : 'Let this conversation go — it is idle and still holding its repositories'"
             @click="stop(c)"
           >
             <CircleStop class="sm" />
           </button>
           <button
             class="icon-btn small del"
-            :title="isRunning(c)
-              ? 'Stop it first — a running conversation is not removed out from under its engine'
+            :title="isLive(c)
+              ? 'Stop it first — a conversation is not removed out from under its engine'
               : 'Remove this conversation'"
             @click="confirming = confirming === c.id ? null : c.id"
           >
@@ -294,6 +304,12 @@ function dotClass(c: Conversation): string {
   white-space: nowrap;
 }
 .meta { font-size: var(--fs-xs); color: var(--text-dim); }
+/* "open" is a state, not an event: it gets the weight of the rest of the meta
+   line. "working" is the one word here worth a colour. */
+.state { color: var(--text-dim); }
+.state.on { color: var(--agent); font-weight: 600; }
+/* Alive and between turns: present, and not pretending to be busy. */
+.dot.idle { background: var(--agent); opacity: 0.5; }
 .ceng { color: var(--text-muted); }
 .sep { opacity: 0.5; }
 .needs { display: inline-flex; color: var(--warn); }

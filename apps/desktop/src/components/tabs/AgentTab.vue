@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
 import {
-  ArrowDown, BookMarked, CircleStop, Clock, Gauge, Hand, Lock,
-  Redo2, Sparkles, Undo2, X,
+  ArrowDown, Asterisk, BookMarked, CircleStop, Clock, Gauge, Hand, Lock,
+  Redo2, Undo2, X,
 } from '@lucide/vue'
 import MemoryTab from './MemoryTab.vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -12,7 +12,7 @@ import ToolGroup from '../agent/ToolGroup.vue'
 import Composer from '../agent/Composer.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, agentDraft, client, closeThread, guard, isRunning,
+  activeAgentScope, agentDraft, client, closeThread, guard, isBusy, isLive,
   askRevert, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, toast, transcriptOf,
 } from '../../core/store.js'
@@ -158,9 +158,17 @@ type Row =
   | { kind: 'group'; id: string; calls: Extract<Item, { kind: 'tool' }>[] }
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
 
-/** Two is where a fold starts earning its keep; one call folded is one click
- *  charged for nothing. */
-const GROUP_AT = 2
+/**
+ * Every run of calls folds, down to a run of one.
+ *
+ * This was 2, on the reasoning that folding a single call charges a click for
+ * nothing. What it actually bought was one full card — icon, command, a
+ * preview of stdout — for every lone `cat` in a conversation, which is most of
+ * them. The line is not a saving of space; it is the altitude the transcript
+ * is read at, and a turn should read the same whether it ran one command or
+ * nine. What the agent *said* is never folded.
+ */
+const GROUP_AT = 1
 
 function rowsOf(items: Item[]): Row[] {
   const rows: Row[] = []
@@ -343,7 +351,7 @@ const rotated = computed(() => {
   const s = selected.value
   if (!s || !s.history.length) return false
   if (transcriptOf(s.id).length) return false
-  return !isRunning(s)
+  return !isLive(s)
 })
 
 /* ── the composer ──────────────────────────────────────────────────────── */
@@ -351,7 +359,7 @@ const rotated = computed(() => {
 /** With a thread open it adds a turn; with none it opens one. The label says. */
 const continuing = computed(() => {
   const s = selected.value
-  return !!s && (isRunning(s) || s.resumable)
+  return !!s && (isLive(s) || s.resumable)
 })
 
 /**
@@ -368,8 +376,16 @@ const canSend = computed(() => {
   return continuing.value || !!scope.value
 })
 
-/** Said, but not started yet: it goes in when the engine finishes this turn. */
-const queueing = computed(() => !!selected.value && isRunning(selected.value))
+/**
+ * Said, but not started yet: it goes in when the engine finishes this turn.
+ *
+ * Only while a turn is actually in flight. This used to ask whether the
+ * *process* was up, so a conversation that had answered and was sitting idle
+ * offered to Queue — a word that means "behind something", with nothing in
+ * front of it. Pressing it sent the turn immediately, which is what Continue
+ * had always said it would do.
+ */
+const queueing = computed(() => !!selected.value && isBusy(selected.value))
 
 async function send(): Promise<void> {
   if (!canSend.value) return
@@ -434,6 +450,148 @@ async function unqueue(prompt: string): Promise<void> {
   const r = await guard(() => client.call('agent.unqueue', { sessionId: s.id, prompt }))
   if (r && !r.ok) toast('error', r.reason ?? 'it has already gone in')
 }
+
+/* ── what it is doing right now ──────────────────────────────────────────
+ *
+ * A turn in flight used to be one italic word — "working…" — and only until
+ * the first tool call landed, after which the thread went silent for however
+ * long the work took. Silence and a hang look identical, so the question the
+ * window left unanswered was the only one anyone actually has: is it still
+ * going?
+ *
+ * Three facts answer it, and all three are things we already know: what it is
+ * doing, how long it has been at it, and how much of the answer is written.
+ * The last one is the one that cannot be faked — it comes from the engine's
+ * own token count, and a hung turn's stops climbing.
+ */
+
+/**
+ * One clock for everything on this panel that ages: the elapsed counter on the
+ * turn in flight, and "2h ago" over every question that was ever asked.
+ *
+ * Fast while a turn is running, because a second-hand that only moves every
+ * half minute is worse than none. Slow otherwise — the only reader then is a
+ * relative timestamp that nobody watches tick, and a re-render a second for it
+ * would be the panel's most expensive idle habit.
+ */
+const now = ref(Date.now())
+let clock: number | null = null
+
+watch(
+  () => !!selected.value && isBusy(selected.value),
+  (busy) => {
+    if (clock !== null) clearInterval(clock)
+    now.value = Date.now()
+    clock = window.setInterval(() => {
+      now.value = Date.now()
+    }, busy ? 1000 : 30_000)
+  },
+  { immediate: true },
+)
+onUnmounted(() => {
+  if (clock !== null) clearInterval(clock)
+  if (dwell !== null) clearTimeout(dwell)
+})
+
+/** Seconds, then minutes. No milliseconds: this one is read while it moves. */
+function since(from: number): string {
+  const s = Math.max(0, Math.floor((now.value - from) / 1000))
+  if (s < 60) return s + 's'
+  return Math.floor(s / 60) + 'm ' + (s % 60) + 's'
+}
+
+/** What has been written of the answer so far, in the engine's own count. */
+const liveTokens = computed(() => (selected.value ? (state.progress[selected.value.id] ?? 0) : 0))
+
+/**
+ * The verb, in the terms of the thing being done.
+ *
+ * A tool call with no outcome yet *is* what it is doing — there is never more
+ * than one in flight — so the last unfinished call is the answer whenever
+ * there is one.
+ */
+const VERBS: Record<string, string> = {
+  Bash: 'Running',
+  Read: 'Reading',
+  Write: 'Writing',
+  Edit: 'Editing',
+  NotebookEdit: 'Editing',
+  Glob: 'Searching',
+  Grep: 'Searching',
+  Task: 'Delegating',
+  TodoWrite: 'Planning',
+  WebFetch: 'Fetching',
+  WebSearch: 'Searching',
+}
+
+function verbFor(tool: string, input: Record<string, unknown>): string {
+  const s = (key: string): string => (typeof input[key] === 'string' ? (input[key] as string) : '')
+  const verb = VERBS[tool] ?? tool
+  // A command is read whole; everything else is known by its last path segment,
+  // which is how anyone says it out loud.
+  const subject =
+    tool === 'Bash'
+      ? s('command')
+      : (s('file_path') || s('path') || s('pattern') || s('description') || s('url'))
+          .split('/')
+          .slice(-1)[0] ?? ''
+  // Cut without a mark of its own — the line's own trailing ellipsis is the
+  // one that says "still going", and two in a row read as a rendering bug.
+  const short = subject.length > 44 ? subject.slice(0, 44).trimEnd() : subject
+  return short ? verb + ' ' + short : verb
+}
+
+const doing = computed(() => {
+  const last = exchanges.value[exchanges.value.length - 1]
+  for (let i = (last?.items.length ?? 0) - 1; i >= 0; i--) {
+    const it = last!.items[i]!
+    if (it.kind === 'tool' && !it.result) return verbFor(it.tool, it.input)
+  }
+  // Nothing outstanding and words arriving: it is writing the answer. Nothing
+  // outstanding and nothing arriving: it is deciding what to do next.
+  return typed.value ? 'Writing' : 'Thinking'
+})
+
+/**
+ * The same thing, at a speed a person can read.
+ *
+ * `doing` is exact and therefore useless on its own: a `Read` that returns in
+ * 40ms would put a long file name on the line for two frames and take it away
+ * again, so a turn full of quick calls reads as a stutter between "Thinking…"
+ * and something nobody had time to see. Lucas: *"it gives an ultra glitch."*
+ *
+ * So the line holds whatever it is showing for `DWELL`, and when the hold ends
+ * it takes the **current** value rather than the one that asked for the change.
+ * A phase shorter than the hold is therefore skipped entirely rather than
+ * flashed — which is the right trade: the name of a command that has already
+ * finished is not news, and the point of naming the long ones is that they are
+ * long.
+ */
+const DWELL = 700
+const shownDoing = ref('')
+let dwell: number | null = null
+let dwelledAt = 0
+
+watch(
+  doing,
+  (next) => {
+    // A change is already scheduled; it will pick up whatever is true then.
+    if (dwell !== null) return
+    const t = performance.now()
+    const wait = DWELL - (t - dwelledAt)
+    if (wait <= 0) {
+      shownDoing.value = next
+      dwelledAt = t
+      return
+    }
+    dwell = window.setTimeout(() => {
+      dwell = null
+      shownDoing.value = doing.value
+      dwelledAt = performance.now()
+    }, wait)
+  },
+  { immediate: true },
+)
 
 /* ── scrolling ───────────────────────────────────────────────────────────
  *
@@ -545,8 +703,24 @@ const crowded = computed(() => (ctx.value?.pct ?? 0) >= CROWDED)
 
 /* ── presentation ──────────────────────────────────────────────────────── */
 
+/**
+ * The day and the minute it was asked, in the reader's own locale.
+ *
+ * Beside the relative time rather than instead of it: "2h ago" is what anyone
+ * actually wants, and the clock time is what they check when the answer is
+ * "no, the other one".
+ */
+function stamp(ts: number): string {
+  return new Date(ts).toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function ago(ts: number): string {
-  const m = Math.floor((Date.now() - ts) / 60000)
+  const m = Math.floor((now.value - ts) / 60000)
   if (m < 1) return 'just now'
   if (m < 60) return m + 'm ago'
   const h = Math.floor(m / 60)
@@ -554,7 +728,8 @@ function ago(ts: number): string {
 }
 
 function dotClass(s: Conversation): string {
-  if (isRunning(s)) return 'working'
+  if (isBusy(s)) return 'working'
+  if (isLive(s)) return 'idle'
   if (s.status === 'failed') return 'unhealthy'
   return 'down'
 }
@@ -654,38 +829,60 @@ function dotClass(s: Conversation): string {
 
     <!-- A thread. The exchange, then the box to continue it. -->
     <template v-else>
-      <div ref="scrollEl" class="thread" @scroll.passive="onScroll">
-        <div class="tbar">
-          <span class="dot" :class="dotClass(selected)" />
-          <span class="ttitle">{{ selected.title || 'untitled' }}</span>
-          <!-- Running is the one state worth a word: it is why the panel comes
-               back to this thread rather than to an empty composer. -->
-          <span v-if="isRunning(selected)" class="live">working</span>
+      <!-- Out of the scroller rather than sticky inside it: the conversation
+           below is a centred column with air on both sides now, and a bar that
+           lives in that column would either be as narrow as the text or have
+           to fight its way back out with negative margins. -->
+      <div class="tbar">
+        <span class="dot" :class="dotClass(selected)" />
+        <span class="ttitle">{{ selected.title || 'untitled' }}</span>
+        <!-- Three states, and the difference between the first two is the
+             whole of §6's promise about what a session is. Working: a turn
+             is in flight. Open: the engine is still here between turns, so
+             the next thing said goes straight in — and it is holding this
+             scope until it is let go. Neither: it is a thread you can read
+             and resume. This said WORKING for the middle one, which is how
+             a finished answer came to sit under a word claiming otherwise. -->
+        <span v-if="isBusy(selected)" class="busytag">
+          <Asterisk class="star" />working
+        </span>
+        <span
+          v-else-if="isLive(selected)"
+          class="alive"
+          title="The engine is still here between turns: the next thing you say goes straight in, and it holds this scope until it is let go"
+        >open</span>
 
-          <!-- §6 + §16 — how full the window is, and what the thread has cost.
-               In this bar because both are facts about the conversation, and
-               this is the conversation's own line. -->
-          <span
-            v-if="ctx"
-            class="ctx"
-            :class="{ crowded }"
-            :title="
-              k(ctx.contextTokens) + ' of ' + k(ctx.contextWindow) + ' tokens in context' +
-              (ctx.model ? ' · ' + ctx.model : '') + ' · ' + money(ctx.costUsd) + ' so far'
-            "
-          >
-            <span class="gauge"><i :style="{ width: Math.max(2, ctx.pct) + '%' }" /></span>
-            <span class="num">{{ ctx.pct }}%</span>
-            <span class="num cost">{{ money(ctx.costUsd) }}</span>
-          </span>
-          <span v-else-if="selected.denials.length" class="needs blocked chip warn" :title="'refused: ' + selected.denials.join(', ')">
-            <Hand class="sm" /> needs you
-          </span>
-          <span class="grow" />
+        <!-- §6 + §16 — how full the window is, and what the thread has cost.
+             In this bar because both are facts about the conversation, and
+             this is the conversation's own line. -->
+        <span
+          v-if="ctx"
+          class="ctx"
+          :class="{ crowded }"
+          :title="
+            k(ctx.contextTokens) + ' of ' + k(ctx.contextWindow) + ' tokens in context' +
+            (ctx.model ? ' · ' + ctx.model : '') + ' · ' + money(ctx.costUsd) + ' so far'
+          "
+        >
+          <span class="gauge"><i :style="{ width: Math.max(2, ctx.pct) + '%' }" /></span>
+          <span class="num">{{ ctx.pct }}%</span>
+          <span class="num cost">{{ money(ctx.costUsd) }}</span>
+        </span>
+        <span v-else-if="selected.denials.length" class="needs blocked chip warn" :title="'refused: ' + selected.denials.join(', ')">
+          <Hand class="sm" /> needs you
+        </span>
+        <span class="grow" />
+        <!-- The instruments, as a cluster. The bar's own 9px gap is the space
+             between things that are about different subjects; these two are one
+             set of controls for one conversation, and they sit closer than the
+             title sits to the gauge. -->
+        <span class="acts">
           <button
-            v-if="isRunning(selected)"
+            v-if="isLive(selected)"
             class="icon-btn"
-            title="Stop this conversation"
+            :title="isBusy(selected)
+              ? 'Stop what it is doing'
+              : 'Let this conversation go — it is between turns and still holding its repositories'"
             @click="stop(selected.id)"
           >
             <CircleStop class="sm" />
@@ -697,123 +894,156 @@ function dotClass(s: Conversation): string {
           >
             <X class="sm" />
           </button>
-        </div>
-
-        <!-- §3.4 — what is missing, and why, rather than a thread that looks
-             like it was never answered. -->
-        <p v-if="rotated" class="rot">
-          <Clock class="sm" />
-          The journal for this conversation has been rotated out — its turns are
-          listed, what was said in them is gone.
-        </p>
-
-        <div v-for="(x, i) in exchanges" :key="x.turn.id" class="ex">
-          <!-- §16 — the tree as it stood before this question was asked.
-               Quiet until the exchange is under the cursor: every turn carries
-               one, and twenty visible at once would read as decoration. -->
-          <!-- §16 — the tree as it stood before this question was asked, and
-               the way forward again once an undo has happened here. Quiet
-               until the exchange is under the cursor: every turn carries these,
-               and twenty pairs lit at once would read as a toolbar. Neither
-               does anything on its own — both open the confirmation. -->
-          <div v-if="x.turn.restorable || x.turn.redoable" class="exbar">
-            <button
-              v-if="x.turn.redoable"
-              class="revert"
-              title="Bring back what the undo discarded"
-              @click="askRevert(selected.id, x.turn, true)"
-            >
-              <Redo2 class="sm" /> Redo
-            </button>
-            <button
-              v-if="x.turn.restorable"
-              class="revert"
-              title="Put the files back to how they were before this turn"
-              @click="askRevert(selected.id, x.turn, false)"
-            >
-              <Undo2 class="sm" /> Undo from here
-            </button>
-          </div>
-
-          <div class="said selectable">{{ x.turn.prompt }}</div>
-          <div
-            v-if="x.turn.status === 'running' && !x.items.length && !typed"
-            class="thinking"
-          >
-            working…
-          </div>
-          <template v-for="r in x.rows" :key="r.id">
-            <div v-if="r.kind === 'text'" class="ln">
-              <span class="badge text"><Sparkles class="sm" /></span>
-              <AgentMarkdown class="txt" :text="r.text" />
-            </div>
-            <!-- Full width, and out of the badge column: a card is a thing the
-                 agent did, not a thing it said. -->
-            <ToolCall
-              v-else-if="r.kind === 'call'"
-              class="call"
-              :tool="r.call.tool"
-              :input="r.call.input"
-              :result="r.call.result"
-              :denied="r.call.denied"
-              :live="x.turn.status === 'running'"
-            />
-            <ToolGroup
-              v-else-if="r.kind === 'group'"
-              class="call"
-              :calls="r.calls"
-              :live="x.turn.status === 'running'"
-            />
-            <!-- It happened to the code, so it is a line in the thread rather
-                 than a toast that has since gone. -->
-            <p v-else class="undone">
-              <component :is="r.redo ? Redo2 : Undo2" class="sm" />
-              {{ r.files }} file{{ r.files === 1 ? '' : 's' }}
-              {{ r.redo ? 'brought back to after this turn' : 'put back to before this turn' }}<template
-                v-if="r.workspaces > 1"
-              >, across {{ r.workspaces }} repositories</template>
-            </p>
-          </template>
-
-          <!-- What the turn cost, under it, at the weight of a receipt. Only
-               once it has landed: a running turn has no total yet, and a zero
-               would be a claim rather than a blank. -->
-          <p v-if="x.turn.usage" class="meter">
-            <span>{{ k(x.turn.usage.context) }} ctx</span>
-            <span>{{ k(x.turn.usage.output) }} out</span>
-            <span v-if="secs(x.turn.startedAt, x.turn.endedAt)">
-              {{ secs(x.turn.startedAt, x.turn.endedAt) }}
-            </span>
-            <span v-if="x.turn.usage.costUsd">{{ money(x.turn.usage.costUsd) }}</span>
-          </p>
-
-          <!-- The sentence as it is being written. Same shape as a finished
-               message on purpose: it *is* that message, a moment early, and the
-               durable event replaces it in place without anything moving. -->
-          <div v-if="typed && i === exchanges.length - 1" class="ln">
-            <span class="badge text"><Sparkles class="sm" /></span>
-            <AgentMarkdown class="txt" :text="typed" live />
-          </div>
-        </div>
-
-        <!-- Said, and not yet asked. In the shape of a question because that
-             is what it is, and dimmed because the engine has not seen it. -->
-        <div v-for="(q, i) in queued" :key="'q' + i" class="ex">
-          <div class="said pending selectable">
-            {{ q }}
-            <button class="drop" title="Take this back before it goes in" @click="unqueue(q)">
-              <X class="sm" />
-            </button>
-          </div>
-          <p class="waits"><Clock class="sm" /> waiting for this turn to land</p>
-        </div>
+        </span>
       </div>
 
-      <!-- Only when it would otherwise be a surprise: while you are at the
-           bottom the thread follows on its own and this says nothing. -->
-      <button v-if="!stuck" class="jump" @click="toBottom">
-        <ArrowDown class="sm" /> Latest
-      </button>
+      <!-- The scroller and the one thing that floats over it. Wrapped, so
+           "Latest" is placed against the bottom of the conversation rather
+           than measured up from the bottom of the panel: it was a hardcoded
+           104px, and the composer stopped being 104px tall the moment its
+           background came off. -->
+      <div class="scroller">
+        <div ref="scrollEl" class="thread" @scroll.passive="onScroll">
+
+          <!-- §3.4 — what is missing, and why, rather than a thread that looks
+               like it was never answered. -->
+          <p v-if="rotated" class="rot">
+            <Clock class="sm" />
+            The journal for this conversation has been rotated out — its turns are
+            listed, what was said in them is gone.
+          </p>
+
+          <div v-for="(x, i) in exchanges" :key="x.turn.id" class="ex">
+            <!-- §16 — the tree as it stood before this question was asked.
+                 Quiet until the exchange is under the cursor: every turn carries
+                 one, and twenty visible at once would read as decoration. -->
+            <!-- §16 — the tree as it stood before this question was asked, and
+                 the way forward again once an undo has happened here. Quiet
+                 until the exchange is under the cursor: every turn carries these,
+                 and twenty pairs lit at once would read as a toolbar. Neither
+                 does anything on its own — both open the confirmation. -->
+            <div class="exbar">
+              <!-- When it was asked. Always rendered, so the row this shares
+                   with the undo has one height whether or not there is anything
+                   to undo, and nothing shifts as the pointer crosses a turn. -->
+              <span class="when">{{ ago(x.turn.startedAt) }} · {{ stamp(x.turn.startedAt) }}</span>
+              <button
+                v-if="x.turn.redoable"
+                class="revert"
+                title="Bring back what the undo discarded"
+                @click="askRevert(selected.id, x.turn, true)"
+              >
+                <Redo2 class="sm" /> Redo
+              </button>
+              <button
+                v-if="x.turn.restorable"
+                class="revert"
+                title="Put the files back to how they were before this turn"
+                @click="askRevert(selected.id, x.turn, false)"
+              >
+                <Undo2 class="sm" /> Undo from here
+              </button>
+            </div>
+
+            <div class="said selectable">{{ x.turn.prompt }}</div>
+            <template v-for="r in x.rows" :key="r.id">
+              <!-- No avatar, no badge: what a person wrote is a bubble on the
+                   right, so everything at the left margin is the agent by
+                   elimination. A glyph per paragraph was a column of purple down
+                   a page whose whole job is to be read. -->
+              <div v-if="r.kind === 'text'" class="ln">
+                <AgentMarkdown class="txt" :text="r.text" />
+              </div>
+              <!-- A card is a thing the agent did, not a thing it said. -->
+              <ToolCall
+                v-else-if="r.kind === 'call'"
+                class="call"
+                :tool="r.call.tool"
+                :input="r.call.input"
+                :result="r.call.result"
+                :denied="r.call.denied"
+                :live="x.turn.status === 'running'"
+              />
+              <ToolGroup
+                v-else-if="r.kind === 'group'"
+                class="call"
+                :calls="r.calls"
+                :live="x.turn.status === 'running'"
+              />
+              <!-- It happened to the code, so it is a line in the thread rather
+                   than a toast that has since gone. -->
+              <p v-else class="undone">
+                <component :is="r.redo ? Redo2 : Undo2" class="sm" />
+                {{ r.files }} file{{ r.files === 1 ? '' : 's' }}
+                {{ r.redo ? 'brought back to after this turn' : 'put back to before this turn' }}<template
+                  v-if="r.workspaces > 1"
+                >, across {{ r.workspaces }} repositories</template>
+              </p>
+            </template>
+
+            <!-- What the turn cost, under it, at the weight of a receipt — and
+                 only while the exchange is under the cursor, like the undo above
+                 it. Four numbers under every turn is a column of arithmetic down
+                 the side of a conversation: worth being able to find, never worth
+                 reading before the answer it belongs to.
+
+                 Only once it has landed: a running turn has no total yet, and a
+                 zero would be a claim rather than a blank. -->
+            <p v-if="x.turn.usage" class="meter">
+              <span>{{ k(x.turn.usage.context) }} ctx</span>
+              <span>{{ k(x.turn.usage.output) }} out</span>
+              <span v-if="secs(x.turn.startedAt, x.turn.endedAt)">
+                {{ secs(x.turn.startedAt, x.turn.endedAt) }}
+              </span>
+              <span v-if="x.turn.usage.costUsd">{{ money(x.turn.usage.costUsd) }}</span>
+            </p>
+
+            <!-- The sentence as it is being written. Same shape as a finished
+                 message on purpose: it *is* that message, a moment early, and the
+                 durable event replaces it in place without anything moving. -->
+            <div v-if="typed && i === exchanges.length - 1" class="ln">
+              <AgentMarkdown class="txt" :text="typed" live />
+            </div>
+
+            <!-- The turn, while it is still happening: what it is doing, how
+                 long it has been at it, and how much is written. At the bottom of
+                 the turn because that is where the next thing will appear — it is
+                 the line the answer is being written onto.
+
+                 It says nothing about how to stop: the way out is under the box,
+                 where the hand already is, and a third Stop on this screen would
+                 make all three easier to miss. -->
+            <p v-if="x.turn.status === 'running'" class="pulse">
+              <Asterisk class="star" />
+              <span class="verb">{{ shownDoing }}…</span>
+              <span class="sep">·</span>
+              <span class="num">{{ since(x.turn.startedAt) }}</span>
+              <template v-if="liveTokens">
+                <span class="sep">·</span>
+                <span class="num">{{ k(liveTokens) }} tokens</span>
+              </template>
+            </p>
+          </div>
+
+          <!-- Said, and not yet asked. In the shape of a question because that
+               is what it is, and dimmed because the engine has not seen it. -->
+          <div v-for="(q, i) in queued" :key="'q' + i" class="ex">
+            <div class="said pending selectable">
+              {{ q }}
+              <button class="drop" title="Take this back before it goes in" @click="unqueue(q)">
+                <X class="sm" />
+              </button>
+            </div>
+            <p class="waits"><Clock class="sm" /> waiting for this turn to land</p>
+          </div>
+        </div>
+
+        <!-- Only when it would otherwise be a surprise: while you are at the
+             bottom the thread follows on its own and this says nothing. -->
+        <button v-if="!stuck" class="jump" @click="toBottom">
+          <ArrowDown class="sm" /> Latest
+        </button>
+      </div>
 
       <footer class="foot">
         <!-- §6 — "vider devient gratuit : la conversation part, la mémoire
@@ -833,7 +1063,9 @@ function dotClass(s: Conversation): string {
         <Composer
           :mode="queueing ? 'queue' : continuing ? 'continue' : 'start'"
           :disabled="!canSend"
+          :busy="queueing"
           :sources="sources"
+          @stop="stop(selected.id)"
           :placeholder="
             queueing
               ? 'Say the next thing now — it goes in when this turn lands'
@@ -958,17 +1190,43 @@ function dotClass(s: Conversation): string {
 
 .guard { margin: 12px 2px 0; text-align: center; font-size: 10px; color: var(--text-dim); }
 
-/* ── a thread ────────────────────────────────────────────────────────── */
-.thread { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 22px 20px; }
+/* ── a thread ────────────────────────────────────────────────────────────
+ *
+ * The conversation is a column of a fixed measure, centred, with the panel's
+ * width falling away on both sides. It used to run the full width of whatever
+ * the splitter gave it, which on a wide window is a 1400px line of prose —
+ * about twice what anyone reads comfortably, and the reason a long answer felt
+ * like a wall. The number is a measure, not a look: ~90 characters at this
+ * size, which is the top of the range typography has agreed on for a century.
+ *
+ * Applied to the children rather than to a wrapper so the scrollbar stays at
+ * the panel's edge, where the eye expects it, instead of at the column's.
+ */
+.thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px var(--pad) 26px;
+  /* Both edges, so the column stays centred on the *panel* rather than on
+     whatever is left of it once the scrollbar has taken its side. Without this
+     the conversation sat half a scrollbar to the left of the box it is typed
+     into — close enough to look like a mistake and not close enough to be one. */
+  scrollbar-gutter: stable both-edges;
+}
+.thread > * {
+  width: 100%;
+  max-width: var(--measure);
+  margin-left: auto;
+  margin-right: auto;
+}
+.agent { --measure: 780px; --pad: 20px; }
+
 .tbar {
-  position: sticky;
-  top: -14px;
-  z-index: 1;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 9px;
-  margin: -14px -22px 14px;
-  padding: 10px 14px 10px 22px;
+  padding: 10px 12px 10px 20px;
   background: var(--bg);
   border-bottom: 1px solid var(--line-soft);
 }
@@ -980,15 +1238,65 @@ function dotClass(s: Conversation): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.live {
+/* `busytag`, not `live` — for the same reason the one below is not `open`.
+   A scoped style also lands on a child component's *root* element, and
+   `AgentMarkdown` puts `live` on its root while a message is streaming: this
+   rule was setting the answer being written in UPPERCASE PURPLE and letting it
+   snap back to prose the moment the durable event replaced the draft.
+
+   Two collisions in this one file is a pattern, not bad luck. Before naming a
+   class here, check it against the root classes of everything this template
+   renders: AgentMarkdown (md / live), ToolCall (tc / failed / pending),
+   ToolGroup (tg / bad), Composer (composer / big / planning). */
+.busytag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--agent);
+}
+/* Alive between turns: the same fact as the dot beside it, in a word, at the
+   weight of a fact. No pulse — nothing is happening, and an animation is a
+   claim that something is.
+
+   Named `alive` and not `open`, which is what it says: a scoped style also
+   lands on a child component's *root* element, and `ToolGroup`'s root carries
+   `open` when it is unfolded — so `.open { text-transform: uppercase }` here
+   was silently shouting every expanded tool's output three levels down. Any
+   class in this file that could also be a child's root class is a collision
+   waiting to happen. */
+.alive {
   flex: none;
   font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--agent);
-  animation: pulse 1.6s var(--ease-soft) infinite;
+  color: var(--text-dim);
+  cursor: default;
+}
+
+/* The one moving thing in the window, and it moves only while a turn does.
+   Turning rather than blinking: a blink is a warning light, and this is the
+   opposite — it is the window saying it is still with you. */
+.star {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2.4;
+  animation: turn 2.6s linear infinite;
+}
+@keyframes turn {
+  to { transform: rotate(360deg); }
+}
+/* Someone who has asked for less motion gets a steady mark, not a missing one. */
+@media (prefers-reduced-motion: reduce) {
+  .star { animation: none; }
 }
 .tbar .needs.chip { flex: none; height: 20px; padding: 0 8px; font-size: 10px; }
+/* Buttons of one set touch; the bar's gap is for things that are not. */
+.tbar .acts { display: flex; align-items: center; gap: 1px; margin-right: -4px; }
 
 /* The conversation's own heartbeat. `--agent` rather than the runtime green:
    this is a thing an agent is doing, and colour maps to one idea (tokens.css). */
@@ -997,23 +1305,49 @@ function dotClass(s: Conversation): string {
   box-shadow: 0 0 0 3px var(--agent-soft);
   animation: pulse 1.6s var(--ease-soft) infinite;
 }
+/* Here, and not working. Still the agent's colour — it is still its process —
+   and steady, because that is the difference being drawn. */
+.dot.idle { background: var(--agent); opacity: 0.5; }
 
-.ex + .ex { margin-top: 20px; }
+/* One clear gap between exchanges, and none of the smaller ones inside a turn
+   pretending to be it. */
+.ex + .ex { margin-top: 26px; }
 /* What was asked reads as said, not as logged: it is the only thing on the
    page a person wrote. */
 .said {
-  margin: 0 0 12px auto;
-  max-width: 82%;
+  margin: 0 0 14px auto;
+  max-width: 76%;
   width: fit-content;
-  padding: 9px 13px;
-  border-radius: var(--radius) var(--radius) 4px var(--radius);
+  padding: 7px 12px;
+  border-radius: var(--radius);
   background: var(--accent-soft);
   color: var(--text);
   font-size: var(--fs-sm);
   line-height: 1.55;
   white-space: pre-wrap;
 }
-.thinking { color: var(--text-dim); font-size: var(--fs-xs); font-style: italic; }
+/* ── the turn in flight ─────────────────────────────────────────────────
+ *
+ * Deliberately the same shape and weight as `.meter`, the receipt under a turn
+ * that has landed: this is that line, one moment earlier, saying what is being
+ * spent rather than what was. The numbers sit on tabular figures so a count
+ * climbing does not shuffle the words after it.
+ */
+/* Bigger than the receipt it becomes. It is the only line on the page that is
+   about *now*, it is what you look at while you wait, and at 11px it read as
+   another footnote among the footnotes. */
+.pulse {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 2px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.pulse .star { flex: none; width: 15px; height: 15px; color: var(--agent); }
+.pulse .verb { color: var(--text); font-weight: 550; }
+.pulse .sep { color: var(--text-dim); opacity: 0.6; }
+.pulse .num { color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
 /* ── §16, the receipt ─────────────────────────────────────────────────────
  *
@@ -1023,11 +1357,14 @@ function dotClass(s: Conversation): string {
 .meter {
   display: flex;
   gap: 12px;
-  margin: 6px 0 0 30px;
+  margin: 6px 0 0;
   font-size: 10px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-soft);
 }
+.ex:hover .meter, .ex:focus-within .meter { opacity: 1; }
 
 /* ── §6, the window ─────────────────────────────────────────────────────── */
 .ctx {
@@ -1085,30 +1422,36 @@ function dotClass(s: Conversation): string {
 .crowd .link:hover { color: var(--text); }
 .crowd .link.go { font-weight: 650; }
 
-/* ── the undo, above the question it would take you back before ──────────
+/* ── when it was asked, and the way back before it ───────────────────────
  *
  * Right-aligned over the prompt bubble, and invisible until the exchange is
- * under the cursor: it belongs to that turn, and a column of them lit at once
+ * under the cursor: both belong to that turn, and a column of them lit at once
  * would read as a toolbar rather than as an escape hatch.
  */
 .exbar {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  gap: 10px;
   min-height: 20px;
   margin-bottom: 2px;
+}
+.when {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-soft);
 }
 .revert {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
-  color: var(--text-dim);
-}
-.revert {
   padding: 3px 9px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
+  font-size: 10px;
+  color: var(--text-dim);
   opacity: 0;
   transition:
     opacity var(--dur-1) var(--ease-soft),
@@ -1117,11 +1460,19 @@ function dotClass(s: Conversation): string {
 }
 /* Keyboard reach as well as pointer: an escape hatch you cannot tab to is an
    escape hatch for one kind of person. */
-.ex:hover .revert, .revert:focus-visible { opacity: 1; }
+.ex:hover .when, .ex:hover .revert, .revert:focus-visible { opacity: 1; }
+
+/* The app's own hover, not a colour of its own.
+ *
+ * This lit up amber on hover, which is the ramp this window reserves for "something
+ * needs you" — so the one control on the page that merely *asks a question*
+ * was the loudest thing on it, in a colour that means something else. Neither
+ * button does anything on its own; both open the confirmation, and that dialog
+ * is where the warning belongs. */
 .revert:hover {
-  color: var(--warn);
-  border-color: var(--warn);
-  background: var(--warn-soft);
+  color: var(--text);
+  border-color: var(--line);
+  background: var(--hover);
 }
 
 /* What an undo left behind, in the thread, at the weight of a fact. */
@@ -1189,12 +1540,17 @@ function dotClass(s: Conversation): string {
 }
 .rot .lucide { flex: none; }
 
-/* Over the conversation, above the composer: it is about the thread, and it
-   must not push the box it sits over. */
+/* The scroller and its floating button share a box, so the button is placed
+   against the end of the conversation rather than against the bottom of the
+   panel. */
+.scroller { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* Over the conversation, just clear of the composer: it is about the thread,
+   and it must not push the box it sits over. */
 .jump {
   position: absolute;
   left: 50%;
-  bottom: 104px;
+  bottom: 14px;
   z-index: 2;
   transform: translateX(-50%);
   display: inline-flex;
@@ -1211,32 +1567,28 @@ function dotClass(s: Conversation): string {
 }
 .jump:hover { color: var(--text); border-color: var(--accent); }
 
-/* The only thing on the page that says "still writing" once text is flowing:
-   the word "working" would be redundant beside a sentence forming. */
-.ln { display: flex; gap: 11px; font-size: var(--fs-sm); line-height: 1.6; margin-bottom: 10px; }
-.badge {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-  background: var(--agent-soft);
-  color: var(--agent);
-}
-.badge .lucide { width: 12px; height: 12px; }
-.badge.tool { background: var(--hover); color: var(--text-dim); }
-.txt { flex: 1; min-width: 0; }
+/* What the agent said: plain text at the left margin, no gutter and no glyph.
+   The badge that used to sit here is gone — see the template. */
+.ln { font-size: var(--fs-sm); line-height: 1.6; margin-bottom: 10px; }
+.txt { min-width: 0; }
 
-/* A card is left-aligned with the badge column rather than indented under it:
-   what the agent *did* is a peer of what it said, not a footnote to it. */
+/* What it *did* is a peer of what it said, on the same margin. */
 .call { margin: 0 0 10px; }
 
+/* One surface, top to bottom. The sunken band under the composer drew a second
+   panel across the bottom of the window — the box already has a border, and a
+   filled tray behind it is the same statement made twice. What is left is a
+   hairline, which is only there so a long answer does not run into the box it
+   is answered in. */
 .foot {
   flex: none;
-  padding: 12px 18px 14px;
-  border-top: 1px solid var(--line);
-  background: var(--bg-sunken);
+  /* The scroller above reserves a gutter on each side; this has no scrollbar,
+     so it pays for the same inset out of its own padding. That is what puts
+     the box on the same axis as the conversation. */
+  padding: 12px calc(var(--pad) + var(--sbw)) 14px;
+  border-top: 1px solid var(--line-soft);
 }
+/* The same column as the conversation above it: a box that ran wider than the
+   text it is about read as a different surface rather than the end of one. */
+.foot > * { max-width: var(--measure); margin-left: auto; margin-right: auto; }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { Marked } from 'marked'
 
 /**
@@ -18,10 +18,10 @@ import { Marked } from 'marked'
  * the app whose content nobody wrote by hand.
  *
  * `live` is the same message while it is still being written: the text is
- * paced by `usePaced` before it gets here, and this adds the two things that
- * only make sense mid-sentence — a soft leading edge, and the caret at the end
- * of it. Nothing about the finished render changes, so the durable event
- * replacing the draft still lands without a flicker.
+ * paced by `usePaced` before it gets here, and the only thing this adds for it
+ * is holding back half-typed markdown markers. Nothing about the finished
+ * render differs, so the durable event replacing the draft lands without a
+ * flicker.
  */
 const props = defineProps<{ text: string; live?: boolean }>()
 
@@ -158,206 +158,28 @@ const blocks = computed<string[]>(() => {
   })
 })
 
-/* ── the leading edge ─────────────────────────────────────────────────────
+/* ── how a streamed message arrives ───────────────────────────────────────
  *
- * Each word comes in on its own clock: it arrives at nothing and is fully lit
- * about a third of a second later, so what you read is ink landing rather than
- * text switching on. Two things this deliberately is not:
+ * One rule: a block fades in when it appears, and nothing else moves.
  *
- * It is not a ramp over the last N characters. That measures age in characters
- * arrived rather than in time, so a pause in the stream froze half a sentence
- * at a quarter opacity and a burst lit it in one frame — and its groups fell
- * mid-word, which is what read as broken: the middle of a word dimmer than its
- * end is not unfinished text, it is damaged text.
+ * This used to animate every *word* — each one wrapped in a span whose opacity
+ * was a function of how long ago it arrived, recomputed every frame, with a
+ * blinking caret walked to the end of the sentence. It was three animations
+ * running over text that was itself growing, and it read exactly as Lucas
+ * described it: a glitch. The machinery was also the most delicate code in the
+ * window (splitting text nodes under Vue's own patcher, then un-splitting them
+ * before the next pass) for an effect nobody asked for.
  *
- * It is not a CSS animation either, because nothing here survives a frame: the
- * block is re-rendered from markdown as the text grows, so an animation would
- * restart under every word on every frame. The opacity is a pure function of
- * how long ago that word arrived, so it only ever increases — recomputed each
- * frame, it *is* the animation.
- *
- * The wrapping is done to the DOM rather than to the markdown on purpose: the
- * source is escaped, so a span written into it would arrive on screen as one.
+ * A block appearing is the only event a reader actually needs marked, and CSS
+ * can mark it on its own: `blockin` below, once, on mount. The rest of the
+ * calm comes from `usePaced`, which is not an animation — it is the text
+ * arriving at a readable rate instead of in slabs.
  */
-const root = ref<HTMLElement | null>(null)
-/** How long a word takes to come fully in. */
-const FADE = 380
-/** Only the head of the message is ever mid-fade; this bounds the work. */
-const MAX_WORDS = 60
-const SPACE = /\s/
 
-function reduced(): boolean {
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-}
-
-/**
- * When each character of the source became visible.
- *
- * The prop only ever grows by whole words (`usePaced` cuts it that way), so
- * every change is one mark, and a word's age is the age of the mark that first
- * covered its last character. Seeded with whatever is already on screen, dated
- * to before the beginning of time: a conversation reopened onto a turn that is
- * halfway through must not replay the half it missed.
- */
-let marks: { len: number; ts: number }[] = [{ len: (props.text ?? '').length, ts: -1e9 }]
-
-function ageOf(offset: number, now: number): number {
-  for (const m of marks) if (m.len >= offset) return now - m.ts
-  return 0
-}
-
-watch(
-  () => props.text,
-  (text, was) => {
-    if (!props.live) return
-    const now = performance.now()
-    // A different message: none of the old timings mean anything for it.
-    if (!was || !text.startsWith(was)) marks = []
-    marks.push({ len: text.length, ts: now })
-    // Everything already fully lit is one mark — the newest of them, so that
-    // the offsets it covers still land on it. Dropping them outright instead
-    // handed every old offset to the *next* mark, which is by definition a
-    // young one: the whole paragraph read as having just arrived and sat at
-    // zero opacity together.
-    while (marks.length > 1 && now - marks[1]!.ts >= FADE) marks.shift()
-  },
-)
-
-/** Idempotent: undoing the wrapping leaves exactly the markdown's own nodes. */
-function undecorate(el: HTMLElement): void {
-  for (const c of Array.from(el.querySelectorAll('span.caret'))) c.remove()
-  for (const t of Array.from(el.querySelectorAll('span[data-tail]'))) {
-    const p = t.parentNode
-    if (!p) continue
-    while (t.firstChild) p.insertBefore(t.firstChild, t)
-    t.remove()
-  }
-  // Merging back the text nodes the splitting broke apart, and dropping the
-  // empty ones it left behind, so the next pass measures the same text this one
-  // did — per block, and never on the root. Vue anchors the `v-for` on empty
-  // text nodes between the blocks, and `normalize()` deletes exactly those: it
-  // took the patcher's anchors out from under it and every later update threw.
-  // Inside a block there is nothing to break — that content is `v-html`, which
-  // Vue writes whole and never diffs.
-  for (const blk of Array.from(el.children)) blk.normalize()
-}
-
-const INLINE = new Set(['SPAN', 'CODE', 'STRONG', 'EM', 'B', 'I', 'A', 'DEL', 'SUP', 'SUB'])
-
-/** Whether anything visible follows `n` among its siblings. */
-function inkAfter(n: Node): boolean {
-  for (let s = n.nextSibling; s; s = s.nextSibling) {
-    if ((s.textContent ?? '').trim()) return true
-  }
-  return false
-}
-
-let fading = 0
-
-function decorate(): void {
-  if (fading) cancelAnimationFrame(fading)
-  fading = 0
-  const el = root.value
-  if (!el) return
-  undecorate(el)
-  if (!props.live) return
-  const block = el.lastElementChild
-  if (!block) return
-
-  // Every text node of the last block, with where it starts, measured before
-  // anything is split so the offsets stay true as the walk moves backwards.
-  const nodes: { node: Text; at: number }[] = []
-  let total = 0
-  const walk = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
-  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
-    const t = n as Text
-    nodes.push({ node: t, at: total })
-    total += t.data.length
-  }
-
-  const now = performance.now()
-  const src = props.text.length
-  let anchor: Node | null = null
-  let young = false
-
-  if (!reduced()) {
-    let words = 0
-    outer: for (let i = nodes.length - 1; i >= 0 && words < MAX_WORDS; i--) {
-      const { node, at } = nodes[i]!
-      while (words < MAX_WORDS) {
-        const data = node.data
-        let e = data.length
-        while (e > 0 && SPACE.test(data[e - 1]!)) e--
-        if (e === 0) break
-        let b = e
-        while (b > 0 && !SPACE.test(data[b - 1]!)) b--
-
-        // Rendered text is shorter than its source by whatever syntax marked it
-        // up, but only by a few characters within one word of the head, which
-        // is the whole distance this measures over.
-        const age = ageOf(src - (total - (at + e)), now)
-        if (age >= FADE) break outer
-        const p = age / FADE
-        young = true
-
-        // Split rather than surround: the word leaves in its own node and the
-        // one being walked keeps everything before it, so the offsets already
-        // measured stay valid and no wrap can nest inside the last one.
-        node.splitText(e)
-        const word = node.splitText(b)
-        const span = document.createElement('span')
-        span.dataset.tail = ''
-        span.style.opacity = (1 - (1 - p) ** 3).toFixed(3)
-        word.parentNode?.insertBefore(span, word)
-        span.appendChild(word)
-        if (!anchor) anchor = span
-        words++
-      }
-    }
-  }
-
-  const caret = document.createElement('span')
-  caret.className = 'caret'
-  anchor ??= lastInk(block)
-  if (!anchor?.parentNode) {
-    block.appendChild(caret)
-  } else {
-    // Out of whatever *inline* element the sentence happens to end inside — a
-    // caret left in the `<code>` chip would be painted on its background — and
-    // no further: out of the paragraph it would sit on a line of its own.
-    while (anchor.parentElement && INLINE.has(anchor.parentElement.tagName) && !inkAfter(anchor)) {
-      anchor = anchor.parentElement
-    }
-    anchor.parentNode?.insertBefore(caret, anchor.nextSibling)
-  }
-
-  // The stream pausing must not leave a word half-lit: while anything is still
-  // coming in, this keeps recomputing it after the text has stopped changing.
-  if (young) fading = requestAnimationFrame(decorate)
-}
-
-/** The last text that is actually ink: markdown leaves a newline after every
- *  block, and hanging the caret off that put it on a line of its own. */
-function lastInk(el: Element): Text | null {
-  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
-  let last: Text | null = null
-  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
-    if ((n as Text).data.trim()) last = n as Text
-  }
-  return last
-}
-
-// `post` is after the DOM this reads: the fade is put back on the new nodes in
-// the same frame that replaced the old ones.
-watch(blocks, decorate, { flush: 'post' })
-onMounted(decorate)
-onBeforeUnmount(() => {
-  if (fading) cancelAnimationFrame(fading)
-})
 </script>
 
 <template>
-  <div ref="root" class="md selectable" :class="{ live }">
+  <div class="md selectable" :class="{ live }">
     <div v-for="(b, i) in blocks" :key="i" class="blk" v-html="b" />
   </div>
 </template>
@@ -379,17 +201,20 @@ onBeforeUnmount(() => {
 .md :deep(.blk > *:first-child) { margin-top: 0; }
 .md > .blk:last-child :deep(> *:last-child) { margin-bottom: 0; }
 
-/* A block that arrives while the message is being written comes up out of
-   nothing, so a code fence's border and background do not snap in around text
-   that is still fading. Opacity only, and shorter than the word fade it sits
-   under: it used to also rise 3px, which moved words the fade was brightening
-   at the same time, inside a column that is scrolling to follow them — three
-   motions at once, reading as jitter. A finished message is not animated at
-   all, so the durable event swapping in under the draft moves nothing. */
-.md.live > .blk { animation: blockin var(--dur-2) var(--ease-soft) both; }
+/* A paragraph, a list, a code fence: each fades in once, as it appears. That
+   is the whole of the streaming animation.
+
+   Opacity only, and no movement: this sits inside a column that is already
+   scrolling to follow the text, and anything that also travels reads as
+   jitter. A finished message is not animated at all, so the durable event
+   swapping in under the draft moves nothing. */
+.md.live > .blk { animation: blockin 260ms var(--ease-soft) both; }
 @keyframes blockin {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .md.live > .blk { animation: none; }
 }
 
 .md :deep(p) { margin: 0 0 9px; }
@@ -453,15 +278,4 @@ onBeforeUnmount(() => {
 .md :deep(th), .md :deep(td) { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
 .md :deep(th) { background: var(--bg-sunken); color: var(--text); font-weight: 600; }
 
-/* Where the writing has got to. Inside the text now rather than under it: it
-   used to sit after a block element and so always started a line of its own. */
-.md :deep(span.caret) {
-  display: inline-block;
-  width: 6px;
-  height: 1em;
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  background: var(--agent);
-  animation: pulse 1.1s var(--ease-soft) infinite;
-}
 </style>

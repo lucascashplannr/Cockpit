@@ -114,6 +114,12 @@ export interface NormalizedEvent {
     | 'text'
     | 'tool'
     | 'tool_result'
+    /**
+     * How much of the answer has been written *so far*, in the engine's own
+     * count. Not a journal entry and never persisted: it is a number that only
+     * means anything while the turn it belongs to is still in flight.
+     */
+    | 'progress'
     /** §16 — what the turn cost and how full the window is. Engine-reported. */
     | 'usage'
     | 'end'
@@ -134,6 +140,8 @@ export interface NormalizedEvent {
   interrupted?: boolean
   /** `end` only: the invocations §16 refused during this turn. */
   denials?: string[]
+  /** `progress` only: output tokens of the message being written right now. */
+  outputTokens?: number
   /**
    * `usage` only. `costUsd` is the engine's *running total for its process*,
    * not this turn's — the driver takes the delta, which is also what keeps a
@@ -215,6 +223,33 @@ function pathsIn(input: Record<string, unknown>): string[] {
   return out
 }
 
+/**
+ * What this harness does to the shell, said to the engine up front.
+ *
+ * §16's red lines are enforced with `--disallowedTools`, and a deny rule of
+ * the form `Bash(git push:*)` puts every command through a matcher that has to
+ * read it before it runs. A command carrying `$(…)` or backticks cannot be
+ * read that way — the substitution is only knowable once it has run — so it is
+ * refused outright with "Contains command_substitution".
+ *
+ * Nothing told the engine that, so it wrote one in the first minute of most
+ * conversations (`git log … $(git rev-list --max-parents=0 HEAD)` is the
+ * standard way to ask when a repository started), watched it fail, retried it
+ * with `dangerouslyDisableSandbox` — which is about the sandbox and does
+ * nothing here — and failed again. Two wasted calls and a red card in the
+ * transcript, every time, before the work began.
+ *
+ * The rule is this harness's, not the project's, so it is stated here rather
+ * than left to a CLAUDE.md nobody has written yet.
+ */
+const SHELL_RULES = [
+  'Bash in this session runs behind a permission check that reads each command before running it.',
+  'A command containing command substitution — $(…) or backticks — cannot be read that way and is',
+  'refused with "Contains command_substitution". Retrying it with dangerouslyDisableSandbox does not',
+  'help: this is the permission matcher, not the sandbox. Write it as two calls instead — run the',
+  'inner command, then use its output in the next one. Pipes, &&, ; and redirection are all fine.',
+].join(' ')
+
 /** Shared by start and resume, so the two cannot drift apart on permissions. */
 function claudeCommon(ctx: LaunchContext): string[] {
   return [
@@ -235,6 +270,9 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // §3.7 — plan mode reads and proposes without writing, which is the one
     // posture where an agent on the main checkout costs nothing to be wrong.
     '--permission-mode', ctx.plan ? 'plan' : 'acceptEdits',
+    // What the two flags above actually forbid, in words the engine reads
+    // before it writes its first command rather than after.
+    '--append-system-prompt', SHELL_RULES,
     ...(ctx.model ? ['--model', ctx.model] : []),
     ...(ctx.effort ? ['--effort', ctx.effort] : []),
     ...ctx.extraDirs.flatMap((d) => ['--add-dir', d]),
@@ -260,7 +298,12 @@ const claudeEngine: EngineSpec = {
 
     if (type === 'stream_event') {
       const ev = o.event as
-        | { type?: string; message?: { id?: string }; delta?: { type?: string; text?: string } }
+        | {
+            type?: string
+            message?: { id?: string }
+            delta?: { type?: string; text?: string }
+            usage?: { output_tokens?: unknown }
+          }
         | undefined
       // A delta carries no message id of its own, so the one opened here is
       // what the driver hangs the next run of tokens on.
@@ -268,6 +311,11 @@ const claudeEngine: EngineSpec = {
         return [{ kind: 'message_start', messageId: String(ev.message?.id ?? '') }]
       if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text)
         return [{ kind: 'delta', text: ev.delta.text }]
+      // The engine's own running count for the message being written. Taken
+      // from it rather than estimated from the characters that have arrived:
+      // a number the window prints as "tokens" has to be tokens.
+      if (ev?.type === 'message_delta' && typeof ev.usage?.output_tokens === 'number')
+        return [{ kind: 'progress', outputTokens: ev.usage.output_tokens }]
       return []
     }
 
@@ -463,6 +511,16 @@ interface Live {
   /** §16 — what the turn in flight has reported, until its row is written. */
   usage: NormalizedEvent['usage'] | null
   /**
+   * Output tokens for this turn: what the messages it has already finished
+   * came to, plus the running count for the one being written.
+   *
+   * Two numbers because the engine counts per message and a turn is routinely
+   * several — a single figure would drop back to zero mid-turn every time the
+   * agent stopped to call a tool.
+   */
+  doneTokens: number
+  msgTokens: number
+  /**
    * The engine's running cost for *this process*, as of the last turn.
    *
    * It reports a cumulative figure, so a turn's own cost is the difference.
@@ -522,6 +580,16 @@ export const agentBus = new EventEmitter<{
    * the right message and throw the lot away when the real one arrives.
    */
   delta: [sessionId: string, messageId: string, text: string]
+  /**
+   * How far into the answer the turn in flight is, in output tokens, and zero
+   * the moment it lands.
+   *
+   * Beside the journal for the same reason deltas are: it is a number that is
+   * only true for as long as it is moving. It exists because a turn that shows
+   * nothing but a spinner is indistinguishable from one that has hung — the
+   * count is the difference between "working" and "still there".
+   */
+  progress: [sessionId: string, outputTokens: number]
 }>()
 agentBus.setMaxListeners(50)
 
@@ -1015,6 +1083,8 @@ async function launch(
     streamingId: null,
     queue: [],
     usage: null,
+    doneTokens: 0,
+    msgTokens: 0,
     costSoFar: 0,
     busy: true,
     calls: new Map(),
@@ -1067,6 +1137,15 @@ async function launch(
       switch (ev.kind) {
         case 'message_start':
           l.streamingId = ev.messageId ?? null
+          // The count that follows starts again from zero for this message, so
+          // what the last one came to is banked before it does.
+          l.doneTokens += l.msgTokens
+          l.msgTokens = 0
+          break
+
+        case 'progress':
+          l.msgTokens = ev.outputTokens ?? 0
+          agentBus.emit('progress', session.id, l.doneTokens + l.msgTokens)
           break
 
         // §3.3 — a token is not a journal entry. Deltas go beside the journal,
@@ -1165,6 +1244,12 @@ async function launch(
           closeTurn(session.id, 'done')
           l.streamingId = null
           l.busy = false
+          // Zero rather than left at the total: the window reads this as "how
+          // far into the answer it is", and a turn that has landed is not part
+          // way into anything. What it came to is on the turn's own row.
+          l.doneTokens = 0
+          l.msgTokens = 0
+          agentBus.emit('progress', session.id, 0)
           session.status = 'idle'
           changed = true
           if (spec.streaming) {
@@ -1240,6 +1325,8 @@ async function flushQueue(l: Live): Promise<void> {
   // already be true by the time the snapshot is being taken.
   l.busy = true
   l.session.status = 'thinking'
+  l.doneTokens = 0
+  l.msgTokens = 0
   const turnId = openTurn(l.session.id, prompt)
   persist(l.session)
   // The turn is on screen while its checkpoint is taken, rather than the

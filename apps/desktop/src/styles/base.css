@@ -110,8 +110,8 @@ button:disabled,
 
 /* Scrollbars: present when scrolling, invisible at rest. */
 ::-webkit-scrollbar {
-  width: 11px;
-  height: 11px;
+  width: var(--sbw);
+  height: var(--sbw);
 }
 ::-webkit-scrollbar-track {
   background: transparent;

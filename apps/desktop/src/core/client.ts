@@ -25,6 +25,8 @@ interface Handlers {
   onWorkspaces(w: Workspace[]): void
   onAgents(s: Conversation[]): void
   onAgentDelta(sessionId: string, messageId: string, text: string): void
+  /** How far into the answer the turn in flight is. See the `agent-progress` push. */
+  onAgentProgress(sessionId: string, outputTokens: number): void
   onEvent(e: CockpitEvent): void
   onTerm(termId: string, data: string): void
   onTermExit(termId: string, code: number): void
@@ -120,6 +122,9 @@ export class CoreClient {
           break
         case 'agent-delta':
           this.h.onAgentDelta(msg.sessionId, msg.messageId, msg.text)
+          break
+        case 'agent-progress':
+          this.h.onAgentProgress(msg.sessionId, msg.outputTokens)
           break
         case 'event':
           this.h.onEvent(msg.event)

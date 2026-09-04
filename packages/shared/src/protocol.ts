@@ -766,6 +766,15 @@ export type ServerPush =
    * delta cannot be appended to the wrong one when two arrive interleaved.
    */
   | { t: 'agent-delta'; sessionId: string; messageId: string; text: string }
+  /**
+   * How far into the answer the turn in flight is, in the engine's own output
+   * tokens, and zero the moment it lands.
+   *
+   * Beside the journal for the same reason deltas are: a count that is only
+   * true while it is moving is not history. It is what lets the window say
+   * "still writing" with a number behind it rather than with an animation.
+   */
+  | { t: 'agent-progress'; sessionId: string; outputTokens: number }
   | { t: 'term'; termId: string; data: string }
   | { t: 'term-exit'; termId: string; code: number }
   /**

@@ -4,12 +4,18 @@ import { ChevronRight, CircleAlert, Hand } from '@lucide/vue'
 import ToolCall from './ToolCall.vue'
 
 /**
- * A run of calls, as one sentence.
+ * A run of calls, as one sentence — however few of them there are.
  *
  * A turn is routinely twenty calls long, and the transcript rendered every one
  * of them as a full card — so reading what an agent did meant scrolling past
  * what it did. The calls are not the work; they are how the work was done, and
  * they belong folded until someone asks.
+ *
+ * It used to take two calls before folding was thought worth a click, which
+ * meant a turn's single `cat package.json` still landed as a card with its
+ * output in it — the one shape Lucas pointed at and said he does not want to
+ * see every day. One call gets the same line as twenty; the line is not a
+ * saving of space, it is the level the transcript is read at.
  *
  * What is never folded is a refusal or a failure: those are the two outcomes
  * that change what a person should do next, so a group holding one opens
@@ -33,12 +39,26 @@ const props = defineProps<{
 const failed = computed(() => props.calls.filter((c) => c.denied || c.result?.isError))
 const pending = computed(() => (props.live === false ? [] : props.calls.filter((c) => !c.result)))
 
-/** Open by default when something in it went wrong; then it is the person's. */
-const forced = computed(() => failed.value.length > 0)
+/**
+ * What is unfolded, which is three states rather than two.
+ *
+ * Untouched, a group holding a failure shows *the failure* — not the other
+ * nineteen calls that went fine. Unfolding everything because one command
+ * exited non-zero was how a turn that ran eight builds put eight cards on
+ * screen to tell you about one of them, which is the opposite of what opening
+ * on a failure is for.
+ *
+ * Clicked, it shows all of them; clicked again, none. The line itself always
+ * names the failure ("ran 8 commands (1 failed)"), so nothing is ever hidden
+ * by the fold — only deferred.
+ */
 const manual = ref<boolean | null>(null)
-const open = computed(() => manual.value ?? forced.value)
+const shown = computed(() =>
+  manual.value === true ? props.calls : manual.value === false ? [] : failed.value,
+)
+/** The first click always means "all of them", whatever is already showing. */
 function toggle(): void {
-  manual.value = !open.value
+  manual.value = manual.value !== true
 }
 
 const str = (input: Record<string, unknown>, k: string): string => {
@@ -52,7 +72,8 @@ function name(c: Call): string {
   return p.split('/').pop() ?? p
 }
 
-const EDITS = new Set(['Edit', 'Write', 'NotebookEdit'])
+const WRITES = new Set(['Write'])
+const EDITS = new Set(['Edit', 'NotebookEdit'])
 const SEARCHES = new Set(['Glob', 'Grep'])
 
 function plural(n: number, one: string, many = one + 's'): string {
@@ -60,33 +81,48 @@ function plural(n: number, one: string, many = one + 's'): string {
 }
 
 /**
- * What happened, in the order it is worth knowing: what was changed first,
- * because that is the only part of a group that touched the repository.
+ * What happened, counted rather than listed.
+ *
+ * It used to name the files — "edited auth.vue, router.js +3 more" — which
+ * grows with the work and is the half of the line that pushes everything else
+ * off the end. A count is the same length whether the turn touched two files
+ * or forty, and the names are one click away in the calls themselves.
+ *
+ * Order: what was changed first, because that is the only part of a group that
+ * touched the repository.
  */
 const summary = computed(() => {
   const parts: string[] = []
+  const count = (has: (t: string) => boolean): number =>
+    props.calls.filter((c) => has(c.tool)).length
 
-  const edited = [...new Set(props.calls.filter((c) => EDITS.has(c.tool)).map(name))].filter(Boolean)
-  if (edited.length) {
-    const shown = edited.slice(0, 2).join(', ')
-    parts.push('edited ' + shown + (edited.length > 2 ? ' +' + (edited.length - 2) + ' more' : ''))
+  const created = count((t) => WRITES.has(t))
+  if (created) parts.push('created ' + plural(created, 'file'))
+
+  const edited = count((t) => EDITS.has(t))
+  if (edited) parts.push('edited ' + plural(edited, 'file'))
+
+  const ran = props.calls.filter((c) => c.tool === 'Bash')
+  if (ran.length) {
+    // The failure count rides on the phrase it belongs to rather than only on
+    // the badge at the end: "ran 26 commands (1 failed)" says which of the
+    // twenty-six is worth opening for.
+    const bad = ran.filter((c) => c.denied || c.result?.isError).length
+    parts.push('ran ' + plural(ran.length, 'command') + (bad ? ' (' + bad + ' failed)' : ''))
   }
 
-  const ran = props.calls.filter((c) => c.tool === 'Bash').length
-  if (ran) parts.push('ran ' + plural(ran, 'command'))
-
-  const read = props.calls.filter((c) => c.tool === 'Read').length
+  const read = count((t) => t === 'Read')
   if (read) parts.push('read ' + plural(read, 'file'))
 
-  const searched = props.calls.filter((c) => SEARCHES.has(c.tool)).length
+  const searched = count((t) => SEARCHES.has(t))
   if (searched) parts.push(plural(searched, 'search', 'searches'))
 
   if (props.calls.some((c) => c.tool === 'TodoWrite')) parts.push('updated the plan')
 
-  const rest = props.calls.filter(
-    (c) => !EDITS.has(c.tool) && !SEARCHES.has(c.tool) && !['Bash', 'Read', 'TodoWrite'].includes(c.tool),
-  ).length
-  if (rest) parts.push(plural(rest, 'other call'))
+  const rest = count(
+    (t) => !WRITES.has(t) && !EDITS.has(t) && !SEARCHES.has(t) && !['Bash', 'Read', 'TodoWrite'].includes(t),
+  )
+  if (rest) parts.push('used ' + plural(rest, 'other tool'))
 
   if (!parts.length) return plural(props.calls.length, 'call')
   // Sentence case, once, at the front — the parts read as a list after it.
@@ -94,31 +130,58 @@ const summary = computed(() => {
 })
 
 /**
- * While one is still running, the group says which — a fold that reads the
- * same before and after the work would hide the only thing moving.
+ * What the group did to the tree, in lines.
+ *
+ * Both sides of every edit are already in the call — that is what the expanded
+ * card draws its diff from — so this costs nothing to know and is the one
+ * number that says how big a fold is without opening it. A `Write` is all
+ * addition, which is what makes "created 4 files +542 −0" read true.
+ *
+ * Only ever an estimate of the *edit*, never of the file: a replacement of two
+ * lines by two lines counts as both, which is what a diff would say too.
  */
-const running = computed(() => {
-  const c = pending.value[pending.value.length - 1]
-  if (!c) return ''
-  return c.tool === 'Bash' ? str(c.input, 'command') : name(c) || c.tool
+const stat = computed(() => {
+  let add = 0
+  let del = 0
+  for (const c of props.calls) {
+    const s = (k: string): string => (typeof c.input[k] === 'string' ? (c.input[k] as string) : '')
+    if (c.tool === 'Write') add += s('content').split('\n').length
+    else if (EDITS.has(c.tool)) {
+      const from = s('old_string')
+      const to = s('new_string')
+      if (from) del += from.split('\n').length
+      if (to) add += to.split('\n').length
+    }
+  }
+  return add || del ? { add, del } : null
 })
+
+/*
+ * The group used to spell out the command in flight beside its summary. The
+ * live line under the turn now names it — held long enough to read, which this
+ * never was — so the same long command was on screen twice, one copy of it
+ * changing with every call. What is left here is the three dots: this line
+ * says *that* something is running, and the line below says what.
+ */
 </script>
 
 <template>
-  <div class="tg" :class="{ open, bad: failed.length }">
+  <div class="tg" :class="{ bad: failed.length }">
     <button class="line" @click="toggle">
-      <ChevronRight class="xs chev" :class="{ turned: open }" />
+      <ChevronRight class="xs chev" :class="{ turned: shown.length }" />
       <span class="what">{{ summary }}</span>
-      <span v-if="running" class="live mono">{{ running }}</span>
+      <span v-if="stat" class="stat">
+        <i class="add">+{{ stat.add }}</i><i class="del">−{{ stat.del }}</i>
+      </span>
       <span class="grow" />
       <span v-if="failed.some((c) => c.denied)" class="tag warn"><Hand class="xs" /> refused</span>
       <span v-else-if="failed.length" class="tag bad"><CircleAlert class="xs" /> failed</span>
       <span v-else-if="pending.length" class="dots"><i /><i /><i /></span>
     </button>
 
-    <div v-if="open" class="calls">
+    <div v-if="shown.length" class="calls">
       <ToolCall
-        v-for="c in calls"
+        v-for="c in shown"
         :key="c.id"
         :tool="c.tool"
         :input="c.input"
@@ -151,16 +214,20 @@ const running = computed(() => {
 .chev.turned { transform: rotate(90deg); }
 .what { flex: none; }
 
-/* The command in flight, cut rather than wrapped: the line must not change
-   height as each one starts. */
-.live {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* What it did to the tree, in the two colours the review pane already uses.
+   Tabular figures so a column of these does not shimmer as the numbers grow. */
+.stat {
+  flex: none;
+  display: inline-flex;
+  gap: 6px;
   font-size: 10px;
-  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  font-style: normal;
 }
+.stat i { font-style: normal; }
+.stat .add { color: var(--ok); }
+.stat .del { color: var(--danger); }
+
 .grow { flex: 1; }
 
 .tag {

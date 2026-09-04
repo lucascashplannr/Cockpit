@@ -249,19 +249,21 @@ const expandable = computed(
 }
 .grow { flex: 0; }
 
+/* Lower case and still: this used to be 9px UPPERCASE, and the running one was
+   purple and blinking — a card that had nothing to say shouted the one word it
+   had. An outcome is a fact; the badge says it once, at the weight of the rest
+   of the line. */
 .tag {
   flex: none;
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 9px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 10px;
   color: var(--text-dim);
 }
 .tag.warn { color: var(--warn); }
 .tag.bad { color: var(--danger); }
-.tag.run { color: var(--agent); animation: pulse 1.6s var(--ease-soft) infinite; }
+.tag.run { color: var(--text-dim); }
 .tag.none { color: var(--text-dim); font-style: italic; }
 .xs { width: 11px; height: 11px; }
 .chev { flex: none; color: var(--text-dim); transition: transform var(--dur-1) var(--ease-soft); }

@@ -153,6 +153,10 @@
   --radius: 10px;
   --radius-lg: 14px;
   --radius-xl: 18px;
+  /* The width the scrollbars below actually take. Named because a scrolling
+     column and a fixed one beside it have to agree on it or they do not line
+     up — see `.thread` / `.foot` in AgentTab. */
+  --sbw: 11px;
   /* macOS draws its three traffic lights 52px wide (12px buttons, 20px apart).
      At 60px the cluster ran past the rail and into the workspace list, so the
      rail is sized around them: 52 + 10 either side. Everything else in the rail

@@ -14,8 +14,13 @@
  * older core does not answer `unknown_method`: it falls through its own switch
  * and returns a plan with no steps at all, which reads as "there is nothing to
  * do" rather than as a daemon nobody restarted.
+ *
+ * 2.7 — the `agent-progress` push. Additive, and an older core simply never
+ * sends it — but what is then missing is the number that tells a long turn
+ * apart from a hung one, and a window silently short of it would have nobody
+ * to ask. Bumped so the banner says which half is out of date.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 6 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 7 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

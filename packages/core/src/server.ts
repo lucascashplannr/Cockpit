@@ -732,6 +732,9 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
   agents.agentBus.on('delta', (sessionId, messageId, text) => {
     broadcast({ t: 'agent-delta', sessionId, messageId, text })
   })
+  agents.agentBus.on('progress', (sessionId, outputTokens) => {
+    broadcast({ t: 'agent-progress', sessionId, outputTokens })
+  })
   /**
    * §8 — a dev server's output reaches the window as it is written, beside the
    * journal rather than through it. Without this the supervisor's ring buffer

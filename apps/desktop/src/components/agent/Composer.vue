@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { FileCode, Map as MapIcon } from '@lucide/vue'
+import { CircleStop, FileCode, Map as MapIcon } from '@lucide/vue'
 import { agentDraft, client, engineName, guard, saveComposer, state } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
@@ -33,8 +33,17 @@ const props = defineProps<{
   /** `start` opens a conversation, `continue` adds a turn, `queue` waits. */
   mode: 'start' | 'continue' | 'queue'
   placeholder: string
+  /**
+   * A turn is in flight.
+   *
+   * The way out of one belongs here and not only in the bar three hundred
+   * pixels up: the box is where you are looking when you decide you have seen
+   * enough, and hunting for the stop button is exactly the moment you should
+   * not be hunting for anything.
+   */
+  busy?: boolean
 }>()
-const emit = defineEmits<{ send: []; 'update:engine': [string] }>()
+const emit = defineEmits<{ send: []; stop: []; 'update:engine': [string] }>()
 
 const box = ref<HTMLTextAreaElement | null>(null)
 
@@ -46,7 +55,8 @@ const box = ref<HTMLTextAreaElement | null>(null)
  * rots.
  */
 const MODELS = [
-  { id: 'opus', label: 'Opus', hint: 'the most capable' },
+  { id: 'fable', label: 'Fable', hint: 'the most capable' },
+  { id: 'opus', label: 'Opus', hint: 'the default' },
   { id: 'sonnet', label: 'Sonnet', hint: 'faster, cheaper' },
   { id: 'haiku', label: 'Haiku', hint: 'quick and small' },
 ]
@@ -320,6 +330,13 @@ defineExpose({ focus: () => box.value?.focus() })
       </button>
 
       <span class="grow" />
+      <!-- Beside the send button rather than instead of it: this app lets you
+           say the next thing while it is still on the last one, so both acts
+           are available at once and neither may hide the other. -->
+      <button v-if="busy" class="btn stop" title="Stop what it is doing" @click="emit('stop')">
+        <CircleStop class="xs" />
+        Stop
+      </button>
       <button class="btn primary" :disabled="disabled" @click="submit">
         {{ sendLabel }}
         <span class="kbd">⌘⏎</span>
@@ -366,6 +383,26 @@ defineExpose({ focus: () => box.value?.focus() })
 .opt.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 .opt.plan { display: inline-flex; align-items: center; gap: 4px; }
 .xs { width: 11px; height: 11px; }
+
+/* An escape hatch, not a call to action: it is offered at the weight of the
+   controls around it, and only turns red under the cursor — the moment it is
+   about to be used. */
+.btn.stop {
+  gap: 5px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.btn.stop:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
 
 .mentions {
   position: absolute;

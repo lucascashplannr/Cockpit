@@ -101,6 +101,18 @@ export const state = reactive({
   deltas: {} as Record<string, { messageId: string; text: string }>,
 
   /**
+   * How far into the answer the turn in flight is, per conversation, in the
+   * engine's own output tokens.
+   *
+   * Beside the journal for the same reason the deltas are, and for one more:
+   * it is the only thing on screen that moves while an agent is thinking with
+   * nothing to show for it yet. A spinner says "something is happening"; a
+   * count that climbs says the same thing and can be trusted, because a hung
+   * turn's count stops.
+   */
+  progress: {} as Record<string, number>,
+
+  /**
    * §3.3 — one conversation's transcript, fetched whole and then kept current
    * by the same events that update everything else.
    *
@@ -245,6 +257,9 @@ export const client = new CoreClient(URL, {
   onAgents(s) {
     state.agents = s
   },
+  onAgentProgress(sessionId, outputTokens) {
+    state.progress[sessionId] = outputTokens
+  },
   onAgentDelta(sessionId, messageId, text) {
     const cur = state.deltas[sessionId]
     // A new message replaces the last one rather than appending to it: two
@@ -269,6 +284,10 @@ export const client = new CoreClient(URL, {
     // streaming by the time this one is journalled.
     if (e.actor.kind === 'agent') {
       const sid = e.actor.sessionId
+      // A process that is gone is not part way through anything. Cleared here
+      // rather than left to the last `progress` push, which a session killed
+      // mid-turn never sends.
+      if (e.type === 'agent.session_ended') delete state.progress[sid]
       const cur = state.deltas[sid]
       if (!cur) return
       if (e.type === 'agent.session_ended') delete state.deltas[sid]
@@ -841,9 +860,39 @@ export function rememberPrompt(text: string): void {
 
 loadComposer()
 
-/** Still running, whatever it is doing — the only thing a spinner is about. */
-export function isRunning(c: Conversation): boolean {
+/**
+ * The engine's process is up.
+ *
+ * Which is *not* the same as it working, and conflating the two was the window
+ * telling a lie every day: a conversation that had answered and was sitting
+ * there with its stdin open said WORKING in the bar, pulsed its dot, and
+ * offered to Queue a turn that nothing was ahead of. "The process is alive"
+ * is a fact about a lease and about how the next turn gets sent — it is never
+ * a thing to report as activity.
+ *
+ * The two are told apart by `status`, which the core has always distinguished:
+ * `thinking` while a turn is in flight, `idle` between them.
+ */
+export function isLive(c: Conversation): boolean {
   return c.status !== 'ended' && c.status !== 'failed'
+}
+
+/** A turn is in flight. This, and only this, is what "working" means. */
+export function isBusy(c: Conversation): boolean {
+  return c.status === 'starting' || c.status === 'thinking'
+}
+
+/**
+ * When it last had something to say.
+ *
+ * `endedAt` is null for as long as the process is up, so a conversation that
+ * answered an hour ago and is still open has to be dated by its last turn —
+ * otherwise "answered, waiting for you" is measured against when the whole
+ * thread was opened, and a long conversation never looks new.
+ */
+export function lastActivityAt(c: Conversation): number {
+  const last = c.history[c.history.length - 1]
+  return c.endedAt ?? last?.endedAt ?? last?.startedAt ?? c.startedAt
 }
 
 /**
@@ -853,13 +902,16 @@ export function isRunning(c: Conversation): boolean {
  *   failed  — the engine died
  *   reply   — it answered, and the answer has not been read
  *
- * A running conversation is never in any of these: it is working, not waiting.
+ * A working conversation is never in any of these: it is working, not waiting.
+ * Being *alive* is not being busy — an answer sitting unread on a session
+ * whose process is still up is exactly the thing this is for, and it used to
+ * be invisible for as long as that process lived.
  */
 export type Attention = 'none' | 'reply' | 'blocked' | 'failed'
 
 export function attentionOf(c: Conversation): Attention {
-  if (isRunning(c)) return 'none'
-  const at = c.endedAt ?? c.startedAt
+  if (isBusy(c)) return 'none'
+  const at = lastActivityAt(c)
   if (at < threads.since) return 'none'
   if ((threads.read[c.id] ?? 0) >= at) return 'none'
   if (c.status === 'failed') return 'failed'
@@ -902,7 +954,7 @@ export const agentActivity = computed(() => {
   }
 
   for (const c of state.agents) {
-    const running = isRunning(c)
+    const running = isBusy(c)
     const att = attentionOf(c)
     if (!running && att === 'none') continue
 
@@ -945,7 +997,9 @@ export function openThreadFor(scope: AgentScope | null): Conversation | null {
   const pinned = all.find((c) => c.id === threads.pinned[scopeKey(scope)])
   if (pinned) return pinned
   const open = all.filter((c) => !threads.closed[c.id])
-  return open.find(isRunning) ?? open[0] ?? null
+  // The busy one first — that is the one there is news about — then any whose
+  // process is still up, which is the one a turn goes straight into.
+  return open.find(isBusy) ?? open.find(isLive) ?? open[0] ?? null
 }
 
 /** Opening one out of the history, which also takes it back out of the bin. */
@@ -1079,8 +1133,8 @@ export const agentDraft = computed<string>({
 
 /** Having it on screen is having read it; there is no second "mark as read". */
 export function markThreadRead(c: Conversation): void {
-  if (isRunning(c)) return
-  const at = c.endedAt ?? c.startedAt
+  if (isBusy(c)) return
+  const at = lastActivityAt(c)
   if ((threads.read[c.id] ?? 0) >= at) return
   threads.read[c.id] = at
   saveThreads()
@@ -2319,7 +2373,7 @@ export async function restartCore(): Promise<void> {
 export async function sendTurn(sessionId: string, prompt: string): Promise<boolean> {
   rememberPrompt(prompt)
   const c = state.agents.find((x) => x.id === sessionId)
-  if (c && isRunning(c)) {
+  if (c && isLive(c)) {
     const res = await guard(() => client.call('agent.send', { sessionId, prompt }))
     if (!res) return false
     if (!res.ok) {
