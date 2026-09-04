@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
 import {
   ArrowDown, BookMarked, CircleStop, Clock, Gauge, Hand, Lock,
-  Redo2, ShieldCheck, Sparkles, Undo2, X,
+  Redo2, Sparkles, Undo2, X,
 } from '@lucide/vue'
 import MemoryTab from './MemoryTab.vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -60,8 +60,25 @@ watch(
   { immediate: true },
 )
 
-/** §4 — allowed, and the reason a restore point is captured before any write. */
-const onMain = computed(() => preview.value?.paths.filter((p) => p.onProtectedBranch) ?? [])
+/**
+ * §7 — every repository this conversation covers, in the order the engine gets
+ * them: the first is its working directory, the rest are handed over whole.
+ * The composer completes `@` across all of them.
+ *
+ * Before the preview lands there is one thing we can name, and it is the
+ * workspace the column is standing on.
+ */
+const sources = computed(() =>
+  preview.value?.paths.length
+    ? preview.value.paths.map((p) => ({ workspaceId: p.workspaceId, name: p.name, path: p.path }))
+    : [
+        {
+          workspaceId: props.workspace.id,
+          name: props.workspace.name,
+          path: props.workspace.path,
+        },
+      ],
+)
 /**
  * §7 — what is in the way, minus the thing you are looking at.
  *
@@ -573,11 +590,12 @@ function dotClass(s: Conversation): string {
         </p>
       </div>
     </div>
-    <p v-else-if="onMain.length" class="note">
-      <ShieldCheck class="sm" />
-      {{ onMain.map((p) => p.name).join(', ') }} on the default branch — a restore point is
-      captured before the first write.
-    </p>
+    <!-- Standing on a default branch used to be a full-width banner here,
+         over every conversation, saying an unchanging sentence nobody had
+         asked twice. It is a fact about where you are standing rather than
+         about the conversation, and it is one glyph on the line that says
+         where you are standing now (ContextPanel). What stays a banner is
+         what is above it: a lock is the one thing here you have to act on. -->
 
     <!-- §6 — over the conversation, never beside it: it is read while writing. -->
     <section v-if="state.memoryOpen" class="over">
@@ -616,7 +634,7 @@ function dotClass(s: Conversation): string {
           big
           mode="start"
           :disabled="!canSend"
-          :workspace-id="props.workspace.id"
+          :sources="sources"
           :engines="engines"
           :engine="engine"
           placeholder="Describe the change. @ for a file, ⌘⏎ to start."
@@ -815,7 +833,7 @@ function dotClass(s: Conversation): string {
         <Composer
           :mode="queueing ? 'queue' : continuing ? 'continue' : 'start'"
           :disabled="!canSend"
-          :workspace-id="props.workspace.id"
+          :sources="sources"
           :placeholder="
             queueing
               ? 'Say the next thing now — it goes in when this turn lands'

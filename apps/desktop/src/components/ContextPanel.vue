@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  BookMarked, FileDiff, GitBranch, History, Layers, MousePointerClick, PanelRight,
+  BookMarked, FileDiff, GitBranch, History, Layers, MousePointerClick, PanelRight, ShieldCheck,
 } from '@lucide/vue'
 import AgentTab from './tabs/AgentTab.vue'
 import ConflictPanel from './ConflictPanel.vue'
@@ -69,6 +69,27 @@ const git = computed(() => {
 const branchName = computed(() =>
   git.value?.branch && git.value.branch !== label.value.name ? git.value.branch : null,
 )
+
+/**
+ * §4 — which repositories under this scope sit on their own default branch.
+ *
+ * This was a full-width banner over the conversation — an unchanging sentence,
+ * on screen for the whole of every thread, costing a row of the work to say
+ * something reassuring. It is a fact about where you are standing, so it lives
+ * on the line that says where you are standing, at the weight of the other
+ * facts there: a glyph, and the sentence on hover.
+ */
+const onDefault = computed(() =>
+  covered.value.filter((x) => x.git && x.git.branch && x.git.branch === x.git.base),
+)
+const onDefaultTitle = computed(() => {
+  const names = onDefault.value.map((x) => x.name)
+  return (
+    names.join(', ') +
+    (names.length > 1 ? ' are on their default branch' : ' is on its default branch') +
+    ' — a restore point is captured before the agent’s first write.'
+  )
+})
 
 const changed = computed(() =>
   covered.value.reduce((n, x) => {
@@ -186,6 +207,13 @@ const servers = computed(() => {
              what falls off the end is by construction the least of it. Each
              one that can be acted on opens the tool that says more. -->
         <span class="stats">
+          <!-- §4 — allowed, and the reason a restore point is captured before
+               anything is written. Wordless: it is reassurance, not a thing to
+               act on, and the composer says it in words where it matters. -->
+          <span v-if="onDefault.length" class="stat" :title="onDefaultTitle">
+            <ShieldCheck class="sm si" />
+          </span>
+
           <!-- How many repositories the word to the left stands for. -->
           <span
             v-if="covered.length > 1"

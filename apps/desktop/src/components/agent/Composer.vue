@@ -19,8 +19,15 @@ const props = defineProps<{
   /** The big centred one on an empty conversation, or the one in the footer. */
   big?: boolean
   disabled?: boolean
-  /** Which workspace `@` completes files from. */
-  workspaceId?: string | null
+  /**
+   * Every repository the conversation is scoped to, in the order the engine
+   * receives them: the first is its working directory, the rest are handed
+   * over explicitly. `@` completes across all of them — a topic spanning two
+   * repositories used to complete files from the anchor only, so half of what
+   * the conversation could touch could not be named in the box that points
+   * it at things.
+   */
+  sources?: { workspaceId: string; name: string; path: string }[]
   engines?: { id: string; available: boolean; bin: string }[]
   engine?: string
   /** `start` opens a conversation, `continue` adds a turn, `queue` waits. */
@@ -73,19 +80,72 @@ const engineOptions = computed<Option[]>(() =>
 
 /* ── @ mentions ───────────────────────────────────────────────────────────
  *
- * The repository's tracked files, fetched once per workspace and kept: an
- * agent is pointed at code under version control, and offering `node_modules`
- * would bury the three files anyone actually means.
+ * The tracked files of every repository in the scope, fetched once per scope
+ * and kept: an agent is pointed at code under version control, and offering
+ * `node_modules` would bury the three files anyone actually means.
  */
-const tracked = ref<string[]>([])
-const loadedFor = ref<string | null>(null)
+interface FileRef {
+  /** The repository it lives in — shown whenever there is more than one. */
+  repo: string
+  /** Its path inside that repository, which is how anyone thinks of it. */
+  rel: string
+  /** What is written into the prompt. */
+  insert: string
+  /** What the fuzzy match runs over. */
+  hay: string
+}
+
+const files = ref<FileRef[]>([])
+/** Whether the repository has to be named on every row, or is understood. */
+const multi = computed(() => (props.sources?.length ?? 0) > 1)
+
+/**
+ * Round-robin rather than concatenated: with an empty query the list is the
+ * first eight, and appended one repository after another that is eight files
+ * from the first repository and none from the second.
+ */
+function interleave(lists: FileRef[][]): FileRef[] {
+  const out: FileRef[] = []
+  const longest = lists.reduce((n, l) => Math.max(n, l.length), 0)
+  for (let i = 0; i < longest; i++) for (const l of lists) if (l[i]) out.push(l[i]!)
+  return out
+}
+
+/** The scope this list was asked for, so a slow answer cannot land after a
+ *  faster one taken on a different scope. */
+let asked = 0
 
 watch(
-  () => props.workspaceId,
-  async (id) => {
-    if (!id || loadedFor.value === id) return
-    loadedFor.value = id
-    tracked.value = (await guard(() => client.call('fs.tracked', { workspaceId: id }))) ?? []
+  () => (props.sources ?? []).map((s) => s.workspaceId).join(),
+  async () => {
+    const mine = ++asked
+    const srcs = props.sources ?? []
+    if (!srcs.length) {
+      files.value = []
+      return
+    }
+    const lists = await Promise.all(
+      srcs.map((s) => guard(() => client.call('fs.tracked', { workspaceId: s.workspaceId }))),
+    )
+    if (mine !== asked) return
+    const many = srcs.length > 1
+    files.value = interleave(
+      lists.map((list, i) => {
+        const s = srcs[i]!
+        return (list ?? []).map((rel) => ({
+          repo: s.name,
+          rel,
+          // The engine runs in the first path and is handed the rest as whole
+          // directories, so a relative path only means anything in the first
+          // one. Everywhere else it is named in full, which is the one form
+          // that resolves wherever the process happens to be standing.
+          insert: i === 0 ? rel : s.path + '/' + rel,
+          // Typing the repository's name is a way of narrowing to it, so it
+          // is part of what is matched — but only when there is a choice.
+          hay: many ? s.name + '/' + rel : rel,
+        }))
+      }),
+    )
   },
   { immediate: true },
 )
@@ -107,8 +167,8 @@ const mention = computed(() => {
 const matches = computed(() => {
   const m = mention.value
   if (m === null) return []
-  if (!m.query) return tracked.value.slice(0, 8)
-  return fuzzyFilter(tracked.value, m.query, (x) => x, 8).map((s) => s.item)
+  if (!m.query) return files.value.slice(0, 8)
+  return fuzzyFilter(files.value, m.query, (f) => f.hay, 8).map((s) => s.item)
 })
 
 const cursor = ref(0)
@@ -121,13 +181,13 @@ function track(): void {
   caret.value = box.value?.selectionStart ?? 0
 }
 
-function accept(path: string): void {
+function accept(f: FileRef | undefined): void {
   const m = mention.value
-  if (!m) return
+  if (!m || !f) return
   const after = agentDraft.value.slice(caret.value)
-  agentDraft.value = agentDraft.value.slice(0, m.from) + '@' + path + ' ' + after
+  agentDraft.value = agentDraft.value.slice(0, m.from) + '@' + f.insert + ' ' + after
   nextTick(() => {
-    const pos = m.from + path.length + 2
+    const pos = m.from + f.insert.length + 2
     box.value?.focus()
     box.value?.setSelectionRange(pos, pos)
     caret.value = pos
@@ -167,7 +227,7 @@ function onKey(ev: KeyboardEvent): void {
     }
     if (ev.key === 'Enter' || ev.key === 'Tab') {
       ev.preventDefault()
-      accept(matches.value[cursor.value] ?? '')
+      accept(matches.value[cursor.value])
       return
     }
     if (ev.key === 'Escape') {
@@ -205,12 +265,16 @@ defineExpose({ focus: () => box.value?.focus() })
     <ul v-if="picking" class="mentions">
       <li
         v-for="(m, i) in matches"
-        :key="m"
+        :key="m.repo + '/' + m.rel"
         :class="{ on: i === cursor }"
         @mousedown.prevent="accept(m)"
       >
         <FileCode class="xs" />
-        <span class="path">{{ m }}</span>
+        <span class="path">{{ m.rel }}</span>
+        <!-- Which repository it is in, only when the scope spans more than
+             one: two files of the same name in two repos are the whole reason
+             the list is worth reading rather than skimming. -->
+        <span v-if="multi" class="from">{{ m.repo }}</span>
       </li>
     </ul>
 
@@ -316,7 +380,11 @@ defineExpose({ focus: () => box.value?.focus() })
   border-radius: var(--radius-sm);
   background: var(--panel-raised);
   box-shadow: var(--shadow-sm);
-  max-height: 220px;
+  /* Eight rows and the box's own padding. It was 220px, twelve short of the
+     eight `matches` returns, so the last one was always cut in half — visible
+     the moment a topic filled the list from two repositories rather than a
+     single one from one. */
+  max-height: 240px;
   overflow-y: auto;
 }
 .mentions li {
@@ -330,6 +398,13 @@ defineExpose({ focus: () => box.value?.focus() })
   cursor: pointer;
 }
 .mentions li.on { background: var(--selected); color: var(--text); }
+.mentions .from {
+  margin-left: auto;
+  padding-left: 10px;
+  flex: none;
+  font-size: 10px;
+  color: var(--text-dim);
+}
 .mentions .lucide { flex: none; color: var(--text-dim); }
-.mentions .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mentions .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
