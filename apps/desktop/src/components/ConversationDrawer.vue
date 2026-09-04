@@ -199,11 +199,14 @@ function dotClass(c: Conversation): string {
    conversation (ContextPanel). Anchored to that same right edge rather than
    measured against the button: both sit hard against it, so the two line up on
    their own and there is no offset to keep true when the count changes width.
-   44px is the button's own box — 10 above it, 28 of it, 6 of air. */
+   44px is the button's own box — 10 above it, 28 of it, 6 of air, measured from
+   the same `--convtop` the button is (ContextPanel): the top of the
+   conversation, which is under the warning band when a scope has one. */
 .drawer {
   position: absolute;
   z-index: 41;
   top: 44px;
+  top: calc(anchor(--convtop top) + 44px);
   right: 12px;
   width: min(400px, calc(100% - 20px));
   display: flex;

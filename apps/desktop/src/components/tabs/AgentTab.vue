@@ -1115,7 +1115,18 @@ function dotClass(s: Conversation): string {
 }
 
 /* ── the empty conversation: the question is the page ────────────────── */
-.hero { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
+/* Both of these carry the anchor the floating instruments hang from
+   (ContextPanel): whichever of the two is on screen *is* the top of the
+   conversation, and the warnings above it are not part of it. */
+.hero {
+  anchor-name: --convtop;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
 .heroinner { width: 100%; max-width: 620px; }
 .wm {
   /* The gap tracks the mark: at 48 the wordmark is its own block rather than a
@@ -1176,6 +1187,7 @@ function dotClass(s: Conversation): string {
 .agent { --measure: 780px; --pad: 20px; }
 
 .tbar {
+  anchor-name: --convtop;
   flex: none;
   display: flex;
   align-items: center;

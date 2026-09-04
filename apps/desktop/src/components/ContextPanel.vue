@@ -215,8 +215,17 @@ async function stop(): Promise<void> {
   /* Centred in the bar underneath: `.tbar` is a stated 49px — 48 of content
      over its 1px rule — so a 28px instrument sits at 10 whether or not the bar
      is carrying anything else. The invitation has no bar and no ✕; the history
-     button lands in the same corner either way. */
+     button lands in the same corner either way.
+
+     Measured from the top of the conversation rather than the top of the
+     column, because those are not always the same line: a scope with a lock on
+     it opens with a warning band above the bar (AgentTab), and 10 from the
+     column put these instruments *inside* that band — floating on a warning
+     they have nothing to do with. `--convtop` is the bar, or the invitation
+     when there is no bar; the plain 10 stays underneath for anything that
+     cannot resolve an anchor. */
   top: 10px;
+  top: calc(anchor(--convtop top) + 10px);
   right: 12px;
   display: flex;
   align-items: center;
