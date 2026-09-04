@@ -2,8 +2,9 @@
 import { computed } from 'vue'
 import type { Component } from 'vue'
 import type { Workspace } from '@cockpit/shared'
-import { FileCode, GitCompareArrows, ScrollText, Server, SquareTerminal } from '@lucide/vue'
+import { BookMarked, FileCode, GitCompareArrows, ScrollText, Server, SquareTerminal } from '@lucide/vue'
 import CodeTab from './tabs/CodeTab.vue'
+import MemoryTab from './tabs/MemoryTab.vue'
 import DiffTab from './tabs/DiffTab.vue'
 import JournalTab from './tabs/JournalTab.vue'
 import ServersTab from './tabs/ServersTab.vue'
@@ -37,6 +38,7 @@ const META: Record<ReviewTool, { label: string; icon: Component }> = {
   servers: { label: 'Servers', icon: Server },
   journal: { label: 'Journal', icon: ScrollText },
   terminal: { label: 'Terminal', icon: SquareTerminal },
+  memory: { label: 'Memory', icon: BookMarked },
 }
 
 const changed = computed(() => {
@@ -49,6 +51,9 @@ const tools = computed(() =>
     id,
     ...META[id],
     badge: id === 'diff' ? changed.value || undefined : undefined,
+    // The memory has no number worth printing — either something is written
+    // down for this scope or nothing is. One dot says that.
+    pip: id === 'memory' && props.workspace.hasMemory,
   })),
 )
 </script>
@@ -66,11 +71,13 @@ const tools = computed(() =>
         <component :is="t.icon" class="sm" />
         <span class="tl">{{ t.label }}</span>
         <span v-if="t.badge !== undefined" class="tbadge num">{{ t.badge }}</span>
+        <span v-else-if="t.pip" class="tpip" />
       </button>
     </nav>
 
     <div class="body">
       <DiffTab v-if="state.reviewTool === 'diff'" :workspace="workspace" />
+      <MemoryTab v-else-if="state.reviewTool === 'memory'" :workspace="workspace" />
       <CodeTab v-else-if="state.reviewTool === 'code'" :workspace="workspace" />
       <ServersTab v-else-if="state.reviewTool === 'servers'" :workspace="workspace" />
       <JournalTab v-else-if="state.reviewTool === 'journal'" :workspace="workspace" />
@@ -139,6 +146,8 @@ const tools = computed(() =>
   color: var(--text-muted);
 }
 .tool.on .tbadge { background: var(--accent-soft); color: var(--accent); }
+/* The same fact as a badge, minus the number there is none of. */
+.tpip { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); }
 
 .body { flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
 

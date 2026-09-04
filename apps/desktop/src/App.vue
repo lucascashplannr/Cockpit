@@ -5,7 +5,6 @@ import WorkspaceList from './components/WorkspaceList.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import ScopeBar from './components/ScopeBar.vue'
 import ConflictPanel from './components/ConflictPanel.vue'
-import ConversationDrawer from './components/ConversationDrawer.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import PlanDialog from './components/PlanDialog.vue'
@@ -56,7 +55,6 @@ function onKey(e: KeyboardEvent) {
     else if (state.paletteOpen) state.paletteOpen = false
     // Layer by layer back to the conversation, which is the ground state.
     else if (state.historyOpen) state.historyOpen = false
-    else if (state.memoryOpen) state.memoryOpen = false
     // The ground state is the conversation with the whole width, so this is
     // one step and not two: Escape out of a diff you are done reading and the
     // thread is there, not a narrower diff.
@@ -214,13 +212,6 @@ onUnmounted(() => {
           :workspace="activeWorkspace!"
           :class="{ reviewcol: state.view === 'split' }"
         />
-
-        <!-- §6 — hung from the bar it is opened from, which is now the
-             window's. Inside this box rather than in the conversation's
-             column so that it still lands under the button that opened it
-             when the review has taken half the width — and clipped to it, so
-             a list of ways back into the thread cannot spill over the app. -->
-        <ConversationDrawer v-if="state.historyOpen && showsAgent" />
 
         <Splitter
           v-if="splitReview"

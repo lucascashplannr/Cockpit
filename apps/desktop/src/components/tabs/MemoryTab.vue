@@ -23,6 +23,12 @@ const SECTIONS = ['Objectif', 'Décisions', 'Contraintes', 'Écarté', 'État']
 
 const sections = computed(() => doc.value?.sections ?? [])
 
+/** The last two segments: enough to say which file, in a 440px column. */
+function tail(path: string): string {
+  const parts = path.split('/').filter(Boolean)
+  return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : path
+}
+
 async function load() {
   editing.value = false
   const [d, s] = await Promise.all([
@@ -97,6 +103,13 @@ watch(() => props.workspace.id, load, { immediate: true })
             <pre v-if="bodyPreview(s.body)" class="body selectable">{{ bodyPreview(s.body) }}</pre>
             <p v-else class="none">—</p>
           </section>
+
+          <!-- A file with none of §6's headings in it. It used to render as a
+               blank page: the document is there, the reader had nothing to
+               show, and nothing said which of the two it was. -->
+          <p v-if="!sections.length" class="none">
+            Nothing under any of the memory's headings yet — Edit raw to see the file as it is.
+          </p>
         </div>
       </template>
 
@@ -112,7 +125,7 @@ watch(() => props.workspace.id, load, { immediate: true })
         <template v-else-if="doc">
           <button class="btn ghost" @click="editing = true"><Pencil />Edit raw</button>
           <span class="grow" />
-          <span class="path mono">{{ doc.path }}</span>
+          <span class="path mono" :title="doc.path">{{ tail(doc.path) }}</span>
         </template>
       </footer>
     </div>
@@ -154,7 +167,20 @@ watch(() => props.workspace.id, load, { immediate: true })
 </template>
 
 <style scoped>
+/* The document, and the box that adds to it. It was written for a full-width
+   overlay, and it is a column in the review now — at 440px the 310px side
+   left the memory itself 130 and the empty state was a word per line. So the
+   two stack under 620, the way the Diff and the Code tab already do: the
+   document first, what you write into it under it. */
 .mem { display: grid; grid-template-columns: minmax(0, 1fr) 310px; height: 100%; }
+@container (max-width: 620px) {
+  .mem {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 46%);
+  }
+  .side { border-left: none; border-top: 1px solid var(--line); }
+  .doc { padding: 18px 18px 30px; }
+}
 
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .doc { flex: 1; overflow-y: auto; padding: 24px 28px 44px; max-width: 800px; }
@@ -214,8 +240,22 @@ watch(() => props.workspace.id, load, { immediate: true })
   padding: 0 18px;
   border-top: 1px solid var(--line);
 }
-.grow { flex: 1; }
-.path { font-size: var(--fs-xs); color: var(--text-dim); }
+.grow { flex: 1; min-width: 0; }
+/* The end of the path, not the start of it. It is here to answer "which file
+   is this", and in a 440px column the whole of it pushed the row off the
+   right edge — the last two segments are the answer anyway. */
+/* Named by its tail, with the whole of it on hover: this is here to answer
+   "which file is this", and in a 440px column the whole path pushed the row
+   off the right edge. */
+.path {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .side {
   border-left: 1px solid var(--line);

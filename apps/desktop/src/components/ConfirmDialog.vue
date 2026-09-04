@@ -18,6 +18,11 @@ import { applyPendingConfirm, state } from '../core/store.js'
  * So the words come first and the argv comes second — one click away, in the
  * same box, before the button rather than after it. Anyone who wants to know
  * exactly what runs still finds out without leaving the decision.
+ *
+ * Some questions have no argv at all — removing a conversation runs no git —
+ * and they are asked here too, with the disclosure simply absent. A second
+ * confirmation drawn its own way is how an app ends up asking "are you sure"
+ * in three different voices.
  */
 
 const c = computed(() => state.pendingConfirm)
@@ -94,7 +99,12 @@ watch(
       <!-- The plan, kept but not insisted upon. `details` rather than a
            hand-rolled toggle: it is a disclosure, the platform has one, and
            this one is reachable by keyboard without anything being wired. -->
-      <details class="what" :open="open" @toggle="open = ($event.target as HTMLDetailsElement).open">
+      <details
+        v-if="c.plan"
+        class="what"
+        :open="open"
+        @toggle="open = ($event.target as HTMLDetailsElement).open"
+      >
         <summary>
           <ChevronRight class="chev sm" />
           <span>
@@ -212,6 +222,9 @@ watch(
   color: var(--text-muted);
 }
 .say p + p { margin-top: 7px; }
+/* With no plan folded under it, the sentences are the last thing above the
+   footer, and 10px there reads as the footer having crowded them. */
+.say:has(+ .foot) { padding-bottom: 16px; }
 /* Sits with the sentences it qualifies rather than in a band of its own: the
    dialog is a paragraph and a question, and a rule across it would make two. */
 .base { margin: 0 20px 12px; }

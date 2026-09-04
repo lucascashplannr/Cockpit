@@ -415,9 +415,11 @@ Trois niveaux, et un seul endroit chacun :
 | Niveau | Où | Quoi |
 |---|---|---|
 | le checkout | la barre, toute la largeur | identité, état, verbes git et runtime |
-| la conversation | le case d'instruments, à droite de la barre | Historique, Mémoire — cachés en vue `review`, où ils n'ouvriraient rien de visible |
-| la fenêtre | le contrôle de vue, tout à droite | les trois vues |
-| un outil | la bande d'onglets, **dans** la colonne de revue | Diff / Code / Servers / Journal / Terminal, et à terme les actions propres à l'outil ouvert |
+| la fenêtre | tout à droite de la barre | le contrôle des trois vues |
+| un outil | la bande d'onglets, **dans** la colonne de revue | Diff / Code / Servers / Journal / Terminal / **Mémoire**, et à terme les actions propres à l'outil ouvert |
+| la conversation | flottant en haut à droite du fil | l'historique des conversations, et son tiroir juste dessous |
+
+La barre a un temps porté un boîtier « instruments de la conversation » avec l'Historique et la Mémoire. Ni l'un ni l'autre ne parle du checkout : une seule barre s'était mise à porter deux choses qui n'y avaient rien à faire. La **mémoire est un outil de revue** — c'est un document qu'on lit *pendant* qu'on écrit un prompt, ce qu'un calque par-dessus le fil est précisément incapable de permettre. L'**historique appartient au fil** : il flotte en haut à droite de la conversation, à la place même où son tiroir était déjà accroché, et il y est aussi quand il n'y a pas encore de fil — le moment où « qu'est-ce que j'ai déjà demandé ici » se pose le plus.
 
 La bande d'onglets est une bande d'onglets, pas un second en-tête : 44px sur le fond de sa colonne, sans surface surélevée — deux bandeaux surélevés empilés se lisaient comme un en-tête dessiné deux fois.
 

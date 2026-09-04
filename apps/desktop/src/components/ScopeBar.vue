@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { BookMarked, FileDiff, GitBranch, History, Layers, ShieldCheck } from '@lucide/vue'
+import { FileDiff, GitBranch, Layers, ShieldCheck } from '@lucide/vue'
 import BranchMenu from './BranchMenu.vue'
 import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
 import {
-  activeAgentScope, activeWorkspace, attentionOf, goTo, scopeLabel, selectedTopicGroup,
-  sessionsForScope, showsAgent, state,
+  activeAgentScope, activeWorkspace, goTo, scopeLabel, selectedTopicGroup,
 } from '../core/store.js'
 
 /**
@@ -96,20 +95,16 @@ const changed = computed(() =>
   }, 0),
 )
 
-/* ── what the conversation is on, and its two instruments ─────────────────
+/* ── what the bar is speaking for ─────────────────────────────────────────
  *
- * These lived on a second bar of their own, directly under this one, so the
- * column opened with two rows of chrome before the first word of the work:
+ * This and the branch line above it lived on two bars, one over the other, so
+ * the column opened with two rows of chrome before the first word of the work:
  * one saying where the branch stood, one saying what the agent was pointed at.
  * They are the same sentence — *this is what you are on* — split across two
  * lines, and the split cost thirty-eight pixels of every screen.
  */
 const scope = computed(() => activeAgentScope.value)
 const label = computed(() => scopeLabel(scope.value))
-const conversations = computed(() => sessionsForScope(scope.value))
-const waiting = computed(
-  () => conversations.value.filter((c) => attentionOf(c) !== 'none').length,
-)
 
 /**
  * §8 — the servers, as one fact and one way in.
@@ -245,37 +240,15 @@ const servers = computed(() => {
          the first thing to go. -->
     <span class="grow" />
 
-    <!-- What you can do, pinned right and never clipped. The verbs of the
-         thing named at the far left, then the conversation's own
-         instruments — kept apart, and shaped apart, because a Push and a
-         "show me the earlier conversations" are not the same kind of act
-         and drawing them as one row of identical ghosts said they were. -->
+    <!-- What you can do, pinned right and never clipped: the verbs of the
+         thing named at the far left, and then the one control that is about
+         the window instead. The conversation's own two used to sit between
+         them in a case of their own — the memory is a review tool now, and
+         the earlier threads hang from the conversation itself. Each of them
+         went to the thing it is about; this bar is about the checkout. -->
     <span class="acts">
       <TopicActions v-if="selectedTopicGroup" :group="selectedTopicGroup" />
       <WorkspaceActions v-else />
-
-      <!-- §6 — the conversation's own two. Only while there is a conversation
-           on screen for them to be about: both open *over* the thread, so in
-           the review-only view they would be two buttons that visibly do
-           nothing. -->
-      <span v-if="showsAgent" class="inst">
-        <button
-          :class="{ on: state.historyOpen, waiting: waiting > 0 }"
-          title="Earlier conversations here"
-          @click="state.historyOpen = !state.historyOpen"
-        >
-          <History class="sm" />
-          <span v-if="conversations.length" class="n">{{ conversations.length }}</span>
-        </button>
-        <button
-          :class="{ on: state.memoryOpen }"
-          title="The durable memory this conversation reads on the way in"
-          @click="state.memoryOpen = !state.memoryOpen"
-        >
-          <BookMarked class="sm" />
-          <span v-if="w.hasMemory" class="pip" />
-        </button>
-      </span>
 
       <!-- §12 — how the right of the window is divided. It ends the bar
            because it is the only control here that is about the *window*
@@ -357,7 +330,7 @@ const servers = computed(() => {
 /* The only thing on the row that wants to be wide. */
 .grow { flex: 1 1 0; min-width: 0; }
 
-/* The right zone: verbs, then instruments. Never shrinks. */
+/* The right zone: the verbs, then the view control. Never shrinks. */
 .acts { flex: none; display: flex; align-items: center; gap: 8px; }
 
 /* What the line is about — and, inside it, the two halves in the order they
@@ -461,40 +434,5 @@ const servers = computed(() => {
 .head button,
 .head :deep(button),
 .head .scope { -webkit-app-region: no-drag; }
-
-/* The three instruments, in a case of their own.
- *
- * They were three more ghost icons in the same run as the verbs, at the same
- * size and the same weight — so a Push and a "show me the earlier
- * conversations" were the same shape, and the only way to tell a bar of eight
- * of them apart was to hover all eight. What they have in common is that none
- * of them *does* anything: each one opens or closes a way of looking. The case
- * is that sentence, drawn. */
-.inst {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  padding: 3px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-sunken);
-  border: 1px solid var(--line-soft);
-}
-.inst > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 7px;
-  border-radius: 5px;
-  font-size: 11px;
-  color: var(--text-dim);
-  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
-}
-.inst > button:hover { color: var(--text); background: var(--hover); }
-.inst > button.on { background: var(--panel-raised); color: var(--accent); box-shadow: var(--shadow-xs); }
-.inst > button.waiting { color: var(--warn); }
-.inst .n { color: inherit; }
-.inst .pip { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); }
 
 </style>

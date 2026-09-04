@@ -59,7 +59,7 @@ export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'servers' | 'journal'
  *
  * The Agent owns the panel permanently; these are what open beside it.
  */
-export type ReviewTool = 'diff' | 'code' | 'servers' | 'journal' | 'terminal'
+export type ReviewTool = 'diff' | 'code' | 'servers' | 'journal' | 'terminal' | 'memory'
 
 /**
  * §12 — how the window is divided between the two things it can show on the
@@ -172,8 +172,6 @@ export const state = reactive({
    */
   view: 'agent' as ShellView,
   reviewTool: 'diff' as ReviewTool,
-  /** §6 — the agent's own tool, over the conversation rather than beside it. */
-  memoryOpen: false,
   /** Every conversation on this scope, over the chat rather than beside it. */
   historyOpen: false,
 
@@ -424,6 +422,17 @@ export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
   // the strip is still the strip of *this* workspace.
   if (w.runtime) ids.push('servers')
   ids.push('journal', 'terminal')
+  // §6 — the memory, last.
+  //
+  // It was an overlay *over* the conversation, on the rule that the chat gets
+  // the width; it is a document you read while writing a prompt, and an
+  // overlay is the one shape that cannot be. Here it is beside the thread
+  // rather than on top of it — and it is the same kind of thing as the four
+  // above it: something written down that you go and read.
+  //
+  // Appended rather than led with so that ⌘2 is still the Diff. Its place in
+  // the strip is one line, here, if that turns out to be wrong.
+  ids.push('memory')
   return ids
 }
 
@@ -440,18 +449,13 @@ export const keyTargets = computed<TabId[]>(() =>
 
 /**
  * The one way to say "show me X", from the palette, a keystroke or a badge.
- * Every layout's rules live here rather than in three components: `memory` is
- * the agent's tool and opens over the conversation, `agent` is the ground
- * state and closes whatever is on top of it, and the rest are review.
+ * Every layout's rule lives here rather than in three components: `agent` is
+ * the ground state and gives the window back to the conversation, and
+ * everything else is a review tool, opened beside it.
  */
 export function goTo(id: TabId): void {
   if (id === 'agent') {
     state.view = 'agent'
-    state.memoryOpen = false
-    return
-  }
-  if (id === 'memory') {
-    state.memoryOpen = true
     return
   }
   if (id === 'ticket') return
@@ -462,7 +466,6 @@ export function goTo(id: TabId): void {
   // take the conversation off the screen, because only they are about the
   // window rather than about a tool.
   if (state.view === 'agent') state.view = 'split'
-  state.memoryOpen = false
 }
 
 /** Which of the two right-hand columns is on screen, for the shell to draw. */
@@ -545,7 +548,6 @@ export function openAgentOn(scope: AgentScope): void {
   // conversation that was not on screen — the click did exactly what it said
   // and nothing visible happened.
   if (state.view === 'review') state.view = 'split'
-  state.memoryOpen = false
   state.historyOpen = false
   state.paletteOpen = false
 }
@@ -692,25 +694,26 @@ export async function startAgentIn(
  *
  * Three facts, and only the first is a preference:
  *   pinned — the thread chosen by hand, out of the history
- *   closed — the threads deliberately put away with the ✕
+ *   fresh  — an empty composer here, chosen over any of them
  *   read   — how far into a finished thread the person has actually got
+ *
+ * There was a fourth, `closed`: a bin of threads put away with the ✕, which
+ * `openThreadFor` skipped when it picked. It made the ✕ a per-conversation act
+ * — close this one, and the one before it comes up — so three open threads took
+ * three ✕s to get back to an empty box, each one surfacing a conversation
+ * nobody had asked for. But there is only ever one thread showing, and the ✕ is
+ * how you stop showing it: `fresh` says that in one fact for the scope instead
+ * of a growing set of ids. Nothing was ever killed by it and nothing is now —
+ * a conversation mid-turn carries on, and the history has all of them.
  */
 const THREADS_KEY = 'cockpit.threads'
 
 interface ThreadMemory {
-  /** scopeKey → session id, chosen by hand and kept until it is closed. */
+  /** scopeKey → session id, chosen by hand and kept until something replaces it. */
   pinned: Record<string, string>
-  /** session id → put away. The one thing that stops it re-opening. */
-  closed: Record<string, true>
   /** session id → the `endedAt` that has been read. */
   read: Record<string, number>
-  /**
-   * scopeKey → composing a new conversation here.
-   *
-   * Distinct from `closed` on purpose: putting a thread away means lead with
-   * something else, and the something else is usually the conversation before
-   * it. This means show an empty box — which is what §6's "start fresh" is.
-   */
+  /** scopeKey → showing an empty composer here rather than any thread. */
   fresh: Record<string, true>
   /**
    * When this window first learned to track any of the above. Every
@@ -724,13 +727,12 @@ interface ThreadMemory {
 export const threads = reactive<ThreadMemory>(readThreads())
 
 function readThreads(): ThreadMemory {
-  const empty: ThreadMemory = { pinned: {}, closed: {}, read: {}, fresh: {}, since: Date.now() }
+  const empty: ThreadMemory = { pinned: {}, read: {}, fresh: {}, since: Date.now() }
   try {
     const raw = JSON.parse(localStorage.getItem(THREADS_KEY) ?? 'null') as Partial<ThreadMemory> | null
     if (!raw || typeof raw !== 'object') return empty
     return {
       pinned: raw.pinned ?? {},
-      closed: raw.closed ?? {},
       read: raw.read ?? {},
       fresh: raw.fresh ?? {},
       since: typeof raw.since === 'number' ? raw.since : empty.since,
@@ -1042,28 +1044,26 @@ export function activityFor(kind: 'workspace' | 'topic' | 'project', id: string)
  * The conversation the panel should be showing on this scope.
  *
  * Nothing here is a guess about what the person wants next: it is what they
- * left open. A thread runs until it is put away — and one still running comes
- * back first, because that is the one there is news about.
+ * left showing. One thread at a time — opening another does not close this one,
+ * it stops being the one on screen — and the empty composer is a state of the
+ * scope, not the absence of anything to show.
  */
 export function openThreadFor(scope: AgentScope | null): Conversation | null {
   if (!scope) return null
-  // §6 — deliberately composing a new one. Not the same as having put a thread
-  // away: `closeThread` means "lead with something else", and would happily
-  // lead with the conversation before it. This means "an empty box, here".
+  // The ✕, and §6's "start fresh": an empty box here, whatever is pinned.
   if (threads.fresh[scopeKey(scope)]) return null
   const all = [...sessionsForScope(scope)].sort((a, b) => b.startedAt - a.startedAt)
   const pinned = all.find((c) => c.id === threads.pinned[scopeKey(scope)])
   if (pinned) return pinned
-  const open = all.filter((c) => !threads.closed[c.id])
-  // The busy one first — that is the one there is news about — then any whose
-  // process is still up, which is the one a turn goes straight into.
-  return open.find(isBusy) ?? open.find(isLive) ?? open[0] ?? null
+  // Never chosen on this scope: the busy one first — that is the one there is
+  // news about — then any whose process is still up, which is the one a turn
+  // goes straight into.
+  return all.find(isBusy) ?? all.find(isLive) ?? all[0] ?? null
 }
 
-/** Opening one out of the history, which also takes it back out of the bin. */
+/** Showing one out of the history. Whatever was showing simply stops being. */
 export function pinThread(scope: AgentScope, sessionId: string): void {
   threads.pinned[scopeKey(scope)] = sessionId
-  delete threads.closed[sessionId]
   // Opening a conversation is the opposite of composing a new one.
   delete threads.fresh[scopeKey(scope)]
   saveThreads()
@@ -1073,23 +1073,17 @@ export function pinThread(scope: AgentScope, sessionId: string): void {
  * §6 — "vider devient gratuit : la conversation part, la mémoire reste."
  *
  * An empty composer on this scope, with every existing thread left exactly
- * where it is: nothing is closed, nothing is lost, and the history still has
- * all of it. The next question starts a conversation that reads the memory on
- * the way in, which is the whole of what makes clearing free.
+ * where it is: nothing is ended, nothing is lost, and the history still has all
+ * of it. The next question starts a conversation that reads the memory on the
+ * way in, which is the whole of what makes clearing free.
+ *
+ * This is also what the ✕ on a thread does. A conversation still answering
+ * carries on answering — the window stops showing it, the rail and the count
+ * still say it is there, and one click of the ✕ gets to the empty box however
+ * many threads have been opened on the way.
  */
 export function startFresh(scope: AgentScope): void {
   threads.fresh[scopeKey(scope)] = true
-  saveThreads()
-}
-
-/**
- * The ✕ on a thread. Deliberate, and therefore respected even for a session
- * still running: the conversation carries on, this window simply stops leading
- * with it, and the badges still say it is there.
- */
-export function closeThread(scope: AgentScope, sessionId: string): void {
-  if (threads.pinned[scopeKey(scope)] === sessionId) delete threads.pinned[scopeKey(scope)]
-  threads.closed[sessionId] = true
   saveThreads()
 }
 
@@ -1099,7 +1093,7 @@ export function closeThread(scope: AgentScope, sessionId: string): void {
  * The service draws the line (`agents.remove`): the conversation and its turns
  * go, the journal and the per-path attribution stay. What is left to do here
  * is the window's own bookkeeping, all of it keyed by session id — a pin, a
- * closed mark, a read mark and a cached transcript. A pin left pointing at a
+ * read mark and a cached transcript. A pin left pointing at a
  * conversation that no longer exists is the one that actually bites:
  * `openThreadFor` finds nothing for it and falls silently through to whatever
  * ran before, so the panel answers a question nobody asked.
@@ -1107,6 +1101,19 @@ export function closeThread(scope: AgentScope, sessionId: string): void {
  * Answers whether it happened, so the caller can keep its confirmation open
  * on a refusal ("it is still running") instead of closing on a lie.
  */
+/**
+ * §6 — the engine let go. The conversation itself stays: its turns, its journal
+ * and the fact it can be resumed.
+ *
+ * Here rather than in a component because three of them ask for it — the
+ * instruments over the thread, the composer while a turn is in flight, and the
+ * history list — and three copies of one RPC call is three places for the toast
+ * to disagree with itself.
+ */
+export async function stopConversation(sessionId: string): Promise<void> {
+  await guard(() => client.call('agent.stop', { sessionId }), 'conversation stopped')
+}
+
 export async function deleteConversation(sessionId: string): Promise<boolean> {
   const r = await guard(() => client.call('agent.delete', { sessionId }))
   if (!r) return false
@@ -1117,7 +1124,6 @@ export async function deleteConversation(sessionId: string): Promise<boolean> {
   for (const key of Object.keys(threads.pinned)) {
     if (threads.pinned[key] === sessionId) delete threads.pinned[key]
   }
-  delete threads.closed[sessionId]
   delete threads.read[sessionId]
   saveThreads()
   delete state.transcripts[sessionId]
@@ -1670,7 +1676,7 @@ async function settlePlan(
  *
  * The heavy dialog stays for the operations that rewrite history.
  */
-export interface PendingConfirm {
+interface ConfirmBase {
   /** The question, asked as one. */
   title: string
   /** What it does, in sentences — the plan's own warnings, usually. */
@@ -1690,12 +1696,37 @@ export interface PendingConfirm {
   quote?: string
   /** Red button, for the one that cannot be taken back. */
   danger: boolean
-  plan: PlanPreview
 }
+
+/**
+ * Most questions here are a git plan wearing plain words. Some are not: removing
+ * a conversation runs no git at all, and it is still a question with the same
+ * shape — a title, a sentence about what it costs, a red button. It carries the
+ * act instead of a plan, and answers the same way: `true` if it happened.
+ *
+ * One dialog for both, deliberately. A second confirmation drawn its own way is
+ * how an app ends up asking "are you sure" in three different voices.
+ */
+export type PendingConfirm = ConfirmBase &
+  (
+    | { plan: PlanPreview; run?: never }
+    | { plan?: never; run: () => Promise<boolean> }
+  )
 
 export async function applyPendingConfirm(): Promise<void> {
   const c = state.pendingConfirm
   if (!c) return
+  if (!c.plan) {
+    state.planBusy = true
+    const ok = await c.run()
+    state.planBusy = false
+    // A refusal ("it is still running") stays in front of the person who asked,
+    // with the question still on screen — `run` has already said why.
+    if (!ok) return
+    state.pendingConfirm = null
+    toast('ok', c.done)
+    return
+  }
   state.planBusy = true
   const res = await guard(() => client.call('git.apply', { planId: c.plan.planId }))
   state.planBusy = false

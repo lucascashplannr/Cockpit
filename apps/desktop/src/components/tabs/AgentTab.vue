@@ -2,19 +2,19 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, BookMarked, CircleStop, Clock, Gauge, Hand, Lock,
+  ArrowDown, Asterisk, Clock, Gauge, Hand, Lock,
   Redo2, Undo2, X,
 } from '@lucide/vue'
-import MemoryTab from './MemoryTab.vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
 import ToolCall from '../agent/ToolCall.vue'
 import ToolGroup from '../agent/ToolGroup.vue'
 import Composer from '../agent/Composer.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, agentDraft, client, closeThread, guard, isBusy, isLive,
-  askRevert, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
-  sendTurn, sessionsForScope, startAgentIn, startFresh, state, toast, transcriptOf,
+  activeAgentScope, agentDraft, client, guard, isBusy, isLive,
+  askRevert, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
+  sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
+  transcriptOf,
 } from '../../core/store.js'
 import { usePaced } from '../../core/reveal.js'
 
@@ -99,10 +99,6 @@ const paths = computed(() => preview.value?.paths ?? [])
  * the store now, and it is remembered.
  */
 const selected = computed(() => openThreadFor(scope.value))
-
-function close(c: Conversation): void {
-  if (scope.value) closeThread(scope.value, c.id)
-}
 
 /**
  * Having a finished thread on screen is having read it — that is what clears
@@ -429,10 +425,6 @@ async function release(leaseId: string): Promise<void> {
 function reveal(sessionId: string): void {
   if (scope.value) pinThread(scope.value, sessionId)
   state.historyOpen = false
-}
-
-async function stop(id: string): Promise<void> {
-  await guard(() => client.call('agent.stop', { sessionId: id }), 'conversation stopped')
 }
 
 /* ── what has been said and not yet asked (§6) ───────────────────────────
@@ -772,27 +764,20 @@ function dotClass(s: Conversation): string {
          where you are standing now (ContextPanel). What stays a banner is
          what is above it: a lock is the one thing here you have to act on. -->
 
-    <!-- §6 — over the conversation, never beside it: it is read while writing. -->
-    <section v-if="state.memoryOpen" class="over">
-      <header class="ohead">
-        <BookMarked class="sm mk" />
-        <span class="ttl">Memory</span>
-        <span class="grow" />
-        <button class="icon-btn" title="Back to the conversation (Esc)" @click="state.memoryOpen = false">
-          <X class="sm" />
-        </button>
-      </header>
-      <div class="obody"><MemoryTab :workspace="props.workspace" /></div>
-    </section>
+    <!-- The memory was an overlay here, over the conversation, on the rule
+         that the chat gets the width. It is a document you read *while*
+         writing a prompt, which is the one thing an overlay cannot let you
+         do — so it is a tool in the review column now (ReviewTools), beside
+         the thread rather than on top of it. -->
 
     <!-- Every conversation on this scope used to be a third full-height panel
-         here, opened *instead of* the thread. It is a drawer under the column's
-         bar now (ConversationDrawer), so the thread it is a way back into stays
-         on screen while you look for it. -->
+         here, opened *instead of* the thread. It is a drawer at the top of
+         this column now (ContextPanel), so the thread it is a way back into
+         stays on screen while you look for it. -->
 
     <!-- The conversation. Nothing yet: the composer is the page, the way a new one is
          a question and a box under it. -->
-    <div v-else-if="!selected" class="hero">
+    <div v-if="!selected" class="hero">
       <div class="heroinner">
         <!-- The one screen in the app that is nothing but an invitation, so
              it is the one that gets to say the app's name in full. The
@@ -872,29 +857,11 @@ function dotClass(s: Conversation): string {
           <Hand class="sm" /> needs you
         </span>
         <span class="grow" />
-        <!-- The instruments, as a cluster. The bar's own 9px gap is the space
-             between things that are about different subjects; these two are one
-             set of controls for one conversation, and they sit closer than the
-             title sits to the gauge. -->
-        <span class="acts">
-          <button
-            v-if="isLive(selected)"
-            class="icon-btn"
-            :title="isBusy(selected)
-              ? 'Stop what it is doing'
-              : 'Let this conversation go — it is between turns and still holding its repositories'"
-            @click="stop(selected.id)"
-          >
-            <CircleStop class="sm" />
-          </button>
-          <button
-            class="icon-btn"
-            title="Put this conversation away and start a new one here"
-            @click="close(selected)"
-          >
-            <X class="sm" />
-          </button>
-        </span>
+        <!-- Nothing at this end any more. All three instruments float over the
+             bar from `ContextPanel` — the ✕ and the history because the
+             invitation, which has no bar, needs them in the same corner, and
+             the stop button because it belongs between those two rather than
+             behind them. What this bar carries here is the room they need. -->
       </div>
 
       <!-- The scroller and the one thing that floats over it. Wrapped, so
@@ -1056,7 +1023,7 @@ function dotClass(s: Conversation): string {
             Promote what matters to the memory, then start fresh: the next
             conversation reads it on the way in.
           </span>
-          <button class="link" @click="state.memoryOpen = true">Memory</button>
+          <button class="link" @click="goTo('memory')">Memory</button>
           <button class="link go" @click="scope && startFresh(scope)">Start fresh</button>
         </p>
 
@@ -1065,7 +1032,7 @@ function dotClass(s: Conversation): string {
           :disabled="!canSend"
           :busy="queueing"
           :sources="sources"
-          @stop="stop(selected.id)"
+          @stop="stopConversation(selected.id)"
           :placeholder="
             queueing
               ? 'Say the next thing now — it goes in when this turn lands'
@@ -1112,19 +1079,6 @@ function dotClass(s: Conversation): string {
 .bl .link:hover { color: var(--text); }
 
 /* ── memory / history, over the conversation ─────────────────────────── */
-.over { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.ohead {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  padding: 0 12px 0 18px;
-  border-bottom: 1px solid var(--line);
-}
-.ohead .mk { color: var(--agent); }
-.ohead .ttl { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
-.obody { flex: 1; min-height: 0; overflow: hidden; }
 .obody.convos { overflow-y: auto; padding: 10px 12px 20px; display: flex; flex-direction: column; gap: 4px; }
 .none { margin: 8px 6px; color: var(--text-dim); font-size: var(--fs-xs); }
 
@@ -1226,7 +1180,25 @@ function dotClass(s: Conversation): string {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 10px 12px 10px 20px;
+  /* A stated height, not one that falls out of what happens to be in it.
+     Padding around the tallest child made the bar 49px while a conversation was
+     live — the stop button is 28 — and 41px the moment that button went away,
+     with the pair floating over it (ContextPanel) still measured from the top
+     at 10. So the ✕ sat two pixels off the bottom edge of a bar it was supposed
+     to be centred in, and only on the threads that had finished. 49 is the tall
+     case made permanent: 48 of content over the 1px rule, which centres a 28px
+     instrument at 10 whatever else the bar is carrying.
+
+     The right padding is not symmetry either: it is the room the three floating
+     instruments need — the history button, the stop and the ✕, none of which
+     live in this bar any more. They sit over it rather than inside it so that
+     the invitation, which has no bar, has them in the same corner. 114 is their
+     box exactly — 12 of margin, then 28 of ✕, 28 of stop and 44 of history a
+     pixel apart. Buttons of one set touch; the 9 that separates the cluster
+     from the title line is this bar's own gap, which falls after the last thing
+     on it because `.grow` is the item that follows. */
+  height: 49px;
+  padding: 0 114px 0 20px;
   background: var(--bg);
   border-bottom: 1px solid var(--line-soft);
 }
@@ -1295,8 +1267,6 @@ function dotClass(s: Conversation): string {
   .star { animation: none; }
 }
 .tbar .needs.chip { flex: none; height: 20px; padding: 0 8px; font-size: 10px; }
-/* Buttons of one set touch; the bar's gap is for things that are not. */
-.tbar .acts { display: flex; align-items: center; gap: 1px; margin-right: -4px; }
 
 /* The conversation's own heartbeat. `--agent` rather than the runtime green:
    this is a thing an agent is doing, and colour maps to one idea (tokens.css). */

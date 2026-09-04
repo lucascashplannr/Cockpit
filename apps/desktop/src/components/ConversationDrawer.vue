@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import type { Conversation } from '@cockpit/shared'
 import { CircleAlert, CircleStop, Hand, Plus, Sparkles, Trash2, X } from '@lucide/vue'
 import {
-  activeAgentScope, attentionOf, client, deleteConversation, engineName, guard, isBusy, isLive,
-  openThreadFor, pinThread, sessionsForScope, startFresh, state,
+  activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive,
+  openThreadFor, pinThread, sessionsForScope, startFresh, state, stopConversation,
 } from '../core/store.js'
 import type { Attention } from '../core/store.js'
 
@@ -21,8 +21,8 @@ import type { Attention } from '../core/store.js'
  *
  * It is also where a conversation is disposed of. §6's promise is that
  * clearing is free — the conversation goes, the memory stays — and until now
- * the window had no way to act on it: threads could be put away, never
- * removed, so the list only ever grew.
+ * the window had no way to act on it: a thread could be stepped away from,
+ * never removed, so the list only ever grew.
  */
 
 const scope = computed(() => activeAgentScope.value)
@@ -38,27 +38,6 @@ const ATTENTION_TEXT: Record<Attention, string> = {
   failed: 'the engine failed',
 }
 
-/**
- * Which row is asking "are you sure". Inline rather than a dialog: a dialog
- * over a drawer is two floating things deep, and the row itself is the only
- * place that can show *which* conversation is about to go.
- */
-const confirming = ref<string | null>(null)
-const busy = ref<string | null>(null)
-
-/** Walking away from the question is answering no. */
-watch(
-  () => state.historyOpen,
-  (open) => {
-    if (!open) confirming.value = null
-  },
-)
-watch(conversations, () => {
-  if (confirming.value && !conversations.value.some((c) => c.id === confirming.value)) {
-    confirming.value = null
-  }
-})
-
 function open(c: Conversation): void {
   if (scope.value) pinThread(scope.value, c.id)
   state.historyOpen = false
@@ -71,16 +50,36 @@ function fresh(): void {
 }
 
 async function stop(c: Conversation): Promise<void> {
-  await guard(() => client.call('agent.stop', { sessionId: c.id }), 'conversation stopped')
+  await stopConversation(c.id)
 }
 
-async function remove(c: Conversation): Promise<void> {
-  busy.value = c.id
-  const gone = await deleteConversation(c.id)
-  busy.value = null
-  // Only on success: a refusal ("it is still running") has to stay in front of
-  // the person who asked, on the row it is about.
-  if (gone) confirming.value = null
+/**
+ * The question, in the dialog every other irreversible act in the app is asked
+ * through.
+ *
+ * It was two lines of red inside the row, with Cancel and Remove as links at
+ * the end of a sentence. Which conversation was going was never in doubt — the
+ * row said so — but the one act in the drawer that cannot be taken back was
+ * also the only one asked in a voice no other act uses, and it re-laid the list
+ * under the cursor as it opened. The title of the conversation is quoted in the
+ * dialog instead: it is their words, and it is the thing being named.
+ */
+function ask(c: Conversation): void {
+  state.pendingConfirm = {
+    title: 'Remove this conversation?',
+    quote: c.title || 'untitled',
+    // What it costs, said before it is spent rather than after — and in one
+    // sentence, not two. The clause after the full stop is the whole point:
+    // people expect Delete to take the work with it, and here it does not.
+    body: [
+      'Its turns go with it. What the agent did to the code stays — the journal,'
+        + ' the restore points, and which lines it wrote.',
+    ],
+    verb: 'Remove',
+    done: 'conversation removed',
+    danger: true,
+    run: () => deleteConversation(c.id),
+  }
 }
 
 function ago(ts: number): string {
@@ -132,7 +131,7 @@ function dotClass(c: Conversation): string {
         v-for="c in conversations"
         :key="c.id"
         class="conv"
-        :class="{ on: selected?.id === c.id, asking: confirming === c.id }"
+        :class="{ on: selected?.id === c.id }"
       >
         <button class="pick" @click="open(c)">
           <span class="crow">
@@ -176,26 +175,11 @@ function dotClass(c: Conversation): string {
             :title="isLive(c)
               ? 'Stop it first — a conversation is not removed out from under its engine'
               : 'Remove this conversation'"
-            @click="confirming = confirming === c.id ? null : c.id"
+            @click="ask(c)"
           >
             <Trash2 class="sm" />
           </button>
         </span>
-
-        <!-- What it costs, said before it is spent rather than after. The
-             sentence is the whole point: people expect Delete to take the work
-             with it, and here it does not. -->
-        <p v-if="confirming === c.id" class="ask">
-          <span class="q">
-            Remove this conversation? Its turns go with it. What the agent did
-            to the code stays — the journal, the restore points, and which
-            lines it wrote.
-          </span>
-          <button class="link" @click="confirming = null">Cancel</button>
-          <button class="link go" :disabled="busy === c.id" @click="remove(c)">
-            {{ busy === c.id ? 'Removing…' : 'Remove' }}
-          </button>
-        </p>
       </div>
     </div>
   </section>
@@ -211,15 +195,16 @@ function dotClass(c: Conversation): string {
  * actually mattered: anywhere else you click closes it. */
 .scrim { position: absolute; inset: 0; z-index: 40; }
 
-/* Under the bar and under its own button, which is at the right end of it.
-   Anchored to the column's right edge rather than measured against the button:
-   the instruments sit hard against that edge, so the two line up on their own
-   and there is no offset to keep true as the bar's contents change. */
+/* Directly under its own button, which floats at the top right of the
+   conversation (ContextPanel). Anchored to that same right edge rather than
+   measured against the button: both sit hard against it, so the two line up on
+   their own and there is no offset to keep true when the count changes width.
+   44px is the button's own box — 10 above it, 28 of it, 6 of air. */
 .drawer {
   position: absolute;
   z-index: 41;
-  top: 6px;
-  right: 10px;
+  top: 44px;
+  right: 12px;
   width: min(400px, calc(100% - 20px));
   display: flex;
   flex-direction: column;
@@ -274,8 +259,8 @@ function dotClass(c: Conversation): string {
   color: var(--text-dim);
 }
 
-/* A row is a target and two acts. Grid rather than flex so the confirmation
-   can take the whole width underneath without the acts moving. */
+/* A row is a target and two acts: the title and its meta line take what is
+   left, the acts take what they need, and neither pushes the other. */
 .conv {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -284,7 +269,6 @@ function dotClass(c: Conversation): string {
 }
 .conv:hover { background: var(--hover); }
 .conv.on { background: var(--selected); }
-.conv.asking { background: var(--danger-soft); }
 
 .pick {
   display: flex;
@@ -317,26 +301,7 @@ function dotClass(c: Conversation): string {
 
 .acts { display: flex; align-items: center; gap: 1px; padding-right: 6px; opacity: 0; }
 .conv:hover .acts,
-.conv.asking .acts,
 .acts:focus-within { opacity: 1; }
 .acts .icon-btn.small { width: 24px; height: 24px; }
 .del:hover { color: var(--danger); background: var(--danger-soft); }
-
-/* Spans both columns: the question is about the row, not about the button. */
-.ask {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  padding: 0 9px 9px;
-  font-size: var(--fs-xs);
-  line-height: 1.45;
-  color: var(--text-muted);
-}
-.ask .q { flex: 1 1 100%; }
-.ask .link { color: var(--text-dim); font-size: var(--fs-xs); }
-.ask .link:hover { color: var(--text); }
-.ask .link.go { color: var(--danger); font-weight: 600; }
-.ask .link.go:disabled { opacity: 0.5; }
 </style>
