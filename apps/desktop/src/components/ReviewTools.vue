@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import type { Component } from 'vue'
 import type { Workspace } from '@cockpit/shared'
-import { FileCode, GitCompareArrows, ScrollText, Server, SquareTerminal, X } from '@lucide/vue'
+import { FileCode, GitCompareArrows, ScrollText, Server, SquareTerminal } from '@lucide/vue'
 import CodeTab from './tabs/CodeTab.vue'
 import DiffTab from './tabs/DiffTab.vue'
 import JournalTab from './tabs/JournalTab.vue'
@@ -15,9 +15,21 @@ import type { ReviewTool } from '../core/store.js'
  * Layer 3 — reading what came out of the run: the diff, the code around it,
  * the journal, and the terminal you check it in. Secondary by definition, and
  * closed by default: the chat gets the width until there is something to read.
+ *
+ * Open, it is either a column beside the conversation or the whole right of
+ * the window — §12's ladder, held in `state.view`. Nothing in here knows which
+ * of the two it is in; it is the same component at two widths, and the
+ * container query below is what makes the wide one worth having.
+ *
+ * The strip at the top is the tools and only the tools. It used to be a 52px
+ * header on the raised surface, matching the other two columns, because it
+ * was one — the top of the window in its own right. It is not any more: the
+ * bar that names the checkout and carries its verbs runs across both columns
+ * above this (ScopeBar), and two raised bands stacked would have read as one
+ * header drawn twice. So it is a tab strip on the column's own ground.
  */
 
-const props = defineProps<{ workspace: Workspace; closable?: boolean }>()
+const props = defineProps<{ workspace: Workspace }>()
 
 const META: Record<ReviewTool, { label: string; icon: Component }> = {
   diff: { label: 'Diff', icon: GitCompareArrows },
@@ -55,10 +67,6 @@ const tools = computed(() =>
         <span class="tl">{{ t.label }}</span>
         <span v-if="t.badge !== undefined" class="tbadge num">{{ t.badge }}</span>
       </button>
-      <span class="grow" />
-      <button v-if="closable" class="icon-btn" title="Close (Esc)" @click="state.reviewOpen = false">
-        <X class="sm" />
-      </button>
     </nav>
 
     <div class="body">
@@ -74,27 +82,21 @@ const tools = computed(() =>
 <style scoped>
 .review { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
 
-/* The same 52px the other two column headers are, on the same surface.
- *
- * It was a 36px strip on the sunken ground, so the top of the window was two
- * bands that did not agree: the workspace list's header and the conversation's
- * ran to one line, and this one stopped short of it and changed colour. They
- * are all the head of a column; they are all drawn the same. It carries the
- * window's drag region for the same reason they do — a frameless window has to
- * be movable from its top edge, and its right third is this. */
+/* A tab strip, not a header — see the note at the top. It was 52px on the
+   raised surface for as long as it was the top of the window in its own
+   right; with a bar above it that is no longer true, and a second raised band
+   read as a header drawn twice. No drag region either: the window is moved
+   from the bar, which now runs the whole way across. */
 .tools {
-  -webkit-app-region: drag;
   flex: none;
   display: flex;
   align-items: center;
   gap: 2px;
-  height: 52px;
+  height: 44px;
   padding: 0 8px 0 10px;
   border-bottom: 1px solid var(--line);
-  background: var(--panel-raised);
   min-width: 0;
 }
-.tools button { -webkit-app-region: no-drag; }
 .grow { flex: 1; }
 .tool {
   position: relative;

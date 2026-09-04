@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
   AppWindow, ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookMarked, Check, CloudDownload,
-  CornerDownLeft, FileCode,
+  Columns2, CornerDownLeft, FileCode,
   FolderOpen,
   FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, TextSearch,
@@ -12,9 +12,9 @@ import {
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  startTopic, activeProject, activeWorkspace, addRepoTo, archivedTopics, client, closeTopic, deleteTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
+  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, archivedTopics, client, closeTopic, deleteTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
-import type { TabId } from '../core/store.js'
+import type { ShellView, TabId } from '../core/store.js'
 
 /**
  * §12 — "L'objectif « 1 à 3 clics » est en réalité un objectif zéro clic :
@@ -26,6 +26,13 @@ import type { TabId } from '../core/store.js'
  *   /          files in the current workspace (git-tracked, §12)
  *   #          full-text across every repo at once (§12)
  */
+
+/** §12's ladder, said in words — the switcher says it in three glyphs. */
+const VIEW_LABELS: Record<ShellView, { label: string; hint: string }> = {
+  agent: { label: 'Agent only', hint: 'the conversation takes the window — ⌘⌥←' },
+  split: { label: 'Agent and review side by side', hint: 'the two columns' },
+  review: { label: 'Review only', hint: 'diff, code, journal, terminal across the window — ⌘⌥→' },
+}
 
 interface Item {
   id: string
@@ -218,6 +225,21 @@ const commands = computed<Item[]>(() => {
     tab('memory', 'Memory', BookMarked)
     tab('journal', 'Journal', ScrollText)
     tab('terminal', 'Terminal', SquareTerminal)
+
+    // §12 — the same three the switcher draws. A tool says *what* to show;
+    // these say how much of the window to give it, which is a different
+    // question and the palette is where every question is asked.
+    for (const v of SHELL_VIEWS) {
+      if (v === state.view) continue
+      out.push({
+        id: 'view:' + v,
+        label: VIEW_LABELS[v].label,
+        hint: VIEW_LABELS[v].hint,
+        group: 'View',
+        icon: Columns2,
+        run: act(() => setView(v)),
+      })
+    }
 
     out.push({
       id: 'ide',

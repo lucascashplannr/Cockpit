@@ -390,6 +390,39 @@ Hypothèse posée : le mobile signifiera **Expo / React Native**, pas du Swift o
 
 La liste centrale liste des **workspaces**, groupés par topic *quand* une topic existe. Un workspace nu et un groupe de trois cohabitent naturellement.
 
+### Les trois vues — comment la fenêtre se partage
+
+À droite de la liste il y a deux choses possibles : l'**Agent** et la **revue** (Diff, Code, Servers, Journal, Terminal). Trois états, dans l'ordre de ce que la revue prend de la fenêtre :
+
+| Vue | Ce qui est à l'écran | Clavier |
+|---|---|---|
+| `agent` | l'Agent seul, toute la largeur | `⌘⌥←` |
+| `split` | les deux, côte à côte, avec la poignée entre eux | — |
+| `review` | la revue seule, toute la largeur | `⌘⌥→` |
+
+C'était un booléen — « à côté » ou « nulle part » — et lire un long diff demandait de traîner la poignée d'un bout à l'autre de l'écran puis de la ramener.
+
+`⌘1..⌘n` et le compteur de fichiers modifiés ouvrent un outil **à côté** de la conversation, jamais à sa place : seuls le contrôle et les deux raccourcis retirent la conversation de l'écran.
+
+### La barre du haut — une seule, au-dessus des deux colonnes
+
+Ce qui est vrai du *checkout* — son nom, sa branche, ses compteurs, et les verbes qui agissent dessus (Start·Stop, Push, Catch up, Pull, le menu, Ouvrir dans l'IDE) — ne change pas selon ce qu'on regarde. La barre non plus : elle traverse toute la largeur à droite de la liste, au-dessus des deux colonnes, et survit aux trois vues.
+
+Elle était l'en-tête de la colonne de conversation, ce qui était juste tant que la conversation était la seule chose possible à droite. En vue `review`, la fenêtre se retrouvait sans nom, sans branche et sans Push.
+
+Trois niveaux, et un seul endroit chacun :
+
+| Niveau | Où | Quoi |
+|---|---|---|
+| le checkout | la barre, toute la largeur | identité, état, verbes git et runtime |
+| la conversation | le case d'instruments, à droite de la barre | Historique, Mémoire — cachés en vue `review`, où ils n'ouvriraient rien de visible |
+| la fenêtre | le contrôle de vue, tout à droite | les trois vues |
+| un outil | la bande d'onglets, **dans** la colonne de revue | Diff / Code / Servers / Journal / Terminal, et à terme les actions propres à l'outil ouvert |
+
+La bande d'onglets est une bande d'onglets, pas un second en-tête : 44px sur le fond de sa colonne, sans surface surélevée — deux bandeaux surélevés empilés se lisaient comme un en-tête dessiné deux fois.
+
+En `split`, la conversation a un plancher de 360px et c'est la revue qui cède : à 960px de fenêtre avec une liste large, les deux colonnes fixes dépassaient la fenêtre et la conversation était dimensionnée à zéro.
+
 ### Onglet Diff — la revue
 
 ```

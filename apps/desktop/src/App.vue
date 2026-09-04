@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ProjectRail from './components/ProjectRail.vue'
 import WorkspaceList from './components/WorkspaceList.vue'
 import ContextPanel from './components/ContextPanel.vue'
+import ScopeBar from './components/ScopeBar.vue'
+import ConflictPanel from './components/ConflictPanel.vue'
+import ConversationDrawer from './components/ConversationDrawer.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import PlanDialog from './components/PlanDialog.vue'
@@ -19,7 +22,7 @@ import TrafficLights from './components/TrafficLights.vue'
 import Splitter from './components/Splitter.vue'
 import {
   LAYOUT_LIMITS, activeWorkspace, client, state, goTo, guard, keyTargets, layout,
-  requestPlan, resetColumnWidth, saveLayout, setColumnWidth,
+  requestPlan, resetColumnWidth, saveLayout, setColumnWidth, showsAgent, showsReview, stepView,
 } from './core/store.js'
 
 /**
@@ -54,7 +57,10 @@ function onKey(e: KeyboardEvent) {
     // Layer by layer back to the conversation, which is the ground state.
     else if (state.historyOpen) state.historyOpen = false
     else if (state.memoryOpen) state.memoryOpen = false
-    else if (state.reviewOpen) state.reviewOpen = false
+    // The ground state is the conversation with the whole width, so this is
+    // one step and not two: Escape out of a diff you are done reading and the
+    // thread is there, not a narrower diff.
+    else if (state.view !== 'agent') state.view = 'agent'
     return
   }
   if (typing) return
@@ -70,6 +76,15 @@ function onKey(e: KeyboardEvent) {
       e.preventDefault()
       goTo(id)
     }
+    return
+  }
+
+  // §12 — the ladder, walked. ⌥ rather than ⇧ because ⌘⇧← is a text selection
+  // everywhere in this window, and `code` for the same AZERTY reason the
+  // digits are read that way: the arrows are named by position, not by glyph.
+  if (meta && e.altKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
+    e.preventDefault()
+    stepView(e.code === 'ArrowRight' ? 1 : -1)
     return
   }
 
@@ -107,13 +122,57 @@ function onKey(e: KeyboardEvent) {
  * to keep true than two rules that must agree.
  */
 const shellStyle = computed(() => ({
-  gridTemplateColumns:
-    `var(--rail-w) ${layout.list}px minmax(0, 1fr)` +
-    (state.reviewOpen && activeWorkspace.value ? ` ${layout.review}px` : ''),
+  gridTemplateColumns: `var(--rail-w) ${layout.list}px minmax(0, 1fr)`,
 }))
 
-onMounted(() => window.addEventListener('keydown', onKey))
-onUnmounted(() => window.removeEventListener('keydown', onKey))
+/** And the split inside it, which is the only part the ladder moves. */
+const panesStyle = computed(() => ({
+  gridTemplateColumns: `minmax(0, 1fr)` + (splitReview.value ? ` ${splitReview.value}px` : ''),
+}))
+
+const RAIL_W = 72
+/** What the conversation keeps in `split`, whatever the review asks for. */
+const AGENT_MIN = 360
+/** And what the review keeps when even that cannot be paid in full. */
+const REVIEW_FLOOR = 240
+
+/** The window's width: the clamp below is a fact about the window. */
+const winW = ref(window.innerWidth)
+const onResize = () => { winW.value = window.innerWidth }
+
+/** What is left for the review once the rail, the list and the floor are paid. */
+const room = computed(() => winW.value - RAIL_W - layout.list - AGENT_MIN)
+
+/** The same ceiling, for the divider — it must not be draggable past it. */
+const reviewMax = computed(() =>
+  Math.min(LAYOUT_LIMITS.review.max, Math.max(LAYOUT_LIMITS.review.min, room.value)),
+)
+
+/**
+ * The review column's width in the one view that has to share it — 0 when it
+ * has the window to itself, or is not on screen at all.
+ *
+ * Clamped against the window rather than read straight off the saved layout,
+ * and clamped *here* rather than in the grid because the divider has to agree
+ * with it. A `1fr` beside a fixed track loses that argument outright: the
+ * minimum window is 960 wide, the list goes to 620, and at that pair the two
+ * fixed tracks came to more than the window — the conversation was sized to
+ * zero and the review drawn off the right-hand edge. The secondary column is
+ * the one that should give way, so it is the one that does.
+ */
+const splitReview = computed(() => {
+  if (state.view !== 'split' || !activeWorkspace.value) return 0
+  return Math.max(REVIEW_FLOOR, Math.min(layout.review, room.value))
+})
+
+onMounted(() => {
+  window.addEventListener('keydown', onKey)
+  window.addEventListener('resize', onResize)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKey)
+  window.removeEventListener('resize', onResize)
+})
 </script>
 
 <template>
@@ -126,14 +185,58 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
          the top of the window and the rail simply keeps its head down. -->
     <ProjectRail />
     <WorkspaceList />
-    <ContextPanel />
-    <!-- Layer 3 as a fourth column, opened on demand. -->
-    <ReviewTools
-      v-if="state.reviewOpen && activeWorkspace"
-      :workspace="activeWorkspace"
-      closable
-      class="reviewcol"
-    />
+
+    <!-- The right of the window: one bar, then whatever the ladder says is
+         under it. The bar is outside the split on purpose — what it carries
+         (the checkout's name, its branch, Start, Push, Catch up, Open in IDE)
+         is true of the checkout, not of whichever of the two columns happens
+         to be on screen, and when it lived inside the conversation's column
+         it went off screen with it. -->
+    <div class="right">
+      <ScopeBar />
+
+      <!-- §3.7 — above both columns, for the same reason: while a rebase is
+           stopped, none of what is below is the next thing to do, and that is
+           as true of a diff as it is of a thread. Absent otherwise (§3.9). -->
+      <ConflictPanel />
+
+      <!-- §12 — the two things the right of the window can be, and the three
+           ways to divide it between them. In `split` both are here and the
+           divider is real; at either end of the ladder one of them simply is
+           not mounted, so the other gets the `1fr` and there is nothing to
+           drag. Unmounted rather than hidden: a terminal and a diff behind a
+           `display:none` are still a subscription and still a scroll position
+           pretending to be a layout. -->
+      <div class="panes" :style="panesStyle">
+        <ContextPanel v-if="showsAgent" />
+        <ReviewTools
+          v-if="showsReview"
+          :workspace="activeWorkspace!"
+          :class="{ reviewcol: state.view === 'split' }"
+        />
+
+        <!-- §6 — hung from the bar it is opened from, which is now the
+             window's. Inside this box rather than in the conversation's
+             column so that it still lands under the button that opened it
+             when the review has taken half the width — and clipped to it, so
+             a list of ways back into the thread cannot spill over the app. -->
+        <ConversationDrawer v-if="state.historyOpen && showsAgent" />
+
+        <Splitter
+          v-if="splitReview"
+          class="sp"
+          :style="{ right: `${splitReview - 3}px` }"
+          :size="splitReview"
+          :min="LAYOUT_LIMITS.review.min"
+          :max="reviewMax"
+          grows="left"
+          label="Width of the review column"
+          @resize="setColumnWidth('review', $event)"
+          @done="saveLayout"
+          @reset="resetColumnWidth('review')"
+        />
+      </div>
+    </div>
 
     <!-- The lines between the columns, over the borders they thicken. Placed
          here rather than inside each column because a splitter belongs to the
@@ -150,20 +253,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       @done="saveLayout"
       @reset="resetColumnWidth('list')"
     />
-    <Splitter
-      v-if="state.reviewOpen && activeWorkspace"
-      class="sp"
-      :style="{ right: `${layout.review - 3}px` }"
-      :size="layout.review"
-      :min="LAYOUT_LIMITS.review.min"
-      :max="LAYOUT_LIMITS.review.max"
-      grows="left"
-      label="Width of the review column"
-      @resize="setColumnWidth('review', $event)"
-      @done="saveLayout"
-      @reset="resetColumnWidth('review')"
-    />
-
     <CommandPalette v-if="state.paletteOpen" />
     <PlanDialog v-if="state.pendingPlan" />
     <ConfirmDialog v-if="state.pendingConfirm" />
@@ -191,11 +280,24 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   position: relative;
 }
 
-/* Layer 3 as a fourth column. The conversation gives up the width, not the
-   list: the list is how you got here, and it is also how a chat is opened.
-   The columns themselves come from `shellStyle` — the tokens are the defaults
-   a fresh install starts from, not the running values. */
-.reviewcol { border-left: 1px solid var(--line); background: var(--bg); }
+/* The right of the window: the bar, then the panes under it. A column rather
+   than a grid row, because the bar is as tall as its contents and the panes
+   take everything that is left. */
+.right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
+/* Where the ladder actually happens. `position: relative` for the drawer that
+   hangs from the underside of the bar, and for the divider between the two. */
+.panes {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* Layer 3 beside the conversation. The conversation gives up the width, not
+   the list: the list is how you got here, and it is also how a chat is
+   opened. The widths themselves come from `panesStyle` — the tokens are the
+   defaults a fresh install starts from, not the running values. */
 .reviewcol { border-left: 1px solid var(--line); background: var(--bg); }
 </style>

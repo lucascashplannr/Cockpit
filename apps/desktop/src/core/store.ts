@@ -61,6 +61,24 @@ export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'servers' | 'journal'
  */
 export type ReviewTool = 'diff' | 'code' | 'servers' | 'journal' | 'terminal'
 
+/**
+ * §12 — how the window is divided between the two things it can show on the
+ * right: the Agent, and the review column.
+ *
+ * Three named states rather than one boolean, because the boolean could only
+ * ever say "beside" or "not at all". Reading a long diff, or a file, wants the
+ * whole width and does not want the conversation next to it, and the only way
+ * to get that was to drag the divider across the window and drag it back.
+ *
+ * They are an ordered ladder, left to right — how much of the window the
+ * review has: none, some, all. That order is what the two keystrokes walk and
+ * what the control draws.
+ */
+export type ShellView = 'agent' | 'split' | 'review'
+
+/** The ladder, in order. The one place that says what "next" means. */
+export const SHELL_VIEWS: ShellView[] = ['agent', 'split', 'review']
+
 
 /**
  * §16 — an undo waiting to be confirmed, with what it would change.
@@ -148,8 +166,11 @@ export const state = reactive({
    * `activeTab` any more — there is what the agent is doing, and what you have
    * opened beside it.
    */
-  /** Layer 3, as a fourth column. Closed by default: the chat gets the width. */
-  reviewOpen: false,
+  /**
+   * Layer 3, as a fourth column. `agent` by default: the chat gets the width
+   * until there is something to read.
+   */
+  view: 'agent' as ShellView,
   reviewTool: 'diff' as ReviewTool,
   /** §6 — the agent's own tool, over the conversation rather than beside it. */
   memoryOpen: false,
@@ -425,7 +446,7 @@ export const keyTargets = computed<TabId[]>(() =>
  */
 export function goTo(id: TabId): void {
   if (id === 'agent') {
-    state.reviewOpen = false
+    state.view = 'agent'
     state.memoryOpen = false
     return
   }
@@ -435,8 +456,40 @@ export function goTo(id: TabId): void {
   }
   if (id === 'ticket') return
   state.reviewTool = id
-  state.reviewOpen = true
+  // Beside the conversation, never instead of it: asking for the Diff is
+  // asking to *see* the diff, and if it is already filling the window that is
+  // the view you meant to stay in. Only the control and the two keystrokes
+  // take the conversation off the screen, because only they are about the
+  // window rather than about a tool.
+  if (state.view === 'agent') state.view = 'split'
   state.memoryOpen = false
+}
+
+/** Which of the two right-hand columns is on screen, for the shell to draw. */
+export const showsAgent = computed(() => state.view !== 'review')
+export const showsReview = computed(() => state.view !== 'agent' && !!activeWorkspace.value)
+
+/**
+ * One step along the ladder — `+1` hands width to the review, `-1` to the
+ * Agent. Written as a step rather than as three `setView` calls because that
+ * is what the keys do and what the ends of the control do; it clamps rather
+ * than wrapping, so holding a key cannot cycle you past the view you wanted.
+ */
+export function stepView(by: 1 | -1): void {
+  const at = SHELL_VIEWS.indexOf(state.view)
+  const next = SHELL_VIEWS[Math.min(SHELL_VIEWS.length - 1, Math.max(0, at + by))]!
+  setView(next)
+}
+
+export function setView(view: ShellView): void {
+  // §3.9 — there is no review of nothing. With no checkout selected the
+  // review column has nothing to mount, so the ladder is one rung long.
+  if (view !== 'agent' && !activeWorkspace.value) return
+  state.view = view
+  // The drawer hangs off the conversation's own bar; taking the conversation
+  // off the screen has to take it with it, or it comes back later attached to
+  // a bar that is no longer there.
+  if (view === 'review') state.historyOpen = false
 }
 
 
@@ -487,6 +540,11 @@ export function openAgentOn(scope: AgentScope): void {
     state.activeProjectId = w.projectId
   }
   state.agentScope = scope
+  // And put the thread where it can be seen. Asking the agent something from
+  // a row while the review had the whole window used to change the scope of a
+  // conversation that was not on screen — the click did exactly what it said
+  // and nothing visible happened.
+  if (state.view === 'review') state.view = 'split'
   state.memoryOpen = false
   state.historyOpen = false
   state.paletteOpen = false
@@ -2245,7 +2303,7 @@ function reportStart(res: { servers: { name: string; ok: boolean; status: string
     toast('error', first.name + ' did not start — ' + why.slice(0, 160))
     // The rest of the reason is one click away rather than in a toast.
     state.reviewTool = 'servers'
-    state.reviewOpen = true
+    if (state.view === 'agent') state.view = 'split'
     return
   }
   if (starting.length) {
