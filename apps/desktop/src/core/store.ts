@@ -1,6 +1,6 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
-  AddRepoSource, AgentScope, AgentScopePreview, Conversation, CockpitEvent, CockpitSettings,
+  AddRepoSource, AgentScope, AgentScopePreview, Attachment, Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, EngineOptions,
   DatabasePlan, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
@@ -225,6 +225,15 @@ export const state = reactive({
    * text that a stray click can dismiss.
    */
   pendingRevert: null as PendingRevert | null,
+
+  /**
+   * The picture being looked at properly, and the ones it sits among.
+   *
+   * At app level like the dialogs, and for the same reason: it covers the
+   * window, so it cannot belong to the panel that happened to open it — a
+   * conversation switched underneath it would take the picture away with it.
+   */
+  pendingImage: null as ImageView | null,
 
   paletteOpen: false,
   /** §7 — the sheet that creates a project rather than finding one. */
@@ -1217,6 +1226,31 @@ export const agentDraft = computed<string>({
   },
 })
 
+/* ── looking at a picture properly ────────────────────────────────────────
+ *
+ * A 48-pixel tile says *that* a screenshot is attached; it does not let anyone
+ * read the error message in it. The thumbnail is an index, the viewer is where
+ * it is actually looked at.
+ */
+
+export interface ImageView {
+  /** Every image it belongs with, so ← and → mean something. */
+  items: { name: string; src: string }[]
+  at: number
+}
+
+export function viewImage(items: ImageView['items'], at: number): void {
+  if (!items.length || at < 0) return
+  state.pendingImage = { items, at }
+}
+
+/** Wraps, because three pictures in a row is a thing you flick through. */
+export function stepImage(by: number): void {
+  const v = state.pendingImage
+  if (!v || v.items.length < 2) return
+  v.at = (v.at + by + v.items.length) % v.items.length
+}
+
 /* ── what is attached to the turn being written ────────────────────────────
  *
  * A screenshot of the bug is the shortest way to describe the bug, and until
@@ -1239,6 +1273,36 @@ export interface DraftFile {
 /** What the thumbnail's `src` is. Built here so nothing has to be revoked. */
 export function dataUrl(f: DraftFile): string {
   return 'data:' + f.mediaType + ';base64,' + f.data
+}
+
+/* ── attachments already sent, fetched back for the window ─────────────────
+ *
+ * Kept here rather than inside the component that draws one, for two reasons:
+ * the same file shown in two places is fetched once, and the viewer can be
+ * handed a whole turn's pictures without every tile having to hand its own
+ * bytes upward.
+ */
+const fetched = reactive<Record<string, string>>({})
+
+/** The data URL for a sent attachment, or '' while it is not here yet. */
+export function attachmentSrc(path: string): string {
+  return fetched[path] ?? ''
+}
+
+export async function loadAttachment(file: Attachment): Promise<void> {
+  if (!file.image || fetched[file.path]) return
+  // `client.call` refuses outright while the socket is down, so this is asked
+  // again on every reconnect rather than once on mount.
+  if (state.connection !== 'connected' && state.connection !== 'outdated') return
+  try {
+    const b64 = await client.call('agent.attachment', { path: file.path })
+    // An attachment whose bytes are gone stays absent, and the tile falls back
+    // to its name: a broken image icon is worse than a filename. Quietly — a
+    // toast per thumbnail would turn one dropped socket into eight banners.
+    if (b64) fetched[file.path] = 'data:' + file.mediaType + ';base64,' + b64
+  } catch {
+    /* the next connection will ask again */
+  }
 }
 
 export const agentFiles = computed<DraftFile[]>({

@@ -1,48 +1,29 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { FileText } from '@lucide/vue'
 import type { Attachment } from '@cockpit/shared'
-import { client, state } from '../../core/store.js'
+import { attachmentSrc, loadAttachment, state } from '../../core/store.js'
 
 /**
  * One file, as it appears in a turn that has already been sent.
  *
  * The bytes come back from the core rather than off a `file://` URL: the
- * window is served over http in development, and a thumbnail that only worked
- * in a release build is one nobody would see until it was too late to notice.
- * Loaded on mount and per component, so a thread of forty turns fetches the
- * pictures of the turns that are actually on screen.
+ * window is served over http in development, and the page's CSP allows `self`
+ * and `data:` and nothing else, so a thumbnail that only worked in a release
+ * build is one nobody would see until it was too late to notice.
+ *
+ * They land in the store rather than here, so that the viewer this tile opens
+ * can be handed the whole turn's pictures without every tile passing its own
+ * bytes up through an event.
  */
 const props = defineProps<{ file: Attachment }>()
 
-const src = ref('')
+const src = computed(() => attachmentSrc(props.file.path))
 
-/**
- * Asked again whenever the socket comes back, not once on mount.
- *
- * `client.call` refuses outright while the connection is down, so a thread
- * opened during a reconnect would have loaded nothing and then sat there
- * showing filenames for the rest of the session — a picture that is present,
- * addressable and simply never drawn. Watching the connection costs one line
- * and removes the whole failure.
- *
- * Failure is quiet on purpose: it is a thumbnail. A toast per image would turn
- * one dropped socket into eight red banners over a conversation.
- */
+/** Asked again whenever the socket comes back, not once on mount. */
 watch(
   () => [state.connection, props.file.path] as const,
-  async () => {
-    if (!props.file.image || src.value) return
-    if (state.connection !== 'connected' && state.connection !== 'outdated') return
-    try {
-      const b64 = await client.call('agent.attachment', { path: props.file.path })
-      // An attachment whose bytes are gone falls back to the chip: the name is
-      // still true, and a broken image icon is worse than a filename.
-      if (b64) src.value = 'data:' + props.file.mediaType + ';base64,' + b64
-    } catch {
-      /* the next connection will ask again */
-    }
-  },
+  () => void loadAttachment(props.file),
   { immediate: true },
 )
 </script>
@@ -51,37 +32,65 @@ watch(
   <li :class="{ pic: file.image && src }" :title="file.name">
     <img v-if="file.image && src" :src="src" :alt="file.name" />
     <template v-else>
-      <FileText class="sm" />
+      <FileText class="glyph" />
       <span class="fname">{{ file.name }}</span>
     </template>
   </li>
 </template>
 
 <style scoped>
+/* One square, whatever is in it.
+   A file used to be a 26px pill beside 84px pictures, so a turn carrying both
+   read as two lists that had been pushed together — the pill floating at the
+   top of a row it did not belong to. What is attached is one kind of thing;
+   the tile is the same size for all of it, and only the contents differ. */
 li {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  height: 26px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--panel-raised);
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-}
-/* An image that loaded is shown at a size worth looking at; one that did not
-   is a chip with its name, which is the same thing a file gets. */
-li.pic {
   width: 84px;
   height: 84px;
-  padding: 0;
-  overflow: hidden;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
   border-radius: var(--radius);
+  background: var(--panel-raised);
+  color: var(--text-muted);
+  overflow: hidden;
+}
+/* An image fills its tile edge to edge; one whose bytes never arrived falls
+   back to the same treatment a file gets, which is why that is a fallback
+   rather than a broken picture. */
+li.pic {
+  padding: 0;
+  /* The tile is an index, not the picture: this says the picture is one click
+     away, on the only ones where that is true. */
+  cursor: zoom-in;
 }
 li.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lucide { flex: none; color: var(--text-dim); }
-.sm { width: 13px; height: 13px; }
+
+/* An icon, not a picture. At 26px the glyph *was* the tile and the name read
+   as a footnote to it; at this size the two share the square — the glyph says
+   "a file", the name says which one. The tile is unchanged at 84px either
+   way: this is the mark shrinking, not the card.
+
+   `--ic-lg` rather than a number: the app has three icon sizes and a fourth
+   invented for one component is how a scale stops being one. */
+.glyph { width: var(--ic-lg); height: var(--ic-lg); flex: none; color: var(--text-dim); }
+
+/* Two lines, then the ellipsis. A tile is 72px of usable width, so one line
+   would cut `.prettierrc` in half; the tooltip carries the whole name either
+   way. Centred, because the icon above it is. */
+.fname {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.3;
+  word-break: break-all;
+}
 </style>

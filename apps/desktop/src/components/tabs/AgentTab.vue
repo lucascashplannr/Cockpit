@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { AgentScopePreview, Conversation, AgentTurn, Workspace } from '@cockpit/shared'
+import type {
+  // Aliased: the component that draws one is `Attachment` too, and the file
+  // needs both in the same scope.
+  Attachment as AttachedFile,
+  AgentScopePreview, Conversation, AgentTurn, Workspace,
+} from '@cockpit/shared'
 import {
   ArrowDown, Asterisk, Clock, Gauge, Hand, Lock,
   Redo2, Undo2, X,
@@ -12,10 +17,10 @@ import Attachment from '../agent/Attachment.vue'
 import Composer from '../agent/Composer.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, agentDraft, agentFiles, client, guard, isBusy, isLive,
+  activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive,
   askRevert, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
-  transcriptOf,
+  transcriptOf, viewImage,
 } from '../../core/store.js'
 import { usePaced } from '../../core/reveal.js'
 
@@ -405,6 +410,22 @@ async function send(): Promise<void> {
     await startAgentIn(engine.value, scope.value, text, files)
   }
   busy.value = false
+}
+
+/**
+ * A thumbnail clicked, opened at a size the screenshot can be read at.
+ *
+ * Handed the whole turn's pictures rather than the one: two screenshots in a
+ * turn are nearly always the before and the after, and flicking between them
+ * is the comparison. Files that are not images, and images whose bytes have
+ * not arrived, are not in the list and do not open.
+ */
+function showImage(turn: AgentTurn, file: AttachedFile): void {
+  const pics = turn.attachments.filter((f) => f.image && attachmentSrc(f.path))
+  viewImage(
+    pics.map((f) => ({ name: f.name, src: attachmentSrc(f.path) })),
+    pics.findIndex((f) => f.id === file.id),
+  )
 }
 
 /** "Init and Init-Backend" — a list, read the way it would be said. */
@@ -926,7 +947,12 @@ function dotClass(s: Conversation): string {
                  question and the sentence is the caption, not the other way
                  round. Turns from before attachments existed carry none. -->
             <ul v-if="x.turn.attachments?.length" class="sent">
-              <Attachment v-for="a in x.turn.attachments" :key="a.id" :file="a" />
+              <Attachment
+                v-for="a in x.turn.attachments"
+                :key="a.id"
+                :file="a"
+                @click="showImage(x.turn, a)"
+              />
             </ul>
             <div v-if="x.turn.prompt" class="said selectable">{{ x.turn.prompt }}</div>
             <template v-for="r in x.rows" :key="r.id">

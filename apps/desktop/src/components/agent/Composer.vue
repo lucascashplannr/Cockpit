@@ -3,8 +3,9 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { CircleStop, FileCode, FileText, Map as MapIcon, Paperclip, X } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachFiles, client, dataUrl, detachFile, engineName, guard,
-  saveComposer, state,
+  saveComposer, state, viewImage,
 } from '../../core/store.js'
+import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
 import type { Option } from './Picker.vue'
@@ -328,6 +329,21 @@ function onDrop(ev: DragEvent): void {
   void attachFiles(files)
 }
 
+/**
+ * A thumbnail clicked, before it has been sent anywhere.
+ *
+ * The same viewer the thread uses: a screenshot is worth checking *before* the
+ * question goes in, and having to send it to find out you pasted the wrong one
+ * is the reason to look.
+ */
+function showImage(f: DraftFile): void {
+  const pics = agentFiles.value.filter((x) => x.mediaType.startsWith('image/'))
+  viewImage(
+    pics.map((x) => ({ name: x.name, src: dataUrl(x) })),
+    pics.findIndex((x) => x.id === f.id),
+  )
+}
+
 /** Rounded the way a person reads a file size, not the way a disk reports one. */
 function size(n: number): string {
   if (n < 1024) return n + ' B'
@@ -369,7 +385,12 @@ defineExpose({ focus: () => box.value?.focus() })
          the question being written, so it reads before the words rather than
          under the row of settings that shape the answer. -->
     <ul v-if="agentFiles.length" class="files">
-      <li v-for="f in agentFiles" :key="f.id" :class="{ pic: f.mediaType.startsWith('image/') }">
+      <li
+        v-for="f in agentFiles"
+        :key="f.id"
+        :class="{ pic: f.mediaType.startsWith('image/') }"
+        @click="showImage(f)"
+      >
         <!-- The picture itself, not an icon labelled with its name: the whole
              reason for pasting one is that looking is faster than reading. -->
         <img v-if="f.mediaType.startsWith('image/')" :src="dataUrl(f)" :alt="f.name" />
@@ -378,7 +399,7 @@ defineExpose({ focus: () => box.value?.focus() })
           <span class="fname">{{ f.name }}</span>
           <span class="fsize">{{ size(f.bytes) }}</span>
         </template>
-        <button class="drop" :title="'Remove ' + f.name" @click="detachFile(f.id)">
+        <button class="drop" :title="'Remove ' + f.name" @click.stop="detachFile(f.id)">
           <X class="xs" />
         </button>
       </li>
@@ -510,8 +531,15 @@ defineExpose({ focus: () => box.value?.focus() })
   align-items: center;
   gap: 6px;
   max-width: 220px;
-  height: 28px;
-  padding: 0 9px;
+  /* No fixed height: the row's items stretch to its tallest, so a file sits
+     level with the pictures beside it instead of floating at the top of a
+     line it is half the height of.
+
+     It keeps its name and its size rather than becoming a square like the
+     thread's tiles do — a 48px tile has room for about five characters, and
+     the one moment the filename actually matters is the moment before you
+     send it. */
+  padding: 7px 9px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--bg);
@@ -526,6 +554,8 @@ defineExpose({ focus: () => box.value?.focus() })
   height: 48px;
   padding: 0;
   overflow: hidden;
+  /* Only on the tiles where there is something larger to see. */
+  cursor: zoom-in;
 }
 .files li.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .files .fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
