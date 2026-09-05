@@ -2,13 +2,17 @@ import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { newId } from '@cockpit/shared'
-import type { AgentScope, Conversation, AgentTurn, TurnUsage } from '@cockpit/shared'
+import type {
+  AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, TurnUsage,
+} from '@cockpit/shared'
 import { getDb } from './db.js'
 import { append, recordTouch } from './journal.js'
 import { which } from './exec.js'
 import * as leases from './leases.js'
 import * as checkpoints from './checkpoints.js'
+import * as attachments from './attachments.js'
 
 /**
  * §7 — a session is a list of PATHS + an engine + a mode + a lease.
@@ -183,8 +187,14 @@ export interface EngineSpec {
    * morning would start from an empty context against a stale memory.
    */
   buildResumeArgs(prompt: string, engineSessionId: string, ctx: LaunchContext): string[]
-  /** Streaming engines: one turn, as the line to write on stdin. */
-  encodeTurn?(prompt: string): string
+  /**
+   * Streaming engines: one turn, as the line to write on stdin.
+   *
+   * `files` are the ones the person attached. Their paths are already in
+   * `prompt`; this is the engine's chance to put the images themselves into
+   * the message, for engines whose input format has somewhere to put them.
+   */
+  encodeTurn?(prompt: string, files?: Attachment[]): string
   /** One line of output, as the zero or more things that happened in it. */
   parse(line: string): NormalizedEvent[]
 }
@@ -276,6 +286,11 @@ function claudeCommon(ctx: LaunchContext): string[] {
     ...(ctx.model ? ['--model', ctx.model] : []),
     ...(ctx.effort ? ['--effort', ctx.effort] : []),
     ...ctx.extraDirs.flatMap((d) => ['--add-dir', d]),
+    // Where the window writes what was pasted or dropped into the box. Handed
+    // over at launch and not per turn, because there is no way to widen a
+    // running process's reach: a screenshot attached on turn nine has to be
+    // readable under the flags turn one was started with.
+    '--add-dir', attachments.attachmentsRoot(),
   ]
 }
 
@@ -287,8 +302,33 @@ const claudeEngine: EngineSpec = {
   buildResumeArgs: (_prompt, id, ctx) => [
     '-p', '--input-format', 'stream-json', ...claudeCommon(ctx), '--resume', id,
   ],
-  encodeTurn: (prompt) =>
-    JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }),
+  /**
+   * A plain string while nothing is attached, and a block array the moment
+   * something is: both are valid user content, and the string form is what
+   * every existing turn has always sent.
+   *
+   * The image goes in beside the text rather than as a path for the engine to
+   * read. A pasted screenshot is the thing being asked about, and a question
+   * whose subject arrives one tool call later — or not at all, if the tool set
+   * has been narrowed — is not the same question.
+   */
+  encodeTurn: (prompt, files) => {
+    const images = (files ?? []).filter((f) => f.image)
+    const content = images.length
+      ? [
+          { type: 'text', text: prompt },
+          ...images.map((f) => ({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: f.mediaType,
+              data: readFileSync(f.path).toString('base64'),
+            },
+          })),
+        ]
+      : prompt
+    return JSON.stringify({ type: 'user', message: { role: 'user', content } })
+  },
   parse(line) {
     const o = safeJson(line)
     if (!o) return []
@@ -486,6 +526,12 @@ export async function engines(): Promise<{ id: string; available: boolean; bin: 
   return out
 }
 
+/** A turn said before the engine was free to hear it, with what came with it. */
+interface QueuedTurn {
+  prompt: string
+  files: Attachment[]
+}
+
 interface Live {
   session: Conversation
   spec: EngineSpec
@@ -501,7 +547,7 @@ interface Live {
    * streaming engine reads one turn at a time, so they wait here and go in as
    * each turn closes.
    */
-  queue: string[]
+  queue: QueuedTurn[]
   /** A turn is in flight: the next one queues instead of being written. */
   busy: boolean
   /** What a tool was called with, kept until its result comes back. */
@@ -673,11 +719,22 @@ export function turnsOf(sessionId: string): AgentTurn[] {
     endedAt: r.ended_at === null ? null : Number(r.ended_at),
     status: String(r.status) as AgentTurn['status'],
     usage: usageOf(r),
+    attachments: attachmentsOf(r),
     restorable: withCheckpoint.has(String(r.id)),
     // The undo's own snapshot is filed under a turn id derived from this one,
     // which is what lets a turn offer the way back without a second table.
     redoable: withCheckpoint.has('redo_' + String(r.id)),
   }))
+}
+
+/** The files that went in with the turn. A row from before this is empty. */
+function attachmentsOf(r: Record<string, unknown>): Attachment[] {
+  try {
+    const v = JSON.parse(String(r.attachments ?? '[]')) as unknown
+    return Array.isArray(v) ? (v as Attachment[]) : []
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -703,7 +760,7 @@ function usageOf(r: Record<string, unknown>): TurnUsage | null {
   }
 }
 
-function openTurn(sessionId: string, prompt: string): string {
+function openTurn(sessionId: string, prompt: string, files: Attachment[] = []): string {
   const seq =
     Number(
       (
@@ -715,9 +772,9 @@ function openTurn(sessionId: string, prompt: string): string {
   const id = newId('turn_')
   getDb()
     .prepare(
-      'INSERT INTO agent_turns (id, session_id, seq, prompt, started_at, ended_at, status) VALUES (?,?,?,?,?,?,?)',
+      'INSERT INTO agent_turns (id, session_id, seq, prompt, attachments, started_at, ended_at, status) VALUES (?,?,?,?,?,?,?,?)',
     )
-    .run(id, sessionId, seq, prompt, Date.now(), null, 'running')
+    .run(id, sessionId, seq, prompt, JSON.stringify(files), Date.now(), null, 'running')
   return id
 }
 
@@ -915,6 +972,8 @@ export interface StartAgentInput {
   allow?: string[]
   /** Model, effort and plan mode, as chosen in the composer. */
   options?: EngineOptions
+  /** Screenshots and files pasted, dropped or picked into the box. */
+  attachments?: AttachmentInput[]
 }
 
 export type StartAgentResult = { sessionId: string } | { denied: true; reason: string }
@@ -932,8 +991,18 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
   const spec = ENGINES[input.engine]
   if (!spec) return { denied: true, reason: 'unknown engine: ' + input.engine }
 
+  const id = newId('agent_')
+  // Before the row exists, so a file too large to keep refuses the start
+  // rather than leaving a conversation in the list that never ran.
+  let files: Attachment[]
+  try {
+    files = attachments.saveAttachments(id, input.attachments ?? [])
+  } catch (e) {
+    return { denied: true, reason: (e as Error).message }
+  }
+
   const session: Conversation = {
-    id: newId('agent_'),
+    id,
     engine: input.engine,
     workspaceIds: input.workspaceIds,
     paths: input.paths.map((p) => resolve(p)),
@@ -948,14 +1017,24 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     resumable: false,
     prompt: input.prompt,
     scope: input.scope,
-    title: input.prompt.slice(0, 200),
+    // A screenshot pasted with nothing typed is a real question, and a
+    // conversation called '' is unfindable. The files name it instead.
+    title: input.prompt.slice(0, 200) || attachments.summarise(files),
     history: [],
     denials: [],
     queued: [],
     usage: null,
   }
 
-  return launch(session, spec, (input.preamble ?? '') + input.prompt, false, input.allow, input.options)
+  return launch(
+    session,
+    spec,
+    (input.preamble ?? '') + input.prompt,
+    false,
+    input.allow,
+    input.options,
+    files,
+  )
 }
 
 /**
@@ -969,6 +1048,7 @@ export async function resumeAgent(
   preamble = '',
   allow?: string[],
   opts?: EngineOptions,
+  incoming: AttachmentInput[] = [],
 ): Promise<StartAgentResult> {
   const prev = get(sessionId)
   if (!prev) return { denied: true, reason: 'unknown session: ' + sessionId }
@@ -986,7 +1066,7 @@ export async function resumeAgent(
   const running = live.get(sessionId)
   if (running) {
     if (running.spec.streaming && running.spec.encodeTurn) {
-      const r = await send(sessionId, prompt)
+      const r = await send(sessionId, prompt, incoming)
       return r.ok ? { sessionId } : { denied: true, reason: r.reason }
     }
     return { denied: true, reason: 'that conversation is already running' }
@@ -994,6 +1074,13 @@ export async function resumeAgent(
 
   const spec = ENGINES[prev.engine]
   if (!spec) return { denied: true, reason: 'unknown engine: ' + prev.engine }
+
+  let files: Attachment[]
+  try {
+    files = attachments.saveAttachments(sessionId, incoming)
+  } catch (e) {
+    return { denied: true, reason: (e as Error).message }
+  }
 
   // `prompt` is the turn in flight; `title` is turn 1 and never moves. Before
   // turns existed this line was the whole bug: it overwrote the only record of
@@ -1010,7 +1097,7 @@ export async function resumeAgent(
     // already been given.
     denials: [],
   }
-  return launch(session, spec, preamble + prompt, true, allow, opts)
+  return launch(session, spec, preamble + prompt, true, allow, opts, files)
 }
 
 /** How the engine is asked to run, chosen per conversation by the window. */
@@ -1027,6 +1114,7 @@ async function launch(
   resuming: boolean,
   allow?: string[],
   opts?: EngineOptions,
+  files: Attachment[] = [],
 ): Promise<StartAgentResult> {
   // §7 — the lease is what makes two overlapping agents impossible. It is taken
   // on paths, so a topic-wide session and a repo session inside it collide
@@ -1050,7 +1138,7 @@ async function launch(
   session.leaseId = lease.lease.id
   persist(session)
   // After persist: the turn references the session row (§6).
-  const turnId = openTurn(session.id, session.prompt)
+  const turnId = openTurn(session.id, session.prompt, files)
   // §16 — before the process exists, not beside it. The lease is already held
   // at this point, so nothing else can be writing into the tree being read.
   await checkpointTurn(session, turnId, session.prompt)
@@ -1066,9 +1154,13 @@ async function launch(
     effort: opts?.effort,
     plan: opts?.plan,
   }
+  // Where the attached files are, said in the prompt the engine reads and not
+  // in the one the window shows. An engine that cannot be handed an image
+  // inline still reaches every one of them through these paths.
+  const withFiles = fullPrompt + attachments.promptSuffix(files)
   const args = resuming
-    ? spec.buildResumeArgs(fullPrompt, session.engineSessionId!, ctx)
-    : spec.buildArgs(fullPrompt, ctx)
+    ? spec.buildResumeArgs(withFiles, session.engineSessionId!, ctx)
+    : spec.buildArgs(withFiles, ctx)
   const child = spawn(spec.bin, args, {
     cwd,
     env: { ...process.env },
@@ -1095,7 +1187,7 @@ async function launch(
   if (spec.streaming && spec.encodeTurn) {
     // The process serves the whole conversation, so its stdin stays open: it
     // is the channel every later turn arrives on.
-    child.stdin?.write(spec.encodeTurn(fullPrompt) + '\n')
+    child.stdin?.write(spec.encodeTurn(withFiles, files) + '\n')
   } else {
     // One-shot: the prompt was an argument. Leaving stdin open costs `claude
     // -p` a three-second wait and a warning on every launch while it hopes for
@@ -1317,7 +1409,7 @@ async function launch(
 async function flushQueue(l: Live): Promise<void> {
   if (l.busy || !l.queue.length) return
   clearIdleTimer(l)
-  const prompt = l.queue.shift()!
+  const { prompt, files } = l.queue.shift()!
   const encode = l.spec.encodeTurn
   if (!encode) return
   // Everything that decides whether another flush may start happens before the
@@ -1327,13 +1419,13 @@ async function flushQueue(l: Live): Promise<void> {
   l.session.status = 'thinking'
   l.doneTokens = 0
   l.msgTokens = 0
-  const turnId = openTurn(l.session.id, prompt)
+  const turnId = openTurn(l.session.id, prompt, files)
   persist(l.session)
   // The turn is on screen while its checkpoint is taken, rather than the
   // window sitting on the previous answer for the length of a snapshot.
   agentBus.emit('changed')
-  await checkpointTurn(l.session, turnId, prompt)
-  l.child.stdin?.write(encode(prompt) + '\n')
+  await checkpointTurn(l.session, turnId, prompt || attachments.summarise(files))
+  l.child.stdin?.write(encode(prompt + attachments.promptSuffix(files), files) + '\n')
   agentBus.emit('changed')
 }
 
@@ -1375,6 +1467,10 @@ export function remove(sessionId: string): { ok: true } | { ok: false; reason: s
     d.prepare('DELETE FROM agent_turns WHERE session_id = ?').run(sessionId)
     d.prepare('DELETE FROM agent_sessions WHERE id = ?').run(sessionId)
   })()
+  // The turns that pointed at them are gone, so nothing can reach these files
+  // any more. The journal and the checkpoints stay, as they always do — what
+  // leaves is the conversation, and a screenshot is part of what was said.
+  attachments.forgetSession(sessionId)
   agentBus.emit('changed')
   return { ok: true }
 }
@@ -1405,6 +1501,7 @@ export function stop(sessionId: string): void {
 export async function send(
   sessionId: string,
   prompt: string,
+  incoming: AttachmentInput[] = [],
 ): Promise<{ ok: true; queued: boolean } | { ok: false; reason: string }> {
   const l = live.get(sessionId)
   if (!l) return { ok: false, reason: 'no such live session — resume it instead' }
@@ -1417,22 +1514,33 @@ export async function send(
     }
   }
   const text = prompt.trim()
-  if (!text) return { ok: false, reason: 'nothing to say' }
+  // A screenshot with nothing typed is something to say. What is refused is an
+  // empty turn — no words and no files — which the engine would answer anyway.
+  if (!text && !incoming.length) return { ok: false, reason: 'nothing to say' }
+
+  let files: Attachment[]
+  try {
+    files = attachments.saveAttachments(sessionId, incoming)
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message }
+  }
 
   if (l.busy) {
-    l.queue.push(text)
+    l.queue.push({ prompt: text, files })
     agentBus.emit('changed')
     return { ok: true, queued: true }
   }
   clearIdleTimer(l)
-  l.queue.push(text)
+  l.queue.push({ prompt: text, files })
   await flushQueue(l)
   return { ok: true, queued: false }
 }
 
 /** What is waiting to be asked, for a window that has to show it. */
 export function queuedIn(sessionId: string): string[] {
-  return [...(live.get(sessionId)?.queue ?? [])]
+  return (live.get(sessionId)?.queue ?? []).map(
+    (q) => q.prompt || attachments.summarise(q.files),
+  )
 }
 
 /**
@@ -1446,7 +1554,9 @@ export function queuedIn(sessionId: string): string[] {
 export function unqueue(sessionId: string, prompt: string): { ok: boolean; reason?: string } {
   const l = live.get(sessionId)
   if (!l) return { ok: false, reason: 'no such live session' }
-  const i = l.queue.indexOf(prompt)
+  const i = l.queue.findIndex(
+    (q) => (q.prompt || attachments.summarise(q.files)) === prompt,
+  )
   if (i === -1) return { ok: false, reason: 'it has already gone in' }
   l.queue.splice(i, 1)
   agentBus.emit('changed')

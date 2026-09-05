@@ -8,10 +8,11 @@ import {
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
 import ToolCall from '../agent/ToolCall.vue'
 import ToolGroup from '../agent/ToolGroup.vue'
+import Attachment from '../agent/Attachment.vue'
 import Composer from '../agent/Composer.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, agentDraft, client, guard, isBusy, isLive,
+  activeAgentScope, agentDraft, agentFiles, client, guard, isBusy, isLive,
   askRevert, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
   transcriptOf,
@@ -367,7 +368,10 @@ const continuing = computed(() => {
  * that still refuses is a scope another session holds.
  */
 const canSend = computed(() => {
-  if (!agentDraft.value.trim() || busy.value) return false
+  // A pasted screenshot on its own is a question. What is refused is an empty
+  // turn — no words and nothing attached.
+  if (!agentDraft.value.trim() && !agentFiles.value.length) return false
+  if (busy.value) return false
   if (blocked.value.length) return false
   return continuing.value || !!scope.value
 })
@@ -386,13 +390,19 @@ const queueing = computed(() => !!selected.value && isBusy(selected.value))
 async function send(): Promise<void> {
   if (!canSend.value) return
   const text = agentDraft.value.trim()
+  const files = agentFiles.value
   busy.value = true
   if (continuing.value && selected.value) {
-    const ok = await sendTurn(selected.value.id, text)
-    if (ok) agentDraft.value = ''
+    const ok = await sendTurn(selected.value.id, text, files)
+    // Emptied together, and only on an answer: a refused turn has to leave the
+    // screenshot in the box, or the way to retry is to go and find it again.
+    if (ok) {
+      agentDraft.value = ''
+      agentFiles.value = []
+    }
   } else if (scope.value) {
     // `startAgentIn` opens the new thread on this scope; nothing to do here.
-    await startAgentIn(engine.value, scope.value, text)
+    await startAgentIn(engine.value, scope.value, text, files)
   }
   busy.value = false
 }
@@ -912,7 +922,13 @@ function dotClass(s: Conversation): string {
               </button>
             </div>
 
-            <div class="said selectable">{{ x.turn.prompt }}</div>
+            <!-- What was attached, above the words: the screenshot is the
+                 question and the sentence is the caption, not the other way
+                 round. Turns from before attachments existed carry none. -->
+            <ul v-if="x.turn.attachments?.length" class="sent">
+              <Attachment v-for="a in x.turn.attachments" :key="a.id" :file="a" />
+            </ul>
+            <div v-if="x.turn.prompt" class="said selectable">{{ x.turn.prompt }}</div>
             <template v-for="r in x.rows" :key="r.id">
               <!-- No avatar, no badge: what a person wrote is a bubble on the
                    right, so everything at the left margin is the agent by
@@ -1296,6 +1312,23 @@ function dotClass(s: Conversation): string {
 .ex + .ex { margin-top: 26px; }
 /* What was asked reads as said, not as logged: it is the only thing on the
    page a person wrote. */
+/* Beside the bubble and on its side of the column: what was attached is part
+   of what was said, so it hangs off the same margin rather than starting a
+   second conversation down the left. */
+.sent {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 0 0 6px auto;
+  padding: 0;
+  max-width: 76%;
+  list-style: none;
+}
+/* Nothing was typed with them, so the files *are* the turn and carry the gap
+   the bubble would have paid. */
+.sent:last-child { margin-bottom: 14px; }
+
 .said {
   margin: 0 0 14px auto;
   max-width: 76%;

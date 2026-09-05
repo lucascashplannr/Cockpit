@@ -2,7 +2,7 @@ import { resolve } from 'node:path'
 import { WebSocketServer, WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@cockpit/shared'
 import type {
-  AgentScope, CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse,
+  AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse,
   ProjectSettings, ServerBoardRow, ServerPush,
 } from '@cockpit/shared'
 import { DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
@@ -16,6 +16,7 @@ import * as plans from './plans.js'
 import * as memory from './memory.js'
 import * as leases from './leases.js'
 import * as agents from './agents.js'
+import * as attachments from './attachments.js'
 import * as topics from './topics/index.js'
 import * as conflict from './conflict.js'
 import * as seed from './seed.js'
@@ -508,6 +509,7 @@ const handlers: Record<string, Handler> = {
     prompt: string
     topicId?: string
     options?: agents.EngineOptions
+    attachments?: AttachmentInput[]
   }) => {
     // §7 — the scope says what this is for. A caller that only knows where it
     // is standing may still pass workspaces, and that reads as a workspace
@@ -545,11 +547,17 @@ const handlers: Record<string, Handler> = {
       // absent, the built-in one applies.
       allow: allowFor(r.workspaces[0]?.projectId),
       options: p.options,
+      attachments: p.attachments,
     })
     pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints }
   },
-  'agent.resume': async (p: { sessionId: string; prompt: string; options?: agents.EngineOptions }) => {
+  'agent.resume': async (p: {
+    sessionId: string
+    prompt: string
+    options?: agents.EngineOptions
+    attachments?: AttachmentInput[]
+  }) => {
     const prev = agents.get(p.sessionId)
     if (!prev) throw new Error('unknown session: ' + p.sessionId)
     const res = await agents.resumeAgent(
@@ -560,10 +568,12 @@ const handlers: Record<string, Handler> = {
       prev.topicId ? topics.promptPreamble(prev.topicId, prev.paths) : '',
       allowFor(registry.getWorkspace(prev.workspaceIds[0] ?? '')?.projectId),
       p.options,
+      p.attachments,
     )
     pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints: [] }
   },
+  'agent.attachment': (p: { path: string }) => attachments.readAttachment(p.path),
   'agent.list': () => agents.list(),
   'agent.stop': (p: { sessionId: string }) => {
     agents.stop(p.sessionId)
@@ -575,8 +585,12 @@ const handlers: Record<string, Handler> = {
     if (r.ok) pushAgentActivity()
     return r
   },
-  'agent.send': async (p: { sessionId: string; prompt: string }) => {
-    const r = await agents.send(p.sessionId, p.prompt)
+  'agent.send': async (p: {
+    sessionId: string
+    prompt: string
+    attachments?: AttachmentInput[]
+  }) => {
+    const r = await agents.send(p.sessionId, p.prompt, p.attachments)
     if (r.ok) pushAgentActivity()
     return r
   },

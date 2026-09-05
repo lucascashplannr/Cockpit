@@ -571,6 +571,44 @@ export interface TurnUsage {
   model: string
 }
 
+/**
+ * A file the person put into the box: a screenshot pasted out of the clipboard,
+ * a log dropped onto the composer, a mockup picked with the `+`.
+ *
+ * The window sends the bytes; the core writes them under its own home and
+ * hands back one of these. Two things are needed and neither can be dropped:
+ * the **path**, because a file on disk is the only form an agent can go back
+ * to on a later turn or after a resume, and the **name the person gave it**,
+ * because `att_1f3a-Capture.png` is not what they will call it in the next
+ * sentence.
+ */
+export interface Attachment {
+  id: string
+  /** As it was on their disk, which is how they will refer to it. */
+  name: string
+  /** `image/png`, `text/plain`, `application/pdf` — as the browser reported it. */
+  mediaType: string
+  /** Where the core wrote it. Inside a directory every session may read. */
+  path: string
+  bytes: number
+  /**
+   * Whether the model can be *shown* it rather than told where it is.
+   *
+   * True only for the four formats the API takes inline — png, jpeg, gif,
+   * webp. A HEIC screenshot is an image to a person and a file to the engine,
+   * and pretending otherwise would send bytes that come back as an error.
+   */
+  image: boolean
+}
+
+/** The same file on its way in, before the core has anywhere to put it. */
+export interface AttachmentInput {
+  name: string
+  mediaType: string
+  /** Base64, with no `data:` prefix. */
+  data: string
+}
+
 export interface AgentTurn {
   id: string
   seq: number
@@ -598,6 +636,15 @@ export interface AgentTurn {
   redoable: boolean
   /** §16 — what it cost and how full the window was. Null before it lands. */
   usage: TurnUsage | null
+  /**
+   * What was attached to this turn, so the thread still says so tomorrow.
+   *
+   * Stored on the turn rather than derived from the prompt: the paths are
+   * appended to what the engine reads, never to what the person wrote, and a
+   * bubble that silently grew three filesystem paths would be a lie about what
+   * was typed.
+   */
+  attachments: Attachment[]
 }
 
 export interface Conversation {

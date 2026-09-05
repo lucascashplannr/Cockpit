@@ -18,7 +18,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 
 const electron = join(ROOT, 'apps', 'desktop', 'node_modules', '.bin', 'electron')
-const tsx = require.resolve('tsx/dist/cli.mjs')
+// `tsx/cli`, not the file behind it: tsx 4.23 stopped exporting `./dist/*`,
+// so resolving the path made this script die on its first line with an
+// ERR_PACKAGE_PATH_NOT_EXPORTED that says nothing about the daemon.
+const tsx = require.resolve('tsx/cli')
 const entry = join(ROOT, 'packages', 'core', 'src', 'index.ts')
 
 const child = spawn(electron, [tsx, 'watch', entry], {

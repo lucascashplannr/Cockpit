@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { CircleStop, FileCode, Map as MapIcon } from '@lucide/vue'
-import { agentDraft, client, engineName, guard, saveComposer, state } from '../../core/store.js'
+import { CircleStop, FileCode, FileText, Map as MapIcon, Paperclip, X } from '@lucide/vue'
+import {
+  agentDraft, agentFiles, attachFiles, client, dataUrl, detachFile, engineName, guard,
+  saveComposer, state,
+} from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
 import type { Option } from './Picker.vue'
@@ -265,11 +268,85 @@ function togglePlan(): void {
   state.engineOptions.plan = !state.engineOptions.plan
 }
 
+/* ── what comes in with the question ──────────────────────────────────────
+ *
+ * Three doors onto one function, because a person moving a screenshot into a
+ * conversation does not think of them as three things: ⌘V, a drag from the
+ * desktop, and the clip for when the file is somewhere they have to go and
+ * find. Only the last one was ever conceivable here, and it did not exist
+ * either — so a bug that a picture explains in a second had to be typed out.
+ */
+
+const picker = ref<HTMLInputElement | null>(null)
+const over = ref(false)
+
+function pick(): void {
+  picker.value?.click()
+}
+
+function picked(ev: Event): void {
+  const el = ev.target as HTMLInputElement
+  void attachFiles(el.files ?? [])
+  // Cleared, or picking the same file twice in a row fires no event at all.
+  el.value = ''
+}
+
+/**
+ * A paste carrying files is an attachment; a paste carrying text is a paste.
+ * Only the first case is intercepted — taking the event unconditionally would
+ * break copying a path into the box, which is the older way of doing this and
+ * still a perfectly good one.
+ */
+function onPaste(ev: ClipboardEvent): void {
+  const files = [...(ev.clipboardData?.files ?? [])]
+  if (!files.length) return
+  ev.preventDefault()
+  void attachFiles(files)
+}
+
+/**
+ * `dragenter`/`dragleave` fire for every child the pointer crosses, so a
+ * counter is kept rather than a flag: hovering the textarea inside the box
+ * would otherwise clear the highlight while the file is still over it.
+ */
+let depth = 0
+function onDragEnter(ev: DragEvent): void {
+  if (!ev.dataTransfer?.types.includes('Files')) return
+  depth++
+  over.value = true
+}
+function onDragLeave(): void {
+  depth = Math.max(0, depth - 1)
+  if (!depth) over.value = false
+}
+function onDrop(ev: DragEvent): void {
+  const files = [...(ev.dataTransfer?.files ?? [])]
+  depth = 0
+  over.value = false
+  if (!files.length) return
+  ev.preventDefault()
+  void attachFiles(files)
+}
+
+/** Rounded the way a person reads a file size, not the way a disk reports one. */
+function size(n: number): string {
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB'
+  return (n / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
 defineExpose({ focus: () => box.value?.focus() })
 </script>
 
 <template>
-  <div class="composer" :class="{ big, planning: plan }">
+  <div
+    class="composer"
+    :class="{ big, planning: plan, over }"
+    @dragenter="onDragEnter"
+    @dragover.prevent
+    @dragleave="onDragLeave"
+    @drop.prevent="onDrop"
+  >
     <!-- The files, over the box: the list is what the word being typed could
          mean, so it belongs against the word rather than below the row. -->
     <ul v-if="picking" class="mentions">
@@ -288,6 +365,25 @@ defineExpose({ focus: () => box.value?.focus() })
       </li>
     </ul>
 
+    <!-- What is attached, over the box and under the mentions: it is part of
+         the question being written, so it reads before the words rather than
+         under the row of settings that shape the answer. -->
+    <ul v-if="agentFiles.length" class="files">
+      <li v-for="f in agentFiles" :key="f.id" :class="{ pic: f.mediaType.startsWith('image/') }">
+        <!-- The picture itself, not an icon labelled with its name: the whole
+             reason for pasting one is that looking is faster than reading. -->
+        <img v-if="f.mediaType.startsWith('image/')" :src="dataUrl(f)" :alt="f.name" />
+        <template v-else>
+          <FileText class="xs" />
+          <span class="fname">{{ f.name }}</span>
+          <span class="fsize">{{ size(f.bytes) }}</span>
+        </template>
+        <button class="drop" :title="'Remove ' + f.name" @click="detachFile(f.id)">
+          <X class="xs" />
+        </button>
+      </li>
+    </ul>
+
     <textarea
       ref="box"
       v-model="agentDraft"
@@ -299,9 +395,17 @@ defineExpose({ focus: () => box.value?.focus() })
       @keyup="track"
       @click="track"
       @input="track"
+      @paste="onPaste"
     />
 
     <div class="row">
+      <!-- The clip before the settings: it adds to the question, where they
+           only shape the answer. -->
+      <button class="opt clip" title="Attach images or files" @click="pick">
+        <Paperclip class="xs" />
+      </button>
+      <input ref="picker" class="hidden" type="file" multiple @change="picked" />
+
       <!-- Engine first: it decides what every control after it means. -->
       <Picker
         v-if="engineOptions.length"
@@ -356,6 +460,10 @@ defineExpose({ focus: () => box.value?.focus() })
 /* Plan mode changes what pressing Start *does*, so it is worth a whole-box
    signal rather than one lit chip among eleven. */
 .composer.planning { border-color: var(--accent); }
+/* A file is over the box and will land in it. The same whole-box signal, for
+   the same reason: it is the box that is about to change, not one control. */
+.composer.over { border-color: var(--accent); background: var(--accent-soft); }
+.composer.over * { pointer-events: none; }
 
 .prompt {
   border: none;
@@ -382,7 +490,64 @@ defineExpose({ focus: () => box.value?.focus() })
 .opt:hover:not(:disabled) { color: var(--text); background: var(--hover); }
 .opt.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 .opt.plan { display: inline-flex; align-items: center; gap: 4px; }
+.opt.clip { display: inline-flex; align-items: center; justify-content: center; padding: 0 7px; }
 .xs { width: 11px; height: 11px; }
+.hidden { display: none; }
+
+/* ── what is attached ──────────────────────────────────────────────────── */
+
+.files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0 4px;
+  list-style: none;
+}
+.files li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+/* An image is shown, so it gets no chrome of its own: the thumbnail is the
+   chip. Square, because a strip of chips at four aspect ratios reads as a
+   mess rather than as a list. */
+.files li.pic {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  overflow: hidden;
+}
+.files li.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.files .fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files .fsize { flex: none; font-size: 10px; color: var(--text-dim); }
+.files .lucide { flex: none; color: var(--text-dim); }
+
+/* Present on every chip, and only legible on the one under the cursor: a strip
+   of five ✕ is a row of buttons where a list of files should be. */
+.drop {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--panel-raised);
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity 90ms ease;
+}
+.files li.pic .drop { position: absolute; top: 3px; right: 3px; }
+.files li:hover .drop, .drop:focus-visible { opacity: 1; }
+.drop:hover { color: var(--danger); }
 
 /* An escape hatch, not a call to action: it is offered at the weight of the
    controls around it, and only turns red under the cursor — the moment it is

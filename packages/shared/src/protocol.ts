@@ -6,7 +6,7 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentScope, BranchRef, Conversation, TranscriptFile, CockpitSettings,
+  AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, TranscriptFile, CockpitSettings,
   CommitPreview, CoreStatus,
   DatabasePlan,
   DiffFile, Topic,
@@ -619,6 +619,8 @@ export interface Rpc {
       /** Scopes the session to a topic: its memory and CONTEXT.md are prepended. */
       topicId?: string
       options?: EngineOptions
+      /** Screenshots and files put into the box with the prompt. */
+      attachments?: AttachmentInput[]
     }
     result: AgentStartResult
   }
@@ -638,9 +640,26 @@ export interface Rpc {
    * is the other half of the same idea.
    */
   'agent.resume': {
-    params: { sessionId: string; prompt: string; options?: EngineOptions }
+    params: {
+      sessionId: string
+      prompt: string
+      options?: EngineOptions
+      attachments?: AttachmentInput[]
+    }
     result: AgentStartResult
   }
+  /**
+   * The bytes of one attachment, for a window that has to show it.
+   *
+   * Not a `file://` URL: in development the window is served over http and the
+   * browser refuses to reach the disk from there, so a thumbnail that worked
+   * in a release build would be a broken tile all through the writing of it.
+   * Confined to the cockpit's own attachments directory — this reads a file
+   * off a path the caller supplies, and everywhere else is not its business.
+   *
+   * Base64, and null when the path is outside that directory or gone.
+   */
+  'agent.attachment': { params: { path: string }; result: string | null }
   'agent.list': { params: void; result: Conversation[] }
   'agent.stop': { params: { sessionId: string }; result: { ok: true } }
   /**
@@ -668,7 +687,7 @@ export interface Rpc {
    * A one-shot engine has no stdin to write into and refuses with a reason.
    */
   'agent.send': {
-    params: { sessionId: string; prompt: string }
+    params: { sessionId: string; prompt: string; attachments?: AttachmentInput[] }
     result: { ok: true; queued: boolean } | { ok: false; reason: string }
   }
   /**

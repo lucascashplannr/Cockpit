@@ -298,6 +298,10 @@ function migrate(d: Db): void {
   addColumn(d, 'agent_turns', 'context_tokens', 'INTEGER NOT NULL DEFAULT 0')
   addColumn(d, 'agent_turns', 'context_window', 'INTEGER NOT NULL DEFAULT 0')
   addColumn(d, 'agent_turns', 'model', "TEXT NOT NULL DEFAULT ''")
+  // The screenshots and files that went in with the prompt, as JSON. On the
+  // turn rather than on the session: it is a property of what was asked, and a
+  // thread reread next week has to show what was attached to *which* question.
+  addColumn(d, 'agent_turns', 'attachments', "TEXT NOT NULL DEFAULT '[]'")
 
   remapVocabulary(d)
   backfillScopes(d)

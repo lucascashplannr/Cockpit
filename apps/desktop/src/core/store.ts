@@ -45,7 +45,7 @@ const host = (window as unknown as { cockpitHost?: CockpitHost }).cockpitHost
  */
 export const hostWindow = host?.platform === 'darwin' ? (host.window ?? null) : null
 const PORT = host?.corePort ?? 7717
-const URL = 'ws://127.0.0.1:' + PORT
+const CORE_URL = 'ws://127.0.0.1:' + PORT
 
 export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'servers' | 'journal' | 'terminal' | 'ticket'
 
@@ -191,6 +191,18 @@ export const state = reactive({
   drafts: {} as Record<string, string>,
 
   /**
+   * The screenshots and files put into that same box, keyed the same way.
+   *
+   * Beside `drafts` rather than inside it, so a half-written question and the
+   * mockup it is about travel together: leaving a thread and coming back has
+   * to give you both or neither.
+   *
+   * In memory only, like the drafts. The bytes go to the core when the turn is
+   * sent, and until then they are worth exactly what an unsent sentence is.
+   */
+  attachments: {} as Record<string, DraftFile[]>,
+
+  /**
    * How the engine is asked to run. Remembered here rather than on the
    * conversation: the window is where the choice is made, and passing it again
    * on resume keeps a thread on the model it was started with without adding a
@@ -254,7 +266,7 @@ export const state = reactive({
 export const termOutput = shallowRef(new Map<string, string[]>())
 const termListeners = new Map<string, ((d: string) => void)[]>()
 
-export const client = new CoreClient(URL, {
+export const client = new CoreClient(CORE_URL, {
   onState(s, detail) {
     state.connection = s
     state.connectionDetail = detail ?? ''
@@ -657,9 +669,16 @@ export async function startAgentIn(
   engine: string,
   scope: AgentScope,
   prompt: string,
+  files: DraftFile[] = [],
 ): Promise<boolean> {
   const res = await guard(() =>
-    client.call('agent.start', { engine, scope, prompt, options: engineOptions() }),
+    client.call('agent.start', {
+      engine,
+      scope,
+      prompt,
+      options: engineOptions(),
+      attachments: wire(files),
+    }),
   )
   if (!res) return false
   if ('denied' in res) {
@@ -669,7 +688,10 @@ export async function startAgentIn(
   }
   rememberPrompt(prompt)
   // The box that was typed into, named before the pin moves the active one on.
+  // Its files go with it: they are on their way to the core, and leaving them
+  // in the composer is how the next question sends them a second time.
   delete state.drafts[draftKey(scope, null)]
+  delete state.attachments[draftKey(scope, null)]
   // The thread that was just opened is the one to land in, and the panel must
   // still be on it after a detour through three other projects (§6).
   pinThread(scope, res.sessionId)
@@ -1194,6 +1216,155 @@ export const agentDraft = computed<string>({
     state.drafts[activeDraftKey.value] = v
   },
 })
+
+/* ── what is attached to the turn being written ────────────────────────────
+ *
+ * A screenshot of the bug is the shortest way to describe the bug, and until
+ * now the only way to get one into a conversation was to save it somewhere and
+ * type the path. Three of the four ways a person actually moves an image —
+ * ⌘V out of the clipboard, a drag from the desktop, the `+` — ended in
+ * nothing happening at all.
+ */
+
+/** One file held in the composer, before any of it has left the window. */
+export interface DraftFile {
+  id: string
+  name: string
+  mediaType: string
+  bytes: number
+  /** Base64, no `data:` prefix — the form the core is handed. */
+  data: string
+}
+
+/** What the thumbnail's `src` is. Built here so nothing has to be revoked. */
+export function dataUrl(f: DraftFile): string {
+  return 'data:' + f.mediaType + ';base64,' + f.data
+}
+
+export const agentFiles = computed<DraftFile[]>({
+  get: () => state.attachments[activeDraftKey.value] ?? [],
+  set: (v) => {
+    if (v.length) state.attachments[activeDraftKey.value] = v
+    else delete state.attachments[activeDraftKey.value]
+  },
+})
+
+/** The four the engine can be shown; everything else it is told where to find. */
+const INLINE_IMAGE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+
+/**
+ * What the model actually looks at.
+ *
+ * Anything wider or taller than this is resampled by the API on the way in, so
+ * sending a 5120-pixel Retina screenshot buys no detail whatsoever — it buys a
+ * four-megabyte round trip through the socket and the disk. Downscaling here
+ * is the one place it costs nothing.
+ */
+const MAX_EDGE = 1568
+/** Below this, resampling is a re-encode that can only lose. */
+const SKIP_UNDER = 512 * 1024
+
+async function shrink(file: File): Promise<Blob> {
+  if (file.size < SKIP_UNDER || file.type === 'image/gif') return file
+  const url = URL.createObjectURL(file)
+  try {
+    const img = new Image()
+    await new Promise<void>((ok, no) => {
+      img.onload = () => ok()
+      img.onerror = () => no(new Error('not readable as an image'))
+      img.src = url
+    })
+    const edge = Math.max(img.naturalWidth, img.naturalHeight)
+    if (!edge || edge <= MAX_EDGE) return file
+    const k = MAX_EDGE / edge
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.round(img.naturalWidth * k)
+    canvas.height = Math.round(img.naturalHeight * k)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return file
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+    const out = await new Promise<Blob | null>((r) =>
+      canvas.toBlob(r, file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png', 0.92),
+    )
+    // Only if it actually helped: a flat PNG screenshot can re-encode larger
+    // than it started, and sending the bigger of the two would be absurd.
+    return out && out.size < file.size ? out : file
+  } catch {
+    // Unreadable as an image is not a reason to drop the file — it goes as a
+    // file, and the engine reads it off disk.
+    return file
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+function base64(buf: ArrayBuffer): string {
+  const b = new Uint8Array(buf)
+  let s = ''
+  // In chunks: `apply` on a 24-megabyte array overflows the argument stack,
+  // which fails as a RangeError halfway through a paste rather than as
+  // anything a person could act on.
+  for (let i = 0; i < b.length; i += 0x8000) {
+    s += String.fromCharCode(...b.subarray(i, i + 0x8000))
+  }
+  return btoa(s)
+}
+
+/** One file per call, so one unreadable file cannot lose the rest of a drop. */
+async function readFile(file: File): Promise<DraftFile | null> {
+  try {
+    const type = file.type || 'application/octet-stream'
+    const blob = INLINE_IMAGE.has(type) ? await shrink(file) : file
+    return {
+      id: 'df_' + Math.random().toString(36).slice(2, 10),
+      // A pasted screenshot arrives as `image.png`, every time. Stamping it
+      // makes three of them in one conversation tellable apart.
+      name: file.name || 'pasted-' + stampName() + '.png',
+      mediaType: type,
+      bytes: blob.size,
+      data: base64(await blob.arrayBuffer()),
+    }
+  } catch {
+    return null
+  }
+}
+
+function stampName(): string {
+  const d = new Date()
+  const two = (n: number): string => String(n).padStart(2, '0')
+  return (
+    d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) +
+    '-' + two(d.getHours()) + two(d.getMinutes()) + two(d.getSeconds())
+  )
+}
+
+/** Twelve is the core's ceiling; refusing here says so before the socket does. */
+const MAX_FILES = 12
+
+/** Pasted, dropped or picked — one door, so all three behave identically. */
+export async function attachFiles(list: Iterable<File>): Promise<void> {
+  const incoming = [...list]
+  if (!incoming.length) return
+  const room = MAX_FILES - agentFiles.value.length
+  if (room <= 0) {
+    toast('error', MAX_FILES + ' files is the limit for one turn')
+    return
+  }
+  const read = await Promise.all(incoming.slice(0, room).map(readFile))
+  const kept = read.filter((f): f is DraftFile => f !== null)
+  if (kept.length < read.length) toast('error', 'some of those could not be read')
+  if (incoming.length > room) toast('info', 'only the first ' + room + ' were attached')
+  if (kept.length) agentFiles.value = [...agentFiles.value, ...kept]
+}
+
+export function detachFile(id: string): void {
+  agentFiles.value = agentFiles.value.filter((f) => f.id !== id)
+}
+
+/** What crosses the socket: the same files, without the window's own handle. */
+function wire(files: DraftFile[]): { name: string; mediaType: string; data: string }[] {
+  return files.map((f) => ({ name: f.name, mediaType: f.mediaType, data: f.data }))
+}
 
 /** Having it on screen is having read it; there is no second "mark as read". */
 export function markThreadRead(c: Conversation): void {
@@ -2459,11 +2630,17 @@ export async function restartCore(): Promise<void> {
  * conversation whose process is gone is resumed, which hands the engine back
  * its own context. The composer does not have to know which it is.
  */
-export async function sendTurn(sessionId: string, prompt: string): Promise<boolean> {
+export async function sendTurn(
+  sessionId: string,
+  prompt: string,
+  files: DraftFile[] = [],
+): Promise<boolean> {
   rememberPrompt(prompt)
   const c = state.agents.find((x) => x.id === sessionId)
   if (c && isLive(c)) {
-    const res = await guard(() => client.call('agent.send', { sessionId, prompt }))
+    const res = await guard(() =>
+      client.call('agent.send', { sessionId, prompt, attachments: wire(files) }),
+    )
     if (!res) return false
     if (!res.ok) {
       toast('error', res.reason)
@@ -2472,7 +2649,7 @@ export async function sendTurn(sessionId: string, prompt: string): Promise<boole
     if (res.queued) toast('ok', 'queued — it is still on the last turn')
     return true
   }
-  return resumeSession(sessionId, prompt)
+  return resumeSession(sessionId, prompt, files)
 }
 
 /* ── §16, the undo ──────────────────────────────────────────────────────── */
@@ -2533,9 +2710,18 @@ export function engineOptions(): EngineOptions {
   return { model: o.model, effort: o.effort, plan: o.plan }
 }
 
-export async function resumeSession(sessionId: string, prompt: string): Promise<boolean> {
+export async function resumeSession(
+  sessionId: string,
+  prompt: string,
+  files: DraftFile[] = [],
+): Promise<boolean> {
   const res = await guard(() =>
-    client.call('agent.resume', { sessionId, prompt, options: engineOptions() }),
+    client.call('agent.resume', {
+      sessionId,
+      prompt,
+      options: engineOptions(),
+      attachments: wire(files),
+    }),
   )
   if (!res) return false
   if ('denied' in res) {
