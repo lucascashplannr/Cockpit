@@ -190,11 +190,13 @@ export interface EngineSpec {
   /**
    * Streaming engines: one turn, as the line to write on stdin.
    *
-   * `files` are the ones the person attached. Their paths are already in
-   * `prompt`; this is the engine's chance to put the images themselves into
-   * the message, for engines whose input format has somewhere to put them.
+   * `segs` is the turn in the order it was written — words, a picture, more
+   * words. `prompt` is the same thing flattened, for an engine that can only
+   * take a string. An engine whose input format has somewhere to put an image
+   * should read `segs`, because that is where "this screenshot, at this point"
+   * lives; anything else can ignore it and lose nothing but the inlining.
    */
-  encodeTurn?(prompt: string, files?: Attachment[]): string
+  encodeTurn?(prompt: string, segs?: attachments.TurnSegment[]): string
   /** One line of output, as the zero or more things that happened in it. */
   parse(line: string): NormalizedEvent[]
 }
@@ -311,23 +313,44 @@ const claudeEngine: EngineSpec = {
    * read. A pasted screenshot is the thing being asked about, and a question
    * whose subject arrives one tool call later — or not at all, if the tool set
    * has been narrowed — is not the same question.
+   *
+   * And it goes in *where it was put*. The content array is ordered, so a
+   * message that says "1) … 2) … 3) …" can carry each screenshot between the
+   * point it belongs to and the next one. That ordering is the whole of what
+   * makes three pictures in one turn unambiguous — to the engine, and to the
+   * person reading the thread back afterwards.
    */
-  encodeTurn: (prompt, files) => {
-    const images = (files ?? []).filter((f) => f.image)
-    const content = images.length
-      ? [
-          { type: 'text', text: prompt },
-          ...images.map((f) => ({
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: f.mediaType,
-              data: readFileSync(f.path).toString('base64'),
-            },
-          })),
-        ]
-      : prompt
-    return JSON.stringify({ type: 'user', message: { role: 'user', content } })
+  encodeTurn: (prompt, segs) => {
+    const blocks: Record<string, unknown>[] = []
+    let run = ''
+    const flush = (): void => {
+      if (run) blocks.push({ type: 'text', text: run })
+      run = ''
+    }
+    for (const seg of segs ?? []) {
+      if (seg.kind === 'text') {
+        run += seg.text
+        continue
+      }
+      // A file that cannot be inlined was already named, with its path, in the
+      // text run around it — there is nothing to add here.
+      if (!seg.file.image) continue
+      flush()
+      blocks.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: seg.file.mediaType,
+          data: readFileSync(seg.file.path).toString('base64'),
+        },
+      })
+    }
+    flush()
+    const inlined = blocks.some((b) => b.type === 'image')
+    return JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: inlined ? blocks : prompt },
+    })
   },
   parse(line) {
     const o = safeJson(line)
@@ -1026,15 +1049,7 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     usage: null,
   }
 
-  return launch(
-    session,
-    spec,
-    (input.preamble ?? '') + input.prompt,
-    false,
-    input.allow,
-    input.options,
-    files,
-  )
+  return launch(session, spec, input.preamble ?? '', false, input.allow, input.options, files)
 }
 
 /**
@@ -1097,7 +1112,7 @@ export async function resumeAgent(
     // already been given.
     denials: [],
   }
-  return launch(session, spec, preamble + prompt, true, allow, opts, files)
+  return launch(session, spec, preamble, true, allow, opts, files)
 }
 
 /** How the engine is asked to run, chosen per conversation by the window. */
@@ -1110,7 +1125,14 @@ export interface EngineOptions {
 async function launch(
   session: Conversation,
   spec: EngineSpec,
-  fullPrompt: string,
+  /**
+   * §7's topic memory, which goes in front of the question.
+   *
+   * Kept apart from the question rather than joined to it by the caller: the
+   * anchors are resolved against what was *typed*, and a `#` inside a memory
+   * document names nothing in this turn.
+   */
+  preamble: string,
   resuming: boolean,
   allow?: string[],
   opts?: EngineOptions,
@@ -1154,10 +1176,11 @@ async function launch(
     effort: opts?.effort,
     plan: opts?.plan,
   }
-  // Where the attached files are, said in the prompt the engine reads and not
-  // in the one the window shows. An engine that cannot be handed an image
-  // inline still reaches every one of them through these paths.
-  const withFiles = fullPrompt + attachments.promptSuffix(files)
+  // The turn in the order it was written: the words, each attachment at the
+  // point its `#handle` put it, and whatever nobody pointed at at the end.
+  // Said in the prompt the engine reads and never in the one the window shows.
+  const segs = attachments.turnSegments(preamble, session.prompt, files)
+  const withFiles = attachments.flatten(segs)
   const args = resuming
     ? spec.buildResumeArgs(withFiles, session.engineSessionId!, ctx)
     : spec.buildArgs(withFiles, ctx)
@@ -1187,7 +1210,7 @@ async function launch(
   if (spec.streaming && spec.encodeTurn) {
     // The process serves the whole conversation, so its stdin stays open: it
     // is the channel every later turn arrives on.
-    child.stdin?.write(spec.encodeTurn(withFiles, files) + '\n')
+    child.stdin?.write(spec.encodeTurn(withFiles, segs) + '\n')
   } else {
     // One-shot: the prompt was an argument. Leaving stdin open costs `claude
     // -p` a three-second wait and a warning on every launch while it hopes for
@@ -1425,7 +1448,8 @@ async function flushQueue(l: Live): Promise<void> {
   // window sitting on the previous answer for the length of a snapshot.
   agentBus.emit('changed')
   await checkpointTurn(l.session, turnId, prompt || attachments.summarise(files))
-  l.child.stdin?.write(encode(prompt + attachments.promptSuffix(files), files) + '\n')
+  const segs = attachments.turnSegments('', prompt, files)
+  l.child.stdin?.write(encode(attachments.flatten(segs), segs) + '\n')
   agentBus.emit('changed')
 }
 

@@ -586,6 +586,14 @@ export interface Attachment {
   id: string
   /** As it was on their disk, which is how they will refer to it. */
   name: string
+  /**
+   * The short name it answers to inside the prompt — `#sidebar-reference`.
+   *
+   * What makes "this screenshot goes with point 2" a thing the message can
+   * say. Empty on every turn taken before anchors existed, which reads as
+   * "about the message as a whole" and is exactly right for those.
+   */
+  handle: string
   /** `image/png`, `text/plain`, `application/pdf` — as the browser reported it. */
   mediaType: string
   /** Where the core wrote it. Inside a directory every session may read. */
@@ -604,6 +612,8 @@ export interface Attachment {
 /** The same file on its way in, before the core has anywhere to put it. */
 export interface AttachmentInput {
   name: string
+  /** Chosen by the window, which is where the prompt naming it was written. */
+  handle: string
   mediaType: string
   /** Base64, with no `data:` prefix. */
   data: string

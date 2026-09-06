@@ -3,8 +3,9 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { CircleStop, FileCode, FileText, Map as MapIcon, Paperclip, X } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachFiles, client, dataUrl, detachFile, engineName, guard,
-  saveComposer, state, viewImage,
+  placedHandles, saveComposer, state, viewImage,
 } from '../../core/store.js'
+import { anchorOf, splitPrompt } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
@@ -165,24 +166,63 @@ watch(
 )
 
 /**
- * The `@token` the caret is currently inside, if any. The caret position is
- * tracked rather than read on demand: a computed that reaches into the DOM
- * does not re-evaluate when only the selection moves.
+ * The `@token` or `#token` the caret is currently inside, if any. The caret
+ * position is tracked rather than read on demand: a computed that reaches into
+ * the DOM does not re-evaluate when only the selection moves.
+ *
+ * Two sigils, one mechanism. `@` points at a file in the repository, `#` at a
+ * file attached to this very message — the same act, aimed at two places, so
+ * it would be perverse to make them two different gestures.
  */
 const caret = ref(0)
 const mention = computed(() => {
   const upto = agentDraft.value.slice(0, caret.value)
-  const m = /(^|\s)@([^\s@]*)$/.exec(upto)
+  const m = /(^|\s)([@#])([^\s@#]*)$/.exec(upto)
   if (!m) return null
-  const q = m[2] ?? ''
-  return { query: q, from: upto.length - q.length - 1 }
+  const q = m[3] ?? ''
+  return { sigil: m[2]!, query: q, from: upto.length - q.length - 1 }
 })
 
-const matches = computed(() => {
+/** One row of whichever list is open. */
+interface Row {
+  key: string
+  /** What it is called. */
+  label: string
+  /** Where it is, or what it answers to — the right-hand column. */
+  hint?: string
+  /** What goes into the prompt after the sigil. */
+  insert: string
+  /** An attached picture shows itself; everything else shows an icon. */
+  pic?: string
+}
+
+const fileRows = computed<Row[]>(() =>
+  files.value.map((f) => ({ key: f.repo + '/' + f.rel, label: f.rel, hint: multi.value ? f.repo : undefined, insert: f.insert })),
+)
+
+/**
+ * The attachments, as things the sentence can point at.
+ *
+ * Every one of them, placed or not: pointing at the same screenshot twice is a
+ * perfectly ordinary thing to write, and a list that hid what was already used
+ * would refuse it for no reason.
+ */
+const attachRows = computed<Row[]>(() =>
+  agentFiles.value.map((f) => ({
+    key: f.id,
+    label: f.name,
+    hint: anchorOf(f.handle),
+    insert: f.handle,
+    pic: f.mediaType.startsWith('image/') ? dataUrl(f) : undefined,
+  })),
+)
+
+const matches = computed<Row[]>(() => {
   const m = mention.value
   if (m === null) return []
-  if (!m.query) return files.value.slice(0, 8)
-  return fuzzyFilter(files.value, m.query, (f) => f.hay, 8).map((s) => s.item)
+  const rows = m.sigil === '#' ? attachRows.value : fileRows.value
+  if (!m.query) return rows.slice(0, 8)
+  return fuzzyFilter(rows, m.query, (r) => (r.hint ?? '') + '/' + r.label, 8).map((s) => s.item)
 })
 
 const cursor = ref(0)
@@ -195,13 +235,40 @@ function track(): void {
   caret.value = box.value?.selectionStart ?? 0
 }
 
-function accept(f: FileRef | undefined): void {
+function accept(r: Row | undefined): void {
   const m = mention.value
-  if (!m || !f) return
+  if (!m || !r) return
   const after = agentDraft.value.slice(caret.value)
-  agentDraft.value = agentDraft.value.slice(0, m.from) + '@' + f.insert + ' ' + after
+  agentDraft.value = agentDraft.value.slice(0, m.from) + m.sigil + r.insert + ' ' + after
   nextTick(() => {
-    const pos = m.from + f.insert.length + 2
+    const pos = m.from + r.insert.length + 2
+    box.value?.focus()
+    box.value?.setSelectionRange(pos, pos)
+    caret.value = pos
+  })
+}
+
+/**
+ * Text into the box where the caret was, and the caret after it.
+ *
+ * This is what makes a paste mean something: the anchor for the screenshot
+ * lands at the point in the sentence the person had reached, which is exactly
+ * the point they were talking about when they pressed ⌘V.
+ */
+function insertAtCaret(text: string): void {
+  const at = Math.min(caret.value, agentDraft.value.length)
+  const before = agentDraft.value.slice(0, at)
+  const after = agentDraft.value.slice(at)
+  // A token needs air around it or it fuses with the word before it and stops
+  // being a token at all.
+  const lead = before && !/\s$/.test(before) ? ' ' : ''
+  // Always a space after, and the caret goes beyond it: the anchor is finished
+  // the moment it is inserted, so it should look finished — a pill — rather
+  // than sitting open under the cursor waiting for a keystroke that says so.
+  const tail = /^\s/.test(after) ? '' : ' '
+  agentDraft.value = before + lead + text + tail + after
+  const pos = at + lead.length + text.length + tail.length
+  nextTick(() => {
     box.value?.focus()
     box.value?.setSelectionRange(pos, pos)
     caret.value = pos
@@ -285,9 +352,23 @@ function pick(): void {
   picker.value?.click()
 }
 
+/**
+ * Attached, and named at the caret.
+ *
+ * The anchor is inserted rather than merely offered, because the moment of
+ * attaching *is* the moment of meaning it: you paste the screenshot after the
+ * sentence it illustrates. Deleting the token is how you say "no, this one is
+ * about the whole message" — the file stays attached either way, which is the
+ * property that makes the token safe to delete.
+ */
+async function take(list: Iterable<File>): Promise<void> {
+  const added = await attachFiles(list)
+  if (added.length) insertAtCaret(added.map((f) => anchorOf(f.handle)).join(' '))
+}
+
 function picked(ev: Event): void {
   const el = ev.target as HTMLInputElement
-  void attachFiles(el.files ?? [])
+  void take(el.files ?? [])
   // Cleared, or picking the same file twice in a row fires no event at all.
   el.value = ''
 }
@@ -302,7 +383,7 @@ function onPaste(ev: ClipboardEvent): void {
   const files = [...(ev.clipboardData?.files ?? [])]
   if (!files.length) return
   ev.preventDefault()
-  void attachFiles(files)
+  void take(files)
 }
 
 /**
@@ -326,7 +407,7 @@ function onDrop(ev: DragEvent): void {
   over.value = false
   if (!files.length) return
   ev.preventDefault()
-  void attachFiles(files)
+  void take(files)
 }
 
 /**
@@ -342,6 +423,63 @@ function showImage(f: DraftFile): void {
     pics.map((x) => ({ name: x.name, src: dataUrl(x) })),
     pics.findIndex((x) => x.id === f.id),
   )
+}
+
+/* ── the anchors, drawn as what they are ──────────────────────────────────
+ *
+ * `#shot` is the truth of the prompt and it stays the truth: the value behind
+ * the box is always plain text, so history, undo, selection, ⌘Z and every
+ * other thing a textarea does for free keep working. What changes is how a
+ * *finished* anchor is drawn — as a pill rather than as syntax.
+ *
+ * Two layers: a mirror holding the same string, invisible, whose sole output
+ * is the rounded ground under a token — and the textarea itself, above it,
+ * still holding the real text and the real caret. Nothing is intercepted;
+ * clicking a pill places the caret the way clicking any word does.
+ *
+ * An anchor the caret is inside — or sitting at the end of — is *not* drawn as
+ * a pill. That is what makes it editable again without a mode: Backspace over
+ * the space after a pill lands the caret at the end of the token, the pill
+ * becomes text under the cursor, and the next keystroke edits the handle. No
+ * key had to be intercepted for that; it falls out of where the caret is.
+ */
+
+const mirror = ref<HTMLDivElement | null>(null)
+const focused = ref(false)
+
+interface Written {
+  kind: 'text' | 'anchor'
+  text: string
+  /** The caret is in it, so it is being written rather than read. */
+  live: boolean
+}
+
+const written = computed<Written[]>(() => {
+  const draft = agentDraft.value
+  const at = caret.value
+  const out: Written[] = []
+  let i = 0
+  for (const part of splitPrompt(draft, agentFiles.value.map((f) => f.handle))) {
+    const text = part.kind === 'text' ? part.text : anchorOf(part.handle)
+    const start = i
+    i += text.length
+    out.push({
+      kind: part.kind,
+      text,
+      // Being at the very start of a token is still being before it; being at
+      // its end is being in it, which is what makes Backspace open it up.
+      live: focused.value && at > start && at <= i,
+    })
+  }
+  // A trailing newline collapses in a div but not in a textarea, so the mirror
+  // would come up one line short and every pill below it would sit high.
+  out.push({ kind: 'text', text: '\u200b', live: false })
+  return out
+})
+
+/** The mirror is not scrolled by the browser; it is scrolled by its textarea. */
+function syncScroll(): void {
+  if (mirror.value && box.value) mirror.value.scrollTop = box.value.scrollTop
 }
 
 /** Rounded the way a person reads a file size, not the way a disk reports one. */
@@ -368,16 +506,19 @@ defineExpose({ focus: () => box.value?.focus() })
     <ul v-if="picking" class="mentions">
       <li
         v-for="(m, i) in matches"
-        :key="m.repo + '/' + m.rel"
+        :key="m.key"
         :class="{ on: i === cursor }"
         @mousedown.prevent="accept(m)"
       >
-        <FileCode class="xs" />
-        <span class="path">{{ m.rel }}</span>
-        <!-- Which repository it is in, only when the scope spans more than
-             one: two files of the same name in two repos are the whole reason
-             the list is worth reading rather than skimming. -->
-        <span v-if="multi" class="from">{{ m.repo }}</span>
+        <!-- An attached picture shows itself: `#` is answered by looking. -->
+        <img v-if="m.pic" class="tiny" :src="m.pic" alt="" />
+        <FileCode v-else class="xs" />
+        <span class="path">{{ m.label }}</span>
+        <!-- Which repository the file is in, or what the attachment answers
+             to. Only when there is something to say: two files of the same
+             name in two repos are the whole reason the list is worth reading
+             rather than skimming. -->
+        <span v-if="m.hint" class="from">{{ m.hint }}</span>
       </li>
     </ul>
 
@@ -388,7 +529,12 @@ defineExpose({ focus: () => box.value?.focus() })
       <li
         v-for="f in agentFiles"
         :key="f.id"
-        :class="{ pic: f.mediaType.startsWith('image/') }"
+        :class="{ pic: f.mediaType.startsWith('image/'), loose: !placedHandles.has(f.handle) }"
+        :title="
+          placedHandles.has(f.handle)
+            ? f.name + ' — placed at ' + anchorOf(f.handle) + ' in the message'
+            : f.name + ' — about the whole message. Type ' + anchorOf(f.handle) + ' to place it.'
+        "
         @click="showImage(f)"
       >
         <!-- The picture itself, not an icon labelled with its name: the whole
@@ -402,22 +548,47 @@ defineExpose({ focus: () => box.value?.focus() })
         <button class="drop" :title="'Remove ' + f.name" @click.stop="detachFile(f.id)">
           <X class="xs" />
         </button>
+        <!-- Only when there is something to say.
+             A tile is 48px across, so the handle written on it truncates to
+             `#shot…` and answers nothing — and it does not need to, because
+             the tokens are legible in the box two lines below, in the same
+             order as these. What is *not* visible anywhere else is that a file
+             belongs to no point in particular, so that is what gets a badge. -->
+        <span v-if="!placedHandles.has(f.handle)" class="tok">all</span>
       </li>
     </ul>
 
-    <textarea
-      ref="box"
-      v-model="agentDraft"
-      class="input prompt selectable"
-      :rows="big ? 3 : 2"
-      :placeholder="placeholder"
-      @keydown="onKey"
-      @keydown.meta.enter="submit"
-      @keyup="track"
-      @click="track"
-      @input="track"
-      @paste="onPaste"
-    />
+    <div class="box">
+      <!-- Under the text, and drawing nothing but the rounded ground beneath a
+           finished anchor. Invisible characters, identical to the ones above
+           them: that is the only way the pill can be exactly as wide as the
+           word it is behind, at every wrap and every window width. -->
+      <div ref="mirror" class="mirror" aria-hidden="true">
+        <span
+          v-for="(w, i) in written"
+          :key="i"
+          :class="{ pill: w.kind === 'anchor' && !w.live }"
+        >{{ w.text }}</span>
+      </div>
+
+      <textarea
+        ref="box"
+        v-model="agentDraft"
+        class="input prompt selectable"
+        :rows="big ? 3 : 2"
+        :placeholder="placeholder"
+        @keydown="onKey"
+        @keydown.meta.enter="submit"
+        @keyup="track"
+        @click="track"
+        @input="track"
+        @paste="onPaste"
+        @scroll="syncScroll"
+        @focus="focused = true"
+        @blur="focused = false"
+      />
+
+    </div>
 
     <div class="row">
       <!-- The clip before the settings: it adds to the question, where they
@@ -486,14 +657,78 @@ defineExpose({ focus: () => box.value?.focus() })
 .composer.over { border-color: var(--accent); background: var(--accent-soft); }
 .composer.over * { pointer-events: none; }
 
-.prompt {
-  border: none;
-  background: transparent;
-  padding: 4px 4px 8px;
-  resize: none;
+/* ── the box, and the two layers that share its geometry ────────────────
+ *
+ * Every rule that decides where a character lands is stated once, on both, or
+ * the pill drifts off the word it belongs to — by a pixel at first, and by a
+ * whole line the moment something wraps. */
+.box { position: relative; }
+
+.prompt,
+.mirror {
   width: 100%;
+  padding: 4px 4px 8px;
+  border: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  letter-spacing: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 4;
 }
-.prompt:focus { box-shadow: none; border-color: transparent; }
+
+.prompt {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  resize: none;
+  /* A textarea is inline-level, so it sits on a text baseline and the block
+     around it keeps 6px of descender space underneath. The mirror is sized to
+     that block, so it was six pixels taller than the thing it mirrors — which
+     never showed as a misplaced pill, but did give the two layers different
+     scroll ranges. */
+  display: block;
+}
+/* `background` too, and that is not belt-and-braces.
+   `.input:focus` in base.css sets an opaque `--panel-raised`, and it has the
+   same specificity as this component's `.prompt` — so which one wins comes
+   down to the order the two stylesheets happen to be injected in. It went one
+   way in a page that mounts this component alone and the other way in the
+   app, where the textarea painted solid white over the mirror the moment it
+   took focus. The chips were there the whole time, underneath it. */
+.prompt:focus { box-shadow: none; border-color: transparent; background: transparent; }
+
+.mirror {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  /* The characters are only here to be measured against. */
+  color: transparent;
+  user-select: none;
+}
+
+/* A finished anchor, wearing the same clothes as the chips in the row below —
+   `.opt`, the Plan and Model buttons — a shade smaller, because this one sits
+   inside a sentence rather than beside it.
+
+   The padding and the border are both cancelled by an equal negative margin.
+   That is not a trick for its own sake: this layer exists to line up
+   character-for-character with the textarea above it, so anything that moves a
+   glyph is forbidden — but width given back as margin moves nothing and still
+   paints. It is the only way a chip here can have any room at all.
+
+   Vertical padding is free: it does not enter an inline box's line height. */
+.mirror .pill {
+  padding: 1px 5px;
+  /* 5 of padding + 1 of border, handed back on each side. */
+  margin: 0 -6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
 
 .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .grow { flex: 1; }
@@ -557,6 +792,25 @@ defineExpose({ focus: () => box.value?.focus() })
   /* Only on the tiles where there is something larger to see. */
   cursor: zoom-in;
 }
+
+/* "This one is not about any particular point."
+   A note, at the weight of a note: it is the quieter of the two states and
+   the one that is true by default, so it says so without arguing. */
+.tok {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--panel-raised);
+  color: var(--text-dim);
+  font-size: 9px;
+  font-weight: 620;
+  line-height: 13px;
+  white-space: nowrap;
+}
+/* On a pill it sits in the row rather than over a picture. */
+.files li:not(.pic) .tok { position: static; flex: none; background: var(--hover); }
 .files li.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .files .fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .files .fsize { flex: none; font-size: 10px; color: var(--text-dim); }
@@ -639,4 +893,12 @@ defineExpose({ focus: () => box.value?.focus() })
 }
 .mentions .lucide { flex: none; color: var(--text-dim); }
 .mentions .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mentions .tiny {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: cover;
+  display: block;
+}
 </style>

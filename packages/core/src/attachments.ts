@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import type { Attachment, AttachmentInput } from '@cockpit/shared'
-import { newId } from '@cockpit/shared'
+import { newId, splitPrompt } from '@cockpit/shared'
 import { COCKPIT_HOME, ensureHome } from './config.js'
 
 /**
@@ -97,6 +97,7 @@ export function saveAttachments(sessionId: string, inputs: AttachmentInput[]): A
       name: a.name,
       mediaType: a.mediaType || 'application/octet-stream',
       path,
+      handle: a.handle,
       bytes: bytes.length,
       image: INLINE_IMAGE.has(a.mediaType),
     })
@@ -108,16 +109,71 @@ function mb(n: number): string {
   return Math.round(n / (1024 * 1024)) + ' MB'
 }
 
+/* ── the turn, in the order it was written ─────────────────────────────── */
+
 /**
- * What the engine is told, appended to the prompt it reads — never to the
- * prompt the window shows.
+ * One piece of the message the engine receives.
  *
- * Images are named here as well as inlined, and the line says which so the
- * engine does not spend a `Read` looking at something already in front of it.
- * Naming them at all is what makes them addressable later: after a compaction
- * the picture is gone from the context and the path is still true.
+ * A turn is a sequence of these rather than a string plus a bag of files,
+ * because that is the only shape in which "this screenshot, at this point"
+ * survives the trip. The API's content is an ordered array; so is this.
  */
-export function promptSuffix(items: Attachment[]): string {
+export type TurnSegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'file'; file: Attachment }
+
+/**
+ * The whole turn, anchors resolved, ready for an engine to encode.
+ *
+ * `preamble` goes in front and is never scanned: it is the topic memory, it
+ * was not typed into the box, and a `#` inside it names nothing.
+ */
+export function turnSegments(
+  preamble: string,
+  prompt: string,
+  files: Attachment[],
+): TurnSegment[] {
+  const byHandle = new Map(files.filter((f) => f.handle).map((f) => [f.handle, f]))
+  const out: TurnSegment[] = []
+  const text = (t: string): void => {
+    if (!t) return
+    const last = out[out.length - 1]
+    if (last?.kind === 'text') last.text += t
+    else out.push({ kind: 'text', text: t })
+  }
+
+  text(preamble)
+  const placed = new Set<string>()
+  for (const part of splitPrompt(prompt, byHandle.keys())) {
+    if (part.kind === 'text') {
+      text(part.text)
+      continue
+    }
+    const file = byHandle.get(part.handle)!
+    placed.add(file.id)
+    // Named in the text as well as placed, and always with its path: the
+    // engine needs a word for it in its own answer — "the second screenshot"
+    // is a guess, `shot-2.png` is not — and it needs somewhere to look on a
+    // later turn, when the picture is no longer in the context. The note is
+    // what stops it spending a `Read` on something already in front of it.
+    text(
+      ' [' + file.name + ' — `' + file.path + '`' +
+        (file.image ? ', shown here' : '') + '] ',
+    )
+    out.push({ kind: 'file', file })
+  }
+
+  // Everything nobody pointed at: about the message as a whole, which is what
+  // an attachment usually is. Said in those words, so a file at the bottom is
+  // not read as belonging to the last sentence above it — and then inlined
+  // like any other, because unplaced is not unimportant.
+  const rest = files.filter((f) => !placed.has(f.id))
+  text(suffixFor(rest, placed.size > 0))
+  for (const file of rest) out.push({ kind: 'file', file })
+  return out
+}
+
+function suffixFor(items: Attachment[], someWerePlaced: boolean): string {
   if (!items.length) return ''
   const lines = items.map((a) => {
     const where = '`' + a.path + '`'
@@ -125,11 +181,30 @@ export function promptSuffix(items: Attachment[]): string {
       ? '- ' + a.name + ' — ' + where + ' (shown to you in this message; no need to read it again)'
       : '- ' + a.name + ' — ' + a.mediaType + ' — ' + where
   })
+  const heading = someWerePlaced
+    ? 'Also attached, about the message as a whole rather than any one point:'
+    : 'Files attached to this message by the user:'
   return (
-    '\n\n---\nFiles attached to this message by the user:\n' +
+    '\n\n---\n' +
+    heading +
+    '\n' +
     lines.join('\n') +
     '\nThey are outside the repository, under the cockpit’s own directory, and are readable.\n'
   )
+}
+
+/**
+ * The same turn as one string, for an engine with nowhere to put a picture.
+ *
+ * `codex` takes its prompt as an argument and cannot be handed an image, so it
+ * gets the paths — in the right places. The ordering survives even where the
+ * inlining cannot.
+ */
+export function flatten(segs: TurnSegment[]): string {
+  // Files contribute nothing of their own: every one of them is already named,
+  // with its path, in the text run beside it. An engine that cannot be handed
+  // a picture still gets told exactly where each one goes.
+  return segs.map((s) => (s.kind === 'text' ? s.text : '')).join('')
 }
 
 /** What a conversation's bubble says when nothing was typed beside the files. */

@@ -1,11 +1,13 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
-  AddRepoSource, AgentScope, AgentScopePreview, Attachment, Conversation, CockpitEvent, CockpitSettings,
+  AddRepoSource, AgentScope, AgentScopePreview, Attachment, AttachmentInput,
+  Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, EngineOptions,
   DatabasePlan, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
+import { anchorsIn, handleFor, splitPrompt } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
 
@@ -1264,6 +1266,14 @@ export function stepImage(by: number): void {
 export interface DraftFile {
   id: string
   name: string
+  /**
+   * What the prompt calls it: `#sidebar-reference`.
+   *
+   * Assigned here, at the moment it is attached, because this is where the
+   * token that names it gets typed into the box. See [[anchors]] in shared for
+   * why a turn needs one at all.
+   */
+  handle: string
   mediaType: string
   bytes: number
   /** Base64, no `data:` prefix — the form the core is handed. */
@@ -1375,15 +1385,20 @@ function base64(buf: ArrayBuffer): string {
 }
 
 /** One file per call, so one unreadable file cannot lose the rest of a drop. */
-async function readFile(file: File): Promise<DraftFile | null> {
+async function readFile(file: File, taken: Set<string>): Promise<DraftFile | null> {
   try {
     const type = file.type || 'application/octet-stream'
     const blob = INLINE_IMAGE.has(type) ? await shrink(file) : file
+    // A pasted screenshot arrives as `image.png`, every time, so it is named
+    // after the handle instead — `shot`, `shot-2`, `shot-3`. Short, because
+    // the name is the word you write in the middle of a sentence.
+    const pasted = !file.name
+    const handle = handleFor(pasted ? 'shot' : file.name, taken)
+    taken.add(handle)
     return {
       id: 'df_' + Math.random().toString(36).slice(2, 10),
-      // A pasted screenshot arrives as `image.png`, every time. Stamping it
-      // makes three of them in one conversation tellable apart.
-      name: file.name || 'pasted-' + stampName() + '.png',
+      name: pasted ? handle + '.png' : file.name,
+      handle,
       mediaType: type,
       bytes: blob.size,
       data: base64(await blob.arrayBuffer()),
@@ -1393,41 +1408,72 @@ async function readFile(file: File): Promise<DraftFile | null> {
   }
 }
 
-function stampName(): string {
-  const d = new Date()
-  const two = (n: number): string => String(n).padStart(2, '0')
-  return (
-    d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) +
-    '-' + two(d.getHours()) + two(d.getMinutes()) + two(d.getSeconds())
-  )
-}
-
 /** Twelve is the core's ceiling; refusing here says so before the socket does. */
 const MAX_FILES = 12
 
-/** Pasted, dropped or picked — one door, so all three behave identically. */
-export async function attachFiles(list: Iterable<File>): Promise<void> {
+/**
+ * Pasted, dropped or picked — one door, so all three behave identically.
+ *
+ * Returns what it actually attached, because the caller is the box the caret
+ * is in and the token naming each file has to go in at that caret.
+ */
+export async function attachFiles(list: Iterable<File>): Promise<DraftFile[]> {
   const incoming = [...list]
-  if (!incoming.length) return
+  if (!incoming.length) return []
   const room = MAX_FILES - agentFiles.value.length
   if (room <= 0) {
     toast('error', MAX_FILES + ' files is the limit for one turn')
-    return
+    return []
   }
-  const read = await Promise.all(incoming.slice(0, room).map(readFile))
-  const kept = read.filter((f): f is DraftFile => f !== null)
-  if (kept.length < read.length) toast('error', 'some of those could not be read')
+  // Sequential rather than `Promise.all`: each handle has to see the ones
+  // chosen before it, or pasting two screenshots at once names them both
+  // `shot` and the prompt can only point at one of them.
+  const taken = new Set(agentFiles.value.map((f) => f.handle))
+  const kept: DraftFile[] = []
+  let failed = 0
+  for (const file of incoming.slice(0, room)) {
+    const f = await readFile(file, taken)
+    if (f) kept.push(f)
+    else failed++
+  }
+  if (failed) toast('error', 'some of those could not be read')
   if (incoming.length > room) toast('info', 'only the first ' + room + ' were attached')
   if (kept.length) agentFiles.value = [...agentFiles.value, ...kept]
+  return kept
 }
 
+/**
+ * The file goes, and so does every `#handle` that pointed at it.
+ *
+ * Leaving them would be harmless — an anchor naming nothing is just text
+ * again — but it would also be litter in a sentence the person is still
+ * writing, and they did not type it.
+ */
 export function detachFile(id: string): void {
+  const gone = agentFiles.value.find((f) => f.id === id)
   agentFiles.value = agentFiles.value.filter((f) => f.id !== id)
+  if (!gone) return
+  const draft = agentDraft.value
+  const next = splitPrompt(draft, [gone.handle])
+    .map((p) => (p.kind === 'text' ? p.text : ''))
+    .join('')
+    .replace(/[ \t]{2,}/g, ' ')
+  if (next !== draft) agentDraft.value = next
 }
 
-/** What crosses the socket: the same files, without the window's own handle. */
-function wire(files: DraftFile[]): { name: string; mediaType: string; data: string }[] {
-  return files.map((f) => ({ name: f.name, mediaType: f.mediaType, data: f.data }))
+/** Which of the attached files the prompt actually points at, by handle. */
+export const placedHandles = computed<Set<string>>(
+  () => new Set(anchorsIn(agentDraft.value, agentFiles.value.map((f) => f.handle))),
+)
+
+/** What crosses the socket: the same files, without the window's own id. */
+function wire(files: DraftFile[]): AttachmentInput[] {
+  return files.map((f) => ({
+    name: f.name,
+    handle: f.handle,
+    mediaType: f.mediaType,
+    data: f.data,
+  }))
 }
 
 /** Having it on screen is having read it; there is no second "mark as read". */

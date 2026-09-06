@@ -16,7 +16,18 @@ import { attachmentSrc, loadAttachment, state } from '../../core/store.js'
  * can be handed the whole turn's pictures without every tile passing its own
  * bytes up through an event.
  */
-const props = defineProps<{ file: Attachment }>()
+const props = defineProps<{
+  file: Attachment
+  /**
+   * What the message calls this one — `#header-today`, or `all` when nothing
+   * points at it.
+   *
+   * Absent when the turn anchors nothing at all, which is most turns: a row of
+   * tiles each labelled `all` says only that no distinction is being drawn,
+   * and says it five times.
+   */
+  label?: string
+}>()
 
 const src = computed(() => attachmentSrc(props.file.path))
 
@@ -29,12 +40,17 @@ watch(
 </script>
 
 <template>
-  <li :class="{ pic: file.image && src }" :title="file.name">
+  <li class="tile" :class="{ pic: file.image && src }" :title="file.name">
     <img v-if="file.image && src" :src="src" :alt="file.name" />
     <template v-else>
       <FileText class="glyph" />
       <span class="fname">{{ file.name }}</span>
     </template>
+    <!-- Which tag in the sentence above is this one. Five screenshots pasted
+         out of a clipboard are all called `image.png`, so the handle is the
+         only thing that tells them apart — on the tile, because that is what
+         you look at when you are matching a tag to a picture. -->
+    <span v-if="label" class="tok">{{ label }}</span>
   </li>
 </template>
 
@@ -44,7 +60,8 @@ watch(
    read as two lists that had been pushed together — the pill floating at the
    top of a row it did not belong to. What is attached is one kind of thing;
    the tile is the same size for all of it, and only the contents differ. */
-li {
+.tile {
+  position: relative;
   width: 84px;
   height: 84px;
   flex: none;
@@ -63,13 +80,32 @@ li {
 /* An image fills its tile edge to edge; one whose bytes never arrived falls
    back to the same treatment a file gets, which is why that is a fallback
    rather than a broken picture. */
-li.pic {
+.tile.pic {
   padding: 0;
   /* The tile is an index, not the picture: this says the picture is one click
      away, on the only ones where that is true. */
   cursor: zoom-in;
 }
-li.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* The same label the composer puts on a tile, for the same reason. */
+.tok {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  max-width: calc(100% - 6px);
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 620;
+  line-height: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* An icon, not a picture. At 26px the glyph *was* the tile and the name read
    as a footnote to it; at this size the two share the square — the glyph says

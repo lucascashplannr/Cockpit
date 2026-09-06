@@ -22,6 +22,7 @@ import {
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
   transcriptOf, viewImage,
 } from '../../core/store.js'
+import { anchorOf, anchorsIn, splitPrompt } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
 
 /**
@@ -420,6 +421,38 @@ async function send(): Promise<void> {
  * is the comparison. Files that are not images, and images whose bytes have
  * not arrived, are not in the list and do not open.
  */
+/**
+ * The turn as it was written: words, with each attachment sitting at the point
+ * its `#handle` put it.
+ *
+ * A turn from before anchors existed has no handles, so this returns one text
+ * part and the strip above carries its files — which is what those turns
+ * always looked like.
+ */
+function bubble(turn: AgentTurn): ({ text: string } | { file: AttachedFile })[] {
+  const files = turn.attachments ?? []
+  const byHandle = new Map(files.filter((f) => f.handle).map((f) => [f.handle, f]))
+  return splitPrompt(turn.prompt, byHandle.keys()).map((p) =>
+    p.kind === 'text' ? { text: p.text } : { file: byHandle.get(p.handle)! },
+  )
+}
+
+/**
+ * What each attachment is called in the sentence above it, or `all`.
+ *
+ * Empty when the turn anchors nothing — which is most turns, and every turn
+ * taken before anchors existed. A row of tiles each labelled `all` draws no
+ * distinction; it just says so five times.
+ */
+function labels(turn: AgentTurn): Record<string, string> {
+  const files = turn.attachments ?? []
+  const placed = new Set(anchorsIn(turn.prompt, files.map((f) => f.handle)))
+  if (!placed.size) return {}
+  return Object.fromEntries(
+    files.map((f) => [f.id, placed.has(f.handle) ? anchorOf(f.handle) : 'all']),
+  )
+}
+
 function showImage(turn: AgentTurn, file: AttachedFile): void {
   const pics = turn.attachments.filter((f) => f.image && attachmentSrc(f.path))
   viewImage(
@@ -946,15 +979,35 @@ function dotClass(s: Conversation): string {
             <!-- What was attached, above the words: the screenshot is the
                  question and the sentence is the caption, not the other way
                  round. Turns from before attachments existed carry none. -->
+            <!-- Every picture, once, above the words — and each one labelled
+                 with what the sentence calls it. The sentence itself carries
+                 the tag rather than the picture: a screenshot dropped into the
+                 middle of a paragraph makes the paragraph unreadable, and the
+                 thing being said is still a sentence. -->
             <ul v-if="x.turn.attachments?.length" class="sent">
               <Attachment
                 v-for="a in x.turn.attachments"
                 :key="a.id"
                 :file="a"
+                :label="labels(x.turn)[a.id]"
                 @click="showImage(x.turn, a)"
               />
             </ul>
-            <div v-if="x.turn.prompt" class="said selectable">{{ x.turn.prompt }}</div>
+            <div v-if="x.turn.prompt" class="said selectable">
+              <template v-for="(part, i) in bubble(x.turn)" :key="i">
+                <span v-if="'text' in part">{{ part.text }}</span>
+                <!-- The tag, as it was written, wearing the chip it wore in
+                     the box it was written in — and still the way through to
+                     the picture, which is what it replaced. -->
+                <span
+                  v-else
+                  class="tag"
+                  :class="{ pic: part.file.image }"
+                  :title="part.file.name"
+                  @click="showImage(x.turn, part.file)"
+                >{{ anchorOf(part.file.handle) }}</span>
+              </template>
+            </div>
             <template v-for="r in x.rows" :key="r.id">
               <!-- No avatar, no badge: what a person wrote is a bubble on the
                    right, so everything at the left margin is the agent by
@@ -1354,6 +1407,22 @@ function dotClass(s: Conversation): string {
 /* Nothing was typed with them, so the files *are* the turn and carry the gap
    the bubble would have paid. */
 .sent:last-child { margin-bottom: 14px; }
+
+/* The same chip the composer draws over the token, now that it can be a real
+   element rather than a background painted under a textarea. */
+.tag {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 0.92em;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+/* Only where there is something to open. */
+.tag.pic { cursor: zoom-in; }
+.tag.pic:hover { border-color: var(--line-strong); background: var(--hover); }
 
 .said {
   margin: 0 0 14px auto;
