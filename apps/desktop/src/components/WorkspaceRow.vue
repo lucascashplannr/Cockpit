@@ -7,7 +7,7 @@ import {
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import {
-  activityFor, openAgentOn, selectedTopicId, selectWorkspace, state, toggleWorkspaceRuntime,
+  activityFor, selectedTopicId, selectWorkspace, state, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
@@ -148,12 +148,6 @@ const kindLabel = computed(() =>
         <span v-if="w.git.headState !== 'attached'" class="chip danger">{{ w.git.headState }}</span>
       </template>
 
-      <span
-        v-if="w.runtime"
-        class="dot"
-        :class="w.runtime.status"
-        :title="'servers ' + w.runtime.status"
-      />
       <!-- Two different facts, never merged into one number: an agent is at
            work here, and an agent is waiting on you here. -->
       <span
@@ -179,27 +173,20 @@ const kindLabel = computed(() =>
       <!-- §8 — and the servers are started *here* too, for the same reason the
            agent is: "click play and it switches to that branch and runs it"
            should not require selecting the row first and then crossing the
-           window to a bar. Absent where there is nothing to run (§3.9). -->
+           window to a bar. Absent where there is nothing to run (§3.9).
+           The button is also the status: there used to be a dot beside it
+           saying the same thing in a second voice.
+           There is no "ask the agent" button beside it: selecting the row
+           already puts you in that row's conversation. -->
       <span
         v-if="w.runtime"
         class="go run"
-        :class="{ lit: serverRunning }"
+        :class="w.runtime.status"
         role="button"
-        :title="serverRunning ? 'Stop the servers on ' + w.name : 'Start the servers on ' + w.name"
+        :title="(serverRunning ? 'Stop the servers on ' : 'Start the servers on ') + w.name + ' — ' + w.runtime.status"
         @click.stop="startHere"
       >
         <component :is="serverRunning ? CircleStop : CirclePlay" class="sm" />
-      </span>
-
-      <!-- §7 — the agent is aimed *here* by clicking here. The scope is where
-           you clicked; there is no second menu asking what you meant. -->
-      <span
-        class="go"
-        role="button"
-        :title="'Ask the agent on ' + w.name"
-        @click.stop="openAgentOn({ kind: 'workspace', workspaceId: w.id })"
-      >
-        <Sparkles class="sm" />
       </span>
     </span>
   </button>
@@ -215,19 +202,26 @@ const kindLabel = computed(() =>
   justify-content: center;
   width: 22px;
   height: 22px;
-  margin-left: 2px;
   border-radius: var(--radius-sm);
   color: var(--text-dim);
   opacity: 0;
   transition: opacity var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
 .row:hover .go, .row.selected .go { opacity: 1; }
-.go:hover { background: var(--agent-soft); color: var(--agent); }
 
-/* A server that is up is not a hover affordance — it is the state of the row,
-   so it stays lit when the pointer leaves and keeps the runtime's own colour. */
+/* A server that is not down is not a hover affordance — it is the state of the
+   row, so the button stays visible when the pointer leaves and wears the
+   runtime's own colour. Down and unknown stay hidden like any other action. */
 .go.run:hover { background: var(--ok-soft); color: var(--ok); }
-.go.run.lit { opacity: 1; color: var(--ok); }
+.go.run.up { opacity: 1; color: var(--ok); }
+.go.run.starting {
+  opacity: 1;
+  color: var(--warn);
+  animation: pulse 1.6s var(--ease-soft) infinite;
+}
+.go.run.unhealthy { opacity: 1; color: var(--danger); }
+.go.run.unhealthy:hover { background: var(--danger-soft); }
+.go.run.starting:hover { background: var(--warn-soft); animation: none; }
 
 .row {
   display: flex;
