@@ -627,7 +627,15 @@ export interface Rpc {
    */
   'runtime.board': { params: void; result: ServerBoardRow[] }
 
-  'agent.engines': { params: void; result: { id: string; available: boolean; bin: string }[] }
+  /**
+   * Which engines are on PATH, and for `claude` which of `CLAUDE_MODELS` the
+   * installed version accepts. `models` is absent when that could not be read,
+   * which the window takes as "offer them all" rather than "offer none".
+   */
+  'agent.engines': {
+    params: void
+    result: { id: string; available: boolean; bin: string; models?: string[] }[]
+  }
   /**
    * §7 — the scope says what the session is for; the core resolves it to the
    * paths the lease is taken on. `workspaceIds` is still accepted for a caller

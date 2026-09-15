@@ -40,7 +40,7 @@ import { usePaced } from '../../core/reveal.js'
 
 const props = defineProps<{ workspace: Workspace }>()
 
-const engines = ref<{ id: string; available: boolean; bin: string }[]>([])
+const engines = ref<{ id: string; available: boolean; bin: string; models?: string[] }[]>([])
 const engine = ref('claude')
 const busy = ref(false)
 const scrollEl = ref<HTMLElement | null>(null)

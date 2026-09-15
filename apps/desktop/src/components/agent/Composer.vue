@@ -5,11 +5,12 @@ import {
   agentDraft, agentFiles, attachFiles, client, dataUrl, detachFile, engineName, guard,
   placedHandles, saveComposer, state, viewImage,
 } from '../../core/store.js'
-import { ANCHOR_PAD, anchorOf, anchorWritten, splitPrompt } from '@cockpit/shared'
+import { ANCHOR_PAD, CLAUDE_MODELS, anchorOf, anchorWritten, splitPrompt } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
 import EffortSlider from './EffortSlider.vue'
+import ModelPicker from './ModelPicker.vue'
 import type { Option } from './Picker.vue'
 
 /**
@@ -34,7 +35,7 @@ const props = defineProps<{
    * it at things.
    */
   sources?: { workspaceId: string; name: string; path: string }[]
-  engines?: { id: string; available: boolean; bin: string }[]
+  engines?: { id: string; available: boolean; bin: string; models?: string[] }[]
   engine?: string
   /** `start` opens a conversation, `continue` adds a turn, `queue` waits. */
   mode: 'start' | 'continue' | 'queue'
@@ -56,16 +57,15 @@ const box = ref<HTMLTextAreaElement | null>(null)
 /* ── model and effort ─────────────────────────────────────────────────── */
 
 /**
- * Aliases rather than pinned ids: the engine resolves `opus` to whatever the
- * current Opus is, and a hard-coded model string is a thing that silently
- * rots.
+ * Only what the installed `claude` accepts: the core reads that out of the CLI,
+ * because the one on PATH and the one bundled with the desktop app are often a
+ * few versions apart, and a model the older one has never heard of is a launch
+ * that fails. Nothing to read means everything is offered.
  */
-const MODELS = [
-  { id: 'fable', label: 'Fable', hint: 'the most capable' },
-  { id: 'opus', label: 'Opus', hint: 'the default' },
-  { id: 'sonnet', label: 'Sonnet', hint: 'faster, cheaper' },
-  { id: 'haiku', label: 'Haiku', hint: 'quick and small' },
-]
+const models = computed(() => {
+  const known = props.engines?.find((e) => e.id === 'claude')?.models
+  return known ? CLAUDE_MODELS.filter((m) => known.includes(m.id)) : CLAUDE_MODELS
+})
 const EFFORTS = [
   { id: 'low', label: 'Low', hint: 'quick passes' },
   { id: 'medium', label: 'Medium' },
@@ -687,7 +687,7 @@ defineExpose({ focus: () => box.value?.focus() })
         :model-value="engine"
         @update:model-value="emit('update:engine', $event)"
       />
-      <Picker :options="MODELS" :model-value="state.engineOptions.model" @update:model-value="pickModel" />
+      <ModelPicker :models="models" :model-value="state.engineOptions.model" @update:model-value="pickModel" />
       <EffortSlider
         :options="EFFORTS"
         :model-value="state.engineOptions.effort"

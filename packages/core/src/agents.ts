@@ -3,7 +3,8 @@ import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { newId } from '@cockpit/shared'
+import { readFile, realpath, stat } from 'node:fs/promises'
+import { CLAUDE_MODELS, newId } from '@cockpit/shared'
 import type {
   AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, TurnUsage,
 } from '@cockpit/shared'
@@ -540,13 +541,46 @@ const codexEngine: EngineSpec = {
 
 const ENGINES: Record<string, EngineSpec> = { claude: claudeEngine, codex: codexEngine }
 
-export async function engines(): Promise<{ id: string; available: boolean; bin: string }[]> {
-  const out: { id: string; available: boolean; bin: string }[] = []
+export async function engines(): Promise<
+  { id: string; available: boolean; bin: string; models?: string[] }[]
+> {
+  const out: { id: string; available: boolean; bin: string; models?: string[] }[] = []
   for (const e of Object.values(ENGINES)) {
     const path = await which(e.bin)
-    out.push({ id: e.id, available: !!path, bin: path ?? e.bin })
+    const models = path && e.id === 'claude' ? await knownModels(path) : undefined
+    out.push({ id: e.id, available: !!path, bin: path ?? e.bin, ...(models ? { models } : {}) })
   }
   return out
+}
+
+/** Keyed by the file behind the command and its mtime, so an update re-reads. */
+const modelScans = new Map<string, string[]>()
+
+/**
+ * Which of `CLAUDE_MODELS` this `claude` accepts, read out of the CLI itself.
+ *
+ * There is no command that lists them, and asking the API costs a turn per
+ * model. But every id the CLI accepts is a quoted string inside it — and one it
+ * does not know is absent — so the file answers exactly: the `claude` on PATH
+ * and the one bundled with the desktop app are routinely a few versions apart,
+ * and a newer model offered to the older one is a launch that fails.
+ */
+async function knownModels(path: string): Promise<string[] | undefined> {
+  try {
+    const file = await realpath(path)
+    const { mtimeMs, size } = await stat(file)
+    const key = file + ':' + mtimeMs + ':' + size
+    const cached = modelScans.get(key)
+    if (cached) return cached
+    const bytes = await readFile(file)
+    // Quoted, so `claude-fable-5` is not found inside `claude-fable-5-1`.
+    const known = CLAUDE_MODELS.filter((m) => bytes.includes('"' + m.id + '"')).map((m) => m.id)
+    if (!known.length) return undefined
+    modelScans.set(key, known)
+    return known
+  } catch {
+    return undefined
+  }
 }
 
 /** A turn said before the engine was free to hear it, with what came with it. */
