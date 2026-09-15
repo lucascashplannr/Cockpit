@@ -5,7 +5,7 @@ import {
   agentDraft, agentFiles, attachFiles, client, dataUrl, detachFile, engineName, guard,
   placedHandles, saveComposer, state, viewImage,
 } from '../../core/store.js'
-import { anchorOf, splitPrompt } from '@cockpit/shared'
+import { ANCHOR_PAD, anchorOf, anchorWritten, splitPrompt } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
@@ -239,9 +239,12 @@ function accept(r: Row | undefined): void {
   const m = mention.value
   if (!m || !r) return
   const after = agentDraft.value.slice(caret.value)
-  agentDraft.value = agentDraft.value.slice(0, m.from) + m.sigil + r.insert + ' ' + after
+  // An attachment token is written with the blank its chip needs around it; a
+  // `@path` is drawn as plain text and wants none.
+  const token = m.sigil === '#' ? anchorWritten(r.insert) : m.sigil + r.insert
+  agentDraft.value = agentDraft.value.slice(0, m.from) + token + ' ' + after
   nextTick(() => {
-    const pos = m.from + r.insert.length + 2
+    const pos = m.from + token.length + 1
     box.value?.focus()
     box.value?.setSelectionRange(pos, pos)
     caret.value = pos
@@ -294,7 +297,55 @@ function walkHistory(step: number, ev: KeyboardEvent): void {
   agentDraft.value = next === -1 ? '' : (state.promptHistory[next] ?? '')
 }
 
+/**
+ * Backspace at the edge of a finished chip takes the whole chip.
+ *
+ * A chip is read as one thing, so it has to delete as one thing. Character by
+ * character it came apart in a way nothing on screen explained: the first press
+ * cropped the chip's right side — that was its padding going, but the padding
+ * is invisible, so the chip simply got narrower for no reason — the next made
+ * the chip vanish and the syntax underneath appear, and only then did the
+ * letters start to go, five presses later than expected.
+ *
+ * What is left behind is the `#`, not nothing. Deleting an anchor is nearly
+ * always the beginning of naming a different attachment, and the `#` is both
+ * the thing that says so and the thing that opens the list — so the gesture
+ * ends where choosing starts. Deleting *that* is one more press.
+ *
+ * Only a chip that is actually drawn. With the caret inside the token it is
+ * open as text, and then Backspace is Backspace: what you see is what goes.
+ */
+function eatAnchor(ev: KeyboardEvent): boolean {
+  const el = box.value
+  if (!el || el.selectionStart !== el.selectionEnd) return false
+  const at = el.selectionStart
+  const draft = agentDraft.value
+  let i = 0
+  for (const part of splitPrompt(draft, agentFiles.value.map((f) => f.handle))) {
+    const start = i
+    const end = start + (part.kind === 'text' ? part.text.length : anchorOf(part.handle).length)
+    i = end
+    if (part.kind !== 'anchor') continue
+    // Inside it, or at the end of it: it is being written, not read.
+    if (at > start && at <= end) return false
+    // Past its right edge, with nothing in between but the chip's own room.
+    if (at <= end || at > end + ANCHOR_PAD.length) continue
+    if (/[^\u00a0]/.test(draft.slice(end, at))) continue
+    const lead = /\u00a0*$/.exec(draft.slice(0, start))![0].length
+    const from = start - Math.min(lead, ANCHOR_PAD.length)
+    ev.preventDefault()
+    agentDraft.value = draft.slice(0, from) + '#' + draft.slice(at)
+    nextTick(() => {
+      el.setSelectionRange(from + 1, from + 1)
+      caret.value = from + 1
+    })
+    return true
+  }
+  return false
+}
+
 function onKey(ev: KeyboardEvent): void {
+  if (ev.key === 'Backspace' && !ev.metaKey && !ev.altKey && eatAnchor(ev)) return
   if (picking.value) {
     if (ev.key === 'ArrowDown') {
       ev.preventDefault()
@@ -363,7 +414,7 @@ function pick(): void {
  */
 async function take(list: Iterable<File>): Promise<void> {
   const added = await attachFiles(list)
-  if (added.length) insertAtCaret(added.map((f) => anchorOf(f.handle)).join(' '))
+  if (added.length) insertAtCaret(added.map((f) => anchorWritten(f.handle)).join(' '))
 }
 
 function picked(ev: Event): void {
@@ -460,9 +511,14 @@ const written = computed<Written[]>(() => {
   const out: Written[] = []
   let i = 0
   for (const part of splitPrompt(draft, agentFiles.value.map((f) => f.handle))) {
-    const text = part.kind === 'text' ? part.text : anchorOf(part.handle)
     const start = i
-    i += text.length
+    // Cut from the draft rather than written out from the handle: a token is
+    // as long as its handle either way, but it may be spelled with either
+    // dash, and this layer has to hold the characters the box above it holds —
+    // not the ones that mean the same thing.
+    const text =
+      part.kind === 'text' ? part.text : draft.slice(start, start + anchorOf(part.handle).length)
+    i = start + text.length
     out.push({
       kind: part.kind,
       text,
@@ -470,6 +526,29 @@ const written = computed<Written[]>(() => {
       // its end is being in it, which is what makes Backspace open it up.
       live: focused.value && at > start && at <= i,
     })
+  }
+  // The chip is drawn over the blank beside the token as well as over the
+  // token itself. That blank is real text — `ANCHOR_PAD`, written in when the
+  // anchor was — so it is already in both layers and already accounted for at
+  // every wrap: taking it into the chip's span moves no glyph and costs no
+  // alignment, and it is the only side padding a chip on this layer can have.
+  for (let k = 0; k < out.length; k++) {
+    const w = out[k]!
+    if (w.kind !== 'anchor' || w.live) continue
+    const before = out[k - 1]
+    const after = out[k + 1]
+    if (before?.kind === 'text') {
+      const room = /\u00a0*$/.exec(before.text)![0].length
+      const n = Math.min(room, ANCHOR_PAD.length)
+      before.text = before.text.slice(0, before.text.length - n)
+      w.text = '\u00a0'.repeat(n) + w.text
+    }
+    if (after?.kind === 'text') {
+      const room = /^\u00a0*/.exec(after.text)![0].length
+      const n = Math.min(room, ANCHOR_PAD.length)
+      after.text = after.text.slice(n)
+      w.text = w.text + '\u00a0'.repeat(n)
+    }
   }
   // A trailing newline collapses in a div but not in a textarea, so the mirror
   // would come up one line short and every pill below it would sit high.
@@ -671,7 +750,14 @@ defineExpose({ focus: () => box.value?.focus() })
   border: none;
   font: inherit;
   font-size: var(--fs-sm);
-  line-height: 1.55;
+  /* Looser than the 1.55 everything else uses, and the chips are the reason.
+     A chip is its glyphs plus its vertical padding, and that padding does not
+     enter the line box — so at 1.55 a chip stands 2.85px proud of its line and
+     two of them on consecutive lines run into each other. This is the room
+     that lets the padding stand without them touching. On the pair, like
+     every other rule here: a line-height the two layers disagreed about would
+     put every line after the first in a different place in each. */
+  line-height: 1.85;
   letter-spacing: inherit;
   white-space: pre-wrap;
   overflow-wrap: break-word;
@@ -714,17 +800,30 @@ defineExpose({ focus: () => box.value?.focus() })
    `.opt`, the Plan and Model buttons — a shade smaller, because this one sits
    inside a sentence rather than beside it.
 
-   The padding and the border are both cancelled by an equal negative margin.
-   That is not a trick for its own sake: this layer exists to line up
+   There is no side padding here, and there cannot be: this layer lines up
    character-for-character with the textarea above it, so anything that moves a
-   glyph is forbidden — but width given back as margin moves nothing and still
-   paints. It is the only way a chip here can have any room at all.
+   glyph is forbidden. Padding was tried as width handed straight back in
+   negative margin — it moves nothing and still paints — but what it paints
+   over is the single space beside the token, 3.26px of it, and five pixels of
+   padding overran that by 2.7px a side and welded the chip to the words.
 
-   Vertical padding is free: it does not enter an inline box's line height. */
+   (Widening every space with `word-spacing` would afford it. Tried and taken
+   out again: it loosens the gaps in ordinary prose too, and a sentence that
+   reads double-spaced is a worse price than a snug chip.)
+
+   So the room is written into the prompt instead — `ANCHOR_PAD`, two
+   non-breaking spaces a side, put there with the anchor and taken into this
+   span by `written`. Real characters, identical in both layers, so the chip
+   gets 6.5px of side padding for nothing and still keeps the ordinary space
+   outside it as the gap to the next word.
+
+   Height is the other half, and it is paid for in `line-height` above rather
+   than here — see that rule. */
 .mirror .pill {
-  padding: 1px 5px;
-  /* 5 of padding + 1 of border, handed back on each side. */
-  margin: 0 -6px;
+  padding: 3px 0;
+  /* The border, and only the border, handed back — it paints over the plain
+     space outside the chip, which has 3.26px to spare. */
+  margin: 0 -1px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--bg);

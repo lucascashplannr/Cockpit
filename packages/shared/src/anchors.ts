@@ -24,12 +24,51 @@
  */
 
 /** The shape a handle takes: lowercase, dash-separated, starting on a letter
- *  or digit. Narrow on purpose — `#` is a character people write in prose. */
-const HANDLE = /#([a-z0-9][a-z0-9-]*)/g
+ *  or digit. Narrow on purpose — `#` is a character people write in prose.
+ *  Either dash: see `ANCHOR_HYPHEN`. */
+const HANDLE = /#([a-z0-9][a-z0-9\-\u2011]*)/g
+
+/**
+ * The dash an anchor is written with: U+2011, the non-breaking hyphen.
+ *
+ * `#image-2` is one word with a hyphen in it, and a plain hyphen is a place a
+ * line may break — so at the widths where the line ran out right there, the
+ * chip drawn under the token was cut in two, and the end of the line showed a
+ * stub of border reading `#image-`. There is no CSS that takes that break
+ * opportunity away (`word-break: keep-all` does not: it was tried), so the
+ * character is the only place left to say it.
+ *
+ * Invisible: in the face this app is drawn in it is the same glyph, at exactly
+ * the same advance, as the hyphen it replaces. A handle is still stored,
+ * matched and spoken about with a plain `-`; only the copy written into the
+ * prompt carries this one, and `splitPrompt` reads both.
+ */
+const ANCHOR_HYPHEN = '\u2011'
 
 /** What the token for one attachment looks like, written out. */
 export function anchorOf(handle: string): string {
   return '#' + handle
+}
+
+/**
+ * The blank an anchor is written between, so the chip drawn under it has
+ * somewhere to put its padding.
+ *
+ * A chip in a sentence is drawn on a second layer holding the same characters
+ * as the box above it, which means it may paint but may never *move* a glyph:
+ * side padding would shove the words along in one layer and not the other. So
+ * the room is bought the only way it can be — as real blank characters, the
+ * same in both layers, with the chip drawn over them.
+ *
+ * Non-breaking on purpose, and that is the whole reason it is not a space: a
+ * line may not wrap inside a chip, or the half left at the end of the line
+ * shows as a sliver of border with nothing in it.
+ */
+export const ANCHOR_PAD = '\u00a0\u00a0'
+
+/** An anchor as it is written into a prompt: the token, its dash, its room. */
+export function anchorWritten(handle: string): string {
+  return ANCHOR_PAD + '#' + handle.replace(/-/g, ANCHOR_HYPHEN) + ANCHOR_PAD
 }
 
 /**
@@ -112,7 +151,9 @@ export function splitPrompt(prompt: string, handles: Iterable<string>): PromptPa
   for (let m = HANDLE.exec(prompt); m; m = HANDLE.exec(prompt)) {
     // The longest handle that is really attached, shortest-suffix-first: the
     // greedy match is the common case and the loop below is the fallback.
-    let word = m[1]!
+    // Back to the one spelling everything else uses: a handle is stored and
+    // compared with a plain dash, whichever dash the prompt was written with.
+    let word = m[1]!.replace(/\u2011/g, '-')
     while (word && !known.has(word)) {
       const cut = word.lastIndexOf('-')
       word = cut > 0 ? word.slice(0, cut) : ''
@@ -125,6 +166,29 @@ export function splitPrompt(prompt: string, handles: Iterable<string>): PromptPa
   }
   push(prompt.slice(at))
   return out
+}
+
+/**
+ * The same cut, as a reader should see it: without the chip's written room.
+ *
+ * `ANCHOR_PAD` is there because of how the composer draws a chip — painted on
+ * a layer beneath a textarea, where it can only be as wide as the characters
+ * it covers, so its padding has to *be* characters. Everywhere the anchor is
+ * read back instead of edited, the chip is an element with padding of its own
+ * and that room arrives as a second space either side of it: a gap nobody
+ * typed. So it is dropped on the way in. The prompt itself is left alone —
+ * it is the record of what was sent.
+ */
+export function readPrompt(prompt: string, handles: Iterable<string>): PromptPart[] {
+  const parts = splitPrompt(prompt, handles)
+  const pad = new RegExp('\\u00a0{1,' + ANCHOR_PAD.length + '}')
+  return parts.map((p, i) => {
+    if (p.kind !== 'text') return p
+    let text = p.text
+    if (parts[i - 1]?.kind === 'anchor') text = text.replace(new RegExp('^' + pad.source), '')
+    if (parts[i + 1]?.kind === 'anchor') text = text.replace(new RegExp(pad.source + '$'), '')
+    return { kind: 'text', text }
+  })
 }
 
 /** The handles a prompt actually places, in the order it places them. */

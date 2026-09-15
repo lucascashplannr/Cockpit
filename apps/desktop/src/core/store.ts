@@ -1457,7 +1457,9 @@ export function detachFile(id: string): void {
   const next = splitPrompt(draft, [gone.handle])
     .map((p) => (p.kind === 'text' ? p.text : ''))
     .join('')
-    .replace(/[ \t]{2,}/g, ' ')
+    // The blank the chip was drawn on goes with it — four non-breaking spaces
+    // left in the middle of a sentence are litter the person did not type.
+    .replace(/[ \t\u00a0]{2,}/g, ' ')
   if (next !== draft) agentDraft.value = next
 }
 

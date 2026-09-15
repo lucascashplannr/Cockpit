@@ -22,7 +22,7 @@ import {
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
   transcriptOf, viewImage,
 } from '../../core/store.js'
-import { anchorOf, anchorsIn, splitPrompt } from '@cockpit/shared'
+import { anchorOf, anchorsIn, readPrompt } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
 
 /**
@@ -432,7 +432,10 @@ async function send(): Promise<void> {
 function bubble(turn: AgentTurn): ({ text: string } | { file: AttachedFile })[] {
   const files = turn.attachments ?? []
   const byHandle = new Map(files.filter((f) => f.handle).map((f) => [f.handle, f]))
-  return splitPrompt(turn.prompt, byHandle.keys()).map((p) =>
+  // `readPrompt` rather than `splitPrompt`: the chip here is an element with
+  // padding of its own, so the room the composer had to write into the text
+  // for its own chip would arrive as a second space either side of this one.
+  return readPrompt(turn.prompt, byHandle.keys()).map((p) =>
     p.kind === 'text' ? { text: p.text } : { file: byHandle.get(p.handle)! },
   )
 }
