@@ -7,7 +7,7 @@ import {
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import {
-  activityFor, selectedTopicId, selectWorkspace, state, toggleWorkspaceRuntime,
+  activityFor, openContextMenu, selectedTopicId, selectWorkspace, state, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
@@ -18,6 +18,11 @@ const w = computed(() => props.workspace)
 // topic is what is selected, none of its rows is.
 const selected = computed(
   () => w.value.id === state.activeWorkspaceId && !selectedTopicId.value,
+)
+
+/** The right-click menu is open on this row: it keeps the hover tint, so you can see what it is about. */
+const menued = computed(
+  () => state.contextMenu?.target.kind === 'workspace' && state.contextMenu.target.id === w.value.id,
 )
 
 /**
@@ -104,7 +109,12 @@ const kindLabel = computed(() =>
 </script>
 
 <template>
-  <button class="row" :class="{ selected, compact }" @click="selectWorkspace(w.id)">
+  <button
+    class="row"
+    :class="{ selected, compact, menued }"
+    @click="selectWorkspace(w.id)"
+    @contextmenu.prevent="openContextMenu($event, { kind: 'workspace', id: w.id })"
+  >
     <!-- The kind is the one thing an icon says faster than a word. -->
     <span class="kind" :title="kindLabel">
       <component :is="w.kind === 'worktree' ? GitBranch : SquareDot" class="sm" />
@@ -244,7 +254,7 @@ const kindLabel = computed(() =>
    says these rows belong to the line above them. */
 .row.compact { padding-left: 29px; }
 
-.row:hover { background: var(--hover); }
+.row:hover, .row.menued { background: var(--hover); }
 /* The tint is the whole signal. There was an accent bar down the left edge as
    well, which is the convention for a rail whose items are otherwise
    undecorated — here it sat against a filled row, an icon that already turns

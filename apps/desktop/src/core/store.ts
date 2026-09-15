@@ -17,6 +17,9 @@ import type { ConnectionState } from './client.js'
  * last push, it is not displayed.
  */
 
+/** A row of the list someone can right-click or open the details of. */
+export type ListTarget = { kind: 'workspace'; id: string } | { kind: 'topic'; id: string }
+
 /** What the folder picker is being opened for — it is not always a project. */
 export interface PickFolderOptions {
   title?: string
@@ -253,6 +256,10 @@ export const state = reactive({
   suggestedDevRoot: null as string | null,
   /** The project whose settings sheet is open, by id. */
   editingProjectId: null as string | null,
+  /** The right-click menu on a list row, where it was opened and on what. */
+  contextMenu: null as { x: number; y: number; target: ListTarget } | null,
+  /** The details sheet of one row of the list. */
+  detailsFor: null as ListTarget | null,
   /** §4 — the sheet that opens a topic across N repositories. */
   topicDialogOpen: false,
   pendingPlan: null as PlanPreview | null,
@@ -1128,6 +1135,23 @@ export function pinThread(scope: AgentScope, sessionId: string): void {
 export function startFresh(scope: AgentScope): void {
   threads.fresh[scopeKey(scope)] = true
   saveThreads()
+}
+
+/** Aimed at the scope *and* on an empty composer — the menu's "New conversation". */
+export function newConversationOn(scope: AgentScope): void {
+  openAgentOn(scope)
+  startFresh(scope)
+}
+
+export function openContextMenu(e: MouseEvent, target: ListTarget): void {
+  state.contextMenu = { x: e.clientX, y: e.clientY, target }
+}
+
+export async function renameTopic(topicId: string, name: string): Promise<boolean> {
+  const res = await guard(() => client.call('topic.rename', { topicId, name }), 'topic renamed')
+  if (!res) return false
+  await refreshTopics()
+  return true
 }
 
 /**

@@ -16,6 +16,23 @@ import type {
 } from './model.js'
 
 /**
+ * The facts about one checkout that are read once, when someone asks.
+ *
+ * Workspaces are probed rather than recorded (§3.4), so there is no "added at"
+ * to read back. The folder's own creation time is the honest stand-in: for a
+ * branch Cockpit opened it is exactly when that happened, and for a repository
+ * it is when it was cloned onto this machine.
+ */
+export interface WorkspaceDetails {
+  /** Birth time of the folder, or null where the filesystem does not keep one. */
+  createdAt: number | null
+  /** `origin`'s URL — where the code came from and where a push goes. */
+  remoteUrl: string | null
+  /** The commit HEAD is on. */
+  head: { sha: string; subject: string; author: string; at: number } | null
+}
+
+/**
  * §11 — one row of "what is running on this machine, and whose is it".
  *
  * The port allocator has always been able to list its assignments, and the
@@ -328,6 +345,11 @@ export interface Rpc {
   'workspace.list': { params: { projectId?: string }; result: Workspace[] }
   'workspace.get': { params: { workspaceId: string }; result: Workspace | null }
   'workspace.probe': { params: { workspaceId: string }; result: Workspace }
+  /**
+   * What the details sheet shows that the probe does not carry: none of it
+   * changes often enough to be worth probing on every refresh.
+   */
+  'workspace.details': { params: { workspaceId: string }; result: WorkspaceDetails | null }
   'workspace.openIn': {
     params: { workspaceId: string; target: 'ide' | 'finder' | 'browser'; path?: string }
     result: { ok: boolean; detail?: string }

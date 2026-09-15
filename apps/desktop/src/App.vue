@@ -7,6 +7,8 @@ import ScopeBar from './components/ScopeBar.vue'
 import ConflictPanel from './components/ConflictPanel.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import ContextMenu from './components/ContextMenu.vue'
+import DetailsDialog from './components/DetailsDialog.vue'
 import ImageViewer from './components/ImageViewer.vue'
 import PlanDialog from './components/PlanDialog.vue'
 import RevertDialog from './components/RevertDialog.vue'
@@ -56,6 +58,7 @@ function onKey(e: KeyboardEvent) {
     else if (state.addRepoProjectId) state.addRepoProjectId = null
     else if (state.settingsOpen) state.settingsOpen = false
     else if (state.editingProjectId) state.editingProjectId = null
+    else if (state.detailsFor) state.detailsFor = null
     else if (state.pendingPlan) state.pendingPlan = null
     else if (state.paletteOpen) state.paletteOpen = false
     // Layer by layer back to the conversation, which is the ground state.
@@ -263,6 +266,8 @@ onUnmounted(() => {
     <ConfirmDialog v-if="state.pendingConfirm" />
     <RevertDialog />
     <ProjectDialog />
+    <DetailsDialog />
+    <ContextMenu />
     <NewProjectDialog />
     <AddRepoDialog />
     <SettingsDialog />

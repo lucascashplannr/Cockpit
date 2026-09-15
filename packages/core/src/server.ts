@@ -298,6 +298,7 @@ const handlers: Record<string, Handler> = {
     pushWorkspaces()
     return w
   },
+  'workspace.details': (p: { workspaceId: string }) => registry.workspaceDetails(p.workspaceId),
   'workspace.openIn': (p: { workspaceId: string; target: string; path?: string }) =>
     openIn(p.workspaceId, p.target, p.path),
 

@@ -5,7 +5,7 @@ import {
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activeProject, activityFor, addRepoTo, client, collapsedTopics, guard, openAgentOn,
+  activeProject, activityFor, addRepoTo, client, collapsedTopics, guard, openAgentOn, openContextMenu,
   selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 
@@ -130,7 +130,9 @@ const ATTENTION_TEXT: Record<string, string> = {
               // Folded over the row you are standing on: the header stands in
               // for it, so it takes the tint the row would have had.
               holding: !!g.topicId && collapsedTopics[g.topicId] && holdsSelection(g.workspaces),
+              menued: !!g.topicId && state.contextMenu?.target.kind === 'topic' && state.contextMenu.target.id === g.topicId,
             }"
+            @contextmenu.prevent="g.topicId && openContextMenu($event, { kind: 'topic', id: g.topicId })"
           >
             <!-- Its own control, because folding is not selecting: the header
                  is a place to stand as much as a lid to close. -->
@@ -281,7 +283,7 @@ const ATTENTION_TEXT: Record<string, string> = {
   text-align: left;
   transition: background var(--dur-1) var(--ease-soft);
 }
-.group-head:hover { background: var(--hover); }
+.group-head:hover, .group-head.menued { background: var(--hover); }
 /* Standing on the topic, and standing on a branch folded inside it, are the
    same sentence from this list's point of view: your place is on this row.
    Which of the two it is, is what the scope line at the top of the panel says
