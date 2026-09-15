@@ -70,7 +70,10 @@ export interface ServerBoardRow {
 export interface EngineOptions {
   /** An alias the engine understands: `opus`, `sonnet`, `haiku`. */
   model?: string
-  /** `low` | `medium` | `high` | `xhigh` | `max`. */
+  /**
+   * `low` | `medium` | `high` | `xhigh` | `max` | `ultracode`. The last is not
+   * an engine flag: the core runs it at `max` and adds the keyword to each turn.
+   */
   effort?: string
   /** §3.7 — reads and proposes, writes nothing. */
   plan?: boolean
@@ -709,7 +712,13 @@ export interface Rpc {
    * A one-shot engine has no stdin to write into and refuses with a reason.
    */
   'agent.send': {
-    params: { sessionId: string; prompt: string; attachments?: AttachmentInput[] }
+    params: {
+      sessionId: string
+      prompt: string
+      attachments?: AttachmentInput[]
+      /** The composer as it is now; only Ultracode takes effect mid-conversation. */
+      options?: EngineOptions
+    }
     result: { ok: true; queued: boolean } | { ok: false; reason: string }
   }
   /**

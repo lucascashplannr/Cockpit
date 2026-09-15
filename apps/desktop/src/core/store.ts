@@ -2785,7 +2785,9 @@ export async function sendTurn(
   const c = state.agents.find((x) => x.id === sessionId)
   if (c && isLive(c)) {
     const res = await guard(() =>
-      client.call('agent.send', { sessionId, prompt, attachments: wire(files) }),
+      client.call('agent.send', {
+        sessionId, prompt, attachments: wire(files), options: engineOptions(),
+      }),
     )
     if (!res) return false
     if (!res.ok) {

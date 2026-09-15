@@ -9,6 +9,7 @@ import { ANCHOR_PAD, anchorOf, anchorWritten, splitPrompt } from '@cockpit/share
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
+import EffortSlider from './EffortSlider.vue'
 import type { Option } from './Picker.vue'
 
 /**
@@ -71,6 +72,8 @@ const EFFORTS = [
   { id: 'high', label: 'High', hint: 'the default' },
   { id: 'xhigh', label: 'X-high' },
   { id: 'max', label: 'Max', hint: 'when correctness beats cost' },
+  // Not an engine flag: the core runs it at Max and says the word in each turn.
+  { id: 'ultracode', label: 'Ultracode', hint: 'fans the work out across agents' },
 ]
 
 function pickModel(id: string): void {
@@ -685,8 +688,7 @@ defineExpose({ focus: () => box.value?.focus() })
         @update:model-value="emit('update:engine', $event)"
       />
       <Picker :options="MODELS" :model-value="state.engineOptions.model" @update:model-value="pickModel" />
-      <Picker
-        label="Effort"
+      <EffortSlider
         :options="EFFORTS"
         :model-value="state.engineOptions.effort"
         @update:model-value="pickEffort"

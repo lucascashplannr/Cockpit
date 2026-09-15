@@ -553,6 +553,8 @@ export async function engines(): Promise<{ id: string; available: boolean; bin: 
 interface QueuedTurn {
   prompt: string
   files: Attachment[]
+  /** Asked at Ultracode — decided per turn, since the keyword travels with it. */
+  ultracode: boolean
 }
 
 interface Live {
@@ -560,6 +562,8 @@ interface Live {
   spec: EngineSpec
   child: ChildProcess
   buffer: string
+  /** The effort the process was launched at was Ultracode. See `ULTRACODE`. */
+  ultracode: boolean
   /** Where the tokens arriving right now belong (§3.3). */
   streamingId: string | null
   /**
@@ -1081,7 +1085,7 @@ export async function resumeAgent(
   const running = live.get(sessionId)
   if (running) {
     if (running.spec.streaming && running.spec.encodeTurn) {
-      const r = await send(sessionId, prompt, incoming)
+      const r = await send(sessionId, prompt, incoming, opts)
       return r.ok ? { sessionId } : { denied: true, reason: r.reason }
     }
     return { denied: true, reason: 'that conversation is already running' }
@@ -1120,6 +1124,30 @@ export interface EngineOptions {
   model?: string
   effort?: string
   plan?: boolean
+}
+
+/**
+ * The level above Max, which is not an effort at all.
+ *
+ * `claude --effort` stops at `max`. Ultracode is a word in the prompt that
+ * lets the turn fan out across a workflow of agents — so it launches at `max`
+ * and says the word in every turn the engine reads, never in the one the
+ * window shows. Only Claude knows the word; any other engine would take it as
+ * part of the question.
+ */
+const ULTRACODE = 'ultracode'
+
+function engineEffort(effort: string | undefined): string | undefined {
+  return effort === ULTRACODE ? 'max' : effort
+}
+
+function withUltracode(
+  spec: EngineSpec,
+  segs: attachments.TurnSegment[],
+  on: boolean,
+): attachments.TurnSegment[] {
+  if (!on || spec.id !== 'claude') return segs
+  return [...segs, { kind: 'text', text: '\n\n' + ULTRACODE }]
 }
 
 async function launch(
@@ -1173,13 +1201,14 @@ async function launch(
     tools: allow?.length ? allow : DEFAULT_TOOLS,
     deny: DEFAULT_DENY,
     model: opts?.model,
-    effort: opts?.effort,
+    effort: engineEffort(opts?.effort),
     plan: opts?.plan,
   }
   // The turn in the order it was written: the words, each attachment at the
   // point its `#handle` put it, and whatever nobody pointed at at the end.
   // Said in the prompt the engine reads and never in the one the window shows.
-  const segs = attachments.turnSegments(preamble, session.prompt, files)
+  const ultracode = opts?.effort === ULTRACODE
+  const segs = withUltracode(spec, attachments.turnSegments(preamble, session.prompt, files), ultracode)
   const withFiles = attachments.flatten(segs)
   const args = resuming
     ? spec.buildResumeArgs(withFiles, session.engineSessionId!, ctx)
@@ -1195,6 +1224,7 @@ async function launch(
     spec,
     child,
     buffer: '',
+    ultracode,
     streamingId: null,
     queue: [],
     usage: null,
@@ -1432,7 +1462,7 @@ async function launch(
 async function flushQueue(l: Live): Promise<void> {
   if (l.busy || !l.queue.length) return
   clearIdleTimer(l)
-  const { prompt, files } = l.queue.shift()!
+  const { prompt, files, ultracode } = l.queue.shift()!
   const encode = l.spec.encodeTurn
   if (!encode) return
   // Everything that decides whether another flush may start happens before the
@@ -1448,7 +1478,7 @@ async function flushQueue(l: Live): Promise<void> {
   // window sitting on the previous answer for the length of a snapshot.
   agentBus.emit('changed')
   await checkpointTurn(l.session, turnId, prompt || attachments.summarise(files))
-  const segs = attachments.turnSegments('', prompt, files)
+  const segs = withUltracode(l.spec, attachments.turnSegments('', prompt, files), ultracode)
   l.child.stdin?.write(encode(attachments.flatten(segs), segs) + '\n')
   agentBus.emit('changed')
 }
@@ -1526,6 +1556,12 @@ export async function send(
   sessionId: string,
   prompt: string,
   incoming: AttachmentInput[] = [],
+  /**
+   * What the composer is set to now. Model, effort and plan are launch flags
+   * and wait for the next launch; Ultracode is a word in the turn, so it is
+   * honoured from this one.
+   */
+  opts?: EngineOptions,
 ): Promise<{ ok: true; queued: boolean } | { ok: false; reason: string }> {
   const l = live.get(sessionId)
   if (!l) return { ok: false, reason: 'no such live session — resume it instead' }
@@ -1549,13 +1585,14 @@ export async function send(
     return { ok: false, reason: (e as Error).message }
   }
 
+  const ultracode = opts ? opts.effort === ULTRACODE : l.ultracode
   if (l.busy) {
-    l.queue.push({ prompt: text, files })
+    l.queue.push({ prompt: text, files, ultracode })
     agentBus.emit('changed')
     return { ok: true, queued: true }
   }
   clearIdleTimer(l)
-  l.queue.push({ prompt: text, files })
+  l.queue.push({ prompt: text, files, ultracode })
   await flushQueue(l)
   return { ok: true, queued: false }
 }

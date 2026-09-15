@@ -590,8 +590,9 @@ const handlers: Record<string, Handler> = {
     sessionId: string
     prompt: string
     attachments?: AttachmentInput[]
+    options?: agents.EngineOptions
   }) => {
-    const r = await agents.send(p.sessionId, p.prompt, p.attachments)
+    const r = await agents.send(p.sessionId, p.prompt, p.attachments, p.options)
     if (r.ok) pushAgentActivity()
     return r
   },
