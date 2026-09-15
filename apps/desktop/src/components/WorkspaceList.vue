@@ -312,6 +312,10 @@ const ATTENTION_TEXT: Record<string, string> = {
 .pick {
   flex: 1;
   min-width: 0;
+  /* A flex box, so the title inside it is a block that can be cut short —
+     an inline span ignores the ellipsis and runs under the counters. */
+  display: flex;
+  overflow: hidden;
   text-align: left;
 }
 .pick:disabled { cursor: default; }
@@ -332,7 +336,7 @@ const ATTENTION_TEXT: Record<string, string> = {
   letter-spacing: -0.01em;
   color: var(--text);
 }
-.summary { display: flex; align-items: center; gap: 9px; font-size: var(--fs-xs); }
+.summary { flex: none; display: flex; align-items: center; gap: 9px; font-size: var(--fs-xs); }
 .summary .up { color: var(--ok); display: inline-flex; align-items: center; gap: 2px; }
 .summary .up .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
 .summary .dim { color: var(--text-dim); }
