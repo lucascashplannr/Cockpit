@@ -1,6 +1,7 @@
-import { createApp } from 'vue'
+import { createApp, watch } from 'vue'
 import App from './App.vue'
-import { applyTheme, client, toast } from './core/store.js'
+import { applyTheme, client, state, toast } from './core/store.js'
+import { releaseSplash } from './core/splash.js'
 
 /* The two faces the app is drawn in, bundled rather than requested: an
    offline desktop tool cannot depend on a font CDN, and `-apple-system` alone
@@ -41,3 +42,11 @@ app.config.errorHandler = (err, _instance, info) => {
 }
 
 app.mount('#app')
+
+// Up until the window has something to show — or has something to say about
+// why it cannot.
+watch(
+  () => state.booted || state.connection === 'disconnected' || state.connection === 'incompatible',
+  (ready) => ready && releaseSplash(),
+  { immediate: true },
+)

@@ -104,6 +104,8 @@ export interface PendingRevert {
 export const state = reactive({
   connection: 'connecting' as ConnectionState,
   connectionDetail: '' as string,
+  /** The first bootstrap has answered, or failed trying. Lets the splash go. */
+  booted: false,
   projects: [] as Project[],
   workspaces: [] as Workspace[],
   topics: [] as Topic[],
@@ -384,6 +386,14 @@ export function onTermData(termId: string, fn: (d: string) => void): () => void 
 }
 
 async function bootstrap(): Promise<void> {
+  try {
+    await load()
+  } finally {
+    state.booted = true
+  }
+}
+
+async function load(): Promise<void> {
   const [projects, workspaces, topics, agents, events, status, config] = await Promise.all([
     client.call('project.list', undefined),
     client.call('workspace.list', {}),
