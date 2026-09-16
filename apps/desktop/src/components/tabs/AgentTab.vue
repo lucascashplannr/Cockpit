@@ -17,7 +17,7 @@ import Attachment from '../agent/Attachment.vue'
 import Composer from '../agent/Composer.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive,
+  activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFile,
   askRevert, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
   transcriptOf, viewImage,
@@ -457,6 +457,11 @@ function labels(turn: AgentTurn): Record<string, string> {
 }
 
 function showImage(turn: AgentTurn, file: AttachedFile): void {
+  // A paste or a file opens as text; only a picture goes to the image viewer.
+  if (!file.image) {
+    void openSentFile(file)
+    return
+  }
   const pics = turn.attachments.filter((f) => f.image && attachmentSrc(f.path))
   viewImage(
     pics.map((f) => ({ name: f.name, src: attachmentSrc(f.path) })),
@@ -1423,8 +1428,9 @@ function dotClass(s: Conversation): string {
   line-height: 1.35;
   white-space: nowrap;
 }
-/* Only where there is something to open. */
-.tag.pic { cursor: zoom-in; }
+/* Every tag opens — a picture into the viewer, a paste or a file as text —
+   so every one points the way a button does. */
+.tag { cursor: pointer; }
 .tag.pic:hover { border-color: var(--line-strong); background: var(--hover); }
 
 .said {

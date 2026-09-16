@@ -82,15 +82,14 @@ watch(
   background: var(--panel-raised);
   color: var(--text-muted);
   overflow: hidden;
+  /* A paste or a file opens as text, so every tile is one click from more. */
+  cursor: pointer;
 }
 /* An image fills its tile edge to edge; one whose bytes never arrived falls
    back to the same treatment a file gets, which is why that is a fallback
    rather than a broken picture. */
 .tile.pic {
   padding: 0;
-  /* The tile is an index, not the picture: this says the picture is one click
-     away, on the only ones where that is true. */
-  cursor: zoom-in;
 }
 /* Pasted text reads from the top-left like the page it came from, and simply
    runs out at the bottom of the square. */
@@ -100,6 +99,9 @@ watch(
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  /* The hand every tile shows, not the I-beam base.css gives a `pre`. */
+  cursor: inherit;
+  user-select: none;
   font-family: var(--mono);
   font-size: 7.5px;
   line-height: 1.35;

@@ -241,6 +241,9 @@ export const state = reactive({
    * conversation switched underneath it would take the picture away with it.
    */
   pendingImage: null as ImageView | null,
+  /** A paste or a file opened out of its tile, to read — or, for a paste still
+   *  in the composer, to edit. */
+  pendingText: null as TextView | null,
 
   paletteOpen: false,
   /** §7 — the sheet that creates a project rather than finding one. */
@@ -1278,6 +1281,105 @@ export interface ImageView {
 export function viewImage(items: ImageView['items'], at: number): void {
   if (!items.length || at < 0) return
   state.pendingImage = { items, at }
+}
+
+/**
+ * A paste or a file, opened to be read.
+ *
+ * `text` is `undefined` while the bytes are on their way and `null` when they
+ * are not text at all — a disk image is worth a tile, not a page of mojibake.
+ */
+export interface TextView {
+  name: string
+  /** `155 lines`, `113.8 MB` — what the tile already said, said again. */
+  meta: string
+  text: string | null | undefined
+  /** Set when this is a paste still in the composer, which makes it editable. */
+  draftId?: string
+}
+
+/** Past this, a text file is a thing to open in an editor, not in a sheet. */
+const MAX_PREVIEW = 2 * 1024 * 1024
+
+/** Rounded the way a person reads a file size. */
+function sizeOf(n: number): string {
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB'
+  return (n / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+function linesOf(text: string): string {
+  const n = text.replace(/\n$/, '').split('\n').length
+  return n + (n === 1 ? ' line' : ' lines')
+}
+
+/**
+ * The bytes as text, or `null` if they are not.
+ *
+ * Judged on the bytes rather than the media type: Chromium reports a `.ts` or
+ * a `.log` dropped from Finder as nothing at all, and a NUL or an invalid
+ * UTF-8 sequence says "binary" far more reliably than an extension does.
+ */
+function asText(b64: string, bytes: number): string | null {
+  if (bytes > MAX_PREVIEW) return null
+  try {
+    const raw = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    if (raw.subarray(0, 8192).includes(0)) return null
+    return new TextDecoder('utf-8', { fatal: true }).decode(raw)
+  } catch {
+    return null
+  }
+}
+
+/** A tile in the composer, opened. */
+export function openDraftFile(f: DraftFile): void {
+  if (f.pasted) {
+    state.pendingText = { name: f.name, meta: linesOf(f.text ?? ''), text: f.text ?? '', draftId: f.id }
+    return
+  }
+  const text = asText(f.data, f.bytes)
+  state.pendingText = { name: f.name, meta: text === null ? sizeOf(f.bytes) : linesOf(text) + ' · ' + sizeOf(f.bytes), text }
+}
+
+/**
+ * A paste edited in the viewer, before it has been sent.
+ *
+ * The tile and the bytes the core will be handed change together, so what is
+ * read in the sheet is exactly what the engine will read at the tag.
+ */
+export function editDraftText(id: string, text: string): void {
+  const bytes = new TextEncoder().encode(text)
+  agentFiles.value = agentFiles.value.map((f) =>
+    f.id === id ? { ...f, text, bytes: bytes.length, data: base64(bytes.buffer) } : f,
+  )
+  // The sheet's text too, not only its caption: the caption changing re-renders
+  // the sheet, and a sheet still bound to the old text puts it back mid-typing.
+  if (state.pendingText?.draftId === id) {
+    state.pendingText.text = text
+    state.pendingText.meta = linesOf(text)
+  }
+}
+
+/** Which open this is, so a slow fetch cannot land in a later sheet. */
+let opened = 0
+
+/** A tile in the thread, opened — fetched on the click, not with the tile. */
+export async function openSentFile(file: Attachment): Promise<void> {
+  const mine = ++opened
+  state.pendingText = { name: file.name, meta: sizeOf(file.bytes), text: undefined }
+  let text: string | null = file.pasted ? fetchedText[file.path] || null : null
+  if (text === null && file.bytes <= MAX_PREVIEW) {
+    try {
+      const b64 = await client.call('agent.attachment', { path: file.path })
+      text = b64 ? asText(b64, file.bytes) : null
+    } catch {
+      text = null
+    }
+  }
+  // Closed, or replaced by another, while the bytes were on their way.
+  if (mine !== opened || !state.pendingText) return
+  state.pendingText.text = text
+  if (text !== null) state.pendingText.meta = linesOf(text) + ' · ' + sizeOf(file.bytes)
 }
 
 /** Wraps, because three pictures in a row is a thing you flick through. */

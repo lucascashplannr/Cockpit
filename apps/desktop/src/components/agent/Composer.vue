@@ -3,7 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { CircleStop, FileCode, FileText, Map as MapIcon, Paperclip, UnfoldVertical, X } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachFiles, attachText, client, dataUrl, detachFile, engineName, guard,
-  isLongPaste, placedHandles, saveComposer, state, viewImage,
+  isLongPaste, openDraftFile, placedHandles, saveComposer, state, viewImage,
 } from '../../core/store.js'
 import { ANCHOR_PAD, CLAUDE_MODELS, anchorOf, anchorWritten, splitPrompt } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
@@ -538,6 +538,11 @@ function onDrop(ev: DragEvent): void {
  * question goes in, and having to send it to find out you pasted the wrong one
  * is the reason to look.
  */
+function open(f: DraftFile): void {
+  if (f.mediaType.startsWith('image/')) showImage(f)
+  else openDraftFile(f)
+}
+
 function showImage(f: DraftFile): void {
   const pics = agentFiles.value.filter((x) => x.mediaType.startsWith('image/'))
   viewImage(
@@ -690,7 +695,7 @@ defineExpose({ focus: () => box.value?.focus() })
             ? f.name + ' — placed at ' + anchorOf(f.handle) + ' in the message'
             : f.name + ' — about the whole message. Type ' + anchorOf(f.handle) + ' to place it.'
         "
-        @click="showImage(f)"
+        @click="open(f)"
       >
         <!-- The picture itself, not an icon labelled with its name: the whole
              reason for pasting one is that looking is faster than reading. -->
@@ -962,13 +967,15 @@ defineExpose({ focus: () => box.value?.focus() })
   background: var(--bg);
   color: var(--text-muted);
   overflow: hidden;
+  /* Every tile opens: a picture into the viewer, a paste or a file into a
+     sheet to read — and a paste to edit. */
+  cursor: pointer;
 }
+.files li:hover { border-color: var(--line-strong); }
 /* An image is shown, so it gets no chrome of its own: the thumbnail is the
    tile. */
 .files li.pic {
   padding: 0;
-  /* Only on the tiles where there is something larger to see. */
-  cursor: zoom-in;
 }
 
 /* "This one is not about any particular point."
@@ -1015,6 +1022,10 @@ defineExpose({ focus: () => box.value?.focus() })
   min-height: 0;
   margin: 0;
   overflow: hidden;
+  /* A preview, not text to select: base.css gives every `pre` the I-beam,
+     which made this the one tile that did not point like the others. */
+  cursor: inherit;
+  user-select: none;
   font-family: var(--mono);
   font-size: 6.5px;
   line-height: 1.35;

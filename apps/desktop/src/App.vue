@@ -10,6 +10,7 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import DetailsDialog from './components/DetailsDialog.vue'
 import ImageViewer from './components/ImageViewer.vue'
+import TextViewer from './components/TextViewer.vue'
 import PlanDialog from './components/PlanDialog.vue'
 import RevertDialog from './components/RevertDialog.vue'
 import ProjectDialog from './components/ProjectDialog.vue'
@@ -50,6 +51,7 @@ function onKey(e: KeyboardEvent) {
     // First, because it is on top of everything: a picture opened over a
     // dialog closes back to the dialog, not past it.
     if (state.pendingImage) state.pendingImage = null
+    else if (state.pendingText) state.pendingText = null
     else if (state.pendingRevert) {
       // Never while it is running: the work is already happening and closing
       // the dialog would only hide its outcome.
@@ -262,6 +264,7 @@ onUnmounted(() => {
     />
     <CommandPalette v-if="state.paletteOpen" />
     <ImageViewer />
+    <TextViewer />
     <PlanDialog v-if="state.pendingPlan" />
     <ConfirmDialog v-if="state.pendingConfirm" />
     <RevertDialog />
