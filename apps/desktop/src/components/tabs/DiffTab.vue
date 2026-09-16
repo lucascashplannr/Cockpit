@@ -1142,7 +1142,7 @@ const mark: Record<string, Component> = {
   overflow-y: auto;
   padding: 12px 12px 12px;
   border-top: 1px solid var(--line);
-  background: var(--bg-sunken);
+  background: var(--surface-dock);
 }
 
 /* What the count is made of. */
@@ -1357,7 +1357,7 @@ const mark: Record<string, Component> = {
   flex-direction: column;
   border-right: 1px solid var(--line);
   min-height: 0;
-  background: var(--panel);
+  background: var(--surface-review);
 }
 .ftop {
   display: flex;

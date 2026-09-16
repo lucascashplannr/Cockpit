@@ -236,7 +236,7 @@ onBeforeUnmount(() => view.value?.destroy())
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--surface-review);
   min-height: 0;
 }
 .ttop {

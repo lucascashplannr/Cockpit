@@ -284,10 +284,9 @@ const servers = computed(() => {
   height: 52px;
   padding: 0 10px 0 18px;
   min-width: 0;
-  /* Its own surface. On `--bg` it was the same colour as the conversation
-     under it and only a hairline said otherwise; on the raised white it reads
-     as the thing the column is headed by. */
-  background: var(--panel-raised);
+  /* The bar belongs to no column, so it has a role of its own (tokens.css,
+     "surfaces by role"). */
+  background: var(--surface-bar);
   border-bottom: 1px solid var(--line);
 }
 

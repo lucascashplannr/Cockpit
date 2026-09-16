@@ -216,12 +216,12 @@ const ATTENTION_TEXT: Record<string, string> = {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--panel);
+  background: var(--surface-nav);
   border-right: 1px solid var(--line);
 }
 
-/* The same height and surface as the conversation's bar, so the two columns
-   are headed on one line. Also a place to pick the window up. */
+/* The same height as the conversation's bar, so the two columns are headed
+   on one line; the column's own surface, like every header. Also a place to pick the window up. */
 .top {
   -webkit-app-region: drag;
   flex: none;
@@ -232,7 +232,7 @@ const ATTENTION_TEXT: Record<string, string> = {
      only meet exactly is one less thing that can quietly grow. */
   height: 52px;
   padding: 0 8px 0 14px;
-  background: var(--panel-raised);
+  background: var(--surface-nav);
   border-bottom: 1px solid var(--line);
 }
 .top button { -webkit-app-region: no-drag; }
@@ -368,7 +368,7 @@ const ATTENTION_TEXT: Record<string, string> = {
   height: 38px;
   padding: 0 8px 0 14px;
   border-top: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--surface-nav);
 }
 .root {
   flex: 1;

@@ -55,7 +55,7 @@ function readColor(name: string, fallback: string): string {
 /** The four colours xterm is told about, read fresh from the tokens. */
 function palette() {
   return {
-    background: readColor('--bg', '#0c0c0f'),
+    background: readColor('--surface-review', '#0c0c0f'),
     foreground: readColor('--text', '#16161c'),
     cursor: readColor('--accent', '#5b58e0'),
     selectionBackground: readColor('--accent-soft', 'rgba(91,88,224,0.16)'),
@@ -163,7 +163,7 @@ watch(() => state.theme, () => void nextTick(repaint))
 </template>
 
 <style scoped>
-.wrap { height: 100%; padding: 14px 8px 8px 16px; background: var(--bg); }
+.wrap { height: 100%; padding: 14px 8px 8px 16px; background: var(--surface-review); }
 .term { height: 100%; }
 :deep(.xterm) { height: 100%; }
 :deep(.xterm-viewport) { background: transparent !important; }

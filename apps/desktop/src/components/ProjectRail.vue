@@ -128,7 +128,7 @@ const themeLabel = computed(() =>
   /* The strip the lights sit in is the window's own, so dragging it moves the
      window; every tile below opts back out. */
   -webkit-app-region: drag;
-  background: var(--bg-sunken);
+  background: var(--surface-rail);
   border-right: 1px solid var(--line);
   overflow: hidden;
 }

@@ -801,11 +801,17 @@ defineExpose({ focus: () => box.value?.focus() })
 </template>
 
 <style scoped>
+/* A well, not a card. On the white conversation a raised white is no step at
+   all, so the box takes a fill of its own and a soft edge. What sits inside it
+   (the chips, the pills, the file tokens) shows the conversation's colour
+   through it; `--inset` hands that down to the pickers and attachments, which
+   are drawn on `--bg` everywhere else. */
 .composer {
+  --inset: var(--surface-work);
   position: relative;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  background: var(--panel-raised);
+  background: var(--surface-input);
   padding: 10px 10px 9px;
 }
 /* Plan mode changes what pressing Start *does*, so it is worth a whole-box
@@ -906,7 +912,7 @@ defineExpose({ focus: () => box.value?.focus() })
   margin: 0 -1px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--inset, var(--bg));
 }
 
 .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -919,7 +925,7 @@ defineExpose({ focus: () => box.value?.focus() })
   border-radius: var(--radius-sm);
   font-size: 11px;
   color: var(--text-muted);
-  background: var(--bg);
+  background: var(--inset, var(--bg));
   white-space: nowrap;
 }
 .opt:hover:not(:disabled) { color: var(--text); background: var(--hover); }
@@ -955,7 +961,7 @@ defineExpose({ focus: () => box.value?.focus() })
   padding: 6px 5px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--inset, var(--bg));
   color: var(--text-muted);
   overflow: hidden;
   /* Every tile opens: a picture into the viewer, a paste or a file into a
@@ -1059,7 +1065,7 @@ defineExpose({ focus: () => box.value?.focus() })
   padding: 0 11px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--inset, var(--bg));
   color: var(--text-muted);
   font-size: var(--fs-xs);
   font-weight: 600;

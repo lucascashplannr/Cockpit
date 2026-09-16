@@ -222,7 +222,7 @@ function reveal(id: string) {
   font-size: var(--fs-xs);
   position: sticky;
   top: 0;
-  background: var(--panel);
+  background: var(--surface-review);
   z-index: 1;
 }
 .bhead span { flex: 1; }

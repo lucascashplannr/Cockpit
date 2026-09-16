@@ -46,6 +46,29 @@
   --overlay: light-dark(#ffffff, #1c1c24);
   --scrim: light-dark(rgba(16, 16, 24, 0.28), rgba(0, 0, 0, 0.55));
 
+  /* ── surfaces by role ─────────────────────────────────────────────
+   * What each part of the shell is painted with, named for what it is rather
+   * than for how high it sits. Components paint a *region* with these and
+   * never with the steps above, so the whole window's scheme is this block
+   * and nothing else.
+   *
+   * Two rules keep it from drifting again:
+   *  1. A column is one surface, top to bottom. Its header and its pinned
+   *     footer take the column's own colour; a hairline says where they end.
+   *     A band of a different grey on top of a column reads as a second
+   *     header drawn over the first.
+   *  2. Colour says which layer you are in, not which box you are in. Only
+   *     the things that sit *on* a surface — a card, a field — step up to
+   *     `--panel-raised`. The composer is the exception that proves it: on
+   *     white a raised white is no step, so it is a well (`--surface-input`). */
+  --surface-rail: light-dark(#e8e8ee, #08080b);   /* the project rail            */
+  --surface-nav: light-dark(#f2f2f6, #0c0c10);    /* the list column             */
+  --surface-bar: light-dark(#ffffff, #121217);    /* the checkout's bar          */
+  --surface-work: light-dark(#ffffff, #121217);   /* the conversation            */
+  --surface-review: light-dark(#ffffff, #121217); /* the review column, all tools */
+  --surface-dock: light-dark(#ffffff, #121217);   /* pinned footers in review    */
+  --surface-input: light-dark(#f2f2f6, #1a1a21);  /* the composer's well        */
+
   /* Hairlines. Three weights: barely there, there, and structural. */
   --line-soft: light-dark(#ececf1, #1c1c23);
   --line: light-dark(#dfdfe7, #27272f);

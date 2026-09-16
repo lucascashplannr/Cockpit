@@ -149,7 +149,7 @@ async function stop(): Promise<void> {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--bg);
+  background: var(--surface-work);
 }
 
 /* ── welcome ─────────────────────────────────────────────────────────── */

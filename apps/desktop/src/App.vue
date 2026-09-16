@@ -314,5 +314,5 @@ onUnmounted(() => {
    the list: the list is how you got here, and it is also how a chat is
    opened. The widths themselves come from `panesStyle` — the tokens are the
    defaults a fresh install starts from, not the running values. */
-.reviewcol { border-left: 1px solid var(--line); background: var(--bg); }
+.reviewcol { border-left: 1px solid var(--line); background: var(--surface-review); }
 </style>

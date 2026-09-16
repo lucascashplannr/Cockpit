@@ -149,7 +149,7 @@ const tools = computed(() =>
 /* The same fact as a badge, minus the number there is none of. */
 .tpip { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); }
 
-.body { flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
+.body { flex: 1; min-height: 0; overflow: hidden; background: var(--surface-review); }
 
 /* The Diff and the Code tab are both a fixed list beside a viewer, sized for
    the full-width column they used to have. In the `panel` candidate the frame

@@ -122,7 +122,7 @@ watch(
   padding: 0 4px;
   border-radius: 4px;
   border: 1px solid var(--line);
-  background: var(--bg);
+  background: var(--inset, var(--bg));
   color: var(--text-muted);
   font-size: 9px;
   font-weight: 620;

@@ -139,7 +139,7 @@ onBeforeUnmount(() => {
   padding: 0 6px 0 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--inset, var(--bg));
   font-size: 11px;
   color: var(--text-muted);
   white-space: nowrap;

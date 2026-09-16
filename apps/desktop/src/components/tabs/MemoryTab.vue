@@ -206,7 +206,7 @@ watch(() => props.workspace.id, load, { immediate: true })
   margin: 0;
   padding: 12px 15px;
   border-left: 2px solid var(--line);
-  background: var(--panel);
+  background: var(--surface-review);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   font-family: var(--font);
   font-size: var(--fs-md);
@@ -224,7 +224,7 @@ watch(() => props.workspace.id, load, { immediate: true })
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--panel);
+  background: var(--surface-review);
   color: var(--text);
   font-size: var(--fs-sm);
   line-height: 1.6;
@@ -259,7 +259,7 @@ watch(() => props.workspace.id, load, { immediate: true })
 
 .side {
   border-left: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--surface-review);
   overflow-y: auto;
   padding: 18px 16px 26px;
 }

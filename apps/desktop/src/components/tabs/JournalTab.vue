@@ -607,7 +607,7 @@ function clear() {
   gap: 10px;
   height: 28px;
   padding: 0 14px;
-  background: var(--bg);
+  background: var(--surface-review);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;

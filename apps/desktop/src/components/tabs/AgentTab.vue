@@ -1305,7 +1305,7 @@ function dotClass(s: Conversation): string {
      on it because `.grow` is the item that follows. */
   height: 49px;
   padding: 0 114px 0 20px;
-  background: var(--bg);
+  background: var(--surface-work);
   border-bottom: 1px solid var(--line-soft);
 }
 .ttitle {
@@ -1696,7 +1696,6 @@ function dotClass(s: Conversation): string {
      so it pays for the same inset out of its own padding. That is what puts
      the box on the same axis as the conversation. */
   padding: 12px calc(var(--pad) + var(--sbw)) 14px;
-  border-top: 1px solid var(--line-soft);
 }
 /* The same column as the conversation above it: a box that ran wider than the
    text it is about read as a different surface rather than the end of one. */
