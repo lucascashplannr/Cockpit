@@ -4,12 +4,12 @@ import type { CommitPreview, DiffFile, FileDiff, StashEntry, Workspace } from '@
 import type { Component } from 'vue'
 import {
   Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, FileCode, GitBranch,
-  GitCommitHorizontal, ArrowLeft, Sparkles, SquareArrowOutUpRight, Trash2, TriangleAlert,
+  ChevronUp, GitCommitHorizontal, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
   Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import {
-  LAYOUT_LIMITS, commit, commitPreview, discard, discardTick, draftCommitMessage, guard, layout, resetCommitHeight,
+  LAYOUT_LIMITS, commit, commitPreview, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetCommitHeight,
   saveLayout, selectWorkspace, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
@@ -82,7 +82,8 @@ onMounted(() => {
   })
   if (root.value) ro.observe(root.value)
   barRo = new ResizeObserver(([e]) => {
-    if (e) measuredCommit.value = Math.round(e.contentRect.height)
+    // The whole box, padding included — that is what the handle sits on.
+    if (e) measuredCommit.value = (e.target as HTMLElement).offsetHeight
   })
   watch(
     bar,
@@ -292,9 +293,39 @@ async function select(path: string) {
  * It belongs next to the diff it is a review of, not in a menu.
  */
 
-const message = ref('')
-const stageAll = ref(true)
+/**
+ * One line — the summary every log, blame and PR title shows. There is no
+ * field for a body: a second box made committing feel like filling in a form.
+ *
+ * `body` still exists for one case. Amending a commit that already has a body
+ * keeps it as it was, rather than an unseen field quietly deleting it.
+ */
+const subject = ref('')
+const body = ref('')
+const message = computed(() => {
+  const head = subject.value.trim()
+  const rest = body.value.trim()
+  return head && rest ? head + '\n\n' + rest : head
+})
+
+/**
+ * What goes in. It was a "stage everything" checkbox, which answered one of
+ * three questions: everything, what git already has staged, or the files you
+ * ticked in the list above — the last one had no way to be said at all.
+ */
+type Include = 'all' | 'staged' | 'picked'
+const include = ref<Include>('all')
+const stageAll = computed(() => include.value === 'all')
 const committing = ref(false)
+
+// Ticking a file is choosing what to commit; clearing the ticks gives it back.
+watch(
+  () => picked.value.length > 0,
+  (any) => {
+    if (any) include.value = 'picked'
+    else if (include.value === 'picked') include.value = 'all'
+  },
+)
 const rows = ref<CommitPreview[]>([])
 
 /**
@@ -339,8 +370,14 @@ const elsewhere = computed(() => {
 })
 
 const willCommit = computed(() => rows.value.filter((r) => r.willCommit))
+const counts = computed(() => ({
+  all: rows.value.reduce((n, r) => n + r.staged + r.unstaged, 0),
+  staged: rows.value.reduce((n, r) => n + r.staged, 0),
+}))
 const fileCount = computed(() =>
-  willCommit.value.reduce((n, r) => n + (stageAll.value ? r.staged + r.unstaged : r.staged), 0),
+  include.value === 'picked'
+    ? picked.value.length
+    : willCommit.value.reduce((n, r) => n + (stageAll.value ? r.staged + r.unstaged : r.staged), 0),
 )
 /**
  * §3.7 — a conflict is a state to work in, and this one had no way out.
@@ -396,21 +433,93 @@ async function markResolved(b: { workspaceId: string; paths: string[] }) {
   await Promise.all([refreshCommit(), load()])
 }
 const canCommit = computed(
-  () => !!message.value.trim() && fileCount.value > 0 && !blocked.value.length && !committing.value,
+  () =>
+    !!subject.value.trim() &&
+    // An amend with nothing new is a message rewrite, and still an amend.
+    (fileCount.value > 0 || amending.value) &&
+    !blocked.value.length &&
+    !committing.value,
 )
 
-async function doCommit() {
+/** Where it lands, said before the button rather than after it. */
+const git = computed(() => props.workspace.git)
+
+/**
+ * Amending is a mode, not a click: the box fills with the last commit's
+ * message so what gets rewritten is visible and editable first, and leaving
+ * the mode puts back whatever was being written before.
+ */
+const amending = ref(false)
+let beforeAmend: { subject: string; body: string } | null = null
+
+async function startAmend() {
+  menuOpen.value = false
+  if (amending.value || !git.value?.lastCommit) return
+  const full = (await lastCommitMessage(props.workspace.id)) ?? git.value.lastCommit.subject
+  beforeAmend = { subject: subject.value, body: body.value }
+  const [head, ...rest] = full.split('\n')
+  subject.value = head ?? ''
+  body.value = rest.join('\n').trim()
+  amending.value = true
+  void nextTick(() => subjectEl.value?.focus())
+}
+
+function stopAmend() {
+  amending.value = false
+  if (beforeAmend) {
+    subject.value = beforeAmend.subject
+    body.value = beforeAmend.body
+  }
+  beforeAmend = null
+}
+
+async function doCommit(opts: { push?: boolean } = {}) {
+  menuOpen.value = false
   if (!canCommit.value) return
   committing.value = true
-  const ok = await commit(null, props.workspace.id, message.value.trim(), stageAll.value)
+  const paths =
+    include.value === 'picked'
+      ? picked.value.flatMap((p) => {
+          const f = files.value.find((x) => x.path === p)
+          return f?.oldPath ? [p, f.oldPath] : [p]
+        })
+      : undefined
+  const ok = await commit(null, props.workspace.id, message.value, stageAll.value, {
+    ...(paths ? { paths } : {}),
+    ...(amending.value ? { amend: true } : {}),
+    ...(opts.push ? { push: true } : {}),
+  })
   committing.value = false
   // The plan dialog takes it from here; clearing on success keeps the field
   // from re-offering a message that has already been used.
   if (ok) {
-    message.value = ''
+    subject.value = ''
+    body.value = ''
     drafted.value = null
+    amending.value = false
+    beforeAmend = null
   }
 }
+
+/** The rest of what the button can do, opened upward — the box sits at the foot of the panel. */
+const menuOpen = ref(false)
+const menuRoot = ref<HTMLElement | null>(null)
+function onDocDown(e: MouseEvent) {
+  if (menuRoot.value && !menuRoot.value.contains(e.target as Node)) menuOpen.value = false
+}
+onMounted(() => document.addEventListener('mousedown', onDocDown))
+onBeforeUnmount(() => document.removeEventListener('mousedown', onDocDown))
+
+const commitLabel = computed(() => {
+  if (committing.value) return 'Planning…'
+  const n = fileCount.value
+  const files = n + ' file' + (n === 1 ? '' : 's')
+  if (amending.value) return n ? 'Amend with ' + files : 'Amend message'
+  return 'Commit ' + files
+})
+
+/** A summary line past 72 characters is cut off in most of the places it is read. */
+const subjectLen = computed(() => subject.value.trim().length)
 
 /* ── §16 — the draft ──────────────────────────────────────────────────────
  *
@@ -424,25 +533,7 @@ async function doCommit() {
  * keeps the fact afterwards.
  */
 
-/**
- * The box grows to what is in it, up to a point.
- *
- * A drafted body is three or four wrapped lines, and a two-line box showed the
- * subject with the reason scrolled out of sight — which is the half a person
- * most needs to read before committing something they did not write. Measured
- * rather than counted from newlines: at this width the wrapping is most of the
- * height.
- */
-const box = ref<HTMLTextAreaElement | null>(null)
-
-function fit() {
-  const el = box.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = Math.min(el.scrollHeight, 190) + 'px'
-}
-
-watch(message, () => void nextTick(fit))
+const subjectEl = ref<HTMLInputElement | null>(null)
 
 const drafting = ref(false)
 const drafted = ref<string | null>(null)
@@ -458,13 +549,15 @@ async function draftMessage() {
   const text = await draftCommitMessage(
     null,
     props.workspace.id,
-    stageAll.value,
-    message.value.trim() || undefined,
+    include.value !== 'staged',
+    subject.value.trim() || undefined,
   )
   drafting.value = false
   if (!text) return
-  message.value = text
-  draftText.value = text
+  // The summary line only — there is nowhere for a body to go.
+  subject.value = text.trim().split('\n')[0] ?? ''
+  body.value = ''
+  draftText.value = message.value
   drafted.value = 'claude'
 }
 
@@ -510,7 +603,7 @@ async function setAside() {
     topicId: stashScope.value,
     workspaceId: props.workspace.id,
     action: 'push',
-    ...(message.value.trim() ? { message: message.value.trim() } : {}),
+    ...(subject.value.trim() ? { message: subject.value.trim() } : {}),
     includeUntracked: true,
   })
   stashing.value = false
@@ -703,7 +796,7 @@ const mark: Record<string, Component> = {
            columns are: how much of the panel each deserves depends on the work
            in front of you, not on a number we picked. -->
       <Splitter
-        :size="layout.commit ?? measuredCommit"
+        :size="measuredCommit"
         :min="LAYOUT_LIMITS.commit.min"
         :max="commitMax"
         grows="up"
@@ -716,7 +809,9 @@ const mark: Record<string, Component> = {
       <!-- §16 — the commit lives against the review, and commits every
            repository of the topic at once because that is the unit the work
            was done in. -->
-      <div ref="bar" class="commitbar" :style="layout.commit ? { height: layout.commit + 'px' } : undefined">
+      <!-- A ceiling, not a height: a box dragged taller than what is in it used
+           to keep the difference as an empty band under the button. -->
+      <div ref="bar" class="commitbar" :style="layout.commit ? { maxHeight: layout.commit + 'px' } : undefined">
         <!-- §16 — work that is parked, where the work it was taken from would
              be. A stash nothing mentions is the failure mode this feature is
              built around; see `stash.ts` in the core. It stays on screen
@@ -821,85 +916,167 @@ const mark: Record<string, Component> = {
             <p class="cnote">Each commits with its own message. Push covers the topic.</p>
           </div>
 
-          <!-- The draft button belongs to the box, not to the footer: three
-               controls in a 320px row wrapped the checkbox onto two lines, and
-               a button that writes the message reads better beside the message
-               than beside the one that commits it. -->
-          <div class="cmhead">
-            <span class="section-label">message</span>
-            <span class="grow" />
-            <button
-              class="btn ghost tiny"
-              :disabled="!fileCount || drafting"
-              :title="
-                message.trim()
-                  ? 'Draft a message from this diff — what is in the box is used as a hint'
-                  : 'Draft a message from this diff'
-              "
-              @click="draftMessage"
-            >
-              <Sparkles />
-              {{ drafting ? 'Drafting…' : 'Draft' }}
-            </button>
-          </div>
+          <div class="cbox" :class="{ amending }">
+            <!-- Where it lands comes first: the branch is the one thing in
+                 here that is hard to take back once it is wrong. -->
+            <div class="chead">
+              <template v-if="amending">
+                <PencilLine class="sm" />
+                <span class="clead">Amending</span>
+                <span class="cwhere" :title="git?.lastCommit?.subject">{{ git?.lastCommit?.hash.slice(0, 7) }}</span>
+                <span class="grow" />
+                <button class="btn ghost tiny" title="Back to a new commit" @click="stopAmend">
+                  <X />Cancel
+                </button>
+              </template>
+              <template v-else>
+                <GitCommitHorizontal class="sm" />
+                <span class="clead">Commit to</span>
+                <span v-if="git?.branch" class="cwhere">{{ git.branch }}</span>
+                <span v-else class="cwhere warn">detached HEAD</span>
+                <span v-if="git?.ahead" class="cahead num" :title="git.ahead + ' commit(s) not pushed yet'">
+                  ↑{{ git.ahead }}
+                </span>
+                <span class="grow" />
+                <button
+                  class="btn ghost tiny"
+                  :disabled="!fileCount || drafting"
+                  :title="
+                    subject.trim()
+                      ? 'Draft a message from this diff — what you wrote is used as a hint'
+                      : 'Draft a message from this diff'
+                  "
+                  @click="draftMessage"
+                >
+                  <Sparkles />
+                  {{ drafting ? 'Drafting…' : 'Draft' }}
+                </button>
+              </template>
+            </div>
 
-          <textarea
-            ref="box"
-            v-model="message"
-            class="input cmsg selectable"
-            rows="2"
-            :placeholder="
-              fileCount
-                ? 'What changed, and why. ⌘⏎ to commit.'
-                : 'Nothing to commit'
-            "
-            :disabled="!fileCount"
-            @keydown.meta.enter="doCommit"
-          />
-          <!-- §12 — a message nobody rewrote is a message nobody wrote. The
-               mark stands until the text is touched. -->
-          <p v-if="drafted" class="cdrafted">
-            <Sparkles class="sm" />
-            Drafted by {{ drafted }} from this diff — read it before you commit.
-          </p>
+            <div class="cfield" :class="{ off: !fileCount && !amending }">
+              <div class="csubject">
+                <input
+                  ref="subjectEl"
+                  v-model="subject"
+                  class="selectable"
+                  :placeholder="fileCount || amending ? 'Commit message' : 'Nothing to commit'"
+                  :disabled="!fileCount && !amending"
+                  @keydown.enter.prevent="$event.metaKey && doCommit()"
+                />
+                <span
+                  v-if="subjectLen > 50"
+                  class="ccount num"
+                  :class="{ over: subjectLen > 72 }"
+                  title="Summaries past 72 characters are cut off in most logs"
+                >
+                  {{ 72 - subjectLen }}
+                </span>
+              </div>
+            </div>
+            <!-- §12 — a message nobody rewrote is a message nobody wrote. The
+                 mark stands until the text is touched. -->
+            <p v-if="drafted" class="cdrafted">
+              <Sparkles class="sm" />
+              Drafted by {{ drafted }} — read it before you commit.
+            </p>
 
-          <div class="cfoot">
-            <label class="call">
-              <input v-model="stageAll" type="checkbox" />
-              <span>stage everything</span>
-            </label>
-            <span class="grow" />
-            <button class="btn primary" :disabled="!canCommit" @click="doCommit">
-              <GitCommitHorizontal />
-              {{
-                committing
-                  ? 'Planning…'
-                  : 'Commit ' + fileCount + ' file' + (fileCount === 1 ? '' : 's')
-              }}
-            </button>
+            <div class="cinclude">
+              <div class="seg" role="group" aria-label="What goes into the commit">
+                <button
+                  :class="{ on: include === 'all' }"
+                  :title="'Every change, untracked files included'"
+                  @click="include = 'all'"
+                >
+                  All <span class="segn num">{{ counts.all }}</span>
+                </button>
+                <button
+                  :class="{ on: include === 'staged' }"
+                  :disabled="!counts.staged"
+                  title="Only what git already has staged"
+                  @click="include = 'staged'"
+                >
+                  Staged <span class="segn num">{{ counts.staged }}</span>
+                </button>
+                <button
+                  :class="{ on: include === 'picked' }"
+                  :disabled="!picked.length"
+                  title="The files ticked in the list above"
+                  @click="include = 'picked'"
+                >
+                  Selected <span class="segn num">{{ picked.length }}</span>
+                </button>
+              </div>
+            </div>
+
+            <div ref="menuRoot" class="csplit">
+              <button
+                class="btn primary cmain"
+                :disabled="!canCommit"
+                :title="'⌘⏎'"
+                @click="doCommit()"
+              >
+                <component :is="amending ? PencilLine : GitCommitHorizontal" />
+                {{ commitLabel }}
+              </button>
+              <button
+                class="btn primary cmore"
+                :class="{ open: menuOpen, dim: !canCommit && !menuOpen }"
+                :disabled="committing"
+                title="More ways to commit"
+                @click="menuOpen = !menuOpen"
+              >
+                <ChevronUp />
+              </button>
+              <div v-if="menuOpen" class="menu cmenu">
+                <button :disabled="!canCommit" @click="doCommit({ push: true })">
+                  <Upload /> {{ amending ? 'Amend & push' : 'Commit & push' }}
+                </button>
+                <div class="rule" />
+                <button v-if="!amending" :disabled="!git?.lastCommit" @click="startAmend">
+                  <PencilLine /> Amend last commit
+                </button>
+                <button v-else @click="stopAmend(); menuOpen = false">
+                  <GitCommitHorizontal /> New commit instead
+                </button>
+              </div>
+            </div>
           </div>
 
           <!-- Not committing is a real answer, and it was the one the window
                had no button for: the tree had to be clean to close a topic or
                switch a branch, and the only way there was a commit you did not
-               mean or a terminal. -->
-          <div v-if="dirty" class="caside">
-            <button class="btn ghost tiny" :disabled="stashing" @click="setAside">
+               mean or a terminal. The last commit sits beside it as context:
+               what this one follows, and what Amend would rewrite. -->
+          <div class="cafter">
+            <button
+              v-if="dirty"
+              class="btn ghost tiny"
+              :disabled="stashing"
+              :title="
+                subject.trim()
+                  ? 'Stash everything, labelled with the summary above — listed here until you put it back'
+                  : 'Stash everything — listed here until you put it back'
+              "
+              @click="setAside"
+            >
               <Archive />
               {{
                 stashing
                   ? 'Planning…'
                   : elsewhere.length
                     ? 'Set aside all ' + (elsewhere.length + 1) + ' repos'
-                    : 'Set aside instead'
+                    : 'Set aside'
               }}
             </button>
-            <span class="anote">
-              {{
-                message.trim()
-                  ? 'Listed here, labelled with the message above.'
-                  : 'Listed here until you put it back.'
-              }}
+            <span class="grow" />
+            <span
+              v-if="git?.lastCommit && !amending"
+              class="clast"
+              :title="git.lastCommit.hash.slice(0, 7) + ' · ' + git.lastCommit.author"
+            >
+              <span class="clastsub">{{ git.lastCommit.subject }}</span>
+              <span class="clastago">{{ since(git.lastCommit.ts) }}</span>
             </span>
           </div>
         </template>
@@ -1020,28 +1197,6 @@ const mark: Record<string, Component> = {
 .cname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crow .num { color: var(--text-dim); font-size: 11px; }
 
-/* A message is a sentence and often two, and a 30px input made writing one
-   feel like filling in a field. */
-.cmsg {
-  width: 100%;
-  resize: vertical;
-  min-height: 48px;
-  max-height: 190px;
-  overflow-y: auto;
-  line-height: 1.5;
-}
-
-.cfoot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-.cfoot .grow { flex: 1; }
-.call {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.call input { accent-color: var(--accent); }
 .cnote {
   margin: 5px 0 0;
   font-size: 10px;
@@ -1090,25 +1245,137 @@ const mark: Record<string, Component> = {
   color: var(--agent);
 }
 .cdrafted .lucide { flex: none; }
+.cbox .cdrafted { margin: -2px 0 0; }
 
-.cmhead { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
-.cmhead .grow { flex: 1; }
 
-.caside {
+/* ── the commit box ─────────────────────────────────────────────────────
+   Where it lands, what it says, what goes in, the verb — in reading order.
+   The panel around it is sunken, so the field is what reads as the thing to
+   fill in. */
+.cbox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.chead > .lucide { width: 13px; height: 13px; flex: none; color: var(--text-dim); }
+.chead .grow { flex: 1; }
+.chead .btn { margin-right: -6px; }
+.cwhere {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--hover);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+}
+.cwhere.warn { color: var(--warn); }
+.cahead { font-size: 11px; color: var(--text-dim); }
+.cbox.amending .chead,
+.cbox.amending .chead > .lucide { color: var(--warn); }
+
+.cfield {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  transition: border-color var(--dur-1) var(--ease-soft), box-shadow var(--dur-1) var(--ease-soft);
+}
+.cfield:hover { border-color: var(--line-strong); }
+.cfield:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.cfield.off { opacity: 0.6; }
+.cfield input {
+  display: block;
+  width: 100%;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+.cfield input::placeholder { color: var(--text-dim); font-weight: 400; }
+.csubject { display: flex; align-items: center; }
+.csubject input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+.ccount { flex: none; padding: 0 10px 0 4px; font-size: 11px; color: var(--text-dim); }
+.ccount.over { color: var(--danger); }
+
+/* What goes in: three answers, the width of the box, each counted. */
+/* The shared `.seg` well is drawn for a raised surface; on this sunken panel
+   its background and border both vanished, so it gets its own edge here. */
+.cinclude .seg {
+  display: flex;
+  width: 100%;
+  background: var(--active);
+  border-color: var(--line);
+}
+.cinclude .seg > button { flex: 1; justify-content: center; }
+.cinclude .seg > button:disabled { opacity: 0.4; cursor: default; }
+.segn { font-size: 10px; color: var(--text-dim); }
+.seg > button.on .segn { color: var(--accent); }
+
+/* The verb, with the rest of its verbs one chevron away. */
+.csplit { position: relative; display: flex; }
+.csplit > .btn { height: 32px; }
+.cmain { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.cmore {
+  flex: none;
+  width: 32px;
+  padding: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--accent-text) 25%, transparent), var(--shadow-sm);
+}
+/* Still clickable with nothing to commit — Amend lives behind it — but drawn
+   at the main half's weight, so the two read as one button. */
+.cmore.dim { opacity: 0.4; }
+.cmore.dim:hover:not(:disabled) { opacity: 0.75; }
+.cmore .lucide { transition: transform var(--dur-1) var(--ease-soft); }
+.cmore.open .lucide { transform: rotate(180deg); }
+.cmenu { bottom: calc(100% + 6px); right: 0; }
+
+.cafter {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 24px;
   margin-top: 6px;
 }
-.tiny { height: 24px; padding: 0 8px; font-size: var(--fs-xs); }
-.tiny .lucide { width: 12px; height: 12px; }
-.anote {
-  flex: 1;
+.cafter .grow { flex: 1; }
+.cafter > .btn { margin-left: -8px; }
+.clast {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   min-width: 0;
-  font-size: 10px;
-  line-height: 1.4;
+  font-size: 11px;
   color: var(--text-dim);
 }
+.clastsub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clastago { flex: none; opacity: 0.8; }
+
+.tiny { height: 24px; padding: 0 8px; font-size: var(--fs-xs); }
+.tiny .lucide { width: 12px; height: 12px; }
 
 .cblock { display: flex; flex-direction: column; gap: 10px; }
 .brepo { display: flex; flex-direction: column; gap: 3px; }

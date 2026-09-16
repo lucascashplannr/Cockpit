@@ -424,6 +424,7 @@ const handlers: Record<string, Handler> = {
 
   'git.commitPreview': (p: commit.CommitInput) => commit.preview(p),
   'git.commit': (p: commit.CommitInput) => commit.plan(p),
+  'git.lastMessage': (p: { workspaceId: string }) => commit.lastMessage(p.workspaceId),
   /** §16 — a draft for the box, never a commit. See `commit.draftMessage`. */
   'git.draftMessage': (p: commit.DraftInput) => commit.draftMessage(p),
 

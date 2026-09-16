@@ -1779,6 +1779,9 @@ export function toast(
   text: string,
   action?: { label: string; run: () => void },
 ): void {
+  // Never an empty toast: an icon and a close button say only that something
+  // went wrong somewhere.
+  if (!text.trim()) text = kind === 'error' ? 'Something went wrong, with no message to show.' : text
   const t = { kind, text, ...(action ? { action } : {}) }
   state.toast = t
   // A toast that offers something stays long enough to be taken up on it.
@@ -2302,12 +2305,14 @@ export async function commit(
   workspaceId: string,
   message: string,
   all: boolean,
+  opts: { paths?: string[]; amend?: boolean; push?: boolean } = {},
 ): Promise<boolean> {
   const res = await guard(() =>
     client.call('git.commit', {
       ...(topicId ? { topicId } : { workspaceIds: [workspaceId] }),
       message,
       all,
+      ...opts,
     }),
   )
   if (!res) return false
@@ -2318,19 +2323,31 @@ export async function commit(
   // §16 — the review already happened, in the tab this was pressed from. What
   // is left to confirm is the sentence and where it lands, not two lines of
   // `git add` under a numbered heading.
-  const n = res.preview
+  const n = opts.paths?.length ?? res.preview
     .filter((r) => r.willCommit)
     .reduce((sum, r) => sum + (all ? r.staged + r.unstaged : r.staged), 0)
+  const files = n + ' file' + (n === 1 ? '' : 's')
   state.pendingConfirm = {
-    title: 'Commit ' + n + ' file' + (n === 1 ? '' : 's') + '?',
+    title: opts.amend
+      ? 'Amend the last commit' + (opts.push ? ' and push?' : '?')
+      : 'Commit ' + files + (opts.push ? ' and push?' : '?'),
     body: res.plan.warnings,
     quote: message,
-    verb: 'Commit',
-    done: 'committed',
-    danger: false,
+    verb: opts.amend ? 'Amend' : opts.push ? 'Commit & push' : 'Commit',
+    done: opts.amend ? 'amended' : opts.push ? 'committed and pushed' : 'committed',
+    danger: res.plan.steps.some((s) => s.destructive),
     plan: res.plan,
   }
   return true
+}
+
+/** The last commit's whole message, for an amend to start from. */
+export async function lastCommitMessage(workspaceId: string): Promise<string | null> {
+  try {
+    return await client.call('git.lastMessage', { workspaceId })
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -2355,7 +2372,9 @@ export async function draftCommitMessage(
   )
   if (!res) return null
   if (!res.ok) {
-    toast('error', res.detail)
+    // A core from before the engine's own words were passed on answers with
+    // an empty detail, and a toast with nothing in it is not an answer.
+    toast('error', res.detail || 'Draft failed, and the engine did not say why — is the claude CLI signed in?')
     return null
   }
   if (res.truncated) toast('info', 'The diff was too large to send whole — read the draft closely.')

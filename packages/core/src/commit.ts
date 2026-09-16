@@ -40,6 +40,15 @@ export interface CommitScope {
 
 export interface CommitInput extends CommitScope {
   message: string
+  /**
+   * Only these paths, whatever else is staged or changed — the files ticked in
+   * the Diff tab. One repository only: a path means nothing across several.
+   */
+  paths?: string[]
+  /** Rewrite the last commit instead of adding one. Needs no files. */
+  amend?: boolean
+  /** Push the branch once the commit is made — same plan, one question. */
+  push?: boolean
 }
 
 /**
@@ -110,10 +119,18 @@ export async function plan(input: CommitInput): Promise<{
     }
   }
 
+  const paths = input.paths?.length ? [...new Set(input.paths)] : null
+  if (paths?.some((p) => p.includes('"'))) {
+    return { ok: false, detail: 'a path with a double quote in it cannot be committed from here', plan: null, preview: [] }
+  }
+
   // preview() re-probes, so the rows below are current and the targets can be
   // read back from the registry afterwards without a second round of git.
   const rows = await preview(input)
   const targets = resolveTargets(input)
+  if (paths && targets.length !== 1) {
+    return { ok: false, detail: 'picking files works in one repository at a time', plan: null, preview: rows }
+  }
   const steps: PlanStep[] = []
   const warnings: string[] = []
   const repos: string[] = []
@@ -150,9 +167,25 @@ export async function plan(input: CommitInput): Promise<{
       )
       continue
     }
-    if (!row.willCommit) continue
+    const files = paths ? paths.length : input.all ? row.staged + row.unstaged : row.staged
+    // An amend with nothing new is a message rewrite, and a real thing to want.
+    if (!input.amend && (paths ? !paths.length : !row.willCommit)) continue
 
-    if (input.all) {
+    const g = registry.requireWorkspace(w.id).git
+    const onRemote = !!g && g.upstream === 'origin/' + row.branch && g.ahead === 0
+    if (input.amend && !g?.lastCommit) {
+      return { ok: false, detail: w.name + ' has no commit to amend', plan: null, preview: rows }
+    }
+
+    const spec = paths ? ' -- ' + paths.map((p) => '"' + p + '"').join(' ') : ''
+    if (paths) {
+      steps.push({
+        title: w.name + ': stage ' + paths.length + ' file(s)',
+        command: 'git add -A' + spec,
+        cwd: w.path,
+        destructive: false,
+      })
+    } else if (input.all) {
       steps.push({
         title: w.name + ': stage everything',
         command: 'git add -A',
@@ -161,22 +194,49 @@ export async function plan(input: CommitInput): Promise<{
       })
     }
     steps.push({
-      title: w.name + ': commit ' + (input.all ? row.staged + row.unstaged : row.staged) + ' file(s)',
-      command: 'git commit -m "' + message + '"',
+      title: w.name + (input.amend ? ': amend the last commit' : ': commit ' + files + ' file(s)'),
+      command: 'git commit' + (input.amend ? ' --amend' : '') + ' -m "' + message + '"' + spec,
       cwd: w.path,
-      destructive: false,
+      // Rewriting a commit that is already on the remote is the one version of
+      // this that cannot be quietly walked back.
+      destructive: !!input.amend && onRemote,
     })
+    if (input.amend && onRemote) {
+      warnings.push(
+        'The last commit of ' + w.name + ' is already on origin. Amending rewrites it, ' +
+          'so the next push has to force.',
+      )
+    }
+
+    if (input.push) {
+      if (!row.branch) {
+        return { ok: false, detail: w.name + ' is not on a branch; there is nothing to push', plan: null, preview: rows }
+      }
+      const origin = await git(w.path, ['remote', 'get-url', 'origin'])
+      if (!origin.ok) {
+        return { ok: false, detail: w.name + ' has no origin remote to push to', plan: null, preview: rows }
+      }
+      const own = g?.upstream === 'origin/' + row.branch
+      const force = own && ((!!input.amend && onRemote) || ((g?.behind ?? 0) > 0 && (g?.ahead ?? 0) > 0))
+      steps.push({
+        title: w.name + (force ? ': force-push (with lease) ' : ': push ') + row.branch,
+        command: force
+          ? 'git push --force-with-lease origin ' + row.branch
+          : 'git push -u origin ' + row.branch,
+        cwd: w.path,
+        destructive: force,
+      })
+      if (!force && own && (g?.behind ?? 0) > 0) {
+        warnings.push('origin/' + row.branch + ' has commits this branch does not; the push will be refused until you catch up.')
+      }
+    }
     repos.push(w.name)
     // Asked as a question now rather than read as a list of steps, and the one
     // thing a list of steps never said out loud is where the commit lands.
     // Which repository and which branch is the whole of what there is to get
     // wrong here — the message is already on screen, and the diff was the
     // screen before it.
-    landings.push({
-      repo: w.name,
-      branch: row.branch,
-      files: input.all ? row.staged + row.unstaged : row.staged,
-    })
+    landings.push({ repo: w.name, branch: row.branch, files })
   }
 
   if (!steps.length) {
@@ -200,10 +260,14 @@ export async function plan(input: CommitInput): Promise<{
   }
 
   warnings.push(
-    input.all
-      ? 'Everything in the working tree is staged first, untracked files included.'
-      : 'Only what is already staged goes in; the rest stays in the working tree.',
+    paths
+      ? 'Only the ' + (paths.length === 1 ? 'file' : paths.length + ' files') +
+          ' you picked go in, as they stand; everything else stays where it is.'
+      : input.all
+        ? 'Everything in the working tree is staged first, untracked files included.'
+        : 'Only what is already staged goes in; the rest stays in the working tree.',
   )
+  if (input.push) warnings.push('Then the branch is pushed to origin — the step that leaves your machine.')
 
   if (repos.length > 1) {
     warnings.push(
@@ -213,7 +277,7 @@ export async function plan(input: CommitInput): Promise<{
 
   const p: PlanPreview = {
     planId: newId('plan_'),
-    operation: 'commit',
+    operation: input.amend ? 'amend' : 'commit',
     steps,
     warnings,
     capturesRestorePoint: false,
@@ -228,6 +292,14 @@ export async function plan(input: CommitInput): Promise<{
 }
 
 export { basename }
+
+/** The whole message of the last commit, body included — what an amend starts from. */
+export async function lastMessage(workspaceId: string): Promise<string | null> {
+  const w = registry.requireWorkspace(workspaceId)
+  if (!w.repo) return null
+  const r = await git(w.path, ['log', '-1', '--format=%B'])
+  return r.ok ? r.stdout.replace(/\s+$/, '') : null
+}
 
 /* ── §16 — drafting the message, never the commit ─────────────────────────
  *
@@ -353,13 +425,10 @@ export async function draftMessage(input: DraftInput): Promise<DraftResult> {
     'no preamble, no explanation, no code fences, no quotation marks around it.',
     '',
     'Rules:',
-    '- First line: imperative, concrete, at most 72 characters.',
-    '- Say what changed and why it changed. Never describe the diff mechanically',
+    '- One line only, no body: imperative, concrete, at most 72 characters.',
+    '- Say what changed, and why when it fits. Never describe the diff mechanically',
     '  ("update file X"), and never invent a reason the diff does not support.',
-    '- Add a body only if the change has a reason that is not obvious from the',
-    '  first line. Blank line before it, wrapped at 72 columns, no bullet padding.',
-    '- The body says why the change was made. It is not a code review: do not',
-    '  point out bugs, risks or missing pieces in the diff, however tempting.',
+    '- It is not a code review: do not point out bugs, risks or missing pieces.',
     ...(ctx.repos.length > 1
       ? ['- This message will be used for ' + ctx.repos.length + ' repositories (' +
          ctx.repos.join(', ') + ') committed together. Describe the change, not each repo.']
@@ -389,7 +458,11 @@ export async function draftMessage(input: DraftInput): Promise<DraftResult> {
   if (!r.ok) {
     return {
       ok: false,
-      detail: (r.stderr.trim().split('\n').pop() ?? 'the engine failed').slice(0, 300),
+      // The CLI reports some failures — an expired sign-in among them — on
+      // stdout, and an empty toast is worse than no toast.
+      detail: (
+        (r.stderr.trim() || r.stdout.trim()).split('\n').pop() || 'the engine failed'
+      ).slice(0, 300),
       message: '',
       engine,
       truncated: ctx.truncated,

@@ -525,9 +525,20 @@ export interface Rpc {
     result: CommitPreview[]
   }
   'git.commit': {
-    params: { topicId?: string; workspaceIds?: string[]; message: string; all: boolean }
+    params: {
+      topicId?: string
+      workspaceIds?: string[]
+      message: string
+      all: boolean
+      /** Only these files — one repository. */
+      paths?: string[]
+      amend?: boolean
+      push?: boolean
+    }
     result: { ok: boolean; detail: string; plan: PlanPreview | null; preview: CommitPreview[] }
   }
+  /** The last commit's full message, for an amend to start from. */
+  'git.lastMessage': { params: { workspaceId: string }; result: string | null }
 
   /**
    * §16 — the message is drafted, never committed. The engine reads the diff
