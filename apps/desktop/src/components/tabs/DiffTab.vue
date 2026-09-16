@@ -495,7 +495,6 @@ async function doCommit(opts: { push?: boolean } = {}) {
   if (ok) {
     subject.value = ''
     body.value = ''
-    drafted.value = null
     amending.value = false
     beforeAmend = null
   }
@@ -518,8 +517,6 @@ const commitLabel = computed(() => {
   return 'Commit ' + files
 })
 
-/** A summary line past 72 characters is cut off in most of the places it is read. */
-const subjectLen = computed(() => subject.value.trim().length)
 
 /* ── §16 — the draft ──────────────────────────────────────────────────────
  *
@@ -527,18 +524,14 @@ const subjectLen = computed(() => subject.value.trim().length)
  * does not commit, and it cannot: what goes in is a string, and the button
  * next to it is still the one a person presses.
  *
- * §12 is why `drafted` exists. A message nobody rewrote is a message nobody
- * wrote, and the difference should be visible while it can still be acted on
- * — so the note sits under the box until the text is touched, and the journal
- * keeps the fact afterwards.
+ * §12's mark — a line saying the sentence was drafted rather than typed —
+ * used to sit under the box. The journal still records it, which is the part
+ * that has to survive; a banner over the commit button did not earn its room.
  */
 
 const subjectEl = ref<HTMLInputElement | null>(null)
 
 const drafting = ref(false)
-const drafted = ref<string | null>(null)
-/** The exact text that came back, so any edit at all clears the mark. */
-const draftText = ref('')
 
 async function draftMessage() {
   if (drafting.value || !fileCount.value) return
@@ -557,13 +550,7 @@ async function draftMessage() {
   // The summary line only — there is nowhere for a body to go.
   subject.value = text.trim().split('\n')[0] ?? ''
   body.value = ''
-  draftText.value = message.value
-  drafted.value = 'claude'
 }
-
-watch(message, (v) => {
-  if (v !== draftText.value) drafted.value = null
-})
 
 /* ── §16 — set aside, and see that you did ───────────────────────────────
  *
@@ -954,32 +941,16 @@ const mark: Record<string, Component> = {
               </template>
             </div>
 
-            <div class="cfield" :class="{ off: !fileCount && !amending }">
-              <div class="csubject">
-                <input
-                  ref="subjectEl"
-                  v-model="subject"
-                  class="selectable"
-                  :placeholder="fileCount || amending ? 'Commit message' : 'Nothing to commit'"
-                  :disabled="!fileCount && !amending"
-                  @keydown.enter.prevent="$event.metaKey && doCommit()"
-                />
-                <span
-                  v-if="subjectLen > 50"
-                  class="ccount num"
-                  :class="{ over: subjectLen > 72 }"
-                  title="Summaries past 72 characters are cut off in most logs"
-                >
-                  {{ 72 - subjectLen }}
-                </span>
-              </div>
-            </div>
-            <!-- §12 — a message nobody rewrote is a message nobody wrote. The
-                 mark stands until the text is touched. -->
-            <p v-if="drafted" class="cdrafted">
-              <Sparkles class="sm" />
-              Drafted by {{ drafted }} — read it before you commit.
-            </p>
+            <!-- The app's own field, not one drawn for this box: a commit
+                 message is text you type like any other. -->
+            <input
+              ref="subjectEl"
+              v-model="subject"
+              class="input cmsg selectable"
+              :placeholder="fileCount || amending ? 'Commit message' : 'Nothing to commit'"
+              :disabled="!fileCount && !amending"
+              @keydown.enter.prevent="$event.metaKey && doCommit()"
+            />
 
             <div class="cinclude">
               <div class="seg" role="group" aria-label="What goes into the commit">
@@ -1169,7 +1140,7 @@ const mark: Record<string, Component> = {
   /* Only when it has been dragged to a height of its own: a box shorter than
      its contents scrolls rather than clipping the button off the end of it. */
   overflow-y: auto;
-  padding: 10px 12px 12px;
+  padding: 12px 12px 12px;
   border-top: 1px solid var(--line);
   background: var(--bg-sunken);
 }
@@ -1234,29 +1205,21 @@ const mark: Record<string, Component> = {
 .srow .icon-btn .lucide { width: 13px; height: 13px; }
 .srow .icon-btn.drop:hover { color: var(--danger); }
 
-/* The draft mark. Quiet — it is a fact about the text, not a warning. */
-.cdrafted {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 6px 0 0;
-  font-size: 10px;
-  line-height: 1.45;
-  color: var(--agent);
-}
-.cdrafted .lucide { flex: none; }
-.cbox .cdrafted { margin: -2px 0 0; }
 
 
 /* ── the commit box ─────────────────────────────────────────────────────
    Where it lands, what it says, what goes in, the verb — in reading order.
    The panel around it is sunken, so the field is what reads as the thing to
    fill in. */
+/* Two groups, not one block: what you write (where it lands, the message),
+   then what you do (what goes in, the verb). The room is between the groups,
+   not spread evenly through them. */
 .cbox {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
+.cinclude { margin-top: 8px; }
 .chead {
   display: flex;
   align-items: center;
@@ -1285,40 +1248,7 @@ const mark: Record<string, Component> = {
 .cbox.amending .chead,
 .cbox.amending .chead > .lucide { color: var(--warn); }
 
-.cfield {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--panel-raised);
-  transition: border-color var(--dur-1) var(--ease-soft), box-shadow var(--dur-1) var(--ease-soft);
-}
-.cfield:hover { border-color: var(--line-strong); }
-.cfield:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-.cfield.off { opacity: 0.6; }
-.cfield input {
-  display: block;
-  width: 100%;
-  margin: 0;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  outline: none;
-}
-.cfield input::placeholder { color: var(--text-dim); font-weight: 400; }
-.csubject { display: flex; align-items: center; }
-.csubject input {
-  flex: 1;
-  min-width: 0;
-  height: 30px;
-  padding: 0 9px;
-  font-size: var(--fs-xs);
-  font-weight: 500;
-}
-.ccount { flex: none; padding: 0 10px 0 4px; font-size: 11px; color: var(--text-dim); }
-.ccount.over { color: var(--danger); }
+.cmsg:disabled { opacity: 0.6; }
 
 /* What goes in: three answers, the width of the box, each counted. */
 /* The shared `.seg` well is drawn for a raised surface; on this sunken panel
@@ -1336,7 +1266,7 @@ const mark: Record<string, Component> = {
 
 /* The verb, with the rest of its verbs one chevron away. */
 .csplit { position: relative; display: flex; }
-.csplit > .btn { height: 32px; }
+.csplit > .btn { height: 34px; }
 .cmain { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .cmore {
   flex: none;
@@ -1359,7 +1289,7 @@ const mark: Record<string, Component> = {
   align-items: center;
   gap: 8px;
   min-height: 24px;
-  margin-top: 6px;
+  margin-top: 10px;
 }
 .cafter .grow { flex: 1; }
 .cafter > .btn { margin-left: -8px; }
