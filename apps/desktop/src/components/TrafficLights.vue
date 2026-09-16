@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { hostWindow } from '../core/store.js'
+import { hostWindow, state } from '../core/store.js'
 
 /**
  * The window's three buttons, drawn rather than native.
@@ -19,11 +19,16 @@ import { hostWindow } from '../core/store.js'
  * Fixed rather than laid out in the title band: the start page covers the
  * whole window, including the band, and native buttons used to float over it.
  * These have to as well, or the start page would have no way to close.
+ *
+ * Except under the attachment viewer. That is a moment of looking at one thing,
+ * with its own way out drawn in the opposite corner; three coloured buttons
+ * floating over the blur were the only part of the window it did not cover,
+ * and the red one closed the whole window from inside a preview.
  */
 </script>
 
 <template>
-  <div v-if="hostWindow" class="lights">
+  <div v-if="hostWindow && !state.pendingView" class="lights">
     <button class="lt close" title="Close" @click="hostWindow.close()">
       <svg class="glyph" viewBox="0 0 8 8" aria-hidden="true">
         <path d="M2.1 2.1 L5.9 5.9 M5.9 2.1 L2.1 5.9" />

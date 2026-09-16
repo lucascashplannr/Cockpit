@@ -17,10 +17,10 @@ import Attachment from '../agent/Attachment.vue'
 import Composer from '../agent/Composer.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFile,
+  activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFiles,
   askRevert, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
-  transcriptOf, viewImage,
+  transcriptOf,
 } from '../../core/store.js'
 import { anchorOf, anchorsIn, readPrompt } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
@@ -457,16 +457,7 @@ function labels(turn: AgentTurn): Record<string, string> {
 }
 
 function showImage(turn: AgentTurn, file: AttachedFile): void {
-  // A paste or a file opens as text; only a picture goes to the image viewer.
-  if (!file.image) {
-    void openSentFile(file)
-    return
-  }
-  const pics = turn.attachments.filter((f) => f.image && attachmentSrc(f.path))
-  viewImage(
-    pics.map((f) => ({ name: f.name, src: attachmentSrc(f.path) })),
-    pics.findIndex((f) => f.id === file.id),
-  )
+  openSentFiles(turn.attachments, file)
 }
 
 /** "Init and Init-Backend" — a list, read the way it would be said. */

@@ -234,16 +234,14 @@ export const state = reactive({
   pendingRevert: null as PendingRevert | null,
 
   /**
-   * The picture being looked at properly, and the ones it sits among.
+   * The attachment being looked at properly — a picture, a paste or a file —
+   * and the ones it sits among.
    *
    * At app level like the dialogs, and for the same reason: it covers the
    * window, so it cannot belong to the panel that happened to open it — a
    * conversation switched underneath it would take the picture away with it.
    */
-  pendingImage: null as ImageView | null,
-  /** A paste or a file opened out of its tile, to read — or, for a paste still
-   *  in the composer, to edit. */
-  pendingText: null as TextView | null,
+  pendingView: null as AttachmentView | null,
 
   paletteOpen: false,
   /** §7 — the sheet that creates a project rather than finding one. */
@@ -1265,37 +1263,45 @@ export const agentDraft = computed<string>({
   },
 })
 
-/* ── looking at a picture properly ────────────────────────────────────────
+/* ── looking at an attachment properly ───────────────────────────────────
  *
- * A 48-pixel tile says *that* a screenshot is attached; it does not let anyone
- * read the error message in it. The thumbnail is an index, the viewer is where
- * it is actually looked at.
+ * A 72-pixel tile says *that* a screenshot or 155 lines are attached; it does
+ * not let anyone read the error message in either. The tile is an index, the
+ * viewer is where it is actually looked at — and one viewer for every kind,
+ * so ← and → walk the whole message rather than stopping at the first thing
+ * that is not a picture.
  */
 
-export interface ImageView {
-  /** Every image it belongs with, so ← and → mean something. */
-  items: { name: string; src: string }[]
+export type ViewItem =
+  | { kind: 'image'; name: string; src: string }
+  | {
+      kind: 'text'
+      name: string
+      /** `155 lines`, `113.8 MB` — what the tile already said, said again. */
+      meta: string
+      /** `undefined` while the bytes are on their way, `null` when they are
+       *  not text at all — a disk image is worth a tile, not a page of mojibake. */
+      text: string | null | undefined
+      /** Set when this is a paste still in the composer, which makes it editable. */
+      draftId?: string
+    }
+
+export interface AttachmentView {
+  /** Everything attached beside it, in the order of the tiles. */
+  items: ViewItem[]
   at: number
 }
 
-export function viewImage(items: ImageView['items'], at: number): void {
+function viewAttachments(items: ViewItem[], at: number): void {
   if (!items.length || at < 0) return
-  state.pendingImage = { items, at }
+  state.pendingView = { items, at }
 }
 
-/**
- * A paste or a file, opened to be read.
- *
- * `text` is `undefined` while the bytes are on their way and `null` when they
- * are not text at all — a disk image is worth a tile, not a page of mojibake.
- */
-export interface TextView {
-  name: string
-  /** `155 lines`, `113.8 MB` — what the tile already said, said again. */
-  meta: string
-  text: string | null | undefined
-  /** Set when this is a paste still in the composer, which makes it editable. */
-  draftId?: string
+/** Wraps, because two attachments are a thing you flick between. */
+export function stepAttachment(by: number): void {
+  const v = state.pendingView
+  if (!v || v.items.length < 2) return
+  v.at = (v.at + by + v.items.length) % v.items.length
 }
 
 /** Past this, a text file is a thing to open in an editor, not in a sheet. */
@@ -1331,14 +1337,25 @@ function asText(b64: string, bytes: number): string | null {
   }
 }
 
-/** A tile in the composer, opened. */
-export function openDraftFile(f: DraftFile): void {
-  if (f.pasted) {
-    state.pendingText = { name: f.name, meta: linesOf(f.text ?? ''), text: f.text ?? '', draftId: f.id }
-    return
-  }
-  const text = asText(f.data, f.bytes)
-  state.pendingText = { name: f.name, meta: text === null ? sizeOf(f.bytes) : linesOf(text) + ' · ' + sizeOf(f.bytes), text }
+/** A tile in the composer, opened among the others beside it. */
+export function openDraftFiles(at: DraftFile): void {
+  const files = agentFiles.value
+  viewAttachments(
+    files.map((f): ViewItem => {
+      if (f.mediaType.startsWith('image/')) return { kind: 'image', name: f.name, src: dataUrl(f) }
+      if (f.pasted) {
+        return { kind: 'text', name: f.name, meta: linesOf(f.text ?? ''), text: f.text ?? '', draftId: f.id }
+      }
+      const text = asText(f.data, f.bytes)
+      return {
+        kind: 'text',
+        name: f.name,
+        meta: text === null ? sizeOf(f.bytes) : linesOf(text) + ' · ' + sizeOf(f.bytes),
+        text,
+      }
+    }),
+    files.findIndex((f) => f.id === at.id),
+  )
 }
 
 /**
@@ -1354,39 +1371,57 @@ export function editDraftText(id: string, text: string): void {
   )
   // The sheet's text too, not only its caption: the caption changing re-renders
   // the sheet, and a sheet still bound to the old text puts it back mid-typing.
-  if (state.pendingText?.draftId === id) {
-    state.pendingText.text = text
-    state.pendingText.meta = linesOf(text)
+  const item = state.pendingView?.items.find((i) => i.kind === 'text' && i.draftId === id)
+  if (item?.kind === 'text') {
+    item.text = text
+    item.meta = linesOf(text)
   }
 }
 
-/** Which open this is, so a slow fetch cannot land in a later sheet. */
+/** Which open this is, so a slow fetch cannot land in a later viewer. */
 let opened = 0
 
-/** A tile in the thread, opened — fetched on the click, not with the tile. */
-export async function openSentFile(file: Attachment): Promise<void> {
+/**
+ * A tile in the thread, opened among the rest of its turn.
+ *
+ * The viewer opens at once and each item fills in as its bytes arrive: they
+ * are fetched on the click, not with the tile, because nobody reads most of
+ * what they ever attached a second time.
+ */
+export function openSentFiles(files: Attachment[], at: Attachment): void {
   const mine = ++opened
-  state.pendingText = { name: file.name, meta: sizeOf(file.bytes), text: undefined }
-  let text: string | null = file.pasted ? fetchedText[file.path] || null : null
-  if (text === null && file.bytes <= MAX_PREVIEW) {
-    try {
-      const b64 = await client.call('agent.attachment', { path: file.path })
-      text = b64 ? asText(b64, file.bytes) : null
-    } catch {
-      text = null
-    }
-  }
-  // Closed, or replaced by another, while the bytes were on their way.
-  if (mine !== opened || !state.pendingText) return
-  state.pendingText.text = text
-  if (text !== null) state.pendingText.meta = linesOf(text) + ' · ' + sizeOf(file.bytes)
-}
+  viewAttachments(
+    files.map((f): ViewItem =>
+      f.image
+        ? { kind: 'image', name: f.name, src: attachmentSrc(f.path) }
+        : { kind: 'text', name: f.name, meta: sizeOf(f.bytes), text: undefined },
+    ),
+    files.findIndex((f) => f.id === at.id),
+  )
+  files.forEach((f, i) => void fill(f, i))
 
-/** Wraps, because three pictures in a row is a thing you flick through. */
-export function stepImage(by: number): void {
-  const v = state.pendingImage
-  if (!v || v.items.length < 2) return
-  v.at = (v.at + by + v.items.length) % v.items.length
+  async function fill(f: Attachment, i: number): Promise<void> {
+    if (f.image) {
+      await loadAttachment(f)
+      const item = mine === opened ? state.pendingView?.items[i] : undefined
+      if (item?.kind === 'image') item.src = attachmentSrc(f.path)
+      return
+    }
+    let text: string | null = f.pasted ? fetchedText[f.path] || null : null
+    if (text === null && f.bytes <= MAX_PREVIEW) {
+      try {
+        const b64 = await client.call('agent.attachment', { path: f.path })
+        text = b64 ? asText(b64, f.bytes) : null
+      } catch {
+        text = null
+      }
+    }
+    // Closed, or replaced by another, while the bytes were on their way.
+    const item = mine === opened ? state.pendingView?.items[i] : undefined
+    if (item?.kind !== 'text') return
+    item.text = text
+    if (text !== null) item.meta = linesOf(text) + ' · ' + sizeOf(f.bytes)
+  }
 }
 
 /* ── what is attached to the turn being written ────────────────────────────

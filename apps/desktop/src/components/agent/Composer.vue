@@ -3,7 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { CircleStop, FileCode, FileText, Map as MapIcon, Paperclip, UnfoldVertical, X } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachFiles, attachText, client, dataUrl, detachFile, engineName, guard,
-  isLongPaste, openDraftFile, placedHandles, saveComposer, state, viewImage,
+  isLongPaste, openDraftFiles, placedHandles, saveComposer, state,
 } from '../../core/store.js'
 import { ANCHOR_PAD, CLAUDE_MODELS, anchorOf, anchorWritten, splitPrompt } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
@@ -539,16 +539,7 @@ function onDrop(ev: DragEvent): void {
  * is the reason to look.
  */
 function open(f: DraftFile): void {
-  if (f.mediaType.startsWith('image/')) showImage(f)
-  else openDraftFile(f)
-}
-
-function showImage(f: DraftFile): void {
-  const pics = agentFiles.value.filter((x) => x.mediaType.startsWith('image/'))
-  viewImage(
-    pics.map((x) => ({ name: x.name, src: dataUrl(x) })),
-    pics.findIndex((x) => x.id === f.id),
-  )
+  openDraftFiles(f)
 }
 
 /* ── the anchors, drawn as what they are ──────────────────────────────────

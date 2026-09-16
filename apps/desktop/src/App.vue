@@ -9,8 +9,7 @@ import CommandPalette from './components/CommandPalette.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import DetailsDialog from './components/DetailsDialog.vue'
-import ImageViewer from './components/ImageViewer.vue'
-import TextViewer from './components/TextViewer.vue'
+import AttachmentViewer from './components/AttachmentViewer.vue'
 import PlanDialog from './components/PlanDialog.vue'
 import RevertDialog from './components/RevertDialog.vue'
 import ProjectDialog from './components/ProjectDialog.vue'
@@ -25,7 +24,7 @@ import TrafficLights from './components/TrafficLights.vue'
 import Splitter from './components/Splitter.vue'
 import {
   LAYOUT_LIMITS, activeWorkspace, client, state, goTo, guard, keyTargets, layout,
-  requestPlan, resetColumnWidth, saveLayout, setColumnWidth, showsAgent, showsReview, stepImage,
+  requestPlan, resetColumnWidth, saveLayout, setColumnWidth, showsAgent, showsReview, stepAttachment,
   stepView,
 } from './core/store.js'
 
@@ -50,8 +49,7 @@ function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     // First, because it is on top of everything: a picture opened over a
     // dialog closes back to the dialog, not past it.
-    if (state.pendingImage) state.pendingImage = null
-    else if (state.pendingText) state.pendingText = null
+    if (state.pendingView) state.pendingView = null
     else if (state.pendingRevert) {
       // Never while it is running: the work is already happening and closing
       // the dialog would only hide its outcome.
@@ -71,12 +69,17 @@ function onKey(e: KeyboardEvent) {
     else if (state.view !== 'agent') state.view = 'agent'
     return
   }
-  // ← and → step between one turn's pictures. Above the `typing` guard on
+  // ← and → step between one turn's attachments. Above the `typing` guard on
   // purpose: the composer may still hold focus behind the scrim, and there is
-  // nothing to move a caret in while a picture covers the window.
-  if (state.pendingImage && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+  // nothing to move a caret in while the viewer covers the window — unless the
+  // caret is in the viewer itself, editing a paste, where arrows are arrows.
+  if (
+    state.pendingView &&
+    (e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+    !(typing && target.closest('.viewer'))
+  ) {
     e.preventDefault()
-    stepImage(e.key === 'ArrowRight' ? 1 : -1)
+    stepAttachment(e.key === 'ArrowRight' ? 1 : -1)
     return
   }
   if (typing) return
@@ -263,8 +266,7 @@ onUnmounted(() => {
       @reset="resetColumnWidth('list')"
     />
     <CommandPalette v-if="state.paletteOpen" />
-    <ImageViewer />
-    <TextViewer />
+    <AttachmentViewer />
     <PlanDialog v-if="state.pendingPlan" />
     <ConfirmDialog v-if="state.pendingConfirm" />
     <RevertDialog />
