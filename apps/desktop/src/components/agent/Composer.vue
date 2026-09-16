@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { CircleStop, FileCode, FileText, Map as MapIcon, Paperclip, UnfoldVertical, X } from '@lucide/vue'
+import { CornerDownLeft, FileCode, FileText, Map as MapIcon, Paperclip, Square, UnfoldVertical, X } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachFiles, attachText, client, dataUrl, detachFile, engineName, guard,
   isLongPaste, openDraftFiles, placedHandles, saveComposer, state,
@@ -646,108 +646,132 @@ defineExpose({ focus: () => box.value?.focus() })
     @dragleave="onDragLeave"
     @drop.prevent="onDrop"
   >
-    <!-- The files, over the box: the list is what the word being typed could
-         mean, so it belongs against the word rather than below the row. -->
-    <ul v-if="picking" class="mentions">
-      <li
-        v-for="(m, i) in matches"
-        :key="m.key"
-        :class="{ on: i === cursor }"
-        @mousedown.prevent="accept(m)"
-      >
-        <!-- An attached picture shows itself: `#` is answered by looking. -->
-        <img v-if="m.pic" class="tiny" :src="m.pic" alt="" />
-        <FileCode v-else class="xs" />
-        <span class="path">{{ m.label }}</span>
-        <!-- Which repository the file is in, or what the attachment answers
-             to. Only when there is something to say: two files of the same
-             name in two repos are the whole reason the list is worth reading
-             rather than skimming. -->
-        <span v-if="m.hint" class="from">{{ m.hint }}</span>
-      </li>
-    </ul>
+    <div class="well">
+      <!-- The files, over the box: the list is what the word being typed could
+           mean, so it belongs against the word rather than below the row. -->
+      <ul v-if="picking" class="mentions">
+        <li
+          v-for="(m, i) in matches"
+          :key="m.key"
+          :class="{ on: i === cursor }"
+          @mousedown.prevent="accept(m)"
+        >
+          <!-- An attached picture shows itself: `#` is answered by looking. -->
+          <img v-if="m.pic" class="tiny" :src="m.pic" alt="" />
+          <FileCode v-else class="xs" />
+          <span class="path">{{ m.label }}</span>
+          <!-- Which repository the file is in, or what the attachment answers
+               to. Only when there is something to say: two files of the same
+               name in two repos are the whole reason the list is worth reading
+               rather than skimming. -->
+          <span v-if="m.hint" class="from">{{ m.hint }}</span>
+        </li>
+      </ul>
 
-    <!-- What is attached, over the box and under the mentions: it is part of
-         the question being written, so it reads before the words rather than
-         under the row of settings that shape the answer. -->
-    <ul v-if="agentFiles.length" class="files">
-      <li
-        v-for="f in agentFiles"
-        :key="f.id"
-        :class="{
-          pic: f.mediaType.startsWith('image/'),
-          text: f.pasted,
-          loose: !placedHandles.has(f.handle),
-        }"
-        :title="
-          f.pasted
-            ? (f.text ?? '').slice(0, 600) + ((f.text ?? '').length > 600 ? '\n…' : '')
-            : placedHandles.has(f.handle)
-            ? f.name + ' — placed at ' + anchorOf(f.handle) + ' in the message'
-            : f.name + ' — about the whole message. Type ' + anchorOf(f.handle) + ' to place it.'
-        "
-        @click="open(f)"
-      >
-        <!-- The picture itself, not an icon labelled with its name: the whole
-             reason for pasting one is that looking is faster than reading. -->
-        <img v-if="f.mediaType.startsWith('image/')" :src="dataUrl(f)" :alt="f.name" />
-        <!-- Folded text says what it starts with and how much of it there is:
-             `paste.txt` would tell two pastes apart by number and nothing else. -->
-        <template v-else-if="f.pasted">
-          <pre class="snip">{{ head(f.text) }}</pre>
-          <span class="fsize">{{ lineCount(f.text) }} lines</span>
-          <button class="drop unfold" title="Unfold back into the message as text" @click.stop="unfold(f)">
-            <UnfoldVertical class="xs" />
+      <!-- What is attached, over the box and under the mentions: it is part of
+           the question being written, so it reads before the words rather than
+           under the row of settings that shape the answer. -->
+      <ul v-if="agentFiles.length" class="files">
+        <li
+          v-for="f in agentFiles"
+          :key="f.id"
+          :class="{
+            pic: f.mediaType.startsWith('image/'),
+            text: f.pasted,
+            loose: !placedHandles.has(f.handle),
+          }"
+          :title="
+            f.pasted
+              ? (f.text ?? '').slice(0, 600) + ((f.text ?? '').length > 600 ? '\n…' : '')
+              : placedHandles.has(f.handle)
+              ? f.name + ' — placed at ' + anchorOf(f.handle) + ' in the message'
+              : f.name + ' — about the whole message. Type ' + anchorOf(f.handle) + ' to place it.'
+          "
+          @click="open(f)"
+        >
+          <!-- The picture itself, not an icon labelled with its name: the whole
+               reason for pasting one is that looking is faster than reading. -->
+          <img v-if="f.mediaType.startsWith('image/')" :src="dataUrl(f)" :alt="f.name" />
+          <!-- Folded text says what it starts with and how much of it there is:
+               `paste.txt` would tell two pastes apart by number and nothing else. -->
+          <template v-else-if="f.pasted">
+            <pre class="snip">{{ head(f.text) }}</pre>
+            <span class="fsize">{{ lineCount(f.text) }} lines</span>
+            <button class="drop unfold" title="Unfold back into the message as text" @click.stop="unfold(f)">
+              <UnfoldVertical class="xs" />
+            </button>
+          </template>
+          <template v-else>
+            <FileText class="glyph" />
+            <span class="fname">{{ f.name }}</span>
+            <span class="fsize">{{ size(f.bytes) }}</span>
+          </template>
+          <button class="drop" :title="'Remove ' + f.name" @click.stop="detachFile(f.id)">
+            <X class="xs" />
           </button>
-        </template>
-        <template v-else>
-          <FileText class="glyph" />
-          <span class="fname">{{ f.name }}</span>
-          <span class="fsize">{{ size(f.bytes) }}</span>
-        </template>
-        <button class="drop" :title="'Remove ' + f.name" @click.stop="detachFile(f.id)">
-          <X class="xs" />
-        </button>
-        <!-- Only when there is something to say.
-             A tile is 48px across, so the handle written on it truncates to
-             `#shot…` and answers nothing — and it does not need to, because
-             the tokens are legible in the box two lines below, in the same
-             order as these. What is *not* visible anywhere else is that a file
-             belongs to no point in particular, so that is what gets a badge. -->
-        <span v-if="!placedHandles.has(f.handle)" class="tok">all</span>
-      </li>
-    </ul>
+          <!-- Only when there is something to say.
+               A tile is 48px across, so the handle written on it truncates to
+               `#shot…` and answers nothing — and it does not need to, because
+               the tokens are legible in the box two lines below, in the same
+               order as these. What is *not* visible anywhere else is that a file
+               belongs to no point in particular, so that is what gets a badge. -->
+          <span v-if="!placedHandles.has(f.handle)" class="tok">all</span>
+        </li>
+      </ul>
 
-    <div class="box">
-      <!-- Under the text, and drawing nothing but the rounded ground beneath a
-           finished anchor. Invisible characters, identical to the ones above
-           them: that is the only way the pill can be exactly as wide as the
-           word it is behind, at every wrap and every window width. -->
-      <div ref="mirror" class="mirror" aria-hidden="true">
-        <span
-          v-for="(w, i) in written"
-          :key="i"
-          :class="{ pill: w.kind === 'anchor' && !w.live }"
-        >{{ w.text }}</span>
+      <div class="box">
+        <!-- Under the text, and drawing nothing but the rounded ground beneath a
+             finished anchor. Invisible characters, identical to the ones above
+             them: that is the only way the pill can be exactly as wide as the
+             word it is behind, at every wrap and every window width. -->
+        <div ref="mirror" class="mirror" aria-hidden="true">
+          <span
+            v-for="(w, i) in written"
+            :key="i"
+            :class="{ pill: w.kind === 'anchor' && !w.live }"
+          >{{ w.text }}</span>
+        </div>
+
+        <textarea
+          ref="box"
+          v-model="agentDraft"
+          class="input prompt selectable"
+          :rows="big ? 3 : 2"
+          :placeholder="placeholder"
+          @keydown="onKey"
+          @keydown.meta.enter="submit"
+          @keyup="track"
+          @click="track"
+          @input="track"
+          @paste="onPaste"
+          @scroll="syncScroll"
+          @focus="focused = true"
+          @blur="focused = false"
+        />
+
       </div>
 
-      <textarea
-        ref="box"
-        v-model="agentDraft"
-        class="input prompt selectable"
-        :rows="big ? 3 : 2"
-        :placeholder="placeholder"
-        @keydown="onKey"
-        @keydown.meta.enter="submit"
-        @keyup="track"
-        @click="track"
-        @input="track"
-        @paste="onPaste"
-        @scroll="syncScroll"
-        @focus="focused = true"
-        @blur="focused = false"
-      />
-
+      <!-- In the well, beside the words: sending is an act on what was typed.
+           The settings under the well only shape the answer. -->
+      <div class="send">
+        <!-- Beside the send button rather than instead of it: this app lets you
+             say the next thing while it is still on the last one, so both acts
+             are available at once and neither may hide the other. -->
+        <button v-if="busy" class="btn stop" title="Stop what it is doing" aria-label="Stop" @click="emit('stop')">
+          <Square class="sq" />
+        </button>
+        <!-- An icon, with the verb kept in the tooltip: Start, Continue and Queue
+             are one act from here, and which one it is shows on hover. -->
+        <button
+          class="btn primary go"
+          :disabled="disabled"
+          :title="sendLabel + ' (⌘⏎)'"
+          :aria-label="sendLabel"
+          @click="submit"
+        >
+          <CornerDownLeft class="ic" />
+        </button>
+      </div>
     </div>
 
     <div class="row">
@@ -783,43 +807,42 @@ defineExpose({ focus: () => box.value?.focus() })
       >
         <MapIcon class="xs" /> Plan
       </button>
-
-      <span class="grow" />
-      <!-- Beside the send button rather than instead of it: this app lets you
-           say the next thing while it is still on the last one, so both acts
-           are available at once and neither may hide the other. -->
-      <button v-if="busy" class="btn stop" title="Stop what it is doing" @click="emit('stop')">
-        <CircleStop class="xs" />
-        Stop
-      </button>
-      <button class="btn primary" :disabled="disabled" @click="submit">
-        {{ sendLabel }}
-        <span class="kbd">⌘⏎</span>
-      </button>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* Two parts: the well, which holds what is being said and the act of sending
+   it, and the row of settings under it, which only shape the answer. The
+   settings used to sit inside the box, where they read as part of the message. */
+.composer { position: relative; }
+
 /* A well, not a card. On the white conversation a raised white is no step at
    all, so the box takes a fill of its own and a soft edge. What sits inside it
-   (the chips, the pills, the file tokens) shows the conversation's colour
-   through it; `--inset` hands that down to the pickers and attachments, which
-   are drawn on `--bg` everywhere else. */
-.composer {
+   (the pills, the file tokens, Stop) shows the conversation's colour through
+   it; `--inset` hands that down to the attachments, which are drawn on `--bg`
+   everywhere else. */
+.well {
   --inset: var(--surface-work);
-  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  column-gap: 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface-input);
-  padding: 10px 10px 9px;
+  padding: 8px 8px 8px 10px;
 }
+.well > .files { grid-column: 1 / -1; }
+.send { display: flex; align-items: center; gap: 6px; padding-bottom: 2px; }
+.send .go { width: 32px; padding: 0; }
+.send .ic { width: 15px; height: 15px; }
 /* Plan mode changes what pressing Start *does*, so it is worth a whole-box
    signal rather than one lit chip among eleven. */
-.composer.planning { border-color: var(--accent); }
+.composer.planning .well { border-color: var(--accent); }
 /* A file is over the box and will land in it. The same whole-box signal, for
    the same reason: it is the box that is about to change, not one control. */
-.composer.over { border-color: var(--accent); background: var(--accent-soft); }
+.composer.over .well { border-color: var(--accent); background: var(--accent-soft); }
 .composer.over * { pointer-events: none; }
 
 /* ── the box, and the two layers that share its geometry ────────────────
@@ -915,8 +938,16 @@ defineExpose({ focus: () => box.value?.focus() })
   background: var(--inset, var(--bg));
 }
 
-.row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.grow { flex: 1; }
+/* Under the well, on the conversation's own ground, so nothing here needs a
+   box of its own: the controls are ghosts until the pointer is on one. The
+   pickers are other components, hence `:deep`. */
+.row { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; padding: 6px 2px 0; }
+.row .opt,
+.row :deep(.trigger) { border-color: transparent; background: transparent; }
+.row .opt:hover:not(:disabled),
+.row :deep(.trigger:hover),
+.row :deep(.trigger.open) { border-color: transparent; background: var(--hover); }
+.row .opt.on { border-color: transparent; background: var(--accent-soft); }
 
 .opt {
   height: 24px;
@@ -1059,17 +1090,18 @@ defineExpose({ focus: () => box.value?.focus() })
 /* An escape hatch, not a call to action: it is offered at the weight of the
    controls around it, and only turns red under the cursor — the moment it is
    about to be used. */
+/* The send button's twin: the same 32px square, one glyph, the verb in the
+   tooltip. A filled square is the stop sign every player has taught. */
 .btn.stop {
-  gap: 5px;
-  height: 28px;
-  padding: 0 11px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   background: var(--inset, var(--bg));
   color: var(--text-muted);
-  font-size: var(--fs-xs);
-  font-weight: 600;
 }
+.btn.stop .sq { width: 11px; height: 11px; fill: currentColor; stroke-width: 0; border-radius: 2px; }
 .btn.stop:hover {
   color: var(--danger);
   border-color: var(--danger);
