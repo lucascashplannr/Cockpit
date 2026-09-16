@@ -607,6 +607,16 @@ export interface Attachment {
    * and pretending otherwise would send bytes that come back as an error.
    */
   image: boolean
+  /**
+   * Text that was pasted into the box and folded into a tag rather than left
+   * sprawling across it.
+   *
+   * It is still what was *said*, not a file anyone has on disk, so the core
+   * writes it back into the message where the tag stands — the engine reads
+   * it inline, exactly as if it had been typed there. The copy on disk is for
+   * later turns, the same as every other attachment.
+   */
+  pasted?: boolean
 }
 
 /** The same file on its way in, before the core has anywhere to put it. */
@@ -617,6 +627,8 @@ export interface AttachmentInput {
   mediaType: string
   /** Base64, with no `data:` prefix. */
   data: string
+  /** Folded text rather than a file — see `Attachment.pasted`. */
+  pasted?: boolean
 }
 
 export interface AgentTurn {

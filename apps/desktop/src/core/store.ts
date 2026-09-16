@@ -1312,6 +1312,10 @@ export interface DraftFile {
   bytes: number
   /** Base64, no `data:` prefix — the form the core is handed. */
   data: string
+  /** Text folded out of the box on paste; see `attachText`. */
+  pasted?: boolean
+  /** The pasted text itself, kept decoded so the tile can quote it. */
+  text?: string
 }
 
 /** What the thumbnail's `src` is. Built here so nothing has to be revoked. */
@@ -1327,6 +1331,13 @@ export function dataUrl(f: DraftFile): string {
  * bytes upward.
  */
 const fetched = reactive<Record<string, string>>({})
+/** Pasted text that has already been sent, decoded, by path. */
+const fetchedText = reactive<Record<string, string>>({})
+
+/** The text of a sent paste, or '' while it is not here yet. */
+export function attachmentText(path: string): string {
+  return fetchedText[path] ?? ''
+}
 
 /** The data URL for a sent attachment, or '' while it is not here yet. */
 export function attachmentSrc(path: string): string {
@@ -1334,7 +1345,9 @@ export function attachmentSrc(path: string): string {
 }
 
 export async function loadAttachment(file: Attachment): Promise<void> {
-  if (!file.image || fetched[file.path]) return
+  if (file.pasted) {
+    if (fetchedText[file.path]) return
+  } else if (!file.image || fetched[file.path]) return
   // `client.call` refuses outright while the socket is down, so this is asked
   // again on every reconnect rather than once on mount.
   if (state.connection !== 'connected' && state.connection !== 'outdated') return
@@ -1343,7 +1356,8 @@ export async function loadAttachment(file: Attachment): Promise<void> {
     // An attachment whose bytes are gone stays absent, and the tile falls back
     // to its name: a broken image icon is worse than a filename. Quietly — a
     // toast per thumbnail would turn one dropped socket into eight banners.
-    if (b64) fetched[file.path] = 'data:' + file.mediaType + ';base64,' + b64
+    if (b64 && file.pasted) fetchedText[file.path] = fromBase64(b64)
+    else if (b64) fetched[file.path] = 'data:' + file.mediaType + ';base64,' + b64
   } catch {
     /* the next connection will ask again */
   }
@@ -1442,6 +1456,51 @@ async function readFile(file: File, taken: Set<string>): Promise<DraftFile | nul
   }
 }
 
+function fromBase64(b64: string): string {
+  return new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
+}
+
+/**
+ * When a paste stops being words in a sentence and becomes a thing the
+ * sentence points at.
+ *
+ * A stack trace, a component, a log: past a dozen lines the box turns into a
+ * scroll region with the actual question lost somewhere above or below it,
+ * and the indentation the textarea wraps is not the indentation that was
+ * copied. A couple of lines stay inline — they read as part of the sentence.
+ */
+export function isLongPaste(text: string): boolean {
+  return text.length >= 1000 || text.split('\n').length > 12
+}
+
+/**
+ * Text, folded into an attachment that is written back where its tag stands.
+ *
+ * The same door as a screenshot: a handle (`paste`, `paste-2`), a tile over
+ * the box, a chip at the caret. Only the delivery differs — the core expands
+ * it into the message rather than inlining an image or naming a path.
+ */
+export function attachText(text: string): DraftFile | null {
+  if (agentFiles.value.length >= MAX_FILES) {
+    toast('error', MAX_FILES + ' files is the limit for one turn')
+    return null
+  }
+  const handle = handleFor('paste', agentFiles.value.map((f) => f.handle))
+  const bytes = new TextEncoder().encode(text)
+  const f: DraftFile = {
+    id: 'df_' + Math.random().toString(36).slice(2, 10),
+    name: handle + '.txt',
+    handle,
+    mediaType: 'text/plain',
+    bytes: bytes.length,
+    data: base64(bytes.buffer),
+    pasted: true,
+    text,
+  }
+  agentFiles.value = [...agentFiles.value, f]
+  return f
+}
+
 /** Twelve is the core's ceiling; refusing here says so before the socket does. */
 const MAX_FILES = 12
 
@@ -1509,6 +1568,7 @@ function wire(files: DraftFile[]): AttachmentInput[] {
     handle: f.handle,
     mediaType: f.mediaType,
     data: f.data,
+    ...(f.pasted ? { pasted: true } : {}),
   }))
 }
 

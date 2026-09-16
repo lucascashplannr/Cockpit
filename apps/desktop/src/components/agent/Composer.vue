@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { CircleStop, FileCode, FileText, Map as MapIcon, Paperclip, X } from '@lucide/vue'
+import { CircleStop, FileCode, FileText, Map as MapIcon, Paperclip, UnfoldVertical, X } from '@lucide/vue'
 import {
-  agentDraft, agentFiles, attachFiles, client, dataUrl, detachFile, engineName, guard,
-  placedHandles, saveComposer, state, viewImage,
+  agentDraft, agentFiles, attachFiles, attachText, client, dataUrl, detachFile, engineName, guard,
+  isLongPaste, placedHandles, saveComposer, state, viewImage,
 } from '../../core/store.js'
 import { ANCHOR_PAD, CLAUDE_MODELS, anchorOf, anchorWritten, splitPrompt } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
@@ -428,16 +428,83 @@ function picked(ev: Event): void {
 }
 
 /**
- * A paste carrying files is an attachment; a paste carrying text is a paste.
- * Only the first case is intercepted — taking the event unconditionally would
- * break copying a path into the box, which is the older way of doing this and
- * still a perfectly good one.
+ * A paste carrying files is an attachment; a short paste of text is a paste.
+ *
+ * A *long* one is folded: two hundred lines of a component dropped into the
+ * box buried the question under a scroll region, and the textarea re-wrapped
+ * every indented line it could not fit. It becomes a `#paste` chip at the
+ * caret and a tile over the box, the way a screenshot does, and the core
+ * writes it back in at the chip when the turn is sent. A path, a word, a
+ * couple of lines are not intercepted — they read as part of the sentence.
  */
 function onPaste(ev: ClipboardEvent): void {
+  track()
   const files = [...(ev.clipboardData?.files ?? [])]
-  if (!files.length) return
+  if (files.length) {
+    ev.preventDefault()
+    void take(files)
+    return
+  }
+  const text = ev.clipboardData?.getData('text/plain') ?? ''
+  if (!isLongPaste(text)) return
   ev.preventDefault()
-  void take(files)
+  // A paste replaces what is selected, folded or not.
+  const el = box.value
+  if (el && el.selectionStart !== el.selectionEnd) {
+    const [from, to] = [el.selectionStart, el.selectionEnd]
+    agentDraft.value = agentDraft.value.slice(0, from) + agentDraft.value.slice(to)
+    caret.value = from
+  }
+  const f = attachText(text.replace(/\r\n?/g, '\n'))
+  if (f) insertAtCaret(anchorWritten(f.handle))
+}
+
+/**
+ * The folded text, back into the box as text — where its chip stood, or at
+ * the caret if nothing pointed at it.
+ *
+ * For the paste that was meant to be edited: folding is the right default for
+ * a log, and the wrong one for the ten lines you wanted to trim first.
+ */
+function unfold(f: DraftFile): void {
+  if (f.text === undefined) return
+  const draft = agentDraft.value
+  let i = 0
+  let out = ''
+  let done = false
+  let trim = false
+  for (const part of splitPrompt(draft, agentFiles.value.map((x) => x.handle))) {
+    const len = part.kind === 'text' ? part.text.length : anchorOf(part.handle).length
+    let raw = draft.slice(i, i + len)
+    i += len
+    if (trim) {
+      raw = raw.replace(/^\u00a0+/, '')
+      trim = false
+    }
+    if (!done && part.kind === 'anchor' && part.handle === f.handle) {
+      // The chip's own room goes with it; the text brings its own spacing.
+      out = out.replace(/\u00a0+$/, '') + f.text
+      done = true
+      trim = true
+      continue
+    }
+    out += raw
+  }
+  agentFiles.value = agentFiles.value.filter((x) => x.id !== f.id)
+  if (done) {
+    agentDraft.value = out
+    nextTick(() => box.value?.focus())
+  } else {
+    insertAtCaret(f.text)
+  }
+}
+
+/** The opening of a folded paste — as much as a tile can show, and no more. */
+function head(text = ''): string {
+  return text.replace(/^\s*\n/, '').split('\n', 14).join('\n')
+}
+function lineCount(text = ''): number {
+  return text.replace(/\n$/, '').split('\n').length
 }
 
 /**
@@ -611,9 +678,15 @@ defineExpose({ focus: () => box.value?.focus() })
       <li
         v-for="f in agentFiles"
         :key="f.id"
-        :class="{ pic: f.mediaType.startsWith('image/'), loose: !placedHandles.has(f.handle) }"
+        :class="{
+          pic: f.mediaType.startsWith('image/'),
+          text: f.pasted,
+          loose: !placedHandles.has(f.handle),
+        }"
         :title="
-          placedHandles.has(f.handle)
+          f.pasted
+            ? (f.text ?? '').slice(0, 600) + ((f.text ?? '').length > 600 ? '\n…' : '')
+            : placedHandles.has(f.handle)
             ? f.name + ' — placed at ' + anchorOf(f.handle) + ' in the message'
             : f.name + ' — about the whole message. Type ' + anchorOf(f.handle) + ' to place it.'
         "
@@ -622,8 +695,17 @@ defineExpose({ focus: () => box.value?.focus() })
         <!-- The picture itself, not an icon labelled with its name: the whole
              reason for pasting one is that looking is faster than reading. -->
         <img v-if="f.mediaType.startsWith('image/')" :src="dataUrl(f)" :alt="f.name" />
+        <!-- Folded text says what it starts with and how much of it there is:
+             `paste.txt` would tell two pastes apart by number and nothing else. -->
+        <template v-else-if="f.pasted">
+          <pre class="snip">{{ head(f.text) }}</pre>
+          <span class="fsize">{{ lineCount(f.text) }} lines</span>
+          <button class="drop unfold" title="Unfold back into the message as text" @click.stop="unfold(f)">
+            <UnfoldVertical class="xs" />
+          </button>
+        </template>
         <template v-else>
-          <FileText class="xs" />
+          <FileText class="glyph" />
           <span class="fname">{{ f.name }}</span>
           <span class="fsize">{{ size(f.bytes) }}</span>
         </template>
@@ -863,33 +945,28 @@ defineExpose({ focus: () => box.value?.focus() })
 }
 .files li {
   position: relative;
+  /* One square, whatever is in it — the thread's tiles made the same call.
+     Files and pastes used to be 220px pills beside 48px pictures, so a turn
+     carrying both read as two lists pushed together. */
+  width: var(--tile, 72px);
+  height: var(--tile, 72px);
+  flex: none;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  /* No fixed height: the row's items stretch to its tallest, so a file sits
-     level with the pictures beside it instead of floating at the top of a
-     line it is half the height of.
-
-     It keeps its name and its size rather than becoming a square like the
-     thread's tiles do — a 48px tile has room for about five characters, and
-     the one moment the filename actually matters is the moment before you
-     send it. */
-  padding: 7px 9px;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 5px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--bg);
-  font-size: var(--fs-xs);
   color: var(--text-muted);
+  overflow: hidden;
 }
 /* An image is shown, so it gets no chrome of its own: the thumbnail is the
-   chip. Square, because a strip of chips at four aspect ratios reads as a
-   mess rather than as a list. */
+   tile. */
 .files li.pic {
-  width: 48px;
-  height: 48px;
   padding: 0;
-  overflow: hidden;
   /* Only on the tiles where there is something larger to see. */
   cursor: zoom-in;
 }
@@ -910,29 +987,66 @@ defineExpose({ focus: () => box.value?.focus() })
   line-height: 13px;
   white-space: nowrap;
 }
-/* On a pill it sits in the row rather than over a picture. */
-.files li:not(.pic) .tok { position: static; flex: none; background: var(--hover); }
+/* On a file or a paste the bottom edge carries its size, so the note moves
+   to the top, where only the hover buttons on the right compete for room. */
+.files li:not(.pic) .tok { top: 3px; bottom: auto; background: var(--hover); }
 .files li.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.files .fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.files .fsize { flex: none; font-size: 10px; color: var(--text-dim); }
-.files .lucide { flex: none; color: var(--text-dim); }
 
-/* Present on every chip, and only legible on the one under the cursor: a strip
+/* A file: the mark says "a file", the name says which, the size says how much. */
+.files .glyph { width: 14px; height: 14px; flex: none; color: var(--text-dim); }
+.files .fname {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: center;
+  font-size: 9.5px;
+  line-height: 1.25;
+  word-break: break-all;
+}
+.files .fsize { flex: none; font-size: 9px; line-height: 1.2; color: var(--text-dim); white-space: nowrap; }
+
+/* A paste reads from the top-left like the page it came from — unwrapped, so
+   its indentation is still its indentation — and runs out into a fade. */
+.files li.text { align-items: stretch; justify-content: flex-start; padding: 5px 5px 4px; }
+.files .snip {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 6.5px;
+  line-height: 1.35;
+  white-space: pre;
+  color: var(--text-muted);
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+.files li.text .fsize { text-align: right; }
+
+/* Present on every tile, and only legible on the one under the cursor: a strip
    of five ✕ is a row of buttons where a list of files should be. */
 .drop {
+  position: absolute;
+  top: 3px;
+  right: 3px;
   display: grid;
   place-items: center;
   width: 16px;
   height: 16px;
+  border: 1px solid var(--line);
   border-radius: 50%;
   background: var(--panel-raised);
   color: var(--text-dim);
   opacity: 0;
   transition: opacity 90ms ease;
 }
-.files li.pic .drop { position: absolute; top: 3px; right: 3px; }
+.drop.unfold { right: 22px; }
 .files li:hover .drop, .drop:focus-visible { opacity: 1; }
 .drop:hover { color: var(--danger); }
+/* Unfolding loses nothing, so it does not warn like removing does. */
+.drop.unfold:hover { color: var(--text); }
 
 /* An escape hatch, not a call to action: it is offered at the weight of the
    controls around it, and only turns red under the cursor — the moment it is

@@ -2,7 +2,7 @@
 import { computed, watch } from 'vue'
 import { FileText } from '@lucide/vue'
 import type { Attachment } from '@cockpit/shared'
-import { attachmentSrc, loadAttachment, state } from '../../core/store.js'
+import { attachmentSrc, attachmentText, loadAttachment, state } from '../../core/store.js'
 
 /**
  * One file, as it appears in a turn that has already been sent.
@@ -30,6 +30,11 @@ const props = defineProps<{
 }>()
 
 const src = computed(() => attachmentSrc(props.file.path))
+/** A folded paste shows its opening lines, the way a picture shows itself. */
+const text = computed(() => (props.file.pasted ? attachmentText(props.file.path) : ''))
+const tip = computed(() =>
+  text.value ? text.value.slice(0, 600) + (text.value.length > 600 ? '\n…' : '') : props.file.name,
+)
 
 /** Asked again whenever the socket comes back, not once on mount. */
 watch(
@@ -40,8 +45,9 @@ watch(
 </script>
 
 <template>
-  <li class="tile" :class="{ pic: file.image && src }" :title="file.name">
+  <li class="tile" :class="{ pic: file.image && src, text: file.pasted && text }" :title="tip">
     <img v-if="file.image && src" :src="src" :alt="file.name" />
+    <pre v-else-if="file.pasted && text" class="snip">{{ text.slice(0, 400) }}</pre>
     <template v-else>
       <FileText class="glyph" />
       <span class="fname">{{ file.name }}</span>
@@ -85,6 +91,23 @@ watch(
   /* The tile is an index, not the picture: this says the picture is one click
      away, on the only ones where that is true. */
   cursor: zoom-in;
+}
+/* Pasted text reads from the top-left like the page it came from, and simply
+   runs out at the bottom of the square. */
+.tile.text { align-items: stretch; justify-content: flex-start; padding: 6px 7px; }
+.snip {
+  margin: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 7.5px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-muted);
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
 }
 .tile.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
 

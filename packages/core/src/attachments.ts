@@ -99,7 +99,8 @@ export function saveAttachments(sessionId: string, inputs: AttachmentInput[]): A
       path,
       handle: a.handle,
       bytes: bytes.length,
-      image: INLINE_IMAGE.has(a.mediaType),
+      image: !a.pasted && INLINE_IMAGE.has(a.mediaType),
+      ...(a.pasted ? { pasted: true } : {}),
     })
   }
   return out
@@ -151,6 +152,12 @@ export function turnSegments(
     }
     const file = byHandle.get(part.handle)!
     placed.add(file.id)
+    // Folded text goes back where its tag stands. It was only folded so the
+    // box stayed legible; to the engine it is part of the sentence.
+    if (file.pasted) {
+      text('\n' + pastedBlock(file) + '\n')
+      continue
+    }
     // Named in the text as well as placed, and always with its path: the
     // engine needs a word for it in its own answer — "the second screenshot"
     // is a guess, `shot-2.png` is not — and it needs somewhere to look on a
@@ -168,9 +175,37 @@ export function turnSegments(
   // not read as belonging to the last sentence above it — and then inlined
   // like any other, because unplaced is not unimportant.
   const rest = files.filter((f) => !placed.has(f.id))
-  text(suffixFor(rest, placed.size > 0))
-  for (const file of rest) out.push({ kind: 'file', file })
+  const loose = rest.filter((f) => !f.pasted)
+  text(suffixFor(loose, placed.size > 0))
+  for (const file of rest) {
+    if (file.pasted) text('\n\n' + pastedBlock(file) + '\n')
+  }
+  for (const file of loose) out.push({ kind: 'file', file })
   return out
+}
+
+/**
+ * Pasted text, fenced so where it starts and stops is never a guess.
+ *
+ * Read back off disk rather than carried on the attachment: the core wrote it
+ * a moment ago, and the disk copy is the one a later turn will point at. The
+ * path is named in the fence for the same reason — "the log I pasted" three
+ * turns on, after a compaction, is a path or it is nothing.
+ */
+function pastedBlock(file: Attachment): string {
+  let body: string
+  try {
+    body = readFileSync(file.path, 'utf8')
+  } catch {
+    return '[pasted text, no longer readable — `' + file.path + '`]'
+  }
+  body = body.replace(/\n$/, '')
+  const lines = body.split('\n').length
+  return (
+    '<pasted-text name="' + file.handle + '" lines="' + lines + '" path="' + file.path + '">\n' +
+    body +
+    '\n</pasted-text>'
+  )
 }
 
 function suffixFor(items: Attachment[], someWerePlaced: boolean): string {
