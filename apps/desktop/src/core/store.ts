@@ -280,7 +280,12 @@ export const state = reactive({
     | null,
   pendingConfirm: null as PendingConfirm | null,
   planBusy: false,
-  toast: null as { kind: 'ok' | 'error' | 'info'; text: string } | null,
+  toast: null as {
+    kind: 'ok' | 'error' | 'info'
+    text: string
+    /** One verb beside the message — Undo, for something that can be. */
+    action?: { label: string; run: () => void }
+  } | null,
   theme: (localStorage.getItem('cockpit.theme') ?? 'system') as 'system' | 'dark' | 'light',
 })
 
@@ -1769,11 +1774,17 @@ export function has(w: Workspace | null, cap: string): boolean {
   return !!w?.capabilities.some((c) => c.id === cap)
 }
 
-export function toast(kind: 'ok' | 'error' | 'info', text: string): void {
-  state.toast = { kind, text }
+export function toast(
+  kind: 'ok' | 'error' | 'info',
+  text: string,
+  action?: { label: string; run: () => void },
+): void {
+  const t = { kind, text, ...(action ? { action } : {}) }
+  state.toast = t
+  // A toast that offers something stays long enough to be taken up on it.
   window.setTimeout(() => {
-    if (state.toast?.text === text) state.toast = null
-  }, 4200)
+    if (state.toast === t) state.toast = null
+  }, action ? 9000 : 4200)
 }
 
 export async function guard<T>(fn: () => Promise<T>, okMessage?: string): Promise<T | null> {
@@ -2418,6 +2429,42 @@ const STASH_WORDS: Record<
     danger: true,
   },
 }
+
+/**
+ * §16 — discarding uncommitted work. Nothing is asked first, because nothing
+ * is lost: the core stashes what goes (see `discard.ts`), the entry appears
+ * under Set aside, and the toast carries the short way back.
+ */
+export async function discard(params: {
+  workspaceId: string
+  paths?: string[]
+  hunk?: { path: string; index: number; lines: { kind: 'context' | 'add' | 'del'; text: string }[] }
+}): Promise<boolean> {
+  const res = await guard(() => client.call('git.discard', params))
+  if (!res) return false
+  if (!res.ok) {
+    toast('error', res.detail)
+    return false
+  }
+  const entry = res.entry
+  toast(
+    'ok',
+    res.detail + ' — kept under Set aside',
+    entry ? { label: 'Undo', run: () => void undoDiscard(params.workspaceId, entry) } : undefined,
+  )
+  return true
+}
+
+export async function undoDiscard(workspaceId: string, entry: string): Promise<void> {
+  state.toast = null
+  const res = await guard(() => client.call('git.discardUndo', { workspaceId, entry }))
+  if (!res) return
+  toast(res.ok ? 'ok' : 'error', res.ok ? 'Put back' : res.detail)
+  discardTick.value++
+}
+
+/** Bumped when an undo lands, so a Diff tab showing the file reads it again. */
+export const discardTick = ref(0)
 
 export async function stash(
   params: {

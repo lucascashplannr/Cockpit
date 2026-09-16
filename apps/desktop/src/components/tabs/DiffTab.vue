@@ -5,11 +5,11 @@ import type { Component } from 'vue'
 import {
   Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, FileCode, GitBranch,
   GitCommitHorizontal, ArrowLeft, Sparkles, SquareArrowOutUpRight, Trash2, TriangleAlert,
-  User, UsersRound,
+  Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import {
-  LAYOUT_LIMITS, commit, commitPreview, draftCommitMessage, guard, layout, resetCommitHeight,
+  LAYOUT_LIMITS, commit, commitPreview, discard, discardTick, draftCommitMessage, guard, layout, resetCommitHeight,
   saveLayout, selectWorkspace, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
@@ -129,8 +129,8 @@ function setView(v: DiffView): void {
 }
 const split = computed(() => view.value === 'split' && !narrow.value)
 
-type Cell = { num: number | null; kind: 'context' | 'add' | 'del' | 'empty'; text: string }
-type SplitRow = { meta: string } | { left: Cell; right: Cell }
+type Cell = { num: number | null; kind: 'context' | 'add' | 'del' | 'blank'; text: string }
+type SplitRow = { meta: string; hunk: number } | { left: Cell; right: Cell }
 
 /**
  * The same lines, paired. A run of deletions followed by a run of additions is
@@ -140,13 +140,14 @@ type SplitRow = { meta: string } | { left: Cell; right: Cell }
 const splitRows = computed<SplitRow[]>(() => {
   const lines = current.value?.lines ?? []
   const rows: SplitRow[] = []
-  const blank: Cell = { num: null, kind: 'empty', text: '' }
+  const blank: Cell = { num: null, kind: 'blank', text: '' }
   let i = 0
+  let hunk = -1
   const at = (k: number, kind: string) => lines[k]?.kind === kind
   while (i < lines.length) {
     const l = lines[i]!
     if (l.kind === 'meta') {
-      rows.push({ meta: l.text })
+      rows.push({ meta: l.text, hunk: ++hunk })
       i++
     } else if (l.kind === 'context') {
       rows.push({
@@ -174,6 +175,81 @@ const splitRows = computed<SplitRow[]>(() => {
 const selected = ref<string | null>(null)
 const loading = ref(false)
 
+/* ── §16 — discarding, and never for good ─────────────────────────────────
+ *
+ * Three reaches: a file, the files ticked in the list, one hunk of the file
+ * on screen. All three go through the core's discard, which stashes what it
+ * takes — so nothing here asks "are you sure". The entry shows up under Set
+ * aside, and the toast offers Undo while the moment is still fresh.
+ */
+
+const picked = ref<string[]>([])
+const discarding = ref(false)
+
+function togglePick(path: string) {
+  picked.value = picked.value.includes(path)
+    ? picked.value.filter((p) => p !== path)
+    : [...picked.value, path]
+}
+
+/** Which hunk each meta line opens, so its button knows what it discards. */
+const hunkOf = computed(() => {
+  let n = -1
+  return (current.value?.lines ?? []).map((l) => (l.kind === 'meta' ? ++n : n))
+})
+
+function hunkLines(index: number) {
+  const out: { kind: 'context' | 'add' | 'del'; text: string }[] = []
+  let n = -1
+  for (const l of current.value?.lines ?? []) {
+    if (l.kind === 'meta') n++
+    else if (n === index) out.push({ kind: l.kind, text: l.text })
+    else if (n > index) break
+  }
+  return out
+}
+
+async function discardFiles(paths: string[]) {
+  if (!paths.length || discarding.value) return
+  discarding.value = true
+  const ok = await discard({ workspaceId: props.workspace.id, paths })
+  discarding.value = false
+  if (ok) {
+    picked.value = picked.value.filter((p) => !paths.includes(p))
+    await afterDiscard()
+  }
+}
+
+async function discardHunk(index: number) {
+  const path = selected.value
+  if (!path || discarding.value) return
+  discarding.value = true
+  const ok = await discard({
+    workspaceId: props.workspace.id,
+    hunk: { path, index, lines: hunkLines(index) },
+  })
+  discarding.value = false
+  // Refused because the file moved under the reader: showing it again is the
+  // answer to "look at it again", so that happens either way.
+  if (ok) await afterDiscard()
+  else await reloadCurrent()
+}
+
+async function afterDiscard() {
+  await Promise.all([load(), refreshStashes(), refreshCommit()])
+  await reloadCurrent()
+}
+
+/** The file on screen, read again in place — no drilling, no reselecting. */
+async function reloadCurrent() {
+  const path = selected.value
+  if (!path || !files.value.some((f) => f.path === path)) return
+  const r = await guard(() => client.call('diff.file', { workspaceId: props.workspace.id, path }))
+  if (selected.value === path) current.value = r
+}
+
+watch(discardTick, () => void afterDiscard())
+
 const totals = computed(() => ({
   add: files.value.reduce((n, f) => n + f.additions, 0),
   del: files.value.reduce((n, f) => n + f.deletions, 0),
@@ -184,6 +260,7 @@ async function load() {
   const r = await guard(() => client.call('diff.files', { workspaceId: props.workspace.id }))
   files.value = r ?? []
   loading.value = false
+  picked.value = picked.value.filter((p) => files.value.some((f) => f.path === p))
   const still = files.value.some((f) => f.path === selected.value)
   if (!files.value.length) {
     selected.value = null
@@ -521,6 +598,21 @@ watch(
   () => void load(),
 )
 
+/**
+ * The name is what you look for in the list; the folder only tells two
+ * files of the same name apart. So the name leads, and the folder follows,
+ * fainter, and is the part that gives way when the column is narrow.
+ */
+function baseName(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1)
+}
+function dirName(path: string): string {
+  const i = path.lastIndexOf('/')
+  // Wrapped in left-to-right marks: the element is `direction: rtl` so its
+  // ellipsis lands on the left, and the marks keep the slashes where they are.
+  return i > 0 ? '\u200e' + path.slice(0, i) + '\u200e' : ''
+}
+
 /** One icon per author, and the icon is the same everywhere it appears. */
 const mark: Record<string, Component> = {
   human: User,
@@ -542,18 +634,39 @@ const mark: Record<string, Component> = {
       </div>
 
       <div class="scroll">
-        <button
+        <div v-if="picked.length" class="picked">
+          <span>{{ picked.length }} selected</span>
+          <span class="grow" />
+          <button
+            class="btn ghost tiny danger"
+            :disabled="discarding"
+            title="Discard these files — kept under Set aside, with Undo"
+            @click="discardFiles(picked)"
+          >
+            <Undo2 />Discard
+          </button>
+          <button class="btn ghost tiny" @click="picked = []">Clear</button>
+        </div>
+
+        <div
           v-for="f in files"
           :key="f.path"
+          class="fline"
+          :class="{ picking: picked.length > 0, ticked: picked.includes(f.path) }"
+        >
+        <button
           class="frow"
           :class="{ on: f.path === selected }"
-          @click="select(f.path)"
+          @click="$event.metaKey ? togglePick(f.path) : select(f.path)"
         >
           <span class="attr" :class="f.attribution" :title="'written by: ' + f.attribution">
             <component :is="mark[f.attribution]" class="sm" />
           </span>
           <span class="st" :class="f.status">{{ f.status }}</span>
-          <span class="fp">{{ f.path }}</span>
+          <span class="fp" :title="f.oldPath ? f.oldPath + ' → ' + f.path : f.path">
+            <span class="fname">{{ baseName(f.path) }}</span>
+            <span v-if="dirName(f.path)" class="fdir">{{ dirName(f.path) }}</span>
+          </span>
           <span class="counts num">
             <span v-if="f.additions" class="add">+{{ f.additions }}</span>
             <span v-if="f.deletions" class="del">−{{ f.deletions }}</span>
@@ -561,6 +674,23 @@ const mark: Record<string, Component> = {
           <!-- Narrow, the row goes somewhere rather than merely being picked. -->
           <ChevronRight v-if="narrow" class="go" />
         </button>
+          <span class="facts">
+            <button
+              class="icon-btn"
+              :disabled="discarding"
+              :title="'Discard changes to ' + f.path + ' — kept under Set aside, with Undo'"
+              @click="discardFiles([f.path])"
+            >
+              <Undo2 class="sm" />
+            </button>
+            <input
+              type="checkbox"
+              :checked="picked.includes(f.path)"
+              :title="'Select ' + f.path + ' (⌘-click the row does the same)'"
+              @change="togglePick(f.path)"
+            />
+          </span>
+        </div>
 
         <div v-if="!files.length && !loading" class="empty">
           <FileCode />
@@ -794,8 +924,18 @@ const mark: Record<string, Component> = {
 
       <div class="hunks mono split" v-if="split && current && current.lines.length">
         <template v-for="(r, i) in splitRows" :key="i">
-          <div v-if="'meta' in r" class="line meta"><span class="txt">{{ r.meta }}</span></div>
-          <div v-else class="srow">
+          <div v-if="'meta' in r" class="line meta">
+            <span class="txt">{{ r.meta }}</span>
+            <button
+              class="hdisc"
+              :disabled="discarding"
+              title="Discard this change — kept under Set aside, with Undo"
+              @click="discardHunk(r.hunk)"
+            >
+              <Undo2 />Discard
+            </button>
+          </div>
+          <div v-else class="sxs">
             <div class="line" :class="r.left.kind">
               <span class="gutter num">{{ r.left.num ?? '' }}</span>
               <span class="sign">{{ r.left.kind === 'del' ? '−' : ' ' }}</span>
@@ -816,6 +956,15 @@ const mark: Record<string, Component> = {
           <span class="gutter num">{{ l.newLine ?? '' }}</span>
           <span class="sign">{{ l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' ' }}</span>
           <span class="txt">{{ l.text }}</span>
+          <button
+            v-if="l.kind === 'meta'"
+            class="hdisc"
+            :disabled="discarding"
+            title="Discard this change — kept under Set aside, with Undo"
+            @click="discardHunk(hunkOf[i]!)"
+          >
+            <Undo2 />Discard
+          </button>
         </div>
       </div>
 
@@ -1065,18 +1214,72 @@ const mark: Record<string, Component> = {
 .fp {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.fname {
+  flex: none;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  /* Truncate from the left; `plaintext` keeps the string itself in reading
-     order, which bare `rtl` does not — it moves the leading slash to the end. */
+  font-size: var(--fs-sm);
+}
+.fdir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Truncate from the left, so the folder nearest the file survives. */
   direction: rtl;
-  unicode-bidi: plaintext;
   text-align: left;
-  font-family: var(--mono);
   font-size: var(--fs-xs);
+  color: var(--text-dim);
 }
 .counts { display: flex; gap: 5px; font-size: 10px; flex: none; }
+
+/* The row's own verbs sit over its counts and take their place on hover —
+   the counts are for scanning, the verbs for the row under the pointer. */
+.fline { position: relative; }
+.facts {
+  position: absolute;
+  top: 0;
+  right: 9px;
+  height: 30px;
+  display: none;
+  align-items: center;
+  gap: 4px;
+}
+.diff.narrow .facts { right: 26px; }
+.facts .icon-btn { width: 22px; height: 22px; }
+.facts input { width: 14px; height: 14px; }
+.fline:hover .facts,
+.fline.picking .facts { display: flex; }
+/* The verbs take the counts' place, and the row gives them room: hiding the
+   counts alone left a long path running underneath the buttons. */
+.fline:hover .counts,
+.fline.picking .counts { display: none; }
+.fline:hover .frow,
+.fline.picking .frow { padding-right: 58px; }
+.fline.picking:not(:hover) .facts .icon-btn { display: none; }
+.fline.ticked .frow { color: var(--text); }
+
+.picked {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  margin-bottom: 2px;
+  padding: 0 4px 0 9px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  font-size: var(--fs-xs);
+  color: var(--text);
+}
+.picked .btn { height: 22px; padding: 0 7px; font-size: var(--fs-xs); }
+.picked .btn.danger { color: var(--danger); }
 
 .view { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .vhead {
@@ -1110,6 +1313,7 @@ const mark: Record<string, Component> = {
 .line.add { background: var(--diff-add-bg); }
 .line.del { background: var(--diff-del-bg); }
 .line.meta {
+  align-items: center;
   color: var(--text-dim);
   background: var(--bg-sunken);
   font-size: var(--fs-xs);
@@ -1140,13 +1344,38 @@ const mark: Record<string, Component> = {
 
 /* Split: two halves that keep their rows level, so long lines wrap rather
    than scroll one side out of step with the other. */
-.srow { display: grid; grid-template-columns: 1fr 1fr; }
-.srow > .line { min-width: 0; }
-.srow > .line + .line { border-left: 1px solid var(--line-soft); }
+.sxs { display: grid; grid-template-columns: 1fr 1fr; }
+.sxs > .line { min-width: 0; }
+.sxs > .line + .line { border-left: 1px solid var(--line-soft); }
 .split .txt { white-space: pre-wrap; overflow-wrap: anywhere; }
-.line.empty { background: var(--bg-sunken); }
+.line.blank { background: var(--bg-sunken); }
+.split .line.meta > .txt { padding-left: 20px; }
 .sign { flex: none; width: 14px; text-align: center; user-select: none; }
 .line.add .sign, .line.add .txt { color: var(--diff-add-text); }
 .line.del .sign, .line.del .txt { color: var(--diff-del-text); }
 .txt { flex: 1; padding-right: 16px; }
+
+/* A hunk's own discard, on its header line: out of the way until the
+   pointer is on that change. */
+.hdisc {
+  position: sticky;
+  right: 8px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  margin-right: 8px;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-family: var(--font);
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
+}
+.hdisc .lucide { width: 12px; height: 12px; }
+.line.meta:hover .hdisc,
+.hdisc:focus-visible { opacity: 1; }
+.hdisc:hover { color: var(--danger); background: var(--hover); }
 </style>

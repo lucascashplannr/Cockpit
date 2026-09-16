@@ -126,7 +126,9 @@ function parseUnified(text: string): DiffHunkLine[] {
       out.push({ kind: 'add', oldLine: null, newLine: newLine++, text: raw.slice(1) })
     } else if (raw.startsWith('-')) {
       out.push({ kind: 'del', oldLine: oldLine++, newLine: null, text: raw.slice(1) })
-    } else if (raw.startsWith('\\')) {
+    } else if (raw.startsWith('\\') || raw === '') {
+      // A context line is at least its leading space; an empty string is the
+      // split after the diff's final newline, not a blank line of the file.
       continue
     } else {
       out.push({ kind: 'context', oldLine: oldLine++, newLine: newLine++, text: raw.slice(1) })

@@ -12,6 +12,9 @@ import { state } from '../core/store.js'
         <Info v-else class="sm" />
       </span>
       <span class="msg selectable">{{ state.toast.text }}</span>
+      <button v-if="state.toast.action" class="act" @click="state.toast.action.run()">
+        {{ state.toast.action.label }}
+      </button>
       <button class="x" title="Dismiss" @click="state.toast = null"><X class="sm" /></button>
     </div>
   </Transition>
@@ -46,6 +49,17 @@ import { state } from '../core/store.js'
 .toast.ok .ic { color: var(--ok); }
 .toast.error .ic { color: var(--danger); }
 .msg { flex: 1; min-width: 0; line-height: 1.5; }
+.act {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--accent);
+  transition: background var(--dur-1) var(--ease-soft);
+}
+.act:hover { background: var(--accent-soft); }
 .x {
   flex: none;
   display: flex;

@@ -73,6 +73,9 @@ export type EventType =
   | 'git.message_drafted'
   | 'git.conflict.resolved'
   | 'git.conflict.aborted'
+  /** §16 — uncommitted work thrown away, into a stash entry rather than nowhere. */
+  | 'git.discarded'
+  | 'git.discard_undone'
   // §7 — the gitignored local config carried into a new worktree
   | 'worktree.seeded'
   // runtime

@@ -23,6 +23,7 @@ import * as seed from './seed.js'
 import * as database from './database.js'
 import * as commit from './commit.js'
 import * as stash from './stash.js'
+import * as discard from './discard.js'
 import * as terminals from './terminals.js'
 import * as runtime from './runtime/index.js'
 import * as supervisor from './supervisor.js'
@@ -453,6 +454,19 @@ const handlers: Record<string, Handler> = {
   'git.state': (p: { workspaceId: string }) => conflict.state(p.workspaceId),
   'git.resolve': async (p: { workspaceId: string; action: conflict.ResolveAction }) => {
     const res = await conflict.resolve(p.workspaceId, p.action)
+    await registry.probeWorkspace(p.workspaceId)
+    pushWorkspaces()
+    return res
+  },
+  /** §16 — a discard is a stash entry first; see `discard.ts`. */
+  'git.discard': async (p: discard.DiscardInput) => {
+    const res = await discard.discard(p)
+    await registry.probeWorkspace(p.workspaceId)
+    pushWorkspaces()
+    return res
+  },
+  'git.discardUndo': async (p: { workspaceId: string; entry: string }) => {
+    const res = await discard.undo(p)
     await registry.probeWorkspace(p.workspaceId)
     pushWorkspaces()
     return res

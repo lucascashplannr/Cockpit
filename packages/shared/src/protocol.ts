@@ -596,6 +596,20 @@ export interface Rpc {
   /** Marks paths resolved by hand — the escape hatch for a file meant to
    *  contain conflict markers, which `continue` refuses over on purpose. */
   'git.stage': { params: { workspaceId: string; paths: string[] }; result: GitResolveResult }
+  /**
+   * §16 — throwing away uncommitted work, whole files or one hunk. Never a bare
+   * restore: what goes is stashed first, titled "Discarded …", and `entry` is
+   * the stash commit that holds it, for `git.discardUndo`.
+   */
+  'git.discard': {
+    params: {
+      workspaceId: string
+      paths?: string[]
+      hunk?: { path: string; index: number; lines: { kind: 'context' | 'add' | 'del'; text: string }[] }
+    }
+    result: { ok: boolean; detail: string; entry: string | null }
+  }
+  'git.discardUndo': { params: { workspaceId: string; entry: string }; result: { ok: boolean; detail: string } }
   'git.log': {
     params: { workspaceId: string; limit?: number }
     result: { hash: string; subject: string; author: string; ts: number; refs: string }[]

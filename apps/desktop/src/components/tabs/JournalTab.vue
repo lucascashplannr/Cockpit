@@ -120,6 +120,8 @@ const TITLES: Partial<Record<EventType, string>> = {
   'git.undone': 'Undone',
   'git.conflict.resolved': 'Conflict resolved',
   'git.conflict.aborted': 'Conflict aborted',
+  'git.discarded': 'Discarded',
+  'git.discard_undone': 'Discard undone',
   'worktree.seeded': 'Branch seeded',
   'runtime.provision': 'Server preparing',
   'runtime.up': 'Server up',
@@ -243,6 +245,8 @@ function detailOf(e: CockpitEvent): string {
     case 'git.conflict': out = join(s('repo'), count(arr('paths').length, 'file')); break
     case 'git.conflict.resolved': out = join(s('kind'), s('action')); break
     case 'git.conflict.aborted': out = join(s('kind'), s('onto')); break
+    case 'git.discarded': out = join(arr('paths').length === 1 ? String(arr('paths')[0]) : count(arr('paths').length, 'file'), s('hunk') ? 'lines ' + s('hunk') : ''); break
+    case 'git.discard_undone': out = s('entry').slice(0, 8); break
     case 'git.restore_point': out = s('reason'); break
     case 'git.undone': out = join(s('head').slice(0, 8), s('reason')); break
     case 'worktree.seeded': out = join(s('repo'), count(arr('copied').length, 'file') + ' carried over'); break
