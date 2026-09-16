@@ -100,6 +100,77 @@ onBeforeUnmount(() => {
 
 const files = ref<DiffFile[]>([])
 const current = ref<FileDiff | null>(null)
+
+/* ── one text, or two ─────────────────────────────────────────────────────
+ *
+ * Unified reads a change as a story, top to bottom; split reads it as a
+ * before and after. Which is better depends on the change, so it is the
+ * reader's call, and it is remembered. Narrow, there is no room for two
+ * columns of code, and the panel falls back to unified without forgetting
+ * the choice.
+ */
+type DiffView = 'unified' | 'split'
+const VIEW_KEY = 'cockpit.diffView'
+function readView(): DiffView {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'split' ? 'split' : 'unified'
+  } catch {
+    return 'unified'
+  }
+}
+const view = ref<DiffView>(readView())
+function setView(v: DiffView): void {
+  view.value = v
+  try {
+    localStorage.setItem(VIEW_KEY, v)
+  } catch {
+    /* remembered for this session only */
+  }
+}
+const split = computed(() => view.value === 'split' && !narrow.value)
+
+type Cell = { num: number | null; kind: 'context' | 'add' | 'del' | 'empty'; text: string }
+type SplitRow = { meta: string } | { left: Cell; right: Cell }
+
+/**
+ * The same lines, paired. A run of deletions followed by a run of additions is
+ * one edit, so they are laid side by side line for line, and whichever run is
+ * shorter is padded with blank cells to keep the rows level.
+ */
+const splitRows = computed<SplitRow[]>(() => {
+  const lines = current.value?.lines ?? []
+  const rows: SplitRow[] = []
+  const blank: Cell = { num: null, kind: 'empty', text: '' }
+  let i = 0
+  const at = (k: number, kind: string) => lines[k]?.kind === kind
+  while (i < lines.length) {
+    const l = lines[i]!
+    if (l.kind === 'meta') {
+      rows.push({ meta: l.text })
+      i++
+    } else if (l.kind === 'context') {
+      rows.push({
+        left: { num: l.oldLine, kind: 'context', text: l.text },
+        right: { num: l.newLine, kind: 'context', text: l.text },
+      })
+      i++
+    } else {
+      const dels: typeof lines = []
+      const adds: typeof lines = []
+      while (at(i, 'del')) dels.push(lines[i++]!)
+      while (at(i, 'add')) adds.push(lines[i++]!)
+      for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
+        const d = dels[k]
+        const a = adds[k]
+        rows.push({
+          left: d ? { num: d.oldLine, kind: 'del', text: d.text } : blank,
+          right: a ? { num: a.newLine, kind: 'add', text: a.text } : blank,
+        })
+      }
+    }
+  }
+  return rows
+})
 const selected = ref<string | null>(null)
 const loading = ref(false)
 
@@ -715,9 +786,31 @@ const mark: Record<string, Component> = {
         <button class="btn ghost" @click="openInIde">
           <SquareArrowOutUpRight />Open in IDE
         </button>
+        <div v-if="!narrow && current && current.lines.length" class="seg" role="group" aria-label="Diff view">
+          <button :class="{ on: view === 'unified' }" @click="setView('unified')">Unified</button>
+          <button :class="{ on: view === 'split' }" @click="setView('split')">Split</button>
+        </div>
       </div>
 
-      <div class="hunks mono" v-if="current && current.lines.length">
+      <div class="hunks mono split" v-if="split && current && current.lines.length">
+        <template v-for="(r, i) in splitRows" :key="i">
+          <div v-if="'meta' in r" class="line meta"><span class="txt">{{ r.meta }}</span></div>
+          <div v-else class="srow">
+            <div class="line" :class="r.left.kind">
+              <span class="gutter num">{{ r.left.num ?? '' }}</span>
+              <span class="sign">{{ r.left.kind === 'del' ? '−' : ' ' }}</span>
+              <span class="txt">{{ r.left.text }}</span>
+            </div>
+            <div class="line" :class="r.right.kind">
+              <span class="gutter num">{{ r.right.num ?? '' }}</span>
+              <span class="sign">{{ r.right.kind === 'add' ? '+' : ' ' }}</span>
+              <span class="txt">{{ r.right.text }}</span>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div class="hunks mono" v-else-if="current && current.lines.length">
         <div v-for="(l, i) in current.lines" :key="i" class="line" :class="l.kind">
           <span class="gutter num">{{ l.oldLine ?? '' }}</span>
           <span class="gutter num">{{ l.newLine ?? '' }}</span>
@@ -1024,22 +1117,34 @@ const mark: Record<string, Component> = {
   margin: 6px 0 2px;
 }
 
+.vhead .seg > button { height: 20px; padding: 0 8px; }
+
+/* The numbers are for finding your place, not for reading: small, faint,
+   right-aligned against the code, and never tinted by the change. */
 .gutter {
   flex: none;
-  width: 44px;
+  width: 40px;
+  padding-right: 8px;
+  text-align: right;
+  font-size: 0.85em;
+  color: var(--text-dim);
+  opacity: 0.55;
+  user-select: none;
   transition: width var(--dur-1) var(--ease-soft);
 }
+.gutter + .gutter { width: 34px; }
 /* Narrow, the hunk has the whole panel and the numbers should not take a
    quarter of it back. */
-.diff.narrow .gutter {
-  width: 30px;
-  padding-right: 6px;
-  padding-right: 10px;
-  text-align: right;
-  color: var(--text-dim);
-  opacity: 0.6;
-  user-select: none;
-}
+.diff.narrow .gutter { width: 30px; padding-right: 6px; }
+.hunks { tab-size: 4; }
+
+/* Split: two halves that keep their rows level, so long lines wrap rather
+   than scroll one side out of step with the other. */
+.srow { display: grid; grid-template-columns: 1fr 1fr; }
+.srow > .line { min-width: 0; }
+.srow > .line + .line { border-left: 1px solid var(--line-soft); }
+.split .txt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.line.empty { background: var(--bg-sunken); }
 .sign { flex: none; width: 14px; text-align: center; user-select: none; }
 .line.add .sign, .line.add .txt { color: var(--diff-add-text); }
 .line.del .sign, .line.del .txt { color: var(--diff-del-text); }
