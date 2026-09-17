@@ -84,6 +84,58 @@ function coreLauncher() {
   return { args: [tsx, entry], what: entry }
 }
 
+/**
+ * The PATH a terminal would have. An app opened from the Dock or Finder is
+ * started by launchd with /usr/bin:/bin:/usr/sbin:/sbin and nothing else, and
+ * the core hands that to every process it starts — so `claude` in
+ * ~/.local/bin, `pnpm` and `node` from Homebrew or a version manager, all read
+ * as missing. `npm run dev` never showed it because a terminal passes its own.
+ *
+ * Asked of the login shell rather than guessed, since where those binaries
+ * live is the user's setup. The markers keep whatever an rc file prints out of
+ * the value. Windows GUI apps get the user's PATH already.
+ */
+function shellPath() {
+  if (process.platform === 'win32') return process.env.PATH
+  const MARK = '__COCKPIT_PATH__'
+  try {
+    const out = execFileSync(
+      process.env.SHELL || '/bin/zsh',
+      ['-ilc', 'printf "' + MARK + '%s' + MARK + '" "$PATH"'],
+      { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
+    )
+    const found = out.split(MARK)[1]
+    if (found) return found
+  } catch {
+    /* a shell that hangs or fails: fall through to the usual places */
+  }
+  const home = require('node:os').homedir()
+  return [join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', process.env.PATH]
+    .filter(Boolean)
+    .join(':')
+}
+
+/**
+ * Where the core writes. It is detached from this process, so its stdout has
+ * nowhere else to go, and a core that fails silently is one nobody can help.
+ * Beside the database, in the same COCKPIT_HOME the core resolves.
+ */
+function coreLog() {
+  const { mkdirSync, openSync, statSync, renameSync } = require('node:fs')
+  const home = process.env.COCKPIT_HOME || join(require('node:os').homedir(), '.cockpit')
+  const dir = join(home, 'logs')
+  const file = join(dir, 'core.log')
+  try {
+    mkdirSync(dir, { recursive: true })
+    // One generation kept: enough to read what happened before a restart,
+    // without a file that grows for as long as the machine is used.
+    if (existsSync(file) && statSync(file).size > 5 * 1024 * 1024) renameSync(file, file + '.1')
+    return openSync(file, 'a')
+  } catch {
+    return 'ignore'
+  }
+}
+
 async function ensureCore() {
   if (await probeCore(CORE_PORT)) {
     console.log('[cockpit] core already running on ' + CORE_PORT)
@@ -95,15 +147,20 @@ async function ensureCore() {
     return
   }
   // Detached: the core outlives this window, and this app on quit.
+  const log = coreLog()
   const child = spawn(process.execPath, launcher.args, {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', log, log],
     env: Object.assign({}, process.env, {
       COCKPIT_PORT: String(CORE_PORT),
       ELECTRON_RUN_AS_NODE: '1',
+      // Packaged only: a dev launch comes from a terminal that already has it.
+      ...(DEV ? {} : { PATH: shellPath() }),
     }),
   })
   child.unref()
+  // The child holds its own copy of the descriptor.
+  if (typeof log === 'number') require('node:fs').closeSync(log)
   for (let i = 0; i < 40; i++) {
     if (await probeCore(CORE_PORT)) return
     await new Promise((r) => setTimeout(r, 250))

@@ -1463,7 +1463,13 @@ async function launch(
     append({ type: 'agent.output', level: 'warn', actor, payload: { text: c.toString('utf8').slice(0, 2000) } })
   })
 
-  child.on('close', (code) => {
+  // Once, whichever of the two arrives. A binary that cannot be started emits
+  // `error` and never `close`: without this the conversation read "thinking"
+  // for as long as the core lived, and `stop` had no process to signal.
+  let ended = false
+  const finish = (code: number | null) => {
+    if (ended) return
+    ended = true
     clearIdleTimer(l)
     live.delete(session.id)
     session.status = code === 0 ? 'ended' : 'failed'
@@ -1481,6 +1487,21 @@ async function launch(
       payload: { code, turns: session.turns, resumable: !!session.engineSessionId },
     })
     agentBus.emit('changed')
+  }
+
+  child.on('close', (code) => finish(code))
+  child.on('error', (err: NodeJS.ErrnoException) => {
+    // ENOENT is the one worth spelling out: an app opened from the Dock does
+    // not inherit the shell's PATH, and "spawn claude ENOENT" says nothing
+    // about where the binary was looked for.
+    const text =
+      err.code === 'ENOENT'
+        ? spec.bin + ' was not found on the PATH the core runs with (' + (process.env.PATH ?? '') + ')'
+        : spec.bin + ' could not be started: ' + err.message
+    append({ type: 'agent.output', level: 'error', actor, workspaceId, payload: { text } })
+    // `error` also covers a signal that could not be delivered to a process
+    // that is still running; only one that never got a pid is over.
+    if (child.pid === undefined) finish(null)
   })
 
   return { sessionId: session.id }
