@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { MonitorCog, Moon, Plus, Search, SlidersHorizontal, Sun } from '@lucide/vue'
-import { activityFor, cycleTheme, newProject, selectProject, state } from '../core/store.js'
+import { Activity, MonitorCog, Moon, Plus, Search, SlidersHorizontal, Sun } from '@lucide/vue'
+import { activityFor, cycleTheme, newProject, selectProject, serviceStale, state } from '../core/store.js'
 
 /**
  * The far-left rail: one square per project, then add.
@@ -101,6 +101,17 @@ const themeLabel = computed(() =>
          every other act in this rail is down here. -->
     <button class="icon-btn find" title="Search or run a command  ⌘K" @click="state.paletteOpen = true">
       <Search />
+    </button>
+
+    <!-- The only mark here that is not an act: a dot when the service is out
+         of step with this window, since the fix is on the other side of it. -->
+    <button
+      class="icon-btn service"
+      :title="serviceStale ? 'Service — running an older version' : 'Service'"
+      @click="state.serviceOpen = true"
+    >
+      <Activity />
+      <i v-if="serviceStale || (state.booted && state.connection === 'disconnected')" class="flag" />
     </button>
 
     <button class="icon-btn" title="Settings" @click="state.settingsOpen = true">
@@ -276,4 +287,16 @@ const themeLabel = computed(() =>
 
 .theme { width: 38px; height: 38px; }
 
+
+.icon-btn.service { position: relative; }
+.icon-btn.service .flag {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--surface-rail);
+}
 </style>

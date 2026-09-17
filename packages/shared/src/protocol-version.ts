@@ -19,8 +19,13 @@
  * sends it — but what is then missing is the number that tells a long turn
  * apart from a hung one, and a window silently short of it would have nobody
  * to ask. Bumped so the banner says which half is out of date.
+ *
+ * 2.8 — `core.logs`, and `CoreStatus` says which app started the service, where
+ * it keeps its data and what PATH it runs with. The window compares that
+ * version with its own: a service left running across an update is the one
+ * that has to be restarted.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 7 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 8 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

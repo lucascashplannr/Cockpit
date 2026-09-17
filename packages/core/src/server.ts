@@ -1,11 +1,12 @@
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
+import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@cockpit/shared'
 import type {
-  AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, RpcRequest, RpcResponse,
+  AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, RpcRequest, RpcResponse,
   ProjectSettings, ServerBoardRow, ServerPush,
 } from '@cockpit/shared'
-import { DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
+import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, forSession, tail } from './journal.js'
 import * as registry from './registry.js'
 import * as scaffold from './scaffold.js'
@@ -44,13 +45,29 @@ import { termBus } from './terminals.js'
 
 const clients = new Set<WebSocket>()
 const startedAt = Date.now()
+let listeningOn = DEFAULT_PORT
 
-function status() {
+/**
+ * Written by whoever started this process (apps/desktop/electron/main.cjs),
+ * which is also who opened the file for its stdout. Read from the same place
+ * so the sheet shows the file this service is actually writing to.
+ */
+const LOG_PATH = join(COCKPIT_HOME, 'logs', 'core.log')
+
+function status(): CoreStatus {
   return {
-    version: '0.1.0',
+    // Handed over by the app that launched this service. A service started
+    // some other way (the CLI, a bare `tsx`) has no app to be the version of.
+    version: process.env.COCKPIT_APP_VERSION || 'unknown',
     protocol: PROTOCOL_VERSION,
     pid: process.pid,
     startedAt,
+    build: process.env.COCKPIT_BUILD === 'packaged' ? 'packaged' : 'source',
+    port: listeningOn,
+    home: COCKPIT_HOME,
+    logPath: LOG_PATH,
+    runtime: process.versions.node,
+    path: process.env.PATH ?? '',
     journalEvents: countEvents(),
     projects: registry.allProjects().length,
     workspaces: registry.allWorkspaces().length,
@@ -208,6 +225,26 @@ const handlers: Record<string, Handler> = {
     const changed = await registry.reconcile(p?.projectId, { fetch: 'force' })
     pushAll()
     return { changed }
+  },
+  /**
+   * The last `bytes` of the log, cut at a line start. Read from the end rather
+   * than whole: the file is kept up to 5 MB, and the sheet shows a screenful.
+   */
+  'core.logs': (p: { bytes?: number }) => {
+    const want = Math.min(Math.max(p?.bytes ?? 64_000, 1_000), 1_000_000)
+    if (!existsSync(LOG_PATH)) return { path: LOG_PATH, text: '', size: 0, missing: true }
+    const size = statSync(LOG_PATH).size
+    const from = Math.max(0, size - want)
+    const buf = Buffer.alloc(size - from)
+    const fd = openSync(LOG_PATH, 'r')
+    try {
+      readSync(fd, buf, 0, buf.length, from)
+    } finally {
+      closeSync(fd)
+    }
+    let text = buf.toString('utf8')
+    if (from > 0) text = text.slice(text.indexOf('\n') + 1)
+    return { path: LOG_PATH, text, size, missing: false }
   },
   'core.shutdown': () => {
     // Through the signal handler, not straight to process.exit: that is where
@@ -690,6 +727,7 @@ const handlers: Record<string, Handler> = {
 }
 
 export function startServer(port = DEFAULT_PORT): WebSocketServer {
+  listeningOn = port
   const wss = new WebSocketServer({ host: '127.0.0.1', port })
 
   wss.on('connection', (ws) => {

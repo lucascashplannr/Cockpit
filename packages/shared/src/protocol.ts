@@ -272,6 +272,11 @@ export interface Rpc {
   'core.status': { params: void; result: CoreStatus }
   'core.reconcile': { params: { projectId?: string }; result: { changed: number } }
   'core.shutdown': { params: void; result: { ok: true } }
+  /** The end of the service's own log file, for the Service sheet. */
+  'core.logs': {
+    params: { bytes?: number }
+    result: { path: string; text: string; size: number; missing: boolean }
+  }
 
   'project.list': { params: void; result: Project[] }
   'project.add': { params: { root: string }; result: Project }

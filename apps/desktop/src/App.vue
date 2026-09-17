@@ -16,6 +16,7 @@ import ProjectDialog from './components/ProjectDialog.vue'
 import NewProjectDialog from './components/NewProjectDialog.vue'
 import AddRepoDialog from './components/AddRepoDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import ServiceDialog from './components/ServiceDialog.vue'
 import TopicDialog from './components/TopicDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
@@ -57,6 +58,7 @@ function onKey(e: KeyboardEvent) {
     } else if (state.newProjectOpen) state.newProjectOpen = false
     else if (state.addRepoProjectId) state.addRepoProjectId = null
     else if (state.settingsOpen) state.settingsOpen = false
+    else if (state.serviceOpen) state.serviceOpen = false
     else if (state.editingProjectId) state.editingProjectId = null
     else if (state.detailsFor) state.detailsFor = null
     else if (state.pendingPlan) state.pendingPlan = null
@@ -276,6 +278,7 @@ onUnmounted(() => {
     <NewProjectDialog />
     <AddRepoDialog />
     <SettingsDialog />
+    <ServiceDialog />
     <TopicDialog />
     <ConnectionBanner />
     <Toast />

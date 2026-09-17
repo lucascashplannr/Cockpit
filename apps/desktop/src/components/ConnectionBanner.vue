@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { LoaderCircle, RefreshCw, TriangleAlert, Unplug } from '@lucide/vue'
-import { client, restartCore, state } from '../core/store.js'
+import { client, restartCore, serviceStale, state } from '../core/store.js'
 
 /**
  * §13 — one of the four consequences of a permanent service that must be
@@ -11,7 +11,18 @@ import { client, restartCore, state } from '../core/store.js'
 </script>
 
 <template>
-  <div v-if="state.connection !== 'connected'" class="banner" :class="state.connection">
+  <!-- Connected, and still wrong: the service outlived an update (§13), so
+       whatever the new version fixed on that side is not running yet. -->
+  <div v-if="state.connection === 'connected' && serviceStale" class="banner outdated">
+    <TriangleAlert class="sm" />
+    <span class="txt">
+      The service is still Cockpit {{ state.status?.version }}; this window is
+      {{ state.hostInfo?.version }}.
+    </span>
+    <button class="btn ghost small" @click="state.serviceOpen = true">Details</button>
+    <button class="btn primary small" @click="restartCore()"><RefreshCw />Restart the service</button>
+  </div>
+  <div v-else-if="state.connection !== 'connected'" class="banner" :class="state.connection">
     <LoaderCircle v-if="state.connection === 'connecting'" class="sm spin" />
     <TriangleAlert v-else-if="state.connection === 'outdated'" class="sm" />
     <Unplug v-else class="sm" />

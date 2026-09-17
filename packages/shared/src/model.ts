@@ -779,10 +779,26 @@ export interface TranscriptFile {
 }
 
 export interface CoreStatus {
+  /**
+   * The version of the app that started this service — not of the window
+   * asking. The service outlives the window, and after an update the two
+   * differ until it is restarted; that difference is what the window shows.
+   */
   version: string
   protocol: { major: number; minor: number }
   pid: number
   startedAt: number
+  /** Absent from services older than protocol 2.8, as is everything below. */
+  build?: 'packaged' | 'source'
+  port?: number
+  /** COCKPIT_HOME: the database, attachments, checkpoints and logs. */
+  home?: string
+  /** Where this service's own output is written. */
+  logPath?: string
+  /** The Node it runs under — Electron's, whichever launched it. */
+  runtime?: string
+  /** The PATH every agent and server it starts inherits. */
+  path?: string
   journalEvents: number
   projects: number
   workspaces: number

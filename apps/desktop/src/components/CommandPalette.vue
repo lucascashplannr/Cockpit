@@ -8,7 +8,7 @@ import {
   FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, TextSearch,
   Trash2, Undo2,
-  RotateCcw, Archive, Zap,
+  RotateCcw, Archive, Zap, Activity,
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
@@ -449,6 +449,16 @@ const commands = computed<Item[]>(() => {
     group: 'Cockpit',
     icon: CloudDownload,
     run: act(() => newProject('clone')),
+  })
+  out.push({
+    id: 'service',
+    label: 'Service…',
+    hint: 'version, agents, PATH, logs, restart',
+    group: 'Cockpit',
+    icon: Activity,
+    run: act(() => {
+      state.serviceOpen = true
+    }),
   })
   out.push({
     id: 'settings',

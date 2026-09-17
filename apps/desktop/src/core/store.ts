@@ -28,6 +28,26 @@ export interface PickFolderOptions {
   defaultPath?: string
 }
 
+/** What the app knows about itself, as opposed to what the service reports. */
+export interface HostInfo {
+  version: string
+  build: 'packaged' | 'source'
+  port: number
+  home: string
+  appLog: string
+  coreLog: string
+  electron: string
+  platform: string
+}
+
+/** The end of a log file. `missing` when nothing has written it yet. */
+export interface LogTail {
+  path: string
+  text: string
+  size: number
+  missing: boolean
+}
+
 /** §13 rule 1 — the whole of what the renderer may ask of its host. */
 interface CockpitHost {
   corePort: number
@@ -37,6 +57,12 @@ interface CockpitHost {
   pickFolder?: (opts?: PickFolderOptions) => Promise<string | null>
   /** Brings a core back after one was stopped. Absent outside Electron. */
   restartCore?: () => Promise<boolean>
+  /** This app's version, build and paths. Absent outside Electron. */
+  info?: () => Promise<HostInfo>
+  /** The end of this app's own log file. */
+  appLog?: (bytes?: number) => Promise<LogTail>
+  /** Opens the logs folder in the file manager. */
+  revealLogs?: () => Promise<string>
   /** The window's own three verbs, drawn by TrafficLights. Absent in a browser. */
   window?: { close: () => void; minimize: () => void; zoom: (alt: boolean) => void }
 }
@@ -163,6 +189,10 @@ export const state = reactive({
   board: [] as ServerBoardRow[],
 
   status: null as CoreStatus | null,
+  /** This window's own version and paths, read once from the host. */
+  hostInfo: null as HostInfo | null,
+  /** The sheet that shows the service: version, PATH, engines, logs. */
+  serviceOpen: false,
 
   activeProjectId: null as string | null,
   activeWorkspaceId: null as string | null,
@@ -3003,6 +3033,46 @@ export async function closeTopic(topicId: string, removeWorktrees: boolean): Pro
   }
   await refreshTopics()
   toast('ok', res.detail)
+}
+
+void host?.info?.().then((i) => {
+  state.hostInfo = i
+})
+
+/**
+ * The service this window is talking to was started by a different app — in
+ * practice, by the version before an update. It keeps running across the
+ * update (§13), so until it is restarted the fixes in the new version that
+ * live in the service are not there. A service started without an app (the
+ * CLI) has no version to compare and is not flagged.
+ */
+export const serviceStale = computed(() => {
+  const s = state.status
+  const h = state.hostInfo
+  if (!s || !h || s.version === 'unknown') return false
+  return s.version !== h.version
+})
+
+/** Both logs, read on demand for the Service sheet. */
+export async function readLogs(bytes = 64_000): Promise<{ service: LogTail | null; app: LogTail | null }> {
+  const [service, app] = await Promise.all([
+    client.call('core.logs', { bytes }).catch(() => null),
+    host?.appLog ? host.appLog(bytes).catch(() => null) : Promise.resolve(null),
+  ])
+  return { service, app }
+}
+
+export async function refreshStatus(): Promise<void> {
+  try {
+    state.status = await client.call('core.status', undefined)
+  } catch {
+    /* disconnected: the banner already says so */
+  }
+}
+
+export function revealLogs(): void {
+  if (host?.revealLogs) void host.revealLogs()
+  else toast('info', 'the logs are in ' + (state.status?.home ?? '~/.cockpit') + '/logs')
 }
 
 /**

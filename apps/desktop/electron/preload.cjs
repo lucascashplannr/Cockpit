@@ -6,7 +6,12 @@ const { contextBridge, ipcRenderer } = require('electron')
  */
 contextBridge.exposeInMainWorld('cockpitHost', {
   platform: process.platform,
-  corePort: Number(process.env.COCKPIT_PORT || 7717),
+  // Handed over by main.cjs, which decides it: 7717 installed, 7718 in development.
+  corePort: Number(
+    (process.argv.find((a) => a.startsWith('--cockpit-port=')) || '').split('=')[1] ||
+      process.env.COCKPIT_PORT ||
+      7717,
+  ),
   isElectron: true,
   /**
    * Resolves to an absolute path, or null when the user cancels. The wording is
@@ -17,6 +22,12 @@ contextBridge.exposeInMainWorld('cockpitHost', {
   pickFolder: (opts) => ipcRenderer.invoke('dialog:pickFolder', opts),
   /** Spawns a core if none is listening. Resolves true once one answers. */
   restartCore: () => ipcRenderer.invoke('core:restart'),
+  /** This app's version, build and paths — what the Service sheet compares. */
+  info: () => ipcRenderer.invoke('host:info'),
+  /** The end of this app's own log file. */
+  appLog: (bytes) => ipcRenderer.invoke('host:appLog', bytes),
+  /** Opens the logs folder in Finder / Explorer. */
+  revealLogs: () => ipcRenderer.invoke('host:revealLogs'),
   /**
    * The window's own three verbs. They exist because AppKit greys the standard
    * buttons on any window that is not the key window, so the app draws its own
