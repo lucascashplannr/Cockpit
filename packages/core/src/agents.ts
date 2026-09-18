@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { CLAUDE_MODELS, newId } from '@cockpit/shared'
 import type {
-  AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, TurnUsage,
+  AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, PermissionMode,
+  PermissionRequest, TurnUsage,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { append, recordTouch } from './journal.js'
@@ -67,10 +68,12 @@ export interface LaunchContext {
   model?: string
   effort?: string
   /**
-   * §3.7 — "toute opération affiche son plan avant de s'exécuter", applied to
-   * the agent itself: plan mode reads and proposes, and writes nothing.
+   * Who approves a tool call. What the mode does not approve by itself is
+   * asked of the window over the control channel, and waits for an answer.
+   * `plan` is §3.7 — "toute opération affiche son plan avant de s'exécuter",
+   * applied to the agent itself: it reads and proposes, and writes nothing.
    */
-  plan?: boolean
+  permissionMode?: PermissionMode
 }
 
 /**
@@ -127,6 +130,13 @@ export interface NormalizedEvent {
     | 'progress'
     /** §16 — what the turn cost and how full the window is. Engine-reported. */
     | 'usage'
+    /**
+     * The engine will not make a call until someone answers. `requestId` is
+     * what the answer goes back to; the call itself is `tool` and `input`.
+     */
+    | 'permission'
+    /** A control request this driver does not handle, to be refused so the engine is not left waiting. */
+    | 'control'
     | 'end'
     | 'error'
   /** `delta` / `text`: what was written. `end`: the closing message. */
@@ -143,6 +153,11 @@ export interface NormalizedEvent {
   stderr?: string
   isError?: boolean
   interrupted?: boolean
+  /** `permission` / `control`: the engine's id for the request. */
+  requestId?: string
+  /** `permission` only: the engine's account of the call, and why it asked. */
+  description?: string
+  reason?: string
   /** `end` only: the invocations §16 refused during this turn. */
   denials?: string[]
   /** `progress` only: output tokens of the message being written right now. */
@@ -200,6 +215,18 @@ export interface EngineSpec {
   encodeTurn?(prompt: string, segs?: attachments.TurnSegment[]): string
   /** One line of output, as the zero or more things that happened in it. */
   parse(line: string): NormalizedEvent[]
+  /**
+   * Streaming engines with a control channel: the lines that open it, answer
+   * a permission question, change the mode of a running process, and refuse a
+   * request the driver has no answer for. Without it nothing can be asked, so
+   * whatever the mode does not approve by itself is refused.
+   */
+  control?: {
+    open(): string
+    answer(requestId: string, allow: boolean, input: Record<string, unknown>): string
+    setMode(mode: PermissionMode): string
+    unsupported(requestId: string): string
+  }
 }
 
 /**
@@ -277,12 +304,13 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // would swallow the flag that follows them.
     '--tools', ctx.tools.join(','),
     ...(ctx.deny.length ? ['--disallowedTools', ctx.deny.join(',')] : []),
-    // Edits do not wait for an approval that has nowhere to arrive: print mode
-    // has no prompt to answer on. What keeps that honest is that the tool set
-    // above is now a boundary rather than a suggestion.
-    // §3.7 — plan mode reads and proposes without writing, which is the one
-    // posture where an agent on the main checkout costs nothing to be wrong.
-    '--permission-mode', ctx.plan ? 'plan' : 'acceptEdits',
+    // Chosen in the composer. What the mode does not approve by itself comes
+    // back over stdio as a `can_use_tool` request and waits for the window.
+    // Without the prompt tool it waited 65 seconds for an answer that had
+    // nowhere to come from and was then refused, which is most of why a turn
+    // in Cockpit ran longer than the same turn anywhere else.
+    '--permission-mode', ctx.permissionMode ?? 'acceptEdits',
+    '--permission-prompt-tool', 'stdio',
     // What the two flags above actually forbid, in words the engine reads
     // before it writes its first command rather than after.
     '--append-system-prompt', SHELL_RULES,
@@ -359,6 +387,25 @@ const claudeEngine: EngineSpec = {
     const type = String(o.type ?? '')
 
     if (type === 'system' && o.subtype === 'init') return [{ kind: 'ready' }]
+
+    if (type === 'control_request') {
+      const requestId = String(o.request_id ?? '')
+      const r = (o.request ?? {}) as Record<string, unknown>
+      if (r.subtype !== 'can_use_tool') return [{ kind: 'control', requestId }]
+      const input = (r.input ?? {}) as Record<string, unknown>
+      return [
+        {
+          kind: 'permission',
+          requestId,
+          tool: String(r.tool_name ?? 'tool'),
+          input,
+          toolUseId: r.tool_use_id == null ? undefined : String(r.tool_use_id),
+          description: typeof r.description === 'string' ? r.description : undefined,
+          reason: typeof r.decision_reason === 'string' ? r.decision_reason : undefined,
+          paths: pathsIn(input),
+        },
+      ]
+    }
 
     if (type === 'stream_event') {
       const ev = o.event as
@@ -443,6 +490,34 @@ const claudeEngine: EngineSpec = {
       ]
     }
     return []
+  },
+  control: {
+    // Before the first turn: until it is initialised, the engine has no host
+    // to ask and falls back to refusing after a timeout.
+    open: () =>
+      JSON.stringify({ type: 'control_request', request_id: 'init', request: { subtype: 'initialize' } }),
+    answer: (requestId, allow, input) =>
+      JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          response: allow
+            ? { behavior: 'allow', updatedInput: input }
+            : { behavior: 'deny', message: 'The person reviewing this refused it. Do not retry it as is.' },
+        },
+      }),
+    setMode: (mode) =>
+      JSON.stringify({
+        type: 'control_request',
+        request_id: newId('mode_'),
+        request: { subtype: 'set_permission_mode', mode },
+      }),
+    unsupported: (requestId) =>
+      JSON.stringify({
+        type: 'control_response',
+        response: { subtype: 'error', request_id: requestId, error: 'not supported by this host' },
+      }),
   },
 }
 
@@ -613,6 +688,10 @@ interface Live {
   busy: boolean
   /** What a tool was called with, kept until its result comes back. */
   calls: Map<string, { tool: string; input: Record<string, unknown> }>
+  /** Calls waiting on a person, by request id, in the order they were asked. */
+  pending: Map<string, PermissionRequest>
+  /** The mode the process is in now, so a change is sent once and only once. */
+  mode: PermissionMode
   /** §6 — the countdown to letting the process go. See `armIdleTimer`. */
   idle: NodeJS.Timeout | null
   /** §16 — what the turn in flight has reported, until its row is written. */
@@ -946,6 +1025,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     usage: rollUp(String(r.id)),
     // Live only, and correctly empty for a conversation whose process is gone.
     queued: queuedIn(String(r.id)),
+    pending: pendingIn(String(r.id)),
   }
 }
 
@@ -1084,6 +1164,7 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     history: [],
     denials: [],
     queued: [],
+    pending: [],
     usage: null,
   }
 
@@ -1157,7 +1238,13 @@ export async function resumeAgent(
 export interface EngineOptions {
   model?: string
   effort?: string
+  permissionMode?: PermissionMode
+  /** The old spelling of `permissionMode: 'plan'`. */
   plan?: boolean
+}
+
+function modeOf(opts: EngineOptions | undefined): PermissionMode {
+  return opts?.permissionMode ?? (opts?.plan ? 'plan' : 'acceptEdits')
 }
 
 /**
@@ -1236,7 +1323,7 @@ async function launch(
     deny: DEFAULT_DENY,
     model: opts?.model,
     effort: engineEffort(opts?.effort),
-    plan: opts?.plan,
+    permissionMode: modeOf(opts),
   }
   // The turn in the order it was written: the words, each attachment at the
   // point its `#handle` put it, and whatever nobody pointed at at the end.
@@ -1267,11 +1354,14 @@ async function launch(
     costSoFar: 0,
     busy: true,
     calls: new Map(),
+    pending: new Map(),
+    mode: ctx.permissionMode ?? 'acceptEdits',
     idle: null,
   }
   live.set(session.id, l)
 
   if (spec.streaming && spec.encodeTurn) {
+    if (spec.control) child.stdin?.write(spec.control.open() + '\n')
     // The process serves the whole conversation, so its stdin stays open: it
     // is the channel every later turn arrives on.
     child.stdin?.write(spec.encodeTurn(withFiles, segs) + '\n')
@@ -1395,6 +1485,26 @@ async function launch(
           changed = true
           break
         }
+
+        // The turn stops here until the window answers — see `answerPermission`.
+        case 'permission': {
+          const id = ev.requestId ?? ''
+          if (!id || !spec.control) break
+          l.pending.set(id, {
+            id,
+            tool: ev.tool ?? 'tool',
+            input: ev.input ?? {},
+            description: ev.description,
+            reason: ev.reason,
+            askedAt: Date.now(),
+          })
+          changed = true
+          break
+        }
+
+        case 'control':
+          if (ev.requestId && spec.control) child.stdin?.write(spec.control.unsupported(ev.requestId) + '\n')
+          break
 
         // §16 — kept on the live conversation until `end` writes the row: the
         // turn is not over, and a half-finished turn has no cost to record.
@@ -1641,6 +1751,13 @@ export async function send(
   }
 
   const ultracode = opts ? opts.effort === ULTRACODE : l.ultracode
+  // The mode is the one launch setting a running process can take: said now,
+  // it applies from this turn on rather than waiting for the next launch.
+  const mode = opts ? modeOf(opts) : l.mode
+  if (mode !== l.mode && l.spec.control) {
+    l.child.stdin?.write(l.spec.control.setMode(mode) + '\n')
+    l.mode = mode
+  }
   if (l.busy) {
     l.queue.push({ prompt: text, files, ultracode })
     agentBus.emit('changed')
@@ -1650,6 +1767,39 @@ export async function send(
   l.queue.push({ prompt: text, files, ultracode })
   await flushQueue(l)
   return { ok: true, queued: false }
+}
+
+/** The calls waiting on a person, oldest first. */
+export function pendingIn(sessionId: string): PermissionRequest[] {
+  return [...(live.get(sessionId)?.pending.values() ?? [])]
+}
+
+/**
+ * A person's answer to a call the engine asked about.
+ *
+ * Journalled with a human actor either way: a command a person let through is
+ * one they are answerable for, and one they refused explains a turn that took
+ * another road.
+ */
+export function answerPermission(
+  sessionId: string,
+  requestId: string,
+  allow: boolean,
+): { ok: boolean; reason?: string } {
+  const l = live.get(sessionId)
+  const req = l?.pending.get(requestId)
+  if (!l || !req || !l.spec.control) return { ok: false, reason: 'that question is no longer open' }
+  l.pending.delete(requestId)
+  l.child.stdin?.write(l.spec.control.answer(requestId, allow, req.input) + '\n')
+  append({
+    type: 'agent.permission',
+    level: allow ? 'info' : 'warn',
+    actor: { kind: 'human' },
+    workspaceId: l.session.workspaceIds[0] ?? null,
+    payload: { sessionId, tool: req.tool, input: req.input, allow },
+  })
+  agentBus.emit('changed')
+  return { ok: true }
 }
 
 /** What is waiting to be asked, for a window that has to show it. */

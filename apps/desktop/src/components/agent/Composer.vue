@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { CornerDownLeft, FileCode, FileText, Map as MapIcon, Paperclip, Square, UnfoldVertical, X } from '@lucide/vue'
+import { CornerDownLeft, FileCode, FileText, Paperclip, Square, UnfoldVertical, X } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachFiles, attachText, client, dataUrl, detachFile, engineName, guard,
   isLongPaste, openDraftFiles, placedHandles, saveComposer, state,
@@ -373,8 +373,34 @@ function onKey(ev: KeyboardEvent): void {
       return
     }
   }
+  // Enter sends, as it does in every chat. ⌘⏎ (or ⇧⏎) is the line break, for
+  // the prompt that needs paragraphs. Not while an input method is still
+  // composing: that Enter picks the character, it does not end the message.
+  if (ev.key === 'Enter' && !ev.isComposing && ev.keyCode !== 229) {
+    if (ev.metaKey || ev.ctrlKey) {
+      ev.preventDefault()
+      newline(ev.target as HTMLTextAreaElement)
+      return
+    }
+    if (!ev.shiftKey && !ev.altKey) {
+      ev.preventDefault()
+      submit()
+      return
+    }
+  }
   if (ev.key === 'ArrowUp') walkHistory(1, ev)
   else if (ev.key === 'ArrowDown') walkHistory(-1, ev)
+}
+
+/** A line break where the caret is, replacing any selection. */
+function newline(el: HTMLTextAreaElement): void {
+  const from = el.selectionStart ?? agentDraft.value.length
+  const to = el.selectionEnd ?? from
+  agentDraft.value = agentDraft.value.slice(0, from) + '\n' + agentDraft.value.slice(to)
+  nextTick(() => {
+    el.setSelectionRange(from + 1, from + 1)
+    caret.value = from + 1
+  })
 }
 
 function submit(): void {
@@ -385,9 +411,20 @@ function submit(): void {
 const sendLabel = computed(() =>
   props.mode === 'queue' ? 'Queue' : props.mode === 'continue' ? 'Continue' : 'Start',
 )
-const plan = computed(() => state.engineOptions.plan)
-function togglePlan(): void {
-  state.engineOptions.plan = !state.engineOptions.plan
+/**
+ * Who approves a tool call. What the mode does not approve by itself is asked
+ * above the box, with the call spelled out, and waits for a yes or a no.
+ */
+const PERMISSIONS: Option[] = [
+  { id: 'auto', label: 'Auto', hint: 'Claude handles permission decisions' },
+  { id: 'manual', label: 'Manual', hint: 'Always ask before making changes' },
+  { id: 'acceptEdits', label: 'Accept edits', hint: 'Automatically accept all file edits' },
+  { id: 'plan', label: 'Plan', hint: 'Create a plan before making changes' },
+]
+const plan = computed(() => state.engineOptions.permissionMode === 'plan')
+function pickPermission(id: string): void {
+  state.engineOptions.permissionMode = id as typeof state.engineOptions.permissionMode
+  saveComposer()
 }
 
 /* ── what comes in with the question ──────────────────────────────────────
@@ -739,7 +776,6 @@ defineExpose({ focus: () => box.value?.focus() })
           :rows="big ? 3 : 2"
           :placeholder="placeholder"
           @keydown="onKey"
-          @keydown.meta.enter="submit"
           @keyup="track"
           @click="track"
           @input="track"
@@ -765,7 +801,7 @@ defineExpose({ focus: () => box.value?.focus() })
         <button
           class="btn primary go"
           :disabled="disabled"
-          :title="sendLabel + ' (⌘⏎)'"
+          :title="sendLabel + ' (⏎)'"
           :aria-label="sendLabel"
           @click="submit"
         >
@@ -796,17 +832,10 @@ defineExpose({ focus: () => box.value?.focus() })
         @update:model-value="pickEffort"
       />
 
-      <!-- §3.7 — the plan before the change, applied to the agent itself.
-           A toggle rather than a picker: it has two states and one of them
-           changes what pressing Start does. -->
-      <button
-        class="opt plan"
-        :class="{ on: plan }"
-        title="Plan mode — it reads and proposes, and writes nothing"
-        @click="togglePlan"
-      >
-        <MapIcon class="xs" /> Plan
-      </button>
+      <!-- Who approves a tool call. Plan is one of the four — §3.7, the plan
+           before the change, applied to the agent itself — and still lights
+           the whole box, because it changes what pressing Start does. -->
+      <Picker :options="PERMISSIONS" :model-value="state.engineOptions.permissionMode" @update:model-value="pickPermission" />
     </div>
   </div>
 </template>
@@ -961,7 +990,6 @@ defineExpose({ focus: () => box.value?.focus() })
 }
 .opt:hover:not(:disabled) { color: var(--text); background: var(--hover); }
 .opt.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
-.opt.plan { display: inline-flex; align-items: center; gap: 4px; }
 .opt.clip { display: inline-flex; align-items: center; justify-content: center; padding: 0 7px; }
 .xs { width: 11px; height: 11px; }
 .hidden { display: none; }

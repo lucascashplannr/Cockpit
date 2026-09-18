@@ -1,13 +1,13 @@
 <script setup lang="ts">
+import { attentionIcon } from './agent/attention.js'
 import { computed } from 'vue'
 import {
-  ArrowDownToLine, ArrowUp, CircleAlert, CirclePlay, CircleStop, GitBranch, GitCompareArrows,
-  Hand, Lock, Sparkles,
+  ArrowDownToLine, ArrowUp, Asterisk, GitBranch, GitCompareArrows,
   SquareDot, TriangleAlert,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import {
-  activityFor, openContextMenu, selectedTopicId, selectWorkspace, state, toggleWorkspaceRuntime,
+  activityFor, openContextMenu, selectedTopicId, selectWorkspace, state,
 } from '../core/store.js'
 
 const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
@@ -24,24 +24,6 @@ const selected = computed(
 const menued = computed(
   () => state.contextMenu?.target.kind === 'workspace' && state.contextMenu.target.id === w.value.id,
 )
-
-/**
- * §8 — `starting` counts as running: a server still coming up is one to stop,
- * not one to start a second time onto the same port.
- */
-const serverRunning = computed(
-  () => w.value.runtime?.status === 'up' || w.value.runtime?.status === 'starting',
-)
-
-/**
- * Select first, then act. Starting a server from a row you are not standing on
- * would leave the window pointed somewhere else while the thing you asked for
- * boots out of sight — and looking at it is the reason you started it.
- */
-async function startHere() {
-  selectWorkspace(w.value.id)
-  await toggleWorkspaceRuntime(w.value)
-}
 
 const dirty = computed(() => {
   const g = w.value.git
@@ -86,6 +68,7 @@ const toPull = computed(() => {
 const act = computed(() => activityFor('workspace', w.value.id))
 
 const ATTENTION_TEXT: Record<string, string> = {
+  approval: 'an agent here is waiting for you to allow a tool call',
   reply: 'an agent answered here — waiting for you',
   blocked: 'an agent stopped here: it was refused a tool it needed',
   failed: 'an agent failed here',
@@ -106,6 +89,18 @@ const kindLabel = computed(() =>
         ? 'folder'
         : w.value.kind,
 )
+
+/** What the leading icon shows, in order of who has to do something next. */
+const lead = computed(() => {
+  const a = act.value
+  if (a.attention === 'approval')
+    return { icon: attentionIcon('approval'), cls: 'approval', title: kindLabel.value + ' · ' + ATTENTION_TEXT.approval }
+  if (a.running)
+    return { icon: Asterisk, cls: 'working', title: kindLabel.value + ' · an agent is working here' }
+  if (a.attention !== 'none')
+    return { icon: attentionIcon(a.attention), cls: a.attention, title: kindLabel.value + ' · ' + ATTENTION_TEXT[a.attention] }
+  return { icon: w.value.kind === 'worktree' ? GitBranch : SquareDot, cls: '', title: kindLabel.value }
+})
 </script>
 
 <template>
@@ -115,9 +110,12 @@ const kindLabel = computed(() =>
     @click="selectWorkspace(w.id)"
     @contextmenu.prevent="openContextMenu($event, { kind: 'workspace', id: w.id })"
   >
-    <!-- The kind is the one thing an icon says faster than a word. -->
-    <span class="kind" :title="kindLabel">
-      <component :is="w.kind === 'worktree' ? GitBranch : SquareDot" class="sm" />
+    <!-- The row's one icon, and it says the most urgent true thing: a hand
+         while an agent waits on you, the turning mark while one works, why it
+         wants you once it has stopped — and only then what kind of row this
+         is. The kind is on hover and in the tree; it is never news. -->
+    <span class="kind" :class="lead.cls" :title="lead.title">
+      <component :is="lead.icon" class="sm" :class="{ 'agent-star': lead.cls === 'working' }" />
     </span>
 
     <!-- §12 — the branch is the identity; the repository name is context. -->
@@ -158,81 +156,11 @@ const kindLabel = computed(() =>
         <span v-if="w.git.headState !== 'attached'" class="chip danger">{{ w.git.headState }}</span>
       </template>
 
-      <!-- Two different facts, never merged into one number: an agent is at
-           work here, and an agent is waiting on you here. -->
-      <span
-        v-if="act.running"
-        class="c agent live"
-        :title="act.running + ' conversation(s) running here'"
-      >
-        <Sparkles class="sm" />{{ act.running }}
-      </span>
-      <span
-        v-if="act.attention !== 'none'"
-        class="c needs"
-        :class="act.attention"
-        :title="ATTENTION_TEXT[act.attention]"
-      >
-        <component :is="act.attention === 'reply' ? Hand : CircleAlert" class="sm" />
-        <template v-if="act.waiting > 1">{{ act.waiting }}</template>
-      </span>
-      <span v-if="w.lease" class="lease" title="locked — an agent is working here">
-        <Lock class="sm" />
-      </span>
-
-      <!-- §8 — and the servers are started *here* too, for the same reason the
-           agent is: "click play and it switches to that branch and runs it"
-           should not require selecting the row first and then crossing the
-           window to a bar. Absent where there is nothing to run (§3.9).
-           The button is also the status: there used to be a dot beside it
-           saying the same thing in a second voice.
-           There is no "ask the agent" button beside it: selecting the row
-           already puts you in that row's conversation. -->
-      <span
-        v-if="w.runtime"
-        class="go run"
-        :class="w.runtime.status"
-        role="button"
-        :title="(serverRunning ? 'Stop the servers on ' : 'Start the servers on ') + w.name + ' — ' + w.runtime.status"
-        @click.stop="startHere"
-      >
-        <component :is="serverRunning ? CircleStop : CirclePlay" class="sm" />
-      </span>
     </span>
   </button>
 </template>
 
 <style scoped>
-/* Hidden until the row is under the cursor or selected: every row carries it,
-   and twenty of them lit at once would read as decoration. */
-.go {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-sm);
-  color: var(--text-dim);
-  opacity: 0;
-  transition: opacity var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
-}
-.row:hover .go, .row.selected .go { opacity: 1; }
-
-/* A server that is not down is not a hover affordance — it is the state of the
-   row, so the button stays visible when the pointer leaves and wears the
-   runtime's own colour. Down and unknown stay hidden like any other action. */
-.go.run:hover { background: var(--ok-soft); color: var(--ok); }
-.go.run.up { opacity: 1; color: var(--ok); }
-.go.run.starting {
-  opacity: 1;
-  color: var(--warn);
-  animation: pulse 1.6s var(--ease-soft) infinite;
-}
-.go.run.unhealthy { opacity: 1; color: var(--danger); }
-.go.run.unhealthy:hover { background: var(--danger-soft); }
-.go.run.starting:hover { background: var(--warn-soft); animation: none; }
-
 .row {
   display: flex;
   align-items: center;
@@ -263,7 +191,21 @@ const kindLabel = computed(() =>
 .row.selected { background: var(--selected); color: var(--text); }
 
 .kind { color: var(--text-dim); display: flex; flex: none; }
+/* One width whatever it holds, so the name does not step sideways when an
+   agent starts or stops. */
+.kind { width: 16px; justify-content: center; }
+/* The turning mark a size up from the other icons: it is small for its box,
+   and it is the one thing on the row that moves. */
+.kind.working .lucide { width: 16px; height: 16px; stroke-width: 2.4; }
 .row.selected .kind { color: var(--accent); }
+/* An agent's state keeps its own colour on the selected row too: the
+   selection tint says where you are, this says what needs you. */
+.row .kind.working { color: var(--agent); }
+.row .kind.approval, .row .kind.blocked { color: var(--warn); }
+.row .kind.reply { color: var(--agent); }
+.row .kind.failed { color: var(--danger); }
+/* The hand at the default weight reads as bold beside the row's name. */
+.kind.approval .lucide { stroke-width: 1.75; }
 
 .name {
   flex: 1;
@@ -294,13 +236,6 @@ const kindLabel = computed(() =>
 .behind { color: var(--warn); }
 .dirty { color: var(--warn); }
 .conflict { color: var(--danger); font-weight: 600; }
-.agent { color: var(--agent); }
-/* The row's only animated thing, and it means exactly one thing: something is
-   running in here right now. */
-.live { animation: pulse 1.6s var(--ease-soft) infinite; }
-.needs.reply { color: var(--agent); }
-.needs.blocked { color: var(--warn); }
-.needs.failed { color: var(--danger); }
 .pip {
   width: 6px;
   height: 6px;
@@ -308,6 +243,4 @@ const kindLabel = computed(() =>
   background: currentColor;
   margin-right: 2px;
 }
-.lease { color: var(--warn); display: flex; }
-.lease .lucide { width: 12px; height: 12px; }
 </style>

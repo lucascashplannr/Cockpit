@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { attentionIcon } from './agent/attention.js'
 import { computed } from 'vue'
 import type { Conversation } from '@cockpit/shared'
-import { CircleAlert, CircleStop, Hand, Plus, Sparkles, Trash2, X } from '@lucide/vue'
+import { CircleStop, Plus, Sparkles, Trash2, X } from '@lucide/vue'
 import {
   activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive,
   openThreadFor, pinThread, sessionsForScope, startFresh, state, stopConversation,
@@ -33,6 +34,7 @@ const selected = computed(() => openThreadFor(scope.value))
 
 const ATTENTION_TEXT: Record<Attention, string> = {
   none: '',
+  approval: 'waiting for you to allow a tool call',
   reply: 'answered — waiting for you',
   blocked: 'stopped: it was refused a tool it needed',
   failed: 'the engine failed',
@@ -96,6 +98,7 @@ function ago(ts: number): string {
  * holding its process pulsed exactly like one mid-turn.
  */
 function dotClass(c: Conversation): string {
+  if (c.pending.length) return 'asking'
   if (isBusy(c)) return 'working'
   if (isLive(c)) return 'idle'
   if (c.status === 'failed') return 'unhealthy'
@@ -144,7 +147,8 @@ function dotClass(c: Conversation): string {
             <span>{{ c.history.length }} turn{{ c.history.length === 1 ? '' : 's' }}</span>
             <span class="sep">·</span>
             <span>{{ ago(c.startedAt) }}</span>
-            <span v-if="isBusy(c)" class="state on">working</span>
+            <span v-if="c.pending.length" class="state ask">needs you</span>
+            <span v-else-if="isBusy(c)" class="state on">working</span>
             <span v-else-if="isLive(c)" class="state">open</span>
             <span
               v-if="attentionOf(c) !== 'none'"
@@ -152,7 +156,7 @@ function dotClass(c: Conversation): string {
               :class="attentionOf(c)"
               :title="ATTENTION_TEXT[attentionOf(c)]"
             >
-              <component :is="attentionOf(c) === 'reply' ? Hand : CircleAlert" class="sm" />
+              <component :is="attentionIcon(attentionOf(c))" class="sm" />
             </span>
           </span>
         </button>
@@ -301,6 +305,8 @@ function dotClass(c: Conversation): string {
 .sep { opacity: 0.5; }
 .needs { display: inline-flex; color: var(--warn); }
 .needs.blocked, .needs.failed { color: var(--danger); }
+.needs.approval, .state.ask { color: var(--warn); }
+.dot.asking { background: var(--warn); }
 
 .acts { display: flex; align-items: center; gap: 1px; padding-right: 6px; opacity: 0; }
 .conv:hover .acts,

@@ -101,6 +101,11 @@ export type EventType =
   /** §16 — the allow-list refused a tool, so the turn stopped short of its job. */
   | 'agent.denied'
   /**
+   * A tool call the engine asked about, and what a person answered. Journalled
+   * because a command a person let through is theirs as much as the agent's.
+   */
+  | 'agent.permission'
+  /**
    * §16 — the working tree as it stood before a turn was allowed to write, and
    * the moment one was put back. Both are journal entries because both are
    * things that happened to the code, not merely to the conversation.

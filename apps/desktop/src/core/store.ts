@@ -2,7 +2,7 @@ import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
   AddRepoSource, AgentScope, AgentScopePreview, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
-  CommitPreview, CoreStatus, EngineOptions,
+  CommitPreview, CoreStatus, EngineOptions, PermissionMode,
   DatabasePlan, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, ServerBoardRow, StashEntry, Workspace,
@@ -245,7 +245,9 @@ export const state = reactive({
    * on resume keeps a thread on the model it was started with without adding a
    * column to a schema whose bump costs the user their history.
    */
-  engineOptions: { model: 'opus', effort: 'high', plan: false } as EngineOptions & { plan: boolean },
+  engineOptions: { model: 'opus', effort: 'high', permissionMode: 'acceptEdits' } as EngineOptions & {
+    permissionMode: PermissionMode
+  },
 
   /**
    * §6 — what has been asked here before, newest first. `↑` in an empty
@@ -963,22 +965,25 @@ const COMPOSER_KEY = 'cockpit.composer'
 const HISTORY_MAX = 60
 
 /**
- * The model, the effort, and the last few things asked. Restored before the
- * first paint so the composer never flashes a default the user replaced weeks
- * ago. Plan mode is deliberately *not* restored: it is a posture for one piece
- * of work, and inheriting it silently is how a session that was meant to write
- * quietly does nothing.
+ * The model, the effort, the permission mode and the last few things asked.
+ * Restored before the first paint so the composer never flashes a default the
+ * user replaced weeks ago. Plan mode is deliberately *not* restored: it is a
+ * posture for one piece of work, and inheriting it silently is how a session
+ * that was meant to write quietly does nothing.
  */
 function loadComposer(): void {
   try {
     const raw = JSON.parse(localStorage.getItem(COMPOSER_KEY) ?? 'null') as {
       model?: string
       effort?: string
+      permissionMode?: string
       history?: string[]
     } | null
     if (!raw) return
     if (raw.model) state.engineOptions.model = raw.model
     if (raw.effort) state.engineOptions.effort = raw.effort
+    if (raw.permissionMode === 'auto' || raw.permissionMode === 'manual' || raw.permissionMode === 'acceptEdits')
+      state.engineOptions.permissionMode = raw.permissionMode
     if (Array.isArray(raw.history)) state.promptHistory = raw.history.filter((x) => typeof x === 'string')
   } catch {
     /* a corrupt entry is a default, not a crash */
@@ -991,6 +996,7 @@ export function saveComposer(): void {
     JSON.stringify({
       model: state.engineOptions.model,
       effort: state.engineOptions.effort,
+      permissionMode: state.engineOptions.permissionMode,
       history: state.promptHistory.slice(0, HISTORY_MAX),
     }),
   )
@@ -1042,20 +1048,24 @@ export function lastActivityAt(c: Conversation): number {
 }
 
 /**
- * Why a finished conversation is still asking for a person.
+ * Why a conversation is asking for a person.
  *
+ *   approval — a tool call is waiting on a yes or a no; the turn cannot move
  *   blocked — the allow-list refused a tool, so it stopped short of the job
  *   failed  — the engine died
  *   reply   — it answered, and the answer has not been read
  *
- * A working conversation is never in any of these: it is working, not waiting.
+ * Apart from `approval`, a working conversation is never in any of these: it
+ * is working, not waiting. `approval` is the exception because the turn is in
+ * flight *and* stopped, and until someone answers it stays stopped.
  * Being *alive* is not being busy — an answer sitting unread on a session
  * whose process is still up is exactly the thing this is for, and it used to
  * be invisible for as long as that process lived.
  */
-export type Attention = 'none' | 'reply' | 'blocked' | 'failed'
+export type Attention = 'none' | 'reply' | 'blocked' | 'failed' | 'approval'
 
 export function attentionOf(c: Conversation): Attention {
+  if (c.pending?.length) return 'approval'
   if (isBusy(c)) return 'none'
   const at = lastActivityAt(c)
   if (at < threads.since) return 'none'
@@ -1065,7 +1075,7 @@ export function attentionOf(c: Conversation): Attention {
   return 'reply'
 }
 
-const ATTENTION_RANK: Record<Attention, number> = { none: 0, reply: 1, blocked: 2, failed: 3 }
+const ATTENTION_RANK: Record<Attention, number> = { none: 0, reply: 1, blocked: 2, failed: 3, approval: 4 }
 
 /** What a badge somewhere in the shell has to say about one thing. */
 export interface AgentActivity {
@@ -1213,6 +1223,12 @@ export async function renameTopic(topicId: string, name: string): Promise<boolea
  * history list — and three copies of one RPC call is three places for the toast
  * to disagree with itself.
  */
+/** Yes or no to a tool call the agent is waiting on. */
+export async function answerPermission(sessionId: string, requestId: string, allow: boolean): Promise<void> {
+  const r = await guard(() => client.call('agent.permission', { sessionId, requestId, allow }))
+  if (r && !r.ok) toast('error', r.reason ?? 'that question is no longer open')
+}
+
 export async function stopConversation(sessionId: string): Promise<void> {
   await guard(() => client.call('agent.stop', { sessionId }), 'conversation stopped')
 }
@@ -3188,7 +3204,7 @@ export function engineName(id: string): string {
 /** What the composer currently says, in the shape the core takes. */
 export function engineOptions(): EngineOptions {
   const o = state.engineOptions
-  return { model: o.model, effort: o.effort, plan: o.plan }
+  return { model: o.model, effort: o.effort, permissionMode: o.permissionMode }
 }
 
 export async function resumeSession(

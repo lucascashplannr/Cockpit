@@ -6,7 +6,7 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, TranscriptFile, CockpitSettings,
+  AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, TranscriptFile, CockpitSettings,
   CommitPreview, CoreStatus,
   DatabasePlan,
   DiffFile, Topic,
@@ -75,7 +75,12 @@ export interface EngineOptions {
    * an engine flag: the core runs it at `max` and adds the keyword to each turn.
    */
   effort?: string
-  /** §3.7 — reads and proposes, writes nothing. */
+  /**
+   * Who approves tool calls. Unlike the model and the effort it can change
+   * mid-conversation: the engine is told on the next turn.
+   */
+  permissionMode?: PermissionMode
+  /** The old spelling of `permissionMode: 'plan'`, still read. */
   plan?: boolean
 }
 
@@ -758,6 +763,14 @@ export interface Rpc {
       options?: EngineOptions
     }
     result: { ok: true; queued: boolean } | { ok: false; reason: string }
+  }
+  /**
+   * The answer to one of `Conversation.pending`. A refusal goes back to the
+   * engine as a refusal, and it carries on from there.
+   */
+  'agent.permission': {
+    params: { sessionId: string; requestId: string; allow: boolean }
+    result: { ok: boolean; reason?: string }
   }
   /**
    * A queued turn taken back before the engine ever reads it. Named by its

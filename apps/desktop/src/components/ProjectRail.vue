@@ -37,6 +37,7 @@ function counts(projectId: string) {
 }
 
 const ATTENTION_TEXT: Record<string, string> = {
+  approval: 'an agent here is waiting for you to allow a tool call',
   reply: 'an agent answered here — waiting for you',
   blocked: 'an agent stopped here: it was refused a tool it needed',
   failed: 'an agent failed here',
@@ -283,6 +284,7 @@ const themeLabel = computed(() =>
 }
 .ping.reply { background: var(--agent); }
 .ping.blocked { background: var(--warn); }
+.ping.approval { background: var(--warn); }
 .ping.failed { background: var(--danger); }
 
 .theme { width: 38px; height: 38px; }

@@ -648,6 +648,11 @@ const handlers: Record<string, Handler> = {
     if (r.ok) pushAgentActivity()
     return r
   },
+  'agent.permission': (p: { sessionId: string; requestId: string; allow: boolean }) => {
+    const r = agents.answerPermission(p.sessionId, p.requestId, p.allow)
+    if (r.ok) pushAgentActivity()
+    return r
+  },
   'agent.unqueue': (p: { sessionId: string; prompt: string }) => {
     const r = agents.unqueue(p.sessionId, p.prompt)
     if (r.ok) pushAgentActivity()

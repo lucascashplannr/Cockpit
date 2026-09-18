@@ -15,6 +15,7 @@ import ToolCall from '../agent/ToolCall.vue'
 import ToolGroup from '../agent/ToolGroup.vue'
 import Attachment from '../agent/Attachment.vue'
 import Composer from '../agent/Composer.vue'
+import PermissionAsk from '../agent/PermissionAsk.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
   activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFiles,
@@ -498,6 +499,7 @@ function reveal(sessionId: string): void {
  * greyed, and can be taken back while they are still only waiting.
  */
 const queued = computed(() => selected.value?.queued ?? [])
+const pending = computed(() => selected.value?.pending ?? [])
 
 async function unqueue(prompt: string): Promise<void> {
   const s = selected.value
@@ -783,6 +785,7 @@ function ago(ts: number): string {
 }
 
 function dotClass(s: Conversation): string {
+  if (s.pending.length) return 'asking'
   if (isBusy(s)) return 'working'
   if (isLive(s)) return 'idle'
   if (s.status === 'failed') return 'unhealthy'
@@ -860,14 +863,14 @@ function dotClass(s: Conversation): string {
           :sources="sources"
           :engines="engines"
           :engine="engine"
-          placeholder="Describe the change. @ for a file, ⌘⏎ to start."
+          placeholder="Describe the change. @ for a file, ⏎ to start, ⌘⏎ for a new line."
           @update:engine="engine = $event"
           @send="send"
         />
 
         <p class="guard">
           {{
-            state.engineOptions.plan
+            state.engineOptions.permissionMode === 'plan'
               ? 'Plan mode — it reads and proposes, and writes nothing'
               : 'Never pushes · diff reviewed before any commit · restore point first'
           }}
@@ -891,7 +894,10 @@ function dotClass(s: Conversation): string {
              scope until it is let go. Neither: it is a thread you can read
              and resume. This said WORKING for the middle one, which is how
              a finished answer came to sit under a word claiming otherwise. -->
-        <span v-if="isBusy(selected)" class="busytag">
+        <span v-if="selected.pending.length" class="needs approval chip warn" title="A tool call is waiting on your answer, above the box">
+          <Hand class="sm" /> needs you
+        </span>
+        <span v-else-if="isBusy(selected)" class="busytag">
           <Asterisk class="star" />working
         </span>
         <span
@@ -1074,7 +1080,13 @@ function dotClass(s: Conversation): string {
                  It says nothing about how to stop: the way out is under the box,
                  where the hand already is, and a third Stop on this screen would
                  make all three easier to miss. -->
-            <p v-if="x.turn.status === 'running'" class="pulse">
+            <p v-if="x.turn.status === 'running' && pending.length" class="pulse asking">
+              <Hand class="star" />
+              <span class="verb">Waiting for you to allow {{ pending[0]!.tool }}</span>
+              <span class="sep">·</span>
+              <span class="num">{{ since(pending[0]!.askedAt) }}</span>
+            </p>
+            <p v-else-if="x.turn.status === 'running'" class="pulse">
               <Asterisk class="star" />
               <span class="verb">{{ shownDoing }}…</span>
               <span class="sep">·</span>
@@ -1121,6 +1133,8 @@ function dotClass(s: Conversation): string {
           <button class="link go" @click="scope && startFresh(scope)">Start fresh</button>
         </p>
 
+        <PermissionAsk v-if="selected && pending.length" :session-id="selected.id" :requests="pending" />
+
         <Composer
           :mode="queueing ? 'queue' : continuing ? 'continue' : 'start'"
           :disabled="!canSend"
@@ -1132,7 +1146,7 @@ function dotClass(s: Conversation): string {
               ? 'Say the next thing now — it goes in when this turn lands'
               : continuing
                 ? 'Next turn — @ for a file, the memory is re-read on the way in'
-                : 'This conversation cannot be resumed; ⌘⏎ opens a new one'
+                : 'This conversation cannot be resumed; ⏎ opens a new one'
           "
           @send="send"
         />
@@ -1196,6 +1210,7 @@ function dotClass(s: Conversation): string {
 .needs .lucide { width: 12px; height: 12px; stroke-width: 2.4; }
 .needs.reply { color: var(--agent); }
 .needs.blocked { color: var(--warn); }
+.needs.approval { color: var(--warn); }
 .needs.failed { color: var(--danger); }
 .ceng { font-weight: 600; color: var(--text); font-size: 11px; }
 .ctitle {
@@ -1384,6 +1399,8 @@ function dotClass(s: Conversation): string {
 /* Here, and not working. Still the agent's colour — it is still its process —
    and steady, because that is the difference being drawn. */
 .dot.idle { background: var(--agent); opacity: 0.5; }
+/* Stopped on a question for you: steady, and in the colour of a request. */
+.dot.asking { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 
 /* One clear gap between exchanges, and none of the smaller ones inside a turn
    pretending to be it. */
@@ -1458,6 +1475,9 @@ function dotClass(s: Conversation): string {
 .pulse .verb { color: var(--text); font-weight: 550; }
 .pulse .sep { color: var(--text-dim); opacity: 0.6; }
 .pulse .num { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+/* Stopped on a question for you: the hand holds still — nothing is being done
+   until you answer, and a spinning mark would say otherwise. */
+.pulse.asking .star { color: var(--warn); animation: none; stroke-width: 1.75; }
 
 /* ── §16, the receipt ─────────────────────────────────────────────────────
  *

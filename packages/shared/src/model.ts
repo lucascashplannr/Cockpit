@@ -669,6 +669,36 @@ export interface AgentTurn {
   attachments: Attachment[]
 }
 
+/**
+ * Who decides whether a tool call runs, as the engine names it.
+ *
+ * `auto` lets the engine's own classifier approve what is safe and asks about
+ * the rest; `manual` asks about anything that writes or runs; `acceptEdits`
+ * takes file edits without asking and asks about commands; `plan` reads and
+ * proposes, and writes nothing (§3.7). `git push` and `git commit` are refused
+ * in every one of them — that is `DEFAULT_DENY`, not the mode.
+ */
+export type PermissionMode = 'auto' | 'manual' | 'acceptEdits' | 'plan'
+
+/**
+ * A tool call the engine will not make until a person says yes.
+ *
+ * Live only, like the queue: the question belongs to the running process, and
+ * a process that has gone has nobody left waiting for the answer.
+ */
+export interface PermissionRequest {
+  /** The engine's id for the question — what the answer is addressed to. */
+  id: string
+  tool: string
+  /** The call's own arguments, whole: the command, the file, the edit. */
+  input: Record<string, unknown>
+  /** The engine's one-line account of the call, when it gives one. */
+  description?: string
+  /** Why it had to ask rather than just run it. */
+  reason?: string
+  askedAt: number
+}
+
 export interface Conversation {
   id: string
   engine: string
@@ -707,6 +737,11 @@ export interface Conversation {
    * gets to it is indistinguishable from a turn that was dropped.
    */
   queued: string[]
+  /**
+   * Tool calls waiting on a yes or a no, oldest first. The turn is paused on
+   * the first of them until it is answered.
+   */
+  pending: PermissionRequest[]
   /**
    * §6 — where the conversation stands against its own limit, and what it has
    * cost so far.

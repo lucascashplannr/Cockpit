@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { attentionIcon } from './agent/attention.js'
 import { computed } from 'vue'
 import {
-  ArrowUp, ChevronRight, CircleAlert, FolderPlus, Hand, Layers, Plus, RefreshCw, Sparkles,
+  ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, Plus, RefreshCw, Sparkles,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
@@ -63,6 +64,7 @@ function holdsSelection(ws: { id: string }[]): boolean {
 }
 
 const ATTENTION_TEXT: Record<string, string> = {
+  approval: 'an agent on this topic is waiting for you to allow a tool call',
   reply: 'an agent answered on this topic — waiting for you',
   blocked: 'an agent stopped on this topic: it was refused a tool it needed',
   failed: 'an agent failed on this topic',
@@ -158,11 +160,11 @@ const ATTENTION_TEXT: Record<string, string> = {
                    no legend. The header takes the list's own selected tint
                    instead — one vocabulary, already learned. -->
               <span
-                v-if="g.topicId && activityFor('topic', g.topicId).running"
-                class="agent live"
+                v-if="g.topicId && activityFor('topic', g.topicId).running && activityFor('topic', g.topicId).attention !== 'approval'"
+                class="agent"
                 :title="activityFor('topic', g.topicId).running + ' conversation(s) running on this topic'"
               >
-                <Sparkles class="sm" />{{ activityFor('topic', g.topicId).running }}
+                <Asterisk class="sm agent-star" />
               </span>
               <span
                 v-if="g.topicId && activityFor('topic', g.topicId).attention !== 'none'"
@@ -171,7 +173,7 @@ const ATTENTION_TEXT: Record<string, string> = {
                 :title="ATTENTION_TEXT[activityFor('topic', g.topicId).attention]"
               >
                 <component
-                  :is="activityFor('topic', g.topicId).attention === 'reply' ? Hand : CircleAlert"
+                  :is="attentionIcon(activityFor('topic', g.topicId).attention)"
                   class="sm"
                 />
               </span>
@@ -344,6 +346,7 @@ const ATTENTION_TEXT: Record<string, string> = {
 .summary .dim { color: var(--text-dim); }
 .summary .agent { color: var(--agent); display: inline-flex; align-items: center; gap: 2px; }
 .summary .agent .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
+.summary .agent .agent-star { width: 14px; height: 14px; }
 /* Only ever on the thing that is actually running — the header inherits it
    from its rows, and two pulses side by side would say nothing extra. */
 .summary .live { animation: pulse 1.6s var(--ease-soft) infinite; }
@@ -351,6 +354,7 @@ const ATTENTION_TEXT: Record<string, string> = {
 .summary .needs .lucide { width: 12px; height: 12px; stroke-width: 2.4; }
 .summary .needs.reply { color: var(--agent); }
 .summary .needs.blocked { color: var(--warn); }
+.summary .needs.approval { color: var(--warn); }
 .summary .needs.failed { color: var(--danger); }
 
 /* Live reads as a state of the header, not as a badge to hunt for. */

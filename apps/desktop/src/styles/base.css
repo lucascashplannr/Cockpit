@@ -346,6 +346,17 @@ button:disabled,
 .spin {
   animation: spin 900ms linear infinite;
 }
+
+/* An agent at work, wherever it is shown: the same mark the thread's own
+   "Thinking…" line turns, so the row and the conversation say it in one
+   voice. It turns only while a turn is in flight. */
+.agent-star {
+  stroke-width: 2.4;
+  animation: spin 2.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-star { animation: none; }
+}
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
