@@ -193,7 +193,7 @@ const lead = computed(() => {
 .kind { color: var(--text-dim); display: flex; flex: none; }
 /* One width whatever it holds, so the name does not step sideways when an
    agent starts or stops. */
-.kind { width: 16px; justify-content: center; }
+.kind { width: 16px; justify-content: center; margin: 0 -1px; }
 /* The turning mark a size up from the other icons: it is small for its box,
    and it is the one thing on the row that moves. */
 .kind.working .lucide { width: 16px; height: 16px; stroke-width: 2.4; }
