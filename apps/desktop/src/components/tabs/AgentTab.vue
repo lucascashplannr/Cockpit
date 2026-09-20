@@ -1306,9 +1306,9 @@ function dotClass(s: Conversation): string {
      live — the stop button is 28 — and 41px the moment that button went away,
      with the pair floating over it (ContextPanel) still measured from the top
      at 10. So the ✕ sat two pixels off the bottom edge of a bar it was supposed
-     to be centred in, and only on the threads that had finished. 49 is the tall
-     case made permanent: 48 of content over the 1px rule, which centres a 28px
-     instrument at 10 whatever else the bar is carrying.
+     to be centred in, and only on the threads that had finished. `--band-h` is
+     that tall case made permanent, and the tab strip beside this one is held to
+     the same figure so the two rules fall on one line (tokens.css).
 
      The right padding is not symmetry either: it is the room the three floating
      instruments need — the history button, the stop and the ✕, none of which
@@ -1318,7 +1318,7 @@ function dotClass(s: Conversation): string {
      pixel apart. Buttons of one set touch; the 9 that separates the cluster
      from the title line is this bar's own gap, which falls after the last thing
      on it because `.grow` is the item that follows. */
-  height: 49px;
+  height: var(--band-h);
   padding: 0 114px 0 20px;
   background: var(--surface-work);
   border-bottom: 1px solid var(--line-soft);

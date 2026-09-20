@@ -2,11 +2,11 @@
 import { attentionIcon } from './agent/attention.js'
 import { computed } from 'vue'
 import {
-  ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, Plus, RefreshCw, Sparkles,
+  ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, Plus, Sparkles,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activeProject, activityFor, addRepoTo, client, collapsedTopics, guard, openAgentOn, openContextMenu,
+  activeProject, activityFor, addRepoTo, collapsedTopics, openAgentOn, openContextMenu,
   selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 
@@ -31,10 +31,6 @@ const hasProjects = computed(() => state.projects.length > 0)
  */
 function unpushed(ws: { git: { ahead: number } | null }[]): number {
   return ws.reduce((n, w) => n + (w.git?.ahead ?? 0), 0)
-}
-
-async function refresh() {
-  await guard(() => client.call('core.reconcile', {}), 'refreshed')
 }
 
 /**
@@ -79,19 +75,21 @@ const ATTENTION_TEXT: Record<string, string> = {
          Those were all at the foot beside the path, where a row of four icons
          made "where this is" and "what you can add to it" read as one thing. -->
     <header v-if="activeProject" class="top">
-      <span class="pname" :title="activeProject.root">{{ activeProject.name }}</span>
+      <span class="pname" :title="activeProject.name + '\n' + activeProject.root">
+        {{ activeProject.name }}
+      </span>
       <span class="grow" />
       <!-- §7 — the widest scope, from the thing it is scoped to: every
            repository in the project, at its main checkout. -->
       <button
-        class="icon-btn small go"
+        class="icon-btn go"
         title="Ask the agent across the whole project — every repository, on its default branch"
         @click="openAgentOn({ kind: 'project', projectId: activeProject.id })"
       >
         <Sparkles class="sm" />
       </button>
       <button
-        class="icon-btn small"
+        class="icon-btn"
         title="Open a topic — one named branch across every repository it touches"
         @click="state.topicDialogOpen = true"
       >
@@ -101,7 +99,7 @@ const ATTENTION_TEXT: Record<string, string> = {
            topic button because it is the same kind of act: adding something to
            the project rather than looking at what is in it. -->
       <button
-        class="icon-btn small"
+        class="icon-btn"
         title="Add a repository — a new one, a clone, or a folder moved in"
         @click="addRepoTo(activeProject.id)"
       >
@@ -198,15 +196,6 @@ const ATTENTION_TEXT: Record<string, string> = {
         </div>
       </template>
     </div>
-
-    <!-- What is left at the foot is where this is and one way to re-read it:
-         both are about the state of the column, not about adding to it. -->
-    <footer v-if="activeProject" class="foot">
-      <span class="root" :title="activeProject.root">{{ activeProject.root }}</span>
-      <button class="icon-btn small" title="Refresh everything" @click="refresh">
-        <RefreshCw class="sm" />
-      </button>
-    </footer>
   </section>
 </template>
 
@@ -229,7 +218,7 @@ const ATTENTION_TEXT: Record<string, string> = {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   /* Fixed, not a minimum: nothing in this header wraps, so a height it can
      only meet exactly is one less thing that can quietly grow. */
   height: 52px;
@@ -249,10 +238,11 @@ const ATTENTION_TEXT: Record<string, string> = {
   white-space: nowrap;
 }
 .top .grow { flex: 1; }
-/* Full size in the header, where they sit beside 28px controls in the bar to
-   the right; the `.small` variant stays for the 38px foot, which is a strip
-   rather than a header. */
-.top .icon-btn { width: 28px; height: 28px; }
+/* Three acts on one project, so they read as one cluster rather than as three
+   separate controls that happen to share a corner: the buttons are the size of
+   their hit area and nothing is added between them. The glyphs sit 10px apart,
+   which is close enough to group them and far enough to aim at. */
+.top .icon-btn { width: 26px; height: 26px; }
 /* The agent is the one act here that is not administrative. */
 .top .go:hover { color: var(--agent); background: var(--agent-soft); }
 
@@ -364,32 +354,11 @@ const ATTENTION_TEXT: Record<string, string> = {
    row, not of a chapter. */
 .divider { padding: 9px 11px 3px; }
 
-.foot {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 38px;
-  padding: 0 8px 0 14px;
-  border-top: 1px solid var(--line);
-  background: var(--surface-nav);
-}
-.root {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  /* Truncate from the left; `plaintext` keeps the string itself in reading
-     order, which bare `rtl` does not — it moves the leading slash to the end. */
-  direction: rtl;
-  unicode-bidi: plaintext;
-  text-align: left;
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
-  font-family: var(--mono);
-}
-.icon-btn.small { width: 26px; height: 26px; }
+/* The path the foot used to print now lives in this header's tooltip. A
+   monospace line of it across the bottom of the column was a caption the eye
+   learned to skip in a week: nothing in the window is addressed by it, it was
+   the dimmest text on screen, and it cost a 38px strip and a border to say
+   where you already knew you were standing. */
 .empty code { font-size: var(--fs-xs); color: var(--text-muted); }
 .empty .kbd { height: 18px; min-width: 18px; }
 </style>

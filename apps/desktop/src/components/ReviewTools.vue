@@ -93,13 +93,17 @@ const tools = computed(() =>
    raised surface for as long as it was the top of the window in its own
    right; with a bar above it that is no longer true, and a second raised band
    read as a header drawn twice. No drag region either: the window is moved
-   from the bar, which now runs the whole way across. */
+   from the bar, which now runs the whole way across.
+
+   It keeps the flat ground, but not its own height: the conversation's bar is
+   immediately to the left of it and 44 against 49 put two rules five pixels
+   apart across one window. `--band-h` is the two of them agreeing. */
 .tools {
   flex: none;
   display: flex;
   align-items: center;
   gap: 2px;
-  height: 44px;
+  height: var(--band-h);
   padding: 0 8px 0 10px;
   border-bottom: 1px solid var(--line);
   min-width: 0;

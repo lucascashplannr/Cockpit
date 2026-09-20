@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Activity, MonitorCog, Moon, Plus, Search, SlidersHorizontal, Sun } from '@lucide/vue'
-import { activityFor, cycleTheme, newProject, selectProject, serviceStale, state } from '../core/store.js'
+import { computed, ref } from 'vue'
+import { Activity, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
+import {
+  activityFor, client, guard, newProject, selectProject, serviceStale, state,
+} from '../core/store.js'
 
 /**
  * The far-left rail: one square per project, then add.
@@ -36,6 +38,34 @@ function counts(projectId: string) {
   return { dirty, running, agents: agent.running, attention: agent.attention, waiting: agent.waiting }
 }
 
+/**
+ * `core.reconcile` takes no project: it re-reads every repository this machine
+ * knows about. It spent a version in the workspace list's header, which said
+ * the opposite — a project act, beside the three that really are — and made
+ * that header a row of four. It belongs with the acts that are the window's
+ * rather than any project's, next to the one that watches the service.
+ *
+ * A toast a second later is not feedback for a button you just pressed, so the
+ * answer comes from the control: the glyph turns while the call is in flight
+ * and the button stops taking clicks.
+ */
+const refreshing = ref(false)
+
+async function refresh(): Promise<void> {
+  if (refreshing.value) return
+  refreshing.value = true
+  const started = Date.now()
+  try {
+    await guard(() => client.call('core.reconcile', {}), 'refreshed')
+  } finally {
+    // A reconcile that comes back in 40ms would otherwise flick the icon a
+    // quarter-turn and stop, which reads as a glitch rather than as a pass.
+    const left = 450 - (Date.now() - started)
+    if (left > 0) await new Promise((r) => setTimeout(r, left))
+    refreshing.value = false
+  }
+}
+
 const ATTENTION_TEXT: Record<string, string> = {
   approval: 'an agent here is waiting for you to allow a tool call',
   reply: 'an agent answered here — waiting for you',
@@ -52,10 +82,6 @@ function tileTitle(name: string, root: string, projectId: string): string {
   lines.push('Right-click for settings')
   return lines.filter(Boolean).join('\n')
 }
-
-const themeLabel = computed(() =>
-  state.theme === 'dark' ? 'Dark' : state.theme === 'light' ? 'Light' : 'System',
-)
 </script>
 
 <template>
@@ -93,37 +119,50 @@ const themeLabel = computed(() =>
 
     <div class="grow" />
 
-    <!-- ⌘K reaches every project, so it belongs to the one column that does
-         too. It spent a moment at the head of the workspace list, which was
-         wrong for the same reason the title band was wrong for the workspace's
-         name: that column is one project's, and this search is not. It spent
-         another at the head of *this* column, alone above the projects, where
-         it read as a group of one. It is an act and not a destination, and
-         every other act in this rail is down here. -->
-    <button class="icon-btn find" title="Search or run a command  ⌘K" @click="state.paletteOpen = true">
-      <Search />
-    </button>
+    <!-- The acts of the whole window, as one group on one rhythm. They were
+         four before, each its own child of the rail with no gap between them
+         and the theme button a size larger than the rest — which left three
+         different distances down a column of identical-looking glyphs. The
+         theme is now in Settings, where a thing you choose once belongs. -->
+    <div class="acts">
+      <!-- ⌘K reaches every project, so it belongs to the one column that does
+           too. It spent a moment at the head of the workspace list, which was
+           wrong for the same reason the title band was wrong for the
+           workspace's name: that column is one project's, and this search is
+           not. It spent another at the head of *this* column, alone above the
+           projects, where it read as a group of one. It is an act and not a
+           destination, and every other act in this rail is down here. -->
+      <button class="icon-btn find" title="Search or run a command  ⌘K" @click="state.paletteOpen = true">
+        <Search />
+      </button>
 
-    <!-- The only mark here that is not an act: a dot when the service is out
-         of step with this window, since the fix is on the other side of it. -->
-    <button
-      class="icon-btn service"
-      :title="serviceStale ? 'Service — running an older version' : 'Service'"
-      @click="state.serviceOpen = true"
-    >
-      <Activity />
-      <i v-if="serviceStale || (state.booted && state.connection === 'disconnected')" class="flag" />
-    </button>
+      <!-- A pair: what this window knows about the disk, and what it knows
+           about the service behind it. -->
+      <button
+        class="icon-btn"
+        :class="{ spinning: refreshing }"
+        :disabled="refreshing"
+        :title="refreshing ? 'Re-reading…' : 'Re-read every repository from disk'"
+        @click="refresh"
+      >
+        <RefreshCw />
+      </button>
 
-    <button class="icon-btn" title="Settings" @click="state.settingsOpen = true">
-      <SlidersHorizontal />
-    </button>
+      <!-- The only mark here that is not an act: a dot when the service is out
+           of step with this window, since the fix is on the other side of it. -->
+      <button
+        class="icon-btn service"
+        :title="serviceStale ? 'Service — running an older version' : 'Service'"
+        @click="state.serviceOpen = true"
+      >
+        <Activity />
+        <i v-if="serviceStale || (state.booted && state.connection === 'disconnected')" class="flag" />
+      </button>
 
-    <button class="icon-btn theme" :title="'Theme: ' + themeLabel" @click="cycleTheme">
-      <Moon v-if="state.theme === 'dark'" />
-      <Sun v-else-if="state.theme === 'light'" />
-      <MonitorCog v-else />
-    </button>
+      <button class="icon-btn" title="Settings — theme, dev folder, editor" @click="state.settingsOpen = true">
+        <SlidersHorizontal />
+      </button>
+    </div>
   </nav>
 </template>
 
@@ -146,7 +185,25 @@ const themeLabel = computed(() =>
 }
 .grow { flex: 1; }
 
-.rail > *, .tile { -webkit-app-region: no-drag; }
+.rail > *, .acts > *, .tile { -webkit-app-region: no-drag; }
+
+/* One group, one rhythm — and the rhythm is the button itself: 28px squares
+   touching, so nothing sits between two glyphs but their own padding. The
+   6px gap on top of 32px squares put 22px between glyphs, which is more air
+   than the workspace header gives its three acts and made four controls that
+   act as one group read as four separate ones. */
+.acts {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.acts .icon-btn { width: 28px; height: 28px; }
+/* Turning is the feedback; dimming on top of it would read as unavailable. */
+.acts .icon-btn:disabled { opacity: 1; color: var(--text-muted); }
+.acts .spinning :deep(svg) { animation: spin 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .acts .spinning :deep(svg) { animation-duration: 2.6s; }
+}
 
 /* An icon, not a field: the rail is 72px wide, and what this opens is the
    palette — the field it used to be was an affordance for a keystroke, never
@@ -154,7 +211,7 @@ const themeLabel = computed(() =>
    And an `icon-btn` rather than a `tile`, which is the whole of the polish: a
    tile is a *destination* — the projects are places you go, and they are
    filled and 44px square to say so. Search is an act. Given a tile it read as
-   one more project. It is the same family as the settings and theme buttons,
+   one more project. It is the same family as the service and settings buttons,
    unfilled until touched, and it stands with them. */
 .find { color: var(--text-dim); }
 .find:hover { color: var(--text); background: var(--hover); }
@@ -287,14 +344,11 @@ const themeLabel = computed(() =>
 .ping.approval { background: var(--warn); }
 .ping.failed { background: var(--danger); }
 
-.theme { width: 38px; height: 38px; }
-
-
 .icon-btn.service { position: relative; }
 .icon-btn.service .flag {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 3px;
+  right: 3px;
   width: 6px;
   height: 6px;
   border-radius: 50%;

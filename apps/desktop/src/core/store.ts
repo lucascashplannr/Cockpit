@@ -2282,8 +2282,13 @@ export function applyTheme(): void {
   localStorage.setItem('cockpit.theme', state.theme)
 }
 
-export function cycleTheme(): void {
-  state.theme = state.theme === 'system' ? 'dark' : state.theme === 'dark' ? 'light' : 'system'
+/**
+ * The theme lives in Settings rather than on a button of its own: it is chosen
+ * once and then forgotten, which is what that dialog is for. Named rather than
+ * cycled — a three-state toggle makes you click twice to read the third state.
+ */
+export function setTheme(theme: 'system' | 'dark' | 'light'): void {
+  state.theme = theme
   applyTheme()
 }
 

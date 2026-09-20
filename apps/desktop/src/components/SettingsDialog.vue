@@ -1,13 +1,24 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { FolderOpen, SlidersHorizontal, X } from '@lucide/vue'
-import { pickFolder, saveSettings, state } from '../core/store.js'
+import { FolderOpen, MonitorCog, Moon, SlidersHorizontal, Sun, X } from '@lucide/vue'
+import { pickFolder, saveSettings, setTheme, state } from '../core/store.js'
 
 /**
  * §15 — "ce qui vit sur la machine" : settings that belong to this computer and
  * this person rather than to any repository. Small on purpose. Anything a
  * colleague would need too belongs in the manifest instead.
+ *
+ * The theme lives here too, and is the one thing in the dialog that is not
+ * saved: it is a choice about this window, it takes effect as you click it,
+ * and there is nothing to confirm. Everything else is a path the service has
+ * to accept, which is what Save is for.
  */
+
+const THEMES = [
+  { id: 'system', label: 'System', icon: MonitorCog },
+  { id: 'light', label: 'Light', icon: Sun },
+  { id: 'dark', label: 'Dark', icon: Moon },
+] as const
 
 const devRootInput = ref('')
 const ide = ref('')
@@ -76,6 +87,20 @@ function onKey(e: KeyboardEvent) {
       </header>
 
       <div class="body">
+        <div class="field">
+          <span class="lbl">Theme</span>
+          <div class="seg">
+            <button
+              v-for="t in THEMES"
+              :key="t.id"
+              :class="{ on: state.theme === t.id }"
+              @click="setTheme(t.id)"
+            >
+              <component :is="t.icon" class="sm" />{{ t.label }}
+            </button>
+          </div>
+        </div>
+
         <label class="field">
           <span class="lbl">Dev folder</span>
           <div class="row">
@@ -89,16 +114,15 @@ function onKey(e: KeyboardEvent) {
             />
             <button class="btn" @click="browse"><FolderOpen />Browse</button>
           </div>
+          <!-- One line, and the rule it has to carry is the one you can get
+               wrong: the project folder is not itself a repository. The rest of
+               the reasoning was an essay in a dialog nobody reads twice. -->
           <span class="help">
-            Where new projects are created: one folder per project, and inside it one folder per
-            repository — <code class="mono">Dev/Project/repo/.git</code>, never
-            <code class="mono">Dev/Project/.git</code>. Keeping the project folder free of a
-            repository of its own is what lets a second one join it later, and what an agent is
-            pointed at to work across all of them at once.
+            Where new projects are created — <code class="mono">Dev/Project/repo/.git</code>, never
+            <code class="mono">Dev/Project/.git</code>.
           </span>
           <span v-if="!state.settings?.devRoot && state.suggestedDevRoot" class="help sug">
-            Your projects already sit in
-            <code class="mono">{{ state.suggestedDevRoot }}</code> — that is the suggestion above.
+            Suggested from where your projects already sit.
           </span>
         </label>
 
@@ -106,14 +130,13 @@ function onKey(e: KeyboardEvent) {
           <span class="lbl">Editor command</span>
           <input v-model="ide" class="input mono" spellcheck="false" placeholder="code" />
           <span class="help">
-            Run with a folder as its argument when something is opened in an editor
-            (<span class="kbd">o</span>).
+            <span class="kbd">o</span> runs it with the folder as its argument.
           </span>
         </label>
       </div>
 
       <footer class="foot">
-        <span class="rp">Kept on this machine, never written into a repository.</span>
+        <span class="rp">Kept on this machine, never in a repository.</span>
         <span class="grow" />
         <button class="btn ghost" :disabled="busy" @click="close">Close</button>
         <button class="btn primary" :disabled="busy || !dirty" @click="save">
@@ -176,9 +199,11 @@ function onKey(e: KeyboardEvent) {
   padding: 18px 20px 8px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 18px;
 }
 .field { display: flex; flex-direction: column; gap: 7px; }
+/* A row of three, not a control stretched across the dialog. */
+.field .seg { align-self: flex-start; }
 .lbl {
   font-size: var(--fs-xs);
   font-weight: 600;

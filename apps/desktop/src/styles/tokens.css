@@ -193,6 +193,13 @@
   /* Every column starts at the same distance below the band, so the search
      field and the workspace title sit on one line. */
   --col-top: 14px;
+  /* The strip at the head of a working column, rule included: the agent's
+     conversation bar (`.tbar` in AgentTab) and the review tools' tab strip
+     (`.tools` in ReviewTools) stand side by side, so their bottom rules have
+     to fall on one line or the two columns read as two windows. 49 is the
+     agent bar's tall case made permanent — 48 of content over the 1px rule,
+     which centres a 28px instrument at 10 whatever else the bar carries. */
+  --band-h: 49px;
 
   /* Icons — three sizes, so a stroke never lands on a half pixel. */
   --ic-sm: 14px;
