@@ -312,12 +312,7 @@ export const state = reactive({
     | null,
   pendingConfirm: null as PendingConfirm | null,
   planBusy: false,
-  toast: null as {
-    kind: 'ok' | 'error' | 'info'
-    text: string
-    /** One verb beside the message — Undo, for something that can be. */
-    action?: { label: string; run: () => void }
-  } | null,
+  toasts: [] as ToastItem[],
   theme: (localStorage.getItem('cockpit.theme') ?? 'system') as 'system' | 'dark' | 'light',
 })
 
@@ -763,10 +758,11 @@ export async function startAgentIn(
   pinThread(scope, res.sessionId)
   // §4 — say that the anchor exists, or capturing it was pointless.
   toast(
-    'ok',
+    'info',
     res.restorePoints.length
       ? 'session started · restore point ' + res.restorePoints[0]!.head.slice(0, 8)
       : 'session started',
+    { icon: 'play' },
   )
   return true
 }
@@ -1717,8 +1713,8 @@ export async function attachFiles(list: Iterable<File>): Promise<DraftFile[]> {
     if (f) kept.push(f)
     else failed++
   }
-  if (failed) toast('error', 'some of those could not be read')
-  if (incoming.length > room) toast('info', 'only the first ' + room + ' were attached')
+  if (failed) toast('warn', 'some of those could not be read')
+  if (incoming.length > room) toast('warn', 'only the first ' + room + ' were attached')
   if (kept.length) agentFiles.value = [...agentFiles.value, ...kept]
   return kept
 }
@@ -1820,21 +1816,201 @@ export function has(w: Workspace | null, cap: string): boolean {
   return !!w?.capabilities.some((c) => c.id === cap)
 }
 
+/* ── Toasts ────────────────────────────────────────────────────────────── */
+
+/** One verb beside the message — Undo, for something that can be. */
+export type ToastAction = { label: string; run: () => void }
+
+/**
+ * Severity, and nothing else — it picks the colour and how long the message
+ * lives. `ok` is not "it finished", it is "it finished and that is good news":
+ * a copy, a stop, a queue are all successes and none of them is a green tick.
+ * What those get instead is an `icon`.
+ */
+export type ToastKind = 'ok' | 'info' | 'warn' | 'error'
+
+/**
+ * The glyph, when the severity's own is not the honest one. It says what the
+ * message is *about* while the kind goes on saying how it went, so a stopped
+ * conversation reads as a stop rather than as an achievement.
+ */
+export type ToastIcon =
+  | 'copy' | 'stop' | 'play' | 'clock' | 'restart' | 'server' | 'undo' | 'save' | 'discard'
+
+export type ToastItem = {
+  id: number
+  kind: ToastKind
+  /** One line, and it should read as one: the whole of a routine message. */
+  text: string
+  /**
+   * The long half — a log tail, an exit reason, the path that was not there.
+   * Shown open under an error and folded away under anything else, because an
+   * error is the one message worth making someone read.
+   */
+  detail?: string
+  action?: ToastAction
+  icon?: ToastIcon
+  /**
+   * `Date.now()` past which it leaves, or null for one that waits: an error,
+   * or any toast the pointer is currently resting on.
+   */
+  expiresAt: number | null
+  /** The span it was given, so hovering can hand back the whole of it. */
+  life: number | null
+}
+
+/**
+ * "conversation stopped" is read in the time it takes to appear, and every
+ * second past that it is only in the way. Something offering a verb has to
+ * outlast the moment you notice it and decide. An error is not on a clock at
+ * all — see `lifeOf`.
+ */
+const TOAST_LIFE = { plain: 2500, warn: 6000, withAction: 8000 }
+
+/** Four is already past what anyone reads at a glance. */
+const MAX_TOASTS = 4
+
+let toastSeq = 0
+
+/**
+ * A toast is a sentence, so it starts like one — but a great many of them
+ * start with a name instead, and `api did not start` must never be rendered
+ * `Api did not start`. So the first word is capitalised only once it is clear
+ * it is a word: not a name this window knows, not a path or an identifier,
+ * not already capital, not a number.
+ *
+ * Doing it here rather than at the sixty-odd call sites is what keeps the two
+ * halves honest — the same strings are printed by the CLI, where lower case is
+ * the house style, and they should not have to be written twice.
+ */
+function asSentence(text: string): string {
+  const first = text.slice(0, 1)
+  if (first !== first.toLowerCase() || first === first.toUpperCase()) return text
+  // Not split on a dot: `cockpit.db` has to survive whole to be recognised
+  // below as a name rather than a word.
+  const word = text.split(/[\s,;:]/, 1)[0] ?? ''
+  // A path, a package, a flag, an address — anything wearing punctuation in
+  // the middle of it is a token being quoted, not a sentence beginning.
+  if (/[./\\_@-]/.test(word)) return text
+  const names = [
+    ...state.projects.map((p) => p.name),
+    ...state.workspaces.map((w) => w.name),
+    ...state.topics.map((t) => t.name),
+  ]
+  if (names.some((n) => n.toLowerCase() === word.toLowerCase())) return text
+  return first.toUpperCase() + text.slice(1)
+}
+
+function lifeOf(kind: ToastKind, action: ToastAction | undefined): number | null {
+  // Everything else on screen is a note that something went as expected, and
+  // is gone before you finish the sentence you were on. A failure is the one
+  // thing that gets to interrupt, so it is also the one thing that stays put
+  // until it has been looked at.
+  if (kind === 'error') return null
+  if (action) return TOAST_LIFE.withAction
+  // It did happen, but not wholly, and the difference is worth a second look:
+  // long enough to read twice, still short enough to leave by itself.
+  return kind === 'warn' ? TOAST_LIFE.warn : TOAST_LIFE.plain
+}
+
 export function toast(
-  kind: 'ok' | 'error' | 'info',
+  kind: ToastKind,
   text: string,
-  action?: { label: string; run: () => void },
-): void {
+  extra?: ToastAction | { detail?: string; action?: ToastAction; icon?: ToastIcon },
+): number {
   // Never an empty toast: an icon and a close button say only that something
   // went wrong somewhere.
   if (!text.trim()) text = kind === 'error' ? 'Something went wrong, with no message to show.' : text
-  const t = { kind, text, ...(action ? { action } : {}) }
-  state.toast = t
-  // A toast that offers something stays long enough to be taken up on it.
-  window.setTimeout(() => {
-    if (state.toast === t) state.toast = null
-  }, action ? 9000 : 4200)
+  text = asSentence(text)
+  // The third argument was an action long before it could carry detail, and
+  // both spellings are worth keeping: `label` is what tells them apart.
+  const opts = extra && 'label' in extra ? { action: extra } : (extra ?? {})
+  let detail = opts.detail?.trim() || undefined
+  const action = opts.action
+
+  // A reason that arrived with its own line breaks already has a headline and
+  // a body; it just needs to be read as two things rather than as one
+  // paragraph crammed into a pill.
+  if (!detail && text.includes('\n')) {
+    const [first, ...rest] = text.split('\n')
+    const body = rest.join('\n').trim()
+    if (body && first!.trim()) {
+      text = first!.trim()
+      detail = body
+    }
+  }
+  const life = lifeOf(kind, action)
+
+  // The same failure twice over is one failure that happened twice. Stacking a
+  // second copy underneath the first says nothing the first did not, so the
+  // one already on screen is given its time back instead.
+  const twin = state.toasts.find((t) => t.kind === kind && t.text === text && t.detail === detail)
+  if (twin) {
+    twin.action = action
+    twin.life = life
+    if (life !== null) twin.expiresAt = Date.now() + life
+    return twin.id
+  }
+
+  const t: ToastItem = {
+    id: ++toastSeq,
+    kind,
+    text,
+    ...(detail ? { detail } : {}),
+    ...(action ? { action } : {}),
+    ...(opts.icon ? { icon: opts.icon } : {}),
+    life,
+    expiresAt: life === null ? null : Date.now() + life,
+  }
+  state.toasts.push(t)
+  // When the stack is full what goes is the least it can afford to lose: the
+  // oldest routine note first, a warning only once there is nothing else, and
+  // an error never — an error is the reason the stack exists.
+  while (state.toasts.length > MAX_TOASTS) {
+    let i = state.toasts.findIndex((x) => x.life !== null && x.kind !== 'warn')
+    if (i === -1) i = state.toasts.findIndex((x) => x.life !== null)
+    state.toasts.splice(i === -1 ? 0 : i, 1)
+  }
+  return t.id
 }
+
+export function dismissToast(id: number): void {
+  const i = state.toasts.findIndex((t) => t.id === id)
+  if (i !== -1) state.toasts.splice(i, 1)
+}
+
+export function dismissToasts(): void {
+  state.toasts.length = 0
+}
+
+/**
+ * Hovering holds a toast still. Leaving gives it its whole span back rather
+ * than the remainder, so a message you started reading is not gone a quarter
+ * of a second after the pointer slides off it.
+ */
+export function holdToast(id: number, held: boolean): void {
+  const t = state.toasts.find((x) => x.id === id)
+  if (!t || t.life === null) return
+  t.expiresAt = held ? null : Date.now() + t.life
+}
+
+/**
+ * Deadlines are read off the clock rather than handed to one `setTimeout` per
+ * toast. A window that is not on screen has its timers slowed — which is how a
+ * two-second message used to still be there a minute later — and the sweep on
+ * `visibilitychange` clears whatever expired while nobody was looking.
+ */
+function sweepToasts(): void {
+  const now = Date.now()
+  for (let i = state.toasts.length - 1; i >= 0; i--) {
+    const at = state.toasts[i]!.expiresAt
+    if (at !== null && at <= now) state.toasts.splice(i, 1)
+  }
+}
+
+window.setInterval(sweepToasts, 200)
+document.addEventListener('visibilitychange', sweepToasts)
+window.addEventListener('focus', sweepToasts)
 
 export async function guard<T>(fn: () => Promise<T>, okMessage?: string): Promise<T | null> {
   try {
@@ -1842,7 +2018,12 @@ export async function guard<T>(fn: () => Promise<T>, okMessage?: string): Promis
     if (okMessage) toast('ok', okMessage)
     return r
   } catch (e) {
-    toast('error', e instanceof Error ? e.message : String(e))
+    const message = e instanceof Error ? e.message : String(e)
+    // The stack is the only part that ever says where, and it is exactly the
+    // part a one-line toast used to throw away.
+    const stack = e instanceof Error ? e.stack : undefined
+    const detail = stack && stack.trim() !== message.trim() ? stack : undefined
+    toast('error', message, detail ? { detail } : undefined)
     return null
   }
 }
@@ -1938,7 +2119,7 @@ export async function addRepo(input: {
   toast('ok', r.wrapped ? 'repository added; the first one moved into ' + r.wrapped + '/' : 'repository added')
   // The commit is the one failure worth surviving: the repository is real
   // either way, and a missing user.email is not this sheet's problem to solve.
-  if (r.note) toast('info', 'the first commit failed — ' + r.note)
+  if (r.note) toast('warn', 'the first commit failed — ' + r.note)
   await refreshProjects()
   const added = state.workspaces.find((w) => w.path === r.repoPath)
   if (added) selectWorkspace(added.id)
@@ -2210,7 +2391,7 @@ async function settlePlan(
   // attached to the workspace, so the next thing on screen is what to do.
   if (res.conflict) {
     if (res.conflict.workspaceId) state.activeWorkspaceId = res.conflict.workspaceId
-    toast('info', res.conflict.repo + ': ' + res.conflict.kind + ' stopped on a conflict — resolve it below')
+    toast('warn', res.conflict.repo + ': ' + res.conflict.kind + ' stopped on a conflict — resolve it below')
     return
   }
   if (!res.ok) {
@@ -2298,7 +2479,9 @@ export async function applyPendingConfirm(): Promise<void> {
     // with the question still on screen — `run` has already said why.
     if (!ok) return
     state.pendingConfirm = null
-    toast('ok', c.done)
+    // `danger` is the table's own word for "this took something away", and a
+    // green tick is the wrong face for that however well it went.
+    toast(c.danger ? 'info' : 'ok', c.done, c.danger ? { icon: 'discard' } : undefined)
     return
   }
   state.planBusy = true
@@ -2423,7 +2606,7 @@ export async function draftCommitMessage(
     toast('error', res.detail || 'Draft failed, and the engine did not say why — is the claude CLI signed in?')
     return null
   }
-  if (res.truncated) toast('info', 'The diff was too large to send whole — read the draft closely.')
+  if (res.truncated) toast('warn', 'The diff was too large to send whole — read the draft closely.')
   return res.message
 }
 
@@ -2512,19 +2695,19 @@ export async function discard(params: {
     return false
   }
   const entry = res.entry
-  toast(
-    'ok',
-    res.detail + ' — kept under Set aside',
-    entry ? { label: 'Undo', run: () => void undoDiscard(params.workspaceId, entry) } : undefined,
-  )
+  toast('info', res.detail + ' — kept under Set aside', {
+    icon: 'discard',
+    ...(entry
+      ? { action: { label: 'Undo', run: () => void undoDiscard(params.workspaceId, entry) } }
+      : {}),
+  })
   return true
 }
 
 export async function undoDiscard(workspaceId: string, entry: string): Promise<void> {
-  state.toast = null
   const res = await guard(() => client.call('git.discardUndo', { workspaceId, entry }))
   if (!res) return
-  toast(res.ok ? 'ok' : 'error', res.ok ? 'Put back' : res.detail)
+  toast(res.ok ? 'ok' : 'error', res.ok ? 'Put back' : res.detail, res.ok ? { icon: 'undo' } : undefined)
   discardTick.value++
 }
 
@@ -2956,18 +3139,28 @@ function reportStart(res: { servers: { name: string; ok: boolean; status: string
     // The name and the last line it wrote: enough to know which repository
     // broke and why, without opening anything.
     const first = failed[0]!
-    const why = first.log.split('\n').filter(Boolean).slice(-1)[0] ?? 'it exited before it answered'
-    toast('error', first.name + ' did not start — ' + why.slice(0, 160))
+    const lines = first.log.split('\n').filter(Boolean)
+    const why = lines.slice(-1)[0] ?? 'it exited before it answered'
+    // The last line says which failure it was; the tail says why. It used to
+    // be 160 characters of the first and nothing of the second.
+    toast('error', first.name + ' did not start — ' + why.slice(0, 160), {
+      ...(lines.length > 1 ? { detail: lines.slice(-40).join('\n') } : {}),
+      ...(failed.length > 1
+        ? { action: { label: 'See all ' + failed.length, run: () => { state.reviewTool = 'servers' } } }
+        : {}),
+    })
     // The rest of the reason is one click away rather than in a toast.
     state.reviewTool = 'servers'
     if (state.view === 'agent') state.view = 'split'
     return
   }
   if (starting.length) {
-    toast('info', starting.map((r) => r.name).join(', ') + ' — still starting, no answer yet')
+    toast('info', starting.map((r) => r.name).join(', ') + ' — still starting, no answer yet', {
+      icon: 'clock',
+    })
     return
   }
-  toast('ok', up.length > 1 ? up.length + ' servers up' : 'up')
+  toast('ok', up.length > 1 ? up.length + ' servers up' : 'up', { icon: 'server' })
 }
 
 export async function startTopic(topicId: string): Promise<void> {
@@ -2980,7 +3173,8 @@ export async function startTopic(topicId: string): Promise<void> {
     if (!forced) return
     await refreshTopics()
     await refreshBoard()
-    if (forced.stoppedTopics.length) toast('info', 'stopped ' + forced.stoppedTopics.join(', '))
+    if (forced.stoppedTopics.length)
+      toast('info', 'stopped ' + forced.stoppedTopics.join(', '), { icon: 'stop' })
     reportStart(forced)
     return
   }
@@ -3010,7 +3204,7 @@ export async function stopTopic(topicId: string): Promise<void> {
   if (!res) return
   await refreshTopics()
   await refreshBoard()
-  toast('ok', 'stopped — the branches stay exactly where they are')
+  toast('info', 'stopped — the branches stay exactly where they are', { icon: 'stop' })
 }
 
 /**
@@ -3026,7 +3220,7 @@ export async function toggleWorkspaceRuntime(w: Workspace): Promise<void> {
   if (running) {
     const res = await guard(() => client.call('runtime.down', { workspaceId: w.id }))
     await refreshBoard()
-    if (res) toast('ok', 'stopped')
+    if (res) toast('info', 'stopped', { icon: 'stop' })
     return
   }
   const res = await guard(() => client.call('runtime.up', { workspaceId: w.id }))
@@ -3101,7 +3295,7 @@ export async function restartCore(): Promise<void> {
     toast('info', 'run `cockpit restart` in a terminal — this window cannot start the service')
     return
   }
-  toast('info', 'stopping the service…')
+  toast('info', 'stopping the service…', { icon: 'clock' })
   try {
     await client.call('core.shutdown', undefined)
   } catch {
@@ -3113,7 +3307,7 @@ export async function restartCore(): Promise<void> {
     return
   }
   client.reconnectNow()
-  toast('ok', 'service restarted')
+  toast('ok', 'service restarted', { icon: 'restart' })
 }
 
 /** §6 — the conversation is still there; the memory has moved on since. */
@@ -3143,7 +3337,7 @@ export async function sendTurn(
       toast('error', res.reason)
       return false
     }
-    if (res.queued) toast('ok', 'queued — it is still on the last turn')
+    if (res.queued) toast('info', 'queued — it is still on the last turn', { icon: 'clock' })
     return true
   }
   return resumeSession(sessionId, prompt, files)
@@ -3225,7 +3419,7 @@ export async function resumeSession(
     toast('error', res.reason)
     return false
   }
-  toast('ok', 'resumed')
+  toast('info', 'resumed', { icon: 'play' })
   return true
 }
 

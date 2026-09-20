@@ -168,7 +168,7 @@ async function save() {
   }
   openMtime.value = res.mtimeMs
   dirty.value = false
-  toast('ok', 'saved ' + openPath.value)
+  toast('ok', 'saved ' + openPath.value, { icon: 'save' })
 }
 
 watch(() => props.workspace.id, loadRoot, { immediate: true })

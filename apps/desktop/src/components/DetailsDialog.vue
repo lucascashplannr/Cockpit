@@ -143,7 +143,7 @@ function bytes(n: number | null): string {
 async function copy(text: string) {
   try {
     await navigator.clipboard.writeText(text)
-    toast('ok', 'copied')
+    toast('info', 'copied', { icon: 'copy' })
   } catch {
     toast('error', 'could not copy')
   }

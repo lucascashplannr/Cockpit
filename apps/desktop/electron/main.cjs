@@ -393,6 +393,13 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // Chromium slows a hidden window's timers to roughly one tick a minute.
+      // For a window that is mostly a view onto work happening elsewhere that
+      // is the wrong trade twice over: the transcript stops streaming the
+      // moment you look away, and a toast given two and a half seconds is
+      // still sitting there when you come back. Nothing here spins when it is
+      // idle, so there is no battery to save by freezing it.
+      backgroundThrottling: false,
     },
   })
 
