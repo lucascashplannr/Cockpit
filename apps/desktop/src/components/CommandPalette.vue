@@ -12,7 +12,7 @@ import {
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, archivedTopics, client, closeTopic, deleteTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
+  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, archivedTopics, askDeleteTopic, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -173,18 +173,10 @@ const commands = computed<Item[]>(() => {
     out.push({
       id: 'topic:delete:' + f.id,
       label: 'Delete ' + f.name + '…',
-      hint: 'drops the record for good; refuses over anything unmerged',
+      hint: 'drops the record for good; the branch is a checkbox in the question',
       group: 'Topic',
       icon: Trash2,
-      run: act(() =>
-        deleteTopic(f.id, {
-          removeWorktrees: true,
-          deleteBranches: window.confirm(
-            'Delete the branch "' + f.slug + '" in every repository too?\n\n' +
-              'Cancel keeps the branches and removes only the checkouts and the record.',
-          ),
-        }),
-      ),
+      run: act(() => askDeleteTopic(f.id)),
     })
   }
   // §3.9 — a closed topic is listed only where it can be acted on.
@@ -203,7 +195,7 @@ const commands = computed<Item[]>(() => {
       hint: 'closed — remove it from the record for good',
       group: 'Topic',
       icon: Trash2,
-      run: act(() => deleteTopic(f.id, { removeWorktrees: true, deleteBranches: false })),
+      run: act(() => askDeleteTopic(f.id)),
     })
   }
 

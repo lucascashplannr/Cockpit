@@ -2479,6 +2479,23 @@ interface ConfirmBase {
    * because it is not the app talking.
    */
   quote?: string
+  /**
+   * The one decision inside the question, when there is one.
+   *
+   * A Catch up puts the branch there; a delete puts the branch's fate there.
+   * Both are the same shape of thing: not a second question, but the word in
+   * this one that the person gets to choose. A native alert cannot draw it,
+   * which is how a single decision ended up asked as three grey boxes in a
+   * row — the checkbox is the reason this dialog exists.
+   */
+  option?: {
+    label: string
+    /** What ticking it changes, in a sentence. */
+    hint: string
+    value: boolean
+    /** Ticking it is what makes the act destructive, so it turns the button red. */
+    danger?: boolean
+  }
   /** Red button, for the one that cannot be taken back. */
   danger: boolean
 }
@@ -2495,7 +2512,7 @@ interface ConfirmBase {
 export type PendingConfirm = ConfirmBase &
   (
     | { plan: PlanPreview; run?: never }
-    | { plan?: never; run: () => Promise<boolean> }
+    | { plan?: never; run: (option: boolean) => Promise<boolean> }
   )
 
 export async function applyPendingConfirm(): Promise<void> {
@@ -2503,10 +2520,12 @@ export async function applyPendingConfirm(): Promise<void> {
   if (!c) return
   if (!c.plan) {
     state.planBusy = true
-    const ok = await c.run()
+    const ok = await c.run(c.option?.value ?? false)
     state.planBusy = false
-    // A refusal ("it is still running") stays in front of the person who asked,
-    // with the question still on screen — `run` has already said why.
+    // Not always a refusal. `run` returns false either because it said no —
+    // "it is still running", toasted — or because the answer turned out to be
+    // another question, which it has already put in this dialog's place. Both
+    // want the box to stay open on what is now in it.
     if (!ok) return
     state.pendingConfirm = null
     // `danger` is the table's own word for "this took something away", and a
@@ -3045,48 +3064,96 @@ export async function reopenTopic(topicId: string): Promise<void> {
 }
 
 /**
- * §16 — every refusal below is a refusal to lose work, so the confirmations
- * are not setup. Unmerged commits are the only thing `force` unlocks,
- * because they are the only thing nothing can bring back.
+ * §16 — close keeps a topic, delete discards it, and the one decision that
+ * separates them is the branch: leave it and every commit stays reachable,
+ * take it and nothing brings them back. So it is this question's checkbox
+ * rather than a question of its own.
+ *
+ * It used to be three `window.confirm`s in a row — the branch, the override,
+ * the plan — which is both the wrong number of questions and the wrong voice
+ * for all of them. The app has one dialog; a delete is not the place to grow
+ * a second.
  */
-export async function deleteTopic(
-  topicId: string,
-  opts: { removeWorktrees: boolean; deleteBranches: boolean },
-): Promise<void> {
+export function askDeleteTopic(topicId: string): void {
   const f = state.topics.find((x) => x.id === topicId)
-  const run = (force: boolean) =>
-    guard(() => client.call('topic.delete', { topicId, ...opts, force }))
+  if (!f) return
+  const wss = state.workspaces.filter((w) => w.topicId === topicId && w.kind === 'worktree')
+  const body = [
+    wss.length
+      ? 'Its ' + (wss.length > 1 ? wss.length + ' checkouts go' : 'checkout goes') +
+        ' to the Trash, with everything the topic kept beside them.'
+      : 'The topic leaves the list. Nothing on disk changes.',
+  ]
+  const unpushed = wss.filter((w) => w.git?.hasUnpushedWork).map((w) => w.name)
+  if (unpushed.length) {
+    body.push(unpushed.join(', ') + ': commits that no remote has a copy of.')
+  }
 
-  let res = await run(false)
-  if (!res) return
+  state.pendingConfirm = {
+    title: 'Delete "' + f.name + '"?',
+    body,
+    option: {
+      label: 'Delete the branch ' + f.slug + ' in every repository too',
+      hint: 'Left alone, the branches stay and every commit on them is still reachable.',
+      value: false,
+      danger: true,
+    },
+    // The ellipsis is honest: this one opens the plan rather than running it.
+    verb: 'Delete…',
+    done: 'deleted ' + f.name,
+    danger: false,
+    run: (deleteBranches) => askDeletePlan(f, deleteBranches, false),
+  }
+}
+
+/**
+ * Asks the core, and turns whatever comes back into the next question in the
+ * same box: a plan to agree to, a discard to say out loud, or a refusal that
+ * is nobody's to override.
+ *
+ * Always `false` — the dialog it leaves behind is the one that acts. Only
+ * a topic with nothing on disk to remove is finished here, and that one has
+ * no plan because there is nothing to run.
+ */
+async function askDeletePlan(f: Topic, deleteBranches: boolean, force: boolean): Promise<boolean> {
+  const res = await guard(() =>
+    client.call('topic.delete', { topicId: f.id, removeWorktrees: true, deleteBranches, force }),
+  )
+  if (!res) return false
 
   if (!res.ok) {
-    // Only the unmerged-branch refusal is forceable; anything else is a state
-    // to fix, not a prompt to click through.
-    if (!/UNMERGED|not merged/i.test(res.detail)) {
+    // Anything not marked forceable is a state to fix, not a prompt to click
+    // through: an agent still running, a runtime up, changes never committed.
+    if (!res.forceable) {
       toast('error', res.detail)
-      return
+      return false
     }
-    if (!window.confirm(res.detail + '\n\nDelete anyway? This cannot be undone.')) return
-    res = await run(true)
-    if (!res?.ok) {
-      if (res) toast('error', res.detail)
-      return
+    state.pendingConfirm = {
+      title: 'Discard "' + f.name + '" and its commits?',
+      body: [res.detail],
+      verb: 'Discard',
+      done: 'discarded ' + f.name,
+      danger: true,
+      run: () => askDeletePlan(f, deleteBranches, true),
     }
+    return false
   }
 
   if (res.plan) {
-    const lines = [
-      'Delete "' + (f?.name ?? 'this topic') + '" for good?',
-      '',
-      ...res.warnings.map((w) => '• ' + w),
-    ]
-    if (!window.confirm(lines.join('\n'))) return
-    state.pendingPlan = res.plan
-    return
+    // §3.7 — the commands, one disclosure down, before any of them runs.
+    state.pendingConfirm = {
+      title: 'Delete "' + f.name + '" for good?',
+      body: res.warnings.length ? res.warnings : ['This cannot be undone.'],
+      verb: 'Delete',
+      done: 'deleted ' + f.name,
+      danger: true,
+      plan: res.plan,
+    }
+    return false
   }
+
   await refreshTopics()
-  toast('ok', res.detail)
+  return true
 }
 
 /**
@@ -3197,15 +3264,29 @@ export async function startTopic(topicId: string): Promise<void> {
   const res = await guard(() => client.call('topic.start', { topicId, force: false }))
   if (!res) return
   if (!res.ok && res.conflicts.length) {
-    const ok = window.confirm(res.conflicts.join('\n') + '\n\nStop it and continue?')
-    if (!ok) return
-    const forced = await guard(() => client.call('topic.start', { topicId, force: true }))
-    if (!forced) return
-    await refreshTopics()
-    await refreshBoard()
-    if (forced.stoppedTopics.length)
-      toast('info', 'stopped ' + forced.stoppedTopics.join(', '), { icon: 'stop' })
-    reportStart(forced)
+    // A port is held by another topic's servers. Nothing is lost by taking it
+    // — they come back up on their own next time — so this is a question in
+    // plain words, not a red one.
+    state.pendingConfirm = {
+      title: 'Stop what is holding the ports?',
+      body: res.conflicts,
+      verb: 'Stop it and start',
+      done: 'started',
+      danger: false,
+      async run() {
+        const forced = await guard(() => client.call('topic.start', { topicId, force: true }))
+        if (!forced) return false
+        await refreshTopics()
+        await refreshBoard()
+        if (forced.stoppedTopics.length)
+          toast('info', 'stopped ' + forced.stoppedTopics.join(', '), { icon: 'stop' })
+        reportStart(forced)
+        // `reportStart` says what came up, in more detail than a toast saying
+        // "started" would, so the dialog's own word is not wanted on top of it.
+        state.pendingConfirm = null
+        return false
+      },
+    }
     return
   }
   await refreshTopics()

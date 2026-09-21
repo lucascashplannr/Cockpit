@@ -2,9 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Archive, CirclePlay, CircleStop, Copy, FileCode, FolderOpen, Info, MessageSquarePlus, Pause, Play,
+  Trash2,
 } from '@lucide/vue'
 import {
-  client, closeTopic, guard, newConversationOn, startTopic, state, stopTopic, toast,
+  askDeleteTopic, client, closeTopic, guard, newConversationOn, startTopic, state, stopTopic, toast,
   toggleWorkspaceRuntime,
 } from '../core/store.js'
 
@@ -41,6 +42,7 @@ const topicOwned = computed(() => !!topic.value && !topic.value.derived && topic
 function close() {
   state.contextMenu = null
 }
+
 
 /**
  * Every item closes the menu, and does not wait for a slow act to do it. The
@@ -168,6 +170,11 @@ async function copyPath(path: string) {
              of its own that is shown before anything happens. -->
         <button class="warn" @click="act(() => closeTopic(topic!.id, true))">
           <Archive /> Close the topic…
+        </button>
+        <!-- The other half of §16: close keeps, delete discards. Without it
+             here, a topic you simply do not want had no verb but the palette. -->
+        <button class="warn" @click="act(() => askDeleteTopic(topic!.id))">
+          <Trash2 /> Delete the topic…
         </button>
       </template>
     </template>

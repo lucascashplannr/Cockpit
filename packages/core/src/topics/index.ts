@@ -901,8 +901,10 @@ export async function closePlan(
 
   const wss = workspacesOf(topicId)
   const blockers: string[] = []
+  /** Worth saying out loud, but closing cannot lose a commit: the branch stays. */
+  const unpushed: string[] = []
   for (const w of wss) {
-    if (w.git?.hasUnpushedWork) blockers.push(w.name + ': unpushed commits')
+    if (w.git?.hasUnpushedWork) unpushed.push(w.name)
     if ((w.git?.staged ?? 0) + (w.git?.unstaged ?? 0) > 0) blockers.push(w.name + ': uncommitted changes')
     if (w.agentSessions.length) blockers.push(w.name + ': an agent session is open')
     if (w.runtime?.status === 'up' || w.runtime?.status === 'starting') blockers.push(w.name + ': runtime is up')
@@ -910,13 +912,16 @@ export async function closePlan(
   if (blockers.length) {
     return { ok: false, detail: blockers.join('; '), plan: null }
   }
+  const unpushedNote = unpushed.length
+    ? ' — ' + unpushed.join(', ') + ' still holds commits no remote has, on a branch that stays'
+    : ''
 
   if (!removeWorktrees) {
     store.patch(topicId, (x) => {
       x.state = 'closed'
     })
     append({ type: 'topic.closed', projectId: f.projectId, payload: { topicId, removedWorktrees: false } })
-    return { ok: true, detail: 'closed; the branch folders are still on disk', plan: null }
+    return { ok: true, detail: 'closed; the branch folders are still on disk' + unpushedNote, plan: null }
   }
 
   const steps: PlanStep[] = []
@@ -937,7 +942,7 @@ export async function closePlan(
     store.patch(topicId, (x) => {
       x.state = 'closed'
     })
-    return { ok: true, detail: 'closed; there was no branch folder to remove', plan: null }
+    return { ok: true, detail: 'closed; there was no branch folder to remove' + unpushedNote, plan: null }
   }
 
   const preview: PlanPreview = {
@@ -946,6 +951,9 @@ export async function closePlan(
     steps,
     warnings: [
       'The branches stay: only the checkouts go. Anything not committed is already refused above.',
+      unpushed.length
+        ? unpushed.join(', ') + ': commits no remote has stay on the branch, reachable after the checkout goes.'
+        : '',
       f.rootPath ? 'The memory at ' + f.rootPath + '/.cockpit/memory.md is NOT removed — promote it to the docs first (§9).' : '',
     ].filter(Boolean),
     capturesRestorePoint: false,
@@ -1065,6 +1073,19 @@ async function isMerged(repoPath: string, branch: string, base: string): Promise
   return false
 }
 
+/**
+ * The commits a checkout holds that no remote has, newest first — the exact
+ * list a discard is about to throw away, so it can be named rather than
+ * summarised as "unpushed commits".
+ */
+async function unpushedSubjects(cwd: string, show = 4): Promise<string[]> {
+  const r = await git(cwd, ['log', 'HEAD', '--not', '--remotes', '--format=%s'])
+  if (!r.ok) return []
+  const all = r.stdout.split('\n').map((x) => x.trim()).filter(Boolean)
+  if (all.length <= show) return all
+  return [...all.slice(0, show), '+' + String(all.length - show) + ' more']
+}
+
 export interface DeleteTopicInput {
   topicId: string
   /** Remove the checkouts. The folder goes to the Trash, never `rm -rf`. */
@@ -1076,7 +1097,10 @@ export interface DeleteTopicInput {
    * a database has no Trash to go to, so unlike the folder this one is gone.
    */
   dropDatabases?: boolean
-  /** Proceed over unmerged branches. Nothing else can be forced. */
+  /**
+   * Proceed over commits that would be lost: a branch not merged into the
+   * base, or one no remote has. Nothing else can be forced.
+   */
   force?: boolean
 }
 
@@ -1088,7 +1112,7 @@ export interface DeleteTopicInput {
  */
 export async function deletePlan(
   input: DeleteTopicInput,
-): Promise<{ ok: boolean; detail: string; warnings: string[]; plan: PlanPreview | null }> {
+): Promise<{ ok: boolean; detail: string; warnings: string[]; forceable: boolean; plan: PlanPreview | null }> {
   const f = store.get(input.topicId)
   if (!f) throw new Error('unknown topic: ' + input.topicId)
 
@@ -1096,13 +1120,35 @@ export async function deletePlan(
   const warnings: string[] = []
   const blockers: string[] = []
 
+  const unpushed: Workspace[] = []
   for (const w of wss) {
     if (w.agentSessions.length) blockers.push(w.name + ': an agent session is open')
     if (w.runtime?.status === 'up' || w.runtime?.status === 'starting') blockers.push(w.name + ': runtime is up')
     if ((w.git?.staged ?? 0) + (w.git?.unstaged ?? 0) > 0) blockers.push(w.name + ': uncommitted changes')
-    if (w.git?.hasUnpushedWork) blockers.push(w.name + ': unpushed commits')
+    // Not a blocker but a question. Discarding a topic IS discarding its
+    // commits; refusing outright left no way to say so anywhere but the
+    // shell, which is the thing the window exists to replace (§16).
+    if (w.git?.hasUnpushedWork) unpushed.push(w)
   }
-  if (blockers.length) return { ok: false, detail: blockers.join('; '), warnings: [], plan: null }
+  if (blockers.length) return { ok: false, detail: blockers.join('; '), warnings: [], forceable: false, plan: null }
+
+  // Only deleting the branch loses them. Keeping it — the default — leaves
+  // every commit reachable after the checkout is gone, so there is nothing
+  // to refuse and nothing to force.
+  if (unpushed.length && input.deleteBranches && !input.force) {
+    const named = await Promise.all(
+      unpushed.map(async (w) => w.name + ': ' + (await unpushedSubjects(w.path)).join(', ')),
+    )
+    return {
+      ok: false,
+      warnings: [],
+      forceable: true,
+      plan: null,
+      detail:
+        'these commits exist nowhere but this machine — ' + named.join('; ') +
+        '. Push them first, or discard the topic and lose them.',
+    }
+  }
 
   const repos = registry.allWorkspaces(f.projectId).filter((w) => w.kind === 'main' && w.repo)
   const steps: PlanStep[] = []
@@ -1139,6 +1185,7 @@ export async function deletePlan(
       return {
         ok: false,
         warnings: [],
+        forceable: true,
         plan: null,
         detail:
           'the branch "' + f.slug + '" holds commits not merged into the base in ' +
@@ -1188,6 +1235,16 @@ export async function deletePlan(
   }
   if (!input.deleteBranches) {
     warnings.push('The branches stay. Only the record and the checkouts go.')
+    for (const w of unpushed) {
+      warnings.push(w.name + ': commits no remote has stay on the branch ' + f.slug + '.')
+    }
+  } else {
+    for (const w of unpushed) {
+      warnings.push(
+        w.name + ': its unpushed commits go with the branch. A restore point records the tip ' +
+          'first, so they stay reachable by SHA until git collects them.',
+      )
+    }
   }
 
   const finish = async () => {
@@ -1210,7 +1267,7 @@ export async function deletePlan(
   // Nothing for git to do: the record is the only thing left to remove.
   if (!steps.length) {
     await finish()
-    return { ok: true, detail: 'deleted "' + f.name + '"', warnings, plan: null }
+    return { ok: true, detail: 'deleted "' + f.name + '"', warnings, forceable: false, plan: null }
   }
 
   const preview: PlanPreview = {
@@ -1218,7 +1275,10 @@ export async function deletePlan(
     operation: 'topic.delete',
     steps,
     warnings,
-    capturesRestorePoint: false,
+    // The one delete that has something to anchor: a branch whose commits no
+    // remote holds. The SHA outlives the branch, which is the difference
+    // between "gone" and "gone unless you look".
+    capturesRestorePoint: input.deleteBranches && unpushed.length > 0,
     repos: repos.map((r) => r.name),
   }
   plans.register(preview, {
@@ -1226,5 +1286,5 @@ export async function deletePlan(
     ...(Object.keys(dbEnv).length ? { env: dbEnv } : {}),
     onApplied: finish,
   })
-  return { ok: true, detail: 'plan ready', warnings, plan: preview }
+  return { ok: true, detail: 'plan ready', warnings, forceable: false, plan: preview }
 }

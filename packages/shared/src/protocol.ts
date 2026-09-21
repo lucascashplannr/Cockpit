@@ -503,7 +503,18 @@ export interface Rpc {
       dropDatabases?: boolean
       force?: boolean
     }
-    result: { ok: boolean; detail: string; warnings: string[]; plan: PlanPreview | null }
+    /**
+     * `forceable` is the refusal saying it would take `force` — commits that
+     * would be lost. Every other refusal is a state to fix, not a prompt to
+     * click through, so the window never offers to override one.
+     */
+    result: {
+      ok: boolean
+      detail: string
+      warnings: string[]
+      forceable: boolean
+      plan: PlanPreview | null
+    }
   }
 
   'fs.list': { params: { workspaceId: string; rel: string }; result: FileEntry[] }

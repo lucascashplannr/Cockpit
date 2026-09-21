@@ -28,6 +28,14 @@ import { applyPendingConfirm, state } from '../core/store.js'
 const c = computed(() => state.pendingConfirm)
 const open = ref(false)
 
+/**
+ * Red is about what the button does, not about which dialog this is. A delete
+ * that leaves the branches alone takes nothing that cannot be walked back, so
+ * it is not red until the checkbox that removes them is ticked — and then it
+ * is, under the hand that ticked it.
+ */
+const danger = computed(() => !!c.value && (c.value.danger || !!(c.value.option?.danger && c.value.option.value)))
+
 function cancel(): void {
   state.pendingConfirm = null
   // §4 — the base a Catch up was going to use goes with the question it
@@ -87,7 +95,7 @@ watch(
       <blockquote v-if="c.quote" class="quote">{{ c.quote }}</blockquote>
 
       <div v-if="c.body.length" class="say">
-        <p v-for="(line, i) in c.body" :key="i" :class="{ lead: i === 0, danger: c.danger && i === 0 }">
+        <p v-for="(line, i) in c.body" :key="i" :class="{ lead: i === 0, danger: danger && i === 0 }">
           {{ line }}
         </p>
       </div>
@@ -95,6 +103,17 @@ watch(
       <!-- §4 — only on a Catch up, and only under the sentence it qualifies:
            the branch is the one word in the question that is a choice. -->
       <BasePicker class="base" />
+
+      <!-- The other kind of choice inside a question: a thing the act will
+           also do, off by default because the default is the one you can
+           take back. -->
+      <label v-if="c.option" class="opt" :class="{ on: c.option.value }">
+        <input v-model="c.option.value" type="checkbox" />
+        <span class="ol">
+          <span class="lab">{{ c.option.label }}</span>
+          <span class="hint">{{ c.option.hint }}</span>
+        </span>
+      </label>
 
       <!-- The plan, kept but not insisted upon. `details` rather than a
            hand-rolled toggle: it is a disclosure, the platform has one, and
@@ -128,7 +147,7 @@ watch(
         <button
           ref="yes"
           class="btn"
-          :class="c.danger ? 'danger solid' : 'primary'"
+          :class="danger ? 'danger solid' : 'primary'"
           :disabled="state.planBusy"
           @click="go"
         >
@@ -228,6 +247,32 @@ watch(
 /* Sits with the sentences it qualifies rather than in a band of its own: the
    dialog is a paragraph and a question, and a rule across it would make two. */
 .base { margin: 0 20px 12px; }
+
+/* A row, not a form control with a label beside it: the whole thing is the
+   target, and the sentence under it is why you would want it. */
+.opt {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0 16px 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: default;
+  transition: border-color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
+}
+.opt:hover { background: var(--hover); }
+/* Ticked, it is the destructive half of the question and says so before the
+   button does. */
+.opt.on { border-color: var(--danger); background: var(--danger-soft); }
+.opt input { flex: none; margin: 2px 0 0; accent-color: var(--danger); }
+.ol { display: flex; flex-direction: column; gap: 2px; }
+.opt .lab { font-size: var(--fs-sm); line-height: 1.4; color: var(--text); }
+.opt .hint { font-size: var(--fs-xs); line-height: 1.45; color: var(--text-dim); }
+/* Ticked, the row is the one thing on screen worth reading twice, and dim
+   grey over a red wash is not readable at the size it is set. */
+.opt.on .hint { color: var(--text-muted); }
 .say .lead { color: var(--text); }
 .say .danger { color: var(--danger); }
 
