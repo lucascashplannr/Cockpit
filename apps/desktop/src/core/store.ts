@@ -130,6 +130,22 @@ export interface PendingRevert {
   busy: boolean
 }
 
+/**
+ * What the ladder sits at until somebody moves it.
+ *
+ * It sat at `high`, which is a whole rung above what `claude` runs at when
+ * nothing asks — and the rung is paid in wall clock, not in quality. Measured
+ * on one question against this repository, same flags, same tool set: `high`
+ * took 92s and `medium` 63s, for the same answer, the same number of calls and
+ * the same money. That 30s was most of why a question asked here came back
+ * later than the same question asked in the CLI, and nobody had chosen it.
+ *
+ * The rungs above are still one click away in the composer, where choosing to
+ * spend another half-minute is a decision somebody is making rather than a
+ * default they inherited.
+ */
+const DEFAULT_EFFORT = 'medium'
+
 export const state = reactive({
   connection: 'connecting' as ConnectionState,
   connectionDetail: '' as string,
@@ -245,7 +261,7 @@ export const state = reactive({
    * on resume keeps a thread on the model it was started with without adding a
    * column to a schema whose bump costs the user their history.
    */
-  engineOptions: { model: 'opus', effort: 'high', permissionMode: 'acceptEdits' } as EngineOptions & {
+  engineOptions: { model: 'opus', effort: DEFAULT_EFFORT, permissionMode: 'acceptEdits' } as EngineOptions & {
     permissionMode: PermissionMode
   },
 
@@ -974,10 +990,16 @@ function loadComposer(): void {
       effort?: string
       permissionMode?: string
       history?: string[]
+      defaults?: number
     } | null
     if (!raw) return
     if (raw.model) state.engineOptions.model = raw.model
-    if (raw.effort) state.engineOptions.effort = raw.effort
+    // A composer saved before `DEFAULT_EFFORT` existed cannot say whether its
+    // `high` was chosen or merely inherited, and every one of them holds the
+    // old default. Read as inherited, so the fix reaches the people who have
+    // been paying for it; anything else they picked is theirs and is restored.
+    if (raw.effort && !(raw.defaults === undefined && raw.effort === 'high'))
+      state.engineOptions.effort = raw.effort
     if (raw.permissionMode === 'auto' || raw.permissionMode === 'manual' || raw.permissionMode === 'acceptEdits')
       state.engineOptions.permissionMode = raw.permissionMode
     if (Array.isArray(raw.history)) state.promptHistory = raw.history.filter((x) => typeof x === 'string')
@@ -994,6 +1016,9 @@ export function saveComposer(): void {
       effort: state.engineOptions.effort,
       permissionMode: state.engineOptions.permissionMode,
       history: state.promptHistory.slice(0, HISTORY_MAX),
+      // Marks a blob written since the effort default moved, so the migration
+      // above runs once and never second-guesses a later choice of `high`.
+      defaults: 1,
     }),
   )
 }

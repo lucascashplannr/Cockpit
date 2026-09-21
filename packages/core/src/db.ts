@@ -297,6 +297,10 @@ function migrate(d: Db): void {
   // correctly instead of being measured against the wrong denominator.
   addColumn(d, 'agent_turns', 'context_tokens', 'INTEGER NOT NULL DEFAULT 0')
   addColumn(d, 'agent_turns', 'context_window', 'INTEGER NOT NULL DEFAULT 0')
+  // How much of `context_tokens` was read back out of the cache on the same
+  // call. Beside it rather than derived from `cache_read`: that column is the
+  // turn's total over every call it made, which is a different question.
+  addColumn(d, 'agent_turns', 'context_cached', 'INTEGER NOT NULL DEFAULT 0')
   addColumn(d, 'agent_turns', 'model', "TEXT NOT NULL DEFAULT ''")
   // The screenshots and files that went in with the prompt, as JSON. On the
   // turn rather than on the session: it is a property of what was asked, and a

@@ -71,18 +71,23 @@ const turn = computed(() => [...props.session.history].reverse().find((t) => t.u
 /**
  * The bar, in the three parts the engine actually distinguishes.
  *
- * `cacheRead` is the conversation as it already stood — read back at a tenth
- * of the price. The rest of the level is what this turn had to send whole:
- * fresh prompt tokens plus whatever was written into the cache for next time.
- * Derived as the remainder rather than added up from `input + cacheCreation`,
- * so the three segments are guaranteed to close and a turn whose figures do
- * not quite reconcile shows as it is rather than as a bar with a gap in it.
+ * `contextCached` is the conversation as it already stood — read back at a
+ * tenth of the price. The rest of the level is what this turn had to send
+ * whole: fresh prompt tokens plus whatever was written into the cache for next
+ * time. Derived as the remainder rather than added up from `input +
+ * cacheCreation`, so the three segments are guaranteed to close and a turn
+ * whose figures do not quite reconcile shows as it is rather than as a bar with
+ * a gap in it.
+ *
+ * Per-call and not the turn's `cacheRead`: that one sums every call the turn
+ * made, so a turn that read twenty files reported more cache than the window
+ * can hold and the segment clamped to the whole bar.
  */
 const seg = computed(() => {
   const win = u.value?.contextWindow ?? 0
   const level = u.value?.contextTokens ?? 0
   if (!win) return null
-  const cached = Math.min(turn.value?.usage?.cacheRead ?? 0, level)
+  const cached = Math.min(turn.value?.usage?.contextCached ?? 0, level)
   return {
     cached,
     fresh: Math.max(0, level - cached),

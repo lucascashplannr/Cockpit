@@ -559,6 +559,15 @@ export interface TurnUsage {
    * of the turn's tokens — it is the size of the conversation so far.
    */
   context: number
+  /**
+   * How much of `context` the model read back out of the cache on that same
+   * last call, rather than being sent whole. The remainder is what this turn
+   * actually had to put on the wire.
+   *
+   * Per-call like `context` and for the same reason: `cacheRead` above is the
+   * turn's total across every call it made, which can be many times the window.
+   */
+  contextCached: number
   /** The engine's own figure for the model it used. 0 when it did not say. */
   window: number
   /**

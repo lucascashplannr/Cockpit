@@ -131,6 +131,11 @@ export interface NormalizedEvent {
     /** §16 — what the turn cost and how full the window is. Engine-reported. */
     | 'usage'
     /**
+     * §16 — how full the window is *right now*, from the call that just came
+     * back. Distinct from `usage` on purpose: see `contextTokens`.
+     */
+    | 'context'
+    /**
      * The engine will not make a call until someone answers. `requestId` is
      * what the answer goes back to; the call itself is `tool` and `input`.
      */
@@ -162,6 +167,24 @@ export interface NormalizedEvent {
   denials?: string[]
   /** `progress` only: output tokens of the message being written right now. */
   outputTokens?: number
+  /**
+   * `context` only — what the model was actually holding on one call: its
+   * fresh input plus everything served from cache.
+   *
+   * It has to come off a single assistant message, because the figures on the
+   * closing `result` event are the turn's *cumulative* ones, summed over every
+   * call it made. Those are right for money and wrong for occupancy: a turn
+   * that reads twenty files makes twenty calls over the same ~80k window and
+   * reports ~1.6M of cache reads, which is a real number answering a different
+   * question. Added up as a level it read 1.69M of a 1M window — a meter past
+   * 100%, telling someone to prune a conversation that was in fact 8% full.
+   *
+   * The last one of these in a turn is where the window actually stood when it
+   * finished, which is the only thing the meter is asking.
+   */
+  contextTokens?: number
+  /** `context` only — how much of `contextTokens` came back out of the cache. */
+  contextCached?: number
   /**
    * `usage` only. `costUsd` is the engine's *running total for its process*,
    * not this turn's — the driver takes the delta, which is also what keeps a
@@ -325,6 +348,60 @@ function claudeCommon(ctx: LaunchContext): string[] {
   ]
 }
 
+/**
+ * The environment the engine process runs in.
+ *
+ * Two things are done to the one this core inherited, and both are about a
+ * turn in Cockpit taking longer than the same turn in the CLI.
+ *
+ * **The cache is asked to outlive the pause.** A conversation here is paced by
+ * a person: a question, an answer read, a minute or ten of thinking, the next
+ * question. `claude` decides its own prompt-cache TTL — an hour on a
+ * subscription, five minutes on an API key — and five minutes is shorter than
+ * most of the gaps this app is designed around. Every turn on the far side of
+ * one of those gaps then re-prefills the whole conversation instead of reading
+ * it back, which is dead time before the first token and is exactly what the
+ * cache-creation figures on our own turn rows were recording. Asked for
+ * explicitly, so it does not depend on which credential the process happened
+ * to pick up.
+ *
+ * **Nothing about somebody else's session is passed down.** These variables
+ * are how a `claude` process tells its children who it is, and `CLAUDE_EFFORT`
+ * is a live override of the effort the composer just chose. A core started
+ * from a shell that has them — which is every core started from inside a
+ * Claude session, so most of them during development — was handing its engine
+ * another session's identity and effort, silently. What the composer picked
+ * has to be what runs.
+ *
+ * Named one by one rather than dropped by their `CLAUDE_CODE_` prefix: that
+ * prefix is also how a person configures Bedrock, a proxy, an output ceiling.
+ * Those are deliberate and are none of this function's business. Only the
+ * markers that describe a *parent session* go, and a TTL somebody set on
+ * purpose is left exactly as they set it.
+ */
+const INHERITED_SESSION_VARS = [
+  'CLAUDECODE',
+  'CLAUDE_EFFORT',
+  'CLAUDE_PID',
+  'CLAUDE_AGENT_SDK_VERSION',
+  'AI_AGENT',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_HOST_SESSION_ID',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ATTENDED',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CLAUDE_CODE_EXECPATH',
+]
+
+function engineEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env }
+  for (const key of INHERITED_SESSION_VARS) delete env[key]
+  env.CLAUDE_CODE_PROMPT_CACHE_TTL ??= '1h'
+  return env
+}
+
 const claudeEngine: EngineSpec = {
   id: 'claude',
   bin: 'claude',
@@ -432,10 +509,26 @@ const claudeEngine: EngineSpec = {
 
     if (type === 'assistant') {
       const msg = o.message as
-        | { id?: string; content?: { type: string; text?: string; id?: string; name?: string; input?: unknown }[] }
+        | {
+            id?: string
+            content?: { type: string; text?: string; id?: string; name?: string; input?: unknown }[]
+            usage?: Record<string, unknown>
+          }
         | undefined
       const messageId = String(msg?.id ?? '')
       const out: NormalizedEvent[] = []
+      // Before the blocks: this is the window as it stood for the call that
+      // carried them, and the last one to arrive is the one that counts.
+      const mu = msg?.usage
+      if (mu) {
+        const n = (v: unknown): number => (typeof v === 'number' && isFinite(v) ? v : 0)
+        out.push({
+          kind: 'context',
+          contextTokens:
+            n(mu.input_tokens) + n(mu.cache_read_input_tokens) + n(mu.cache_creation_input_tokens),
+          contextCached: n(mu.cache_read_input_tokens),
+        })
+      }
       // Every block, not the first one that matches: an assistant message
       // routinely carries a sentence and two calls, and returning one of them
       // is how a transcript loses half of what happened.
@@ -696,6 +789,9 @@ interface Live {
   idle: NodeJS.Timeout | null
   /** §16 — what the turn in flight has reported, until its row is written. */
   usage: NormalizedEvent['usage'] | null
+  /** The window as the most recent call left it. See `contextTokens`. */
+  context: number
+  contextCached: number
   /**
    * Output tokens for this turn: what the messages it has already finished
    * came to, plus the running count for the one being written.
@@ -894,6 +990,7 @@ function usageOf(r: Record<string, unknown>): TurnUsage | null {
     cacheRead: Number(r.cache_read ?? 0),
     cacheCreation: Number(r.cache_creation ?? 0),
     context,
+    contextCached: Number(r.context_cached ?? 0),
     window: Number(r.context_window ?? 0),
     costUsd: Number(r.cost_usd ?? 0),
     model: String(r.model ?? ''),
@@ -949,6 +1046,13 @@ function writeTurnUsage(
   sessionId: string,
   u: NonNullable<NormalizedEvent['usage']>,
   costSoFar: number,
+  /**
+   * The window as the turn's last call left it. Falls back to the cumulative
+   * sum only when the engine never reported a per-call figure, which is the
+   * old behaviour and is wrong the moment a turn makes more than one call.
+   */
+  contextTokens: number,
+  contextCached: number,
 ): void {
   const row = getDb()
     .prepare("SELECT id FROM agent_turns WHERE session_id = ? AND status = 'running' ORDER BY seq DESC LIMIT 1")
@@ -961,16 +1065,19 @@ function writeTurnUsage(
   getDb()
     .prepare(
       `UPDATE agent_turns SET input_tokens = ?, output_tokens = ?, cache_read = ?, cache_creation = ?,
-         context_tokens = ?, context_window = ?, model = ?, cost_usd = ? WHERE id = ?`,
+         context_tokens = ?, context_cached = ?, context_window = ?, model = ?, cost_usd = ? WHERE id = ?`,
     )
     .run(
       u.input,
       u.output,
       u.cacheRead,
       u.cacheCreation,
-      // What the model was actually sent: fresh prompt plus everything served
-      // from cache. Cached is not free of the window — it is the window.
-      u.input + u.cacheRead + u.cacheCreation,
+      // What the model was actually holding on its last call: fresh prompt plus
+      // everything served from cache. Cached is not free of the window — it is
+      // the window. Not the turn's totals: those sum every call it made, which
+      // is money, not level. See `contextTokens`.
+      contextTokens || u.input + u.cacheRead + u.cacheCreation,
+      contextCached,
       u.window,
       u.model,
       cost,
@@ -1336,7 +1443,7 @@ async function launch(
     : spec.buildArgs(withFiles, ctx)
   const child = spawn(spec.bin, args, {
     cwd,
-    env: { ...process.env },
+    env: engineEnv(),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
 
@@ -1349,6 +1456,8 @@ async function launch(
     streamingId: null,
     queue: [],
     usage: null,
+    context: 0,
+    contextCached: 0,
     doneTokens: 0,
     msgTokens: 0,
     costSoFar: 0,
@@ -1427,7 +1536,6 @@ async function launch(
 
         case 'text':
           if (!ev.text) break
-          session.turns++
           session.lastMessage = ev.text.slice(0, 400)
           append({
             type: 'agent.output',
@@ -1512,9 +1620,22 @@ async function launch(
           if (ev.usage) l.usage = ev.usage
           break
 
+        // Overwritten rather than accumulated: each call reports the whole
+        // window it ran against, so the newest figure *is* the level.
+        case 'context':
+          if (typeof ev.contextTokens === 'number') l.context = ev.contextTokens
+          if (typeof ev.contextCached === 'number') l.contextCached = ev.contextCached
+          break
+
         case 'end': {
+          // Here and not on `text`: a turn is a question answered, and the
+          // engine writes many messages inside one. Counted on the text blocks,
+          // a single question that worked for twenty minutes read as "35 turns"
+          // in the same panel that said "end of turn 1" — and put the whole
+          // conversation's cost over a denominator that was never turns.
+          session.turns++
           if (l.usage) {
-            writeTurnUsage(session.id, l.usage, l.costSoFar)
+            writeTurnUsage(session.id, l.usage, l.costSoFar, l.context, l.contextCached)
             l.costSoFar = l.usage.cumulativeCostUsd
             l.usage = null
           }
