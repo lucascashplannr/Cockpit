@@ -87,7 +87,21 @@ const tools = computed(() =>
 </template>
 
 <style scoped>
-.review { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
+/* The column's own ground, and it carries it itself. This lived on `.reviewcol`
+   in App.vue, a class the column is only given in `split` — so the same tools
+   sat on white beside the conversation and on the window's grey when they had
+   the right of the window to themselves. Nothing showed it but the tab strip,
+   which is the one band here with no surface of its own; the panels below all
+   set theirs. What is genuinely about standing beside another column — the
+   rule down the left edge — stays on `.reviewcol`. */
+.review {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--surface-review);
+}
 
 /* A tab strip, not a header — see the note at the top. It was 52px on the
    raised surface for as long as it was the top of the window in its own
@@ -105,7 +119,9 @@ const tools = computed(() =>
   gap: 2px;
   height: var(--band-h);
   padding: 0 8px 0 10px;
-  border-bottom: 1px solid var(--line);
+  /* `--line-soft`, as the conversation's bar has: in `split` the two are one
+     band across the window and their rules meet in the middle of it. */
+  border-bottom: 1px solid var(--line-soft);
   min-width: 0;
 }
 .grow { flex: 1; }

@@ -7,7 +7,7 @@ import type {
   AgentScopePreview, Conversation, AgentTurn, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, Clock, Gauge, Hand, Lock,
+  ArrowDown, Asterisk, Check, Clock, Copy, Gauge, Hand, Lock,
   Redo2, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -441,6 +441,66 @@ function bubble(turn: AgentTurn): ({ text: string } | { file: AttachedFile })[] 
   )
 }
 
+/* ── taking a turn out of the window ─────────────────────────────────────
+ *
+ * Both halves of an exchange are selectable text and always have been, which
+ * is not the same as being copyable: a question is a bubble with chips in it
+ * and an answer is rendered Markdown with tool cards between its paragraphs,
+ * so dragging across either takes a sample of the layout rather than the
+ * thing that was said. One button per half takes exactly the half it belongs
+ * to — the words, as words.
+ */
+
+/** The last thing copied, so the button can say so where it was pressed. */
+const copied = ref<string | null>(null)
+
+async function copy(id: string, text: string): Promise<void> {
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    copied.value = id
+    window.setTimeout(() => {
+      if (copied.value === id) copied.value = null
+    }, 1400)
+  } catch {
+    // The one failure worth a toast: nothing visibly happened, and the reason
+    // is a permission the window cannot show.
+    toast('error', 'could not copy')
+  }
+}
+
+/**
+ * The question as it reads on screen: the words, with each attachment back to
+ * the `#handle` the person typed.
+ *
+ * Through `bubble` rather than off `turn.prompt`, because the raw prompt still
+ * carries the invisible room the composer wrote around each chip (`ANCHOR_PAD`)
+ * — two non-breaking spaces a side, which would arrive in the paste as
+ * characters nobody typed and nothing renders.
+ */
+function asked(turn: AgentTurn): string {
+  return bubble(turn)
+    .map((p) => ('text' in p ? p.text : anchorOf(p.file.handle)))
+    .join('')
+    .trim()
+}
+
+/**
+ * What it said, without what it did.
+ *
+ * The cards are left out on purpose. A turn's prose is the answer; its tool
+ * calls are the working, and forty lines of `git diff` pasted into a message
+ * to a colleague is not what anyone reaching for this button meant. The
+ * paragraphs are rejoined with a blank line, which is the gap the cards
+ * between them stood in.
+ */
+function answered(x: Exchange): string {
+  return x.rows
+    .flatMap((r) => (r.kind === 'text' ? [r.text] : []))
+    .join('\n\n')
+    .trim()
+}
+
 /**
  * What each attachment is called in the sentence above it, or `all`.
  *
@@ -719,24 +779,6 @@ function k(n: number): string {
   return (t < 100 ? t.toFixed(1) : Math.round(t)) + 'k'
 }
 
-/**
- * Money at the precision the number deserves. A tenth of a cent rounded to
- * "$0.00" reads as free, which is the one thing a cost display must never say.
- */
-function money(n: number): string {
-  if (n >= 1) return '$' + n.toFixed(2)
-  if (n >= 0.01) return '$' + n.toFixed(3)
-  return n > 0 ? '$' + n.toFixed(4) : '$0'
-}
-
-function secs(from: number, to: number | null): string {
-  if (!to) return ''
-  const ms = to - from
-  if (ms < 1000) return ms + 'ms'
-  if (ms < 60_000) return (ms / 1000).toFixed(1) + 's'
-  const m = Math.floor(ms / 60_000)
-  return m + 'm ' + Math.round((ms % 60_000) / 1000) + 's'
-}
 
 /** Where the conversation stands against its own window. */
 const ctx = computed(() => {
@@ -761,18 +803,25 @@ const crowded = computed(() => (ctx.value?.pct ?? 0) >= CROWDED)
 /* ── presentation ──────────────────────────────────────────────────────── */
 
 /**
- * The day and the minute it was asked, in the reader's own locale.
+ * The whole of when, in the reader's own locale — for the tooltip only.
  *
- * Beside the relative time rather than instead of it: "2h ago" is what anyone
- * actually wants, and the clock time is what they check when the answer is
- * "no, the other one".
+ * It used to stand in the row beside the relative time: "11h ago · 20 sep,
+ * 21:41", which is the same fact twice, one of them in a form nobody reads
+ * until they have a reason to. "11h ago" is what anyone actually wants; the
+ * clock is what they check when the answer is "no, the other one", and a
+ * pointer resting on the words is exactly that moment. So it is said in full
+ * there — weekday, date, year, to the second — rather than abbreviated to fit
+ * a line it no longer has to fit in.
  */
 function stamp(ts: number): string {
   return new Date(ts).toLocaleString(undefined, {
+    weekday: 'long',
     day: 'numeric',
-    month: 'short',
+    month: 'long',
+    year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
   })
 }
 
@@ -906,23 +955,14 @@ function dotClass(s: Conversation): string {
           title="The engine is still here between turns: the next thing you say goes straight in, and it holds this scope until it is let go"
         >open</span>
 
-        <!-- §6 + §16 — how full the window is, and what the thread has cost.
-             In this bar because both are facts about the conversation, and
-             this is the conversation's own line. -->
-        <span
-          v-if="ctx"
-          class="ctx"
-          :class="{ crowded }"
-          :title="
-            k(ctx.contextTokens) + ' of ' + k(ctx.contextWindow) + ' tokens in context' +
-            (ctx.model ? ' · ' + ctx.model : '') + ' · ' + money(ctx.costUsd) + ' so far'
-          "
-        >
-          <span class="gauge"><i :style="{ width: Math.max(2, ctx.pct) + '%' }" /></span>
-          <span class="num">{{ ctx.pct }}%</span>
-          <span class="num cost">{{ money(ctx.costUsd) }}</span>
-        </span>
-        <span v-else-if="selected.denials.length" class="needs blocked chip warn" :title="'refused: ' + selected.denials.join(', ')">
+        <!-- How full the window is and what the thread has cost went down to
+             the end of the settings row under the box (ContextMeter): both are
+             questions asked while deciding what to type next, and this line is
+             three hundred pixels from where that happens. What was left here
+             when they went is the thing this bar is for — that a turn ended
+             without permission to finish, which used to be hidden behind them
+             for the whole of any conversation that had reported usage. -->
+        <span v-if="selected.denials.length" class="needs blocked chip warn" :title="'refused: ' + selected.denials.join(', ')">
           <Hand class="sm" /> needs you
         </span>
         <span class="grow" />
@@ -950,69 +990,99 @@ function dotClass(s: Conversation): string {
           </p>
 
           <div v-for="(x, i) in exchanges" :key="x.turn.id" class="ex">
-            <!-- §16 — the tree as it stood before this question was asked.
-                 Quiet until the exchange is under the cursor: every turn carries
-                 one, and twenty visible at once would read as decoration. -->
-            <!-- §16 — the tree as it stood before this question was asked, and
-                 the way forward again once an undo has happened here. Quiet
-                 until the exchange is under the cursor: every turn carries these,
-                 and twenty pairs lit at once would read as a toolbar. Neither
-                 does anything on its own — both open the confirmation. -->
-            <div class="exbar">
-              <!-- When it was asked. Always rendered, so the row this shares
-                   with the undo has one height whether or not there is anything
-                   to undo, and nothing shifts as the pointer crosses a turn. -->
-              <span class="when">{{ ago(x.turn.startedAt) }} · {{ stamp(x.turn.startedAt) }}</span>
-              <button
-                v-if="x.turn.redoable"
-                class="revert"
-                title="Bring back what the undo discarded"
-                @click="askRevert(selected.id, x.turn, true)"
-              >
-                <Redo2 class="sm" /> Redo
-              </button>
-              <button
-                v-if="x.turn.restorable"
-                class="revert"
-                title="Put the files back to how they were before this turn"
-                @click="askRevert(selected.id, x.turn, false)"
-              >
-                <Undo2 class="sm" /> Undo from here
-              </button>
+            <!-- The half a person wrote, and its own footer.
+                 
+                 Only as wide as what is in it, and hovered on its own: the two
+                 halves of an exchange carry different controls, and a single
+                 hover over the whole turn lit both — so reaching for the copy
+                 under an answer also offered an Undo belonging to the question
+                 three lines up. -->
+            <div class="ask">
+              <!-- What was attached, above the words: the screenshot is the
+                   question and the sentence is the caption, not the other way
+                   round. Turns from before attachments existed carry none. -->
+              <!-- Every picture, once, above the words — and each one labelled
+                   with what the sentence calls it. The sentence itself carries
+                   the tag rather than the picture: a screenshot dropped into the
+                   middle of a paragraph makes the paragraph unreadable, and the
+                   thing being said is still a sentence. -->
+              <ul v-if="x.turn.attachments?.length" class="sent">
+                <Attachment
+                  v-for="a in x.turn.attachments"
+                  :key="a.id"
+                  :file="a"
+                  :label="labels(x.turn)[a.id]"
+                  @click="showImage(x.turn, a)"
+                />
+              </ul>
+              <div v-if="x.turn.prompt" class="said selectable">
+                <template v-for="(part, i) in bubble(x.turn)" :key="i">
+                  <span v-if="'text' in part">{{ part.text }}</span>
+                  <!-- The tag, as it was written, wearing the chip it wore in
+                       the box it was written in — and still the way through to
+                       the picture, which is what it replaced. -->
+                  <span
+                    v-else
+                    class="tag"
+                    :class="{ pic: part.file.image }"
+                    :title="part.file.name"
+                    @click="showImage(x.turn, part.file)"
+                  >{{ anchorOf(part.file.handle) }}</span>
+                </template>
+              </div>
+
+              <!-- §16 — when it was asked, the question itself, the tree as it
+                   stood before it, and the way forward again once an undo has
+                   happened here. Under the bubble rather than over it: a row of
+                   controls above a message is a heading, and this is a footer —
+                   the same place the answer keeps its own.
+
+                   The row is always rendered and always this tall, so the feed
+                   under it does not move as the pointer crosses a turn: what
+                   changes on hover is only whether it is inked. -->
+              <div class="exbar">
+                <span class="when" :title="stamp(x.turn.startedAt)">{{ ago(x.turn.startedAt) }}</span>
+                <button
+                  v-if="x.turn.prompt"
+                  class="act"
+                  :class="{ done: copied === 'q' + x.turn.id }"
+                  title="Copy what you asked"
+                  aria-label="Copy what you asked"
+                  @click="copy('q' + x.turn.id, asked(x.turn))"
+                >
+                  <Check v-if="copied === 'q' + x.turn.id" class="sm" />
+                  <Copy v-else class="sm" />
+                </button>
+                <!-- Marks, not sentences. "Undo from here" was the only worded
+                     button in a thread, and a row that says one thing in words
+                     and two in glyphs reads as a row with a heading on it. The
+                     words are in the tooltip, where the other two keep theirs,
+                     and the phrasing is unchanged: neither of these does
+                     anything on its own — both open the confirmation, and that
+                     dialog is where a destructive step gets named in full. -->
+                <button
+                  v-if="x.turn.redoable"
+                  class="act"
+                  title="Redo — bring back what the undo discarded"
+                  aria-label="Redo this turn"
+                  @click="askRevert(selected.id, x.turn, true)"
+                >
+                  <Redo2 class="sm" />
+                </button>
+                <button
+                  v-if="x.turn.restorable"
+                  class="act"
+                  title="Undo from here — put the files back to how they were before this turn"
+                  aria-label="Undo from here"
+                  @click="askRevert(selected.id, x.turn, false)"
+                >
+                  <Undo2 class="sm" />
+                </button>
+              </div>
             </div>
 
-            <!-- What was attached, above the words: the screenshot is the
-                 question and the sentence is the caption, not the other way
-                 round. Turns from before attachments existed carry none. -->
-            <!-- Every picture, once, above the words — and each one labelled
-                 with what the sentence calls it. The sentence itself carries
-                 the tag rather than the picture: a screenshot dropped into the
-                 middle of a paragraph makes the paragraph unreadable, and the
-                 thing being said is still a sentence. -->
-            <ul v-if="x.turn.attachments?.length" class="sent">
-              <Attachment
-                v-for="a in x.turn.attachments"
-                :key="a.id"
-                :file="a"
-                :label="labels(x.turn)[a.id]"
-                @click="showImage(x.turn, a)"
-              />
-            </ul>
-            <div v-if="x.turn.prompt" class="said selectable">
-              <template v-for="(part, i) in bubble(x.turn)" :key="i">
-                <span v-if="'text' in part">{{ part.text }}</span>
-                <!-- The tag, as it was written, wearing the chip it wore in
-                     the box it was written in — and still the way through to
-                     the picture, which is what it replaced. -->
-                <span
-                  v-else
-                  class="tag"
-                  :class="{ pic: part.file.image }"
-                  :title="part.file.name"
-                  @click="showImage(x.turn, part.file)"
-                >{{ anchorOf(part.file.handle) }}</span>
-              </template>
-            </div>
+            <!-- The half it answered, with its own footer and its own hover. -->
+            <div class="reply">
             <template v-for="r in x.rows" :key="r.id">
               <!-- No avatar, no badge: what a person wrote is a bubble on the
                    right, so everything at the left margin is the agent by
@@ -1048,23 +1118,6 @@ function dotClass(s: Conversation): string {
               </p>
             </template>
 
-            <!-- What the turn cost, under it, at the weight of a receipt — and
-                 only while the exchange is under the cursor, like the undo above
-                 it. Four numbers under every turn is a column of arithmetic down
-                 the side of a conversation: worth being able to find, never worth
-                 reading before the answer it belongs to.
-
-                 Only once it has landed: a running turn has no total yet, and a
-                 zero would be a claim rather than a blank. -->
-            <p v-if="x.turn.usage" class="meter">
-              <span>{{ k(x.turn.usage.context) }} ctx</span>
-              <span>{{ k(x.turn.usage.output) }} out</span>
-              <span v-if="secs(x.turn.startedAt, x.turn.endedAt)">
-                {{ secs(x.turn.startedAt, x.turn.endedAt) }}
-              </span>
-              <span v-if="x.turn.usage.costUsd">{{ money(x.turn.usage.costUsd) }}</span>
-            </p>
-
             <!-- The sentence as it is being written. Same shape as a finished
                  message on purpose: it *is* that message, a moment early, and the
                  durable event replaces it in place without anything moving. -->
@@ -1096,6 +1149,38 @@ function dotClass(s: Conversation): string {
                 <span class="num">{{ k(liveTokens) }} tokens</span>
               </template>
             </p>
+
+            <!-- The answer's own footer, and only what can be done to it.
+                 
+                 It used to be a receipt — context, output, elapsed, cost, four
+                 numbers under every answer in the thread. They were quiet and
+                 they were still a column of arithmetic down a page whose whole
+                 job is to be read, and they are said better in one place than
+                 in twenty: the meter under the box carries the conversation's
+                 cost and the last turn's figures, which is where anyone asking
+                 the question is already looking. -->
+            <div v-if="answered(x) || x.turn.endedAt" class="rbar">
+              <!-- When the answer landed, which is not when the question was
+                   asked: a turn that took four minutes has two times, and the
+                   one that matters at this end of it is this one. Absent while
+                   the turn is still running — the line above is already saying
+                   how long it has been at it, live. -->
+              <span v-if="x.turn.endedAt" class="when" :title="stamp(x.turn.endedAt)">
+                {{ ago(x.turn.endedAt) }}
+              </span>
+              <button
+                v-if="answered(x)"
+                class="act"
+                :class="{ done: copied === 'a' + x.turn.id }"
+                title="Copy the answer — the words, without the tool calls"
+                aria-label="Copy the answer"
+                @click="copy('a' + x.turn.id, answered(x))"
+              >
+                <Check v-if="copied === 'a' + x.turn.id" class="sm" />
+                <Copy v-else class="sm" />
+              </button>
+            </div>
+            </div>
           </div>
 
           <!-- Said, and not yet asked. In the shape of a question because that
@@ -1140,6 +1225,7 @@ function dotClass(s: Conversation): string {
           :disabled="!canSend"
           :busy="queueing"
           :sources="sources"
+          :session="selected"
           @stop="stopConversation(selected.id)"
           :placeholder="
             queueing
@@ -1405,6 +1491,33 @@ function dotClass(s: Conversation): string {
 /* One clear gap between exchanges, and none of the smaller ones inside a turn
    pretending to be it. */
 .ex + .ex { margin-top: 26px; }
+
+/* ── the two halves of an exchange ───────────────────────────────────────
+ *
+ * Each is its own box, and each is hovered on its own. It was one region over
+ * the whole turn, which meant the pointer anywhere in an answer also lit an
+ * Undo belonging to the question above it — two different things to do, one
+ * of them destructive, offered by the same gesture.
+ *
+ * The asked half is sized to what is in it rather than to the column, so the
+ * region that lights is the bubble and its footer, not the empty half of the
+ * line beside them. `fit-content` takes the wider of the bubble and the row
+ * under it; the 76% it is capped at is the bubble's own old maximum. */
+.ask {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  width: fit-content;
+  max-width: 76%;
+  /* The gap between the halves, paid once here rather than by the bubble:
+     the bubble is no longer the last thing in this half. */
+  margin: 0 0 14px auto;
+}
+/* Inside the column the two of them are already at the right edge and already
+   bounded by it, so their own margin-auto and 76% would be a second, smaller
+   measure inside the first. */
+.ask .sent, .ask .said { margin-left: 0; margin-right: 0; max-width: 100%; }
+.ask .sent, .ask .said, .ask .sent:last-child { margin-bottom: 3px; }
 /* What was asked reads as said, not as logged: it is the only thing on the
    page a person wrote. */
 /* Beside the bubble and on its side of the column: what was attached is part
@@ -1455,14 +1568,12 @@ function dotClass(s: Conversation): string {
 }
 /* ── the turn in flight ─────────────────────────────────────────────────
  *
- * Deliberately the same shape and weight as `.meter`, the receipt under a turn
- * that has landed: this is that line, one moment earlier, saying what is being
- * spent rather than what was. The numbers sit on tabular figures so a count
- * climbing does not shuffle the words after it.
- */
-/* Bigger than the receipt it becomes. It is the only line on the page that is
-   about *now*, it is what you look at while you wait, and at 11px it read as
-   another footnote among the footnotes. */
+ * The one line on the page that is about *now*: what it is doing, how long it
+ * has been at it, how much is written. It is the only arithmetic left in a
+ * thread — the receipt that used to follow it under every landed turn is in
+ * the meter under the box, where the same question is asked once instead of
+ * once per answer. The numbers sit on tabular figures so a count climbing does
+ * not shuffle the words after it. */
 .pulse {
   display: flex;
   align-items: center;
@@ -1484,48 +1595,49 @@ function dotClass(s: Conversation): string {
  * Under the turn, at the weight of a footnote: worth being able to find, never
  * worth reading before the answer it belongs to.
  */
-.meter {
+/* The mirror of `.exbar` on the other side of the exchange: a stated height
+   that is always there, and ink only while this half is under the pointer. */
+.rbar {
   display: flex;
-  gap: 12px;
-  margin: 6px 0 0;
-  font-size: 10px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
+  align-items: center;
+  min-height: 20px;
+  margin-top: 2px;
   opacity: 0;
   transition: opacity var(--dur-1) var(--ease-soft);
 }
-.ex:hover .meter, .ex:focus-within .meter { opacity: 1; }
+.reply:hover .rbar, .reply:focus-within .rbar { opacity: 1; }
+.rbar .act { padding: 3px 6px; }
 
-/* ── §6, the window ─────────────────────────────────────────────────────── */
-.ctx {
+/* ── what you can do to an exchange ──────────────────────────────────────
+ *
+ * Four buttons, one shape: copy the question, redo, undo from here, copy the
+ * answer. A mark alone, at the weight of everything else on its row, lighting
+ * only under the pointer — a labelled button anywhere in a thread is the
+ * loudest thing in it, and the row each of these sits in already says which
+ * half of the exchange it belongs to. What each one is stays in its tooltip. */
+.act {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-size: 10px;
+  justify-content: center;
+  padding: 3px;
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-  cursor: default;
+  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
 }
-.gauge {
-  width: 46px;
-  height: 3px;
-  flex: none;
-  border-radius: 2px;
-  background: var(--line-strong);
-  overflow: hidden;
-}
-.gauge i {
-  display: block;
-  height: 100%;
-  border-radius: 2px;
-  background: var(--text-dim);
-  transition: width var(--dur-3) var(--ease-soft);
-}
-/* Only once it means something. A gauge coloured from 4% teaches nobody where
-   the line is. */
-.ctx.crowded { color: var(--warn); }
-.ctx.crowded .gauge i { background: var(--warn); }
+.act:hover { color: var(--text); background: var(--hover); }
+.act .lucide { width: 12px; height: 12px; }
+/* Taken. The app's yes, for the second and a bit the tick is up — and stated
+   on the button rather than read off which icon is inside it, because the
+   icon set's own class names are not ours to depend on. */
+.act.done, .act.done:hover { color: var(--ok); }
 
+/* In the exchange's bar: the same quiet as the timestamp and the undo beside
+   it, appearing with them rather than on its own. */
+/* The bar inks as one thing, so the marks in it carry no opacity of their
+   own — only the room they need to be pressed. */
+.exbar .act { padding: 3px 6px; }
+
+/* ── §6, the window ─────────────────────────────────────────────────────── */
 .crowd {
   display: flex;
   align-items: center;
@@ -1558,52 +1670,37 @@ function dotClass(s: Conversation): string {
  * under the cursor: both belong to that turn, and a column of them lit at once
  * would read as a toolbar rather than as an escape hatch.
  */
+/* Two things, not four: when it was asked, and what can be done about it.
+   The marks are one set and sit at one gap; the room that used to be between
+   every pair is kept once, in front of them, as the space that separates the
+   fact from the acts.
+
+   The height is stated and unconditional — that is what keeps the thread still
+   as the pointer crosses it. Only the ink changes on hover; the row is there,
+   and this tall, whether or not anything in it can be seen. */
 .exbar {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 10px;
+  gap: 2px;
   min-height: 20px;
-  margin-bottom: 2px;
-}
-.when {
-  font-size: 10px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
   opacity: 0;
   transition: opacity var(--dur-1) var(--ease-soft);
 }
-.revert {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 9px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+.ask:hover .exbar, .ask:focus-within .exbar { opacity: 1; }
+/* Both footers carry one: when it was asked, when it landed. Roughly, in the
+   row; exactly, in the tooltip resting on it — which is why the cursor stays
+   an arrow over a word that is not a link and does not select like prose. */
+.when {
+  margin-right: 8px;
   font-size: 10px;
   color: var(--text-dim);
-  opacity: 0;
-  transition:
-    opacity var(--dur-1) var(--ease-soft),
-    color var(--dur-1) var(--ease-soft),
-    border-color var(--dur-1) var(--ease-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
 }
 /* Keyboard reach as well as pointer: an escape hatch you cannot tab to is an
    escape hatch for one kind of person. */
-.ex:hover .when, .ex:hover .revert, .revert:focus-visible { opacity: 1; }
-
-/* The app's own hover, not a colour of its own.
- *
- * This lit up amber on hover, which is the ramp this window reserves for "something
- * needs you" — so the one control on the page that merely *asks a question*
- * was the loudest thing on it, in a colour that means something else. Neither
- * button does anything on its own; both open the confirmation, and that dialog
- * is where the warning belongs. */
-.revert:hover {
-  color: var(--text);
-  border-color: var(--line);
-  background: var(--hover);
-}
 
 /* What an undo left behind, in the thread, at the weight of a fact. */
 .undone {

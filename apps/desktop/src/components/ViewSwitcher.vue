@@ -95,13 +95,20 @@ const views = SHELL_VIEWS.map((v) => ({ id: v, cut: CUT[v], ...META[v] }))
 /* The one you are in, at the weight the instruments use for the same fact. */
 .vs > button.on { background: var(--panel-raised); color: var(--accent); box-shadow: var(--shadow-xs); }
 
-/* 16px at 1.5, which is what `.sm` gives every lucide glyph on this bar. */
-.g { width: 16px; height: 16px; flex: none; }
+/* Matched to `.sm`, which is what every lucide glyph on this bar is — and
+   matched in the only unit that shows, the pixel the stroke actually lands on.
+   It read as heavier than everything beside it because `stroke-width` is in
+   *viewBox* units and this drawing has a viewBox of its own: lucide draws on
+   24 and is rendered at 14, so its 1.9 arrives as 1.9 x 14/24 = 1.11px, while
+   16 units rendered at 16 made 1.5 arrive as 1.5 — half again as thick as the
+   ✕ and the ⋯ it stands next to. Drawn on 16 and rendered at 14, the same
+   1.11px asks for 1.25. */
+.g { width: var(--ic-sm); height: var(--ic-sm); flex: none; }
 .g rect,
 .g path {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-linecap: round;
 }
 </style>

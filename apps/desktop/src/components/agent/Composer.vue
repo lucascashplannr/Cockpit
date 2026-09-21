@@ -6,9 +6,11 @@ import {
   isLongPaste, openDraftFiles, placedHandles, saveComposer, state,
 } from '../../core/store.js'
 import { ANCHOR_PAD, CLAUDE_MODELS, anchorOf, anchorWritten, splitPrompt } from '@cockpit/shared'
+import type { Conversation } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
+import ContextMeter from './ContextMeter.vue'
 import EffortSlider from './EffortSlider.vue'
 import ModelPicker from './ModelPicker.vue'
 import type { Option } from './Picker.vue'
@@ -39,6 +41,15 @@ const props = defineProps<{
   engine?: string
   /** `start` opens a conversation, `continue` adds a turn, `queue` waits. */
   mode: 'start' | 'continue' | 'queue'
+  /**
+   * The conversation this box is continuing, when it is continuing one.
+   *
+   * Only the meter at the end of the settings row wants it: how full the
+   * window is and what the thread has cost are facts about a conversation that
+   * exists, so on the invitation — which has no conversation yet — there is
+   * nothing to say and the row simply ends one control earlier.
+   */
+  session?: Conversation | null
   placeholder: string
   /**
    * A turn is in flight.
@@ -836,6 +847,13 @@ defineExpose({ focus: () => box.value?.focus() })
            before the change, applied to the agent itself — and still lights
            the whole box, because it changes what pressing Start does. -->
       <Picker :options="PERMISSIONS" :model-value="state.engineOptions.permissionMode" @update:model-value="pickPermission" />
+
+      <!-- §6 + §16 — how full the window is and what this has cost, at the far
+           end of the row. It was in the conversation's bar at the top of the
+           column, as far from the box as this panel can put a number; the
+           moment anyone asks how much room is left is the moment they are
+           deciding how much to type, and that happens here. -->
+      <ContextMeter v-if="session" class="meter" :session="session" />
     </div>
   </div>
 </template>
@@ -971,6 +989,9 @@ defineExpose({ focus: () => box.value?.focus() })
    box of its own: the controls are ghosts until the pointer is on one. The
    pickers are other components, hence `:deep`. */
 .row { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; padding: 6px 2px 0; }
+/* The far end of the row, and the only thing there: everything to its left is
+   a decision about the next turn, and this is the one report. */
+.row .meter { margin-left: auto; }
 .row .opt,
 .row :deep(.trigger) { border-color: transparent; background: transparent; }
 .row .opt:hover:not(:disabled),
