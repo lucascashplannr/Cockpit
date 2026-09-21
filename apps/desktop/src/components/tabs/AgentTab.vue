@@ -899,7 +899,7 @@ function dotClass(s: Conversation): string {
              question stays under it rather than instead of it: the wordmark
              says where you are, and only the line says what it will act on. -->
         <Wordmark :height="48" class="wm" />
-        <p class="ask">
+        <p class="invite">
           What should
           <span class="target">{{ label.name }}</span>
           do?
@@ -1060,8 +1060,15 @@ function dotClass(s: Conversation): string {
                      and the phrasing is unchanged: neither of these does
                      anything on its own — both open the confirmation, and that
                      dialog is where a destructive step gets named in full. -->
+                <!-- Neither of these while the turn is running: the agent is
+                     writing into those files as the row is drawn, and putting
+                     the tree back to before a turn that has not finished
+                     restores it under a process that is still editing. The
+                     way to stop a turn is the Stop under the box; once it
+                     lands, both come back. Copy of what *you* wrote stays —
+                     nothing it does touches the tree. -->
                 <button
-                  v-if="x.turn.redoable"
+                  v-if="x.turn.redoable && x.turn.status !== 'running'"
                   class="act"
                   title="Redo — bring back what the undo discarded"
                   aria-label="Redo this turn"
@@ -1070,7 +1077,7 @@ function dotClass(s: Conversation): string {
                   <Redo2 class="sm" />
                 </button>
                 <button
-                  v-if="x.turn.restorable"
+                  v-if="x.turn.restorable && x.turn.status !== 'running'"
                   class="act"
                   title="Undo from here — put the files back to how they were before this turn"
                   aria-label="Undo from here"
@@ -1139,14 +1146,22 @@ function dotClass(s: Conversation): string {
               <span class="sep">·</span>
               <span class="num">{{ since(pending[0]!.askedAt) }}</span>
             </p>
+            <!-- The verb is the phase it is in *now*; the two numbers are the
+                 whole turn, from the moment the question went in. They read as
+                 one claim — "thinking for 19 minutes" — and they are three, so
+                 each one says what it counts on hover. The token figure in
+                 particular is everything the engine has written this turn:
+                 reasoning and the arguments of every tool call, not the
+                 paragraphs on screen, which is why it runs to five figures on
+                 a long turn while the answer above it is four lines. -->
             <p v-else-if="x.turn.status === 'running'" class="pulse">
               <Asterisk class="star" />
               <span class="verb">{{ shownDoing }}…</span>
               <span class="sep">·</span>
-              <span class="num">{{ since(x.turn.startedAt) }}</span>
+              <span class="num" :title="'Since the question went in, ' + stamp(x.turn.startedAt) + ' — the whole turn, not this step'">{{ since(x.turn.startedAt) }}</span>
               <template v-if="liveTokens">
                 <span class="sep">·</span>
-                <span class="num">{{ k(liveTokens) }} tokens</span>
+                <span class="num" title="Everything the engine has written this turn — its reasoning and the arguments of every tool call, not only the words on screen">{{ k(liveTokens) }} tokens</span>
               </template>
             </p>
 
@@ -1158,8 +1173,15 @@ function dotClass(s: Conversation): string {
                  job is to be read, and they are said better in one place than
                  in twenty: the meter under the box carries the conversation's
                  cost and the last turn's figures, which is where anyone asking
-                 the question is already looking. -->
-            <div v-if="answered(x) || x.turn.endedAt" class="rbar">
+                 the question is already looking.
+
+                 Nothing at all while the turn is running. It appeared the
+                 moment the first paragraph landed, so an answer still being
+                 written — with the live line under it saying so — offered a
+                 Copy that would hand over half of it, silently. A footer is
+                 what goes *under* a finished answer; the turn above still has
+                 its own line, and every earlier answer keeps its button. -->
+            <div v-if="x.turn.status !== 'running' && (answered(x) || x.turn.endedAt)" class="rbar">
               <!-- When the answer landed, which is not when the question was
                    asked: a turn that took four minutes has two times, and the
                    one that matters at this end of it is this one. Absent while
@@ -1335,7 +1357,12 @@ function dotClass(s: Conversation): string {
    stands a mark cut on a 12-row grid, and a line of type at display size
    beside pixel letterforms makes both look like a mistake. Quiet, and one
    step up from the guard line under the composer. */
-.ask {
+/* `invite`, not `ask`: the asked half of an exchange four hundred lines below
+   is also `.ask`, it is declared later, and it won — so the one line on the
+   empty screen was being laid out as a chat bubble: a column, right-aligned,
+   capped at 76% of the panel, three words on three lines against the far
+   edge. Two different things never share a class name in one sheet. */
+.invite {
   display: flex;
   align-items: baseline;
   justify-content: center;
@@ -1346,7 +1373,7 @@ function dotClass(s: Conversation): string {
   font-weight: 450;
   color: var(--text-muted);
 }
-.ask .target { color: var(--accent); font-weight: 550; }
+.invite .target { color: var(--accent); font-weight: 550; }
 
 .guard { margin: 12px 2px 0; text-align: center; font-size: 10px; color: var(--text-dim); }
 
