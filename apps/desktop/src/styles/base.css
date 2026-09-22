@@ -418,6 +418,19 @@ input[type='checkbox']:checked::after {
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
 }
+/* Some of it, not all of it — a box that stands for a list part of which is
+   ticked. `appearance: none` takes the native dash away with the native tick. */
+input[type='checkbox']:indeterminate {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input[type='checkbox']:indeterminate::after {
+  content: '';
+  width: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent-text);
+}
 
 /* Selects keep the native menu but not the native chrome. */
 .select {

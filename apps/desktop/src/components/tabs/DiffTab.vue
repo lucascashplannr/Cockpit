@@ -193,6 +193,18 @@ function togglePick(path: string) {
     : [...picked.value, path]
 }
 
+/**
+ * The whole list in one tick. The box in the header is the same box the rows
+ * carry, so ticking it means what ticking a row means — all of them, and
+ * ticking it back means none.
+ */
+const allPicked = computed(() => files.value.length > 0 && picked.value.length === files.value.length)
+const somePicked = computed(() => picked.value.length > 0 && !allPicked.value)
+
+function toggleAll() {
+  picked.value = allPicked.value ? [] : files.value.map((f) => f.path)
+}
+
 /** Which hunk each meta line opens, so its button knows what it discards. */
 const hunkOf = computed(() => {
   let n = -1
@@ -705,29 +717,43 @@ const mark: Record<string, Component> = {
 <template>
   <div ref="root" class="diff" :class="{ narrow, drilled: narrow && drilled }">
     <aside class="files">
-      <div class="ftop">
-        <span class="section-label">files ({{ files.length }})</span>
-        <span class="tot num">
+      <!-- One bar, not two: the header counts the files until some are ticked,
+           and then it counts the ticked ones and carries what you can do to
+           them. The box on its right is the rows' own box, one row up. -->
+      <div class="ftop" :class="{ picking: picked.length > 0 }">
+        <span class="section-label">
+          {{ picked.length ? picked.length + ' selected' : 'files (' + files.length + ')' }}
+        </span>
+        <span class="grow" />
+        <template v-if="picked.length">
+          <!-- The same undo mark the rows carry, so the verb on the selection
+               and the verb on one file are plainly the same verb. -->
+          <button
+            class="icon-btn danger"
+            :disabled="discarding"
+            :title="'Discard ' + picked.length + ' selected ' + (picked.length === 1 ? 'file' : 'files') + ' — kept under Set aside, with Undo'"
+            @click="discardFiles(picked)"
+          >
+            <Undo2 class="sm" />
+          </button>
+          <button class="btn ghost tiny" @click="picked = []">Clear</button>
+        </template>
+        <span v-else class="tot num">
           <span class="add">+{{ totals.add }}</span>
           <span class="del">−{{ totals.del }}</span>
         </span>
+        <input
+          v-if="picked.length"
+          type="checkbox"
+          class="all"
+          :checked="allPicked"
+          :indeterminate="somePicked"
+          :title="allPicked ? 'Clear the selection' : 'Select every file'"
+          @change="toggleAll"
+        />
       </div>
 
       <div class="scroll">
-        <div v-if="picked.length" class="picked">
-          <span>{{ picked.length }} selected</span>
-          <span class="grow" />
-          <button
-            class="btn ghost tiny danger"
-            :disabled="discarding"
-            title="Discard these files — kept under Set aside, with Undo"
-            @click="discardFiles(picked)"
-          >
-            <Undo2 />Discard
-          </button>
-          <button class="btn ghost tiny" @click="picked = []">Clear</button>
-        </div>
-
         <div
           v-for="f in files"
           :key="f.path"
@@ -1362,9 +1388,26 @@ const mark: Record<string, Component> = {
 .ftop {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px 8px;
+  /* The verbs sit close together; the box that stands for the whole list is
+     given a little air so it does not read as a third verb. */
+  gap: 3px;
+  /* The right padding lines the header's box up with the rows': the list
+     inside .scroll is inset 6px, and the row's box sits 9px in from that. */
+  padding: 12px 15px 8px;
+  transition: color var(--dur-1) var(--ease-soft);
 }
+.ftop .btn { height: 22px; padding: 0 7px; font-size: var(--fs-xs); }
+/* Discard is the mark alone: at this size the word crowded Clear, and the
+   mark is the one the rows already use. */
+.ftop .icon-btn { width: 22px; height: 22px; }
+.ftop .icon-btn.danger { color: var(--danger); }
+.ftop .icon-btn.danger:hover:not(:disabled) { color: var(--danger); background: var(--danger-soft); }
+.ftop.picking { color: var(--text); }
+.ftop.picking .section-label { color: var(--text); }
+/* The box that ticks the whole list. It only exists once a file is ticked —
+   until then there is no selection to widen, and an empty header carries no
+   box at all. */
+.ftop .all { flex: none; width: 14px; height: 14px; margin-left: 7px; }
 .tot { display: flex; gap: 8px; font-size: var(--fs-xs); font-weight: 550; }
 .add { color: var(--ok); }
 .del { color: var(--danger); }
@@ -1447,13 +1490,17 @@ const mark: Record<string, Component> = {
   height: 30px;
   display: none;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
-.diff.narrow .facts { right: 26px; }
 .facts .icon-btn { width: 22px; height: 22px; }
-.facts input { width: 14px; height: 14px; }
+.facts input { width: 14px; height: 14px; flex: none; }
 .fline:hover .facts,
 .fline.picking .facts { display: flex; }
+/* Narrow, the row ends in a chevron because it goes somewhere. The verbs take
+   that end of the row, so the chevron steps aside rather than sitting under
+   the discard button. */
+.fline:hover .frow .go,
+.fline.picking .frow .go { display: none; }
 /* The verbs take the counts' place, and the row gives them room: hiding the
    counts alone left a long path running underneath the buttons. */
 .fline:hover .counts,
@@ -1463,20 +1510,6 @@ const mark: Record<string, Component> = {
 .fline.picking:not(:hover) .facts .icon-btn { display: none; }
 .fline.ticked .frow { color: var(--text); }
 
-.picked {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 30px;
-  margin-bottom: 2px;
-  padding: 0 4px 0 9px;
-  border-radius: var(--radius-sm);
-  background: var(--accent-soft);
-  font-size: var(--fs-xs);
-  color: var(--text);
-}
-.picked .btn { height: 22px; padding: 0 7px; font-size: var(--fs-xs); }
-.picked .btn.danger { color: var(--danger); }
 
 .view { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .vhead {
