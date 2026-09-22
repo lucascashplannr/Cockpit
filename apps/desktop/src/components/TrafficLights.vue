@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { hostWindow, state } from '../core/store.js'
+import { hostWindow } from '../core/store.js'
 
 /**
  * The window's three buttons, drawn rather than native.
@@ -20,15 +20,18 @@ import { hostWindow, state } from '../core/store.js'
  * whole window, including the band, and native buttons used to float over it.
  * These have to as well, or the start page would have no way to close.
  *
- * Except under the attachment viewer. That is a moment of looking at one thing,
- * with its own way out drawn in the opposite corner; three coloured buttons
- * floating over the blur were the only part of the window it did not cover,
- * and the red one closed the whole window from inside a preview.
+ * Above the window, under anything laid over it. A dialog and the attachment
+ * viewer are the same gesture — a sheet of blurred glass across the whole
+ * window — and three coloured buttons drawn crisply on top of the blur were
+ * the one part of the window the glass did not take, while the red one closed
+ * the whole window from inside a preview. Sitting below the scrims, they blur
+ * and dim along with the rail and the list, which is where the window has
+ * gone; a click that lands on them lands on the scrim, and dismisses.
  */
 </script>
 
 <template>
-  <div v-if="hostWindow && !state.pendingView" class="lights">
+  <div v-if="hostWindow" class="lights">
     <button class="lt close" title="Close" @click="hostWindow.close()">
       <svg class="glyph" viewBox="0 0 8 8" aria-hidden="true">
         <path d="M2.1 2.1 L5.9 5.9 M5.9 2.1 L2.1 5.9" />
@@ -54,14 +57,17 @@ import { hostWindow, state } from '../core/store.js'
 <style scoped>
 /* The geometry the native buttons had: 10px in from the window's left edge,
    at the offset the window was told to expect (trafficLightPosition in
-   main.cjs), 12px circles 8px apart. Fixed and
-   above the start page, which covers the band the way it covers everything
-   else. */
+   main.cjs), 12px circles 8px apart. Fixed and above the start page, which
+   covers the band the way it covers everything else.
+
+   45 is above every view the window draws (the conversation drawer, at 41, is
+   the highest) and below every scrim laid over it (the palette at 50, the
+   menus at 55, the dialogs at 60, the viewer at 70). */
 .lights {
   position: fixed;
   top: 19px;
   left: 10px;
-  z-index: 200;
+  z-index: 45;
   display: flex;
   gap: 8px;
   /* The band under them drags the window; these are controls, not chrome. */
