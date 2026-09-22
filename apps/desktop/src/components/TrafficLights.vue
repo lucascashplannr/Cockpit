@@ -48,7 +48,7 @@ import { hostWindow } from '../core/store.js'
       @click="hostWindow.zoom($event.altKey)"
     >
       <svg class="glyph fill" viewBox="0 0 8 8" aria-hidden="true">
-        <path d="M1.4 6.6 V4.4 L3.6 6.6 Z M6.6 1.4 V3.6 L4.4 1.4 Z" />
+        <path d="M1.2 6.8 V3.9 L4.1 6.8 Z M6.8 1.2 V4.1 L3.9 1.2 Z" />
       </svg>
     </button>
   </div>
@@ -99,20 +99,22 @@ import { hostWindow } from '../core/store.js'
 /* Hovering any one of them shows all three glyphs, as macOS does: they read as
    one control with three parts.
 
-   6.5px inside a 12px circle, not 8: a mark that fills its button reads as a
-   badge stuck on the light rather than a symbol drawn in it, and at this size
-   the weight is what gives it away first — hence a stroke under a pixel once
-   the 8-unit box is scaled down. */
+   8.5px inside a 12px circle. macOS draws these a shade smaller, but macOS
+   draws them on its own titlebar, at the top of a screen you are looking at.
+   Ours sit on a dark band you glance at from the editor, and at the native
+   size the marks read as smudges rather than as verbs. Bigger and darker, then
+   — far enough short of the edge that they are still symbols drawn in the
+   light rather than badges stuck on it. */
 .glyph {
-  width: 6.5px;
-  height: 6.5px;
+  width: 8.5px;
+  height: 8.5px;
   opacity: 0;
   transition: opacity var(--dur-1) var(--ease-soft);
-  stroke: rgba(0, 0, 0, 0.5);
-  stroke-width: 1.1;
+  stroke: rgba(0, 0, 0, 0.66);
+  stroke-width: 1.3;
   stroke-linecap: round;
   fill: none;
 }
-.glyph.fill { fill: rgba(0, 0, 0, 0.5); stroke: none; }
+.glyph.fill { fill: rgba(0, 0, 0, 0.66); stroke: none; }
 .lights:hover .glyph { opacity: 1; }
 </style>

@@ -883,6 +883,18 @@ export const LAYOUT_LIMITS = {
    * form.
    */
   commit: { min: 132, max: 560 },
+  /**
+   * The running board over the server output, in the Servers tab.
+   *
+   * The same boundary argument one level down again: a machine with six
+   * runtimes up wants the board, and a server that is failing to boot wants
+   * the console under it — and which of those you are doing is not something
+   * the app can know. The floor is two rows and the header, so the board
+   * always says *something*. There is no useful ceiling in here: the real one
+   * is the height of the tab, worked out in `ServersTab`, and it goes all the
+   * way — a board dragged to the bottom is how the console is put away.
+   */
+  board: { min: 84, max: 1400 },
 }
 
 /** What a fresh install starts from, and what a double-click goes back to. */
@@ -891,14 +903,14 @@ export const LAYOUT_DEFAULTS = { list: 340, review: 440 }
 export const layout = reactive(readLayout())
 
 /**
- * The commit box is the one pane with no default height: left alone it is as
- * tall as what is in it, which is right nearly always — a number here would
- * mean padding an empty box out or scrolling a full one for no reason. Null is
- * therefore a real value and not a missing one, and it is what a double-click
- * on the handle goes back to.
+ * The commit box and the running board are the two panes with no default
+ * height: left alone each is as tall as what is in it, which is right nearly
+ * always — a number here would mean padding an empty box out or scrolling a
+ * full one for no reason. Null is therefore a real value and not a missing
+ * one, and it is what a double-click on the handle goes back to.
  */
-function readLayout(): { list: number; review: number; commit: number | null } {
-  const fallback = { ...LAYOUT_DEFAULTS, commit: null as number | null }
+function readLayout(): { list: number; review: number; commit: number | null; board: number | null } {
+  const fallback = { ...LAYOUT_DEFAULTS, commit: null as number | null, board: null as number | null }
   try {
     const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<typeof fallback> | null
     if (!raw) return fallback
@@ -907,6 +919,8 @@ function readLayout(): { list: number; review: number; commit: number | null } {
       review: clampTo(raw.review ?? fallback.review, LAYOUT_LIMITS.review),
       commit:
         typeof raw.commit === 'number' ? clampTo(raw.commit, LAYOUT_LIMITS.commit) : null,
+      board:
+        typeof raw.board === 'number' ? clampTo(raw.board, LAYOUT_LIMITS.board) : null,
     }
   } catch {
     return fallback
@@ -929,6 +943,16 @@ export function setCommitHeight(px: number): void {
 /** Back to a box the size of its contents — see `readLayout`. */
 export function resetCommitHeight(): void {
   layout.commit = null
+  saveLayout()
+}
+
+export function setBoardHeight(px: number): void {
+  layout.board = clampTo(px, LAYOUT_LIMITS.board)
+}
+
+/** Back to a board sized by its rows, capped by the stylesheet. */
+export function resetBoardHeight(): void {
+  layout.board = null
   saveLayout()
 }
 

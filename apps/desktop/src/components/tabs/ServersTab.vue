@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { CirclePlay, CircleStop, ExternalLink, RotateCw } from '@lucide/vue'
 import type { ProcessLog, ServerBoardRow, Workspace } from '@cockpit/shared'
 import {
-  client, guard, loadRuntimeLogs, onRuntimeLogData, refreshBoard, selectWorkspace, state,
-  toggleWorkspaceRuntime,
+  LAYOUT_LIMITS, client, guard, layout, loadRuntimeLogs, onRuntimeLogData, refreshBoard,
+  resetBoardHeight, saveLayout, setBoardHeight, state, toggleWorkspaceRuntime,
 } from '../../core/store.js'
+import Splitter from '../Splitter.vue'
 
 /**
  * §8 + §11 — what is running on this machine, and what it is saying.
@@ -19,10 +20,15 @@ import {
  * read — so a server that failed to boot and one that booted looked exactly
  * alike from here.
  *
- * Deliberately machine-wide rather than scoped to the selected workspace.
- * Running two topics of two different projects at once is the case the global
- * allocator exists for, and a board that stopped at the project boundary
- * would not answer the question it is opened to answer.
+ * Scoped to the project in view, not to the machine.
+ *
+ * It was machine-wide at first, on the argument that the port allocator is
+ * global and two projects running at once is the case it exists for. That is
+ * true of the allocator and false of the tab: opened from a Cashplannr
+ * worktree it listed a `dfdgdf` and an `Rdssf` from projects nobody had asked
+ * about, and the rows that mattered were three of eight. A panel opened on one
+ * project answers for that project — the same rule the list and the diff
+ * already follow.
  */
 
 const props = defineProps<{ workspace: Workspace }>()
@@ -33,7 +39,8 @@ const history = ref<ProcessLog[]>([])
 const body = ref<HTMLElement | null>(null)
 const follow = ref(true)
 
-const rows = computed(() => state.board)
+/** §4 — a worktree of another project is not this panel's business. */
+const rows = computed(() => state.board.filter((r) => r.projectId === props.workspace.projectId))
 const current = computed(() => rows.value.find((r) => r.workspaceId === shown.value) ?? null)
 
 /**
@@ -114,17 +121,89 @@ async function open(url: string | null, id: string) {
   await guard(() => client.call('workspace.openIn', { workspaceId: id, target: 'browser' }))
 }
 
-/** The board is where you go to compare, so a row is also a way to get there. */
+/**
+ * A row picks whose output is read — and nothing else.
+ *
+ * It used to call `selectWorkspace` as well, so glancing at a second server's
+ * log silently moved the window: the branch, the diff and the conversation all
+ * followed, and coming back meant finding where you had been. Reading is not
+ * navigating. The list on the left is how you change what you are working on.
+ */
 function reveal(id: string) {
   shown.value = id
-  selectWorkspace(id)
 }
+
+/* ── how much of the tab each half gets ──────────────────────────────── */
+
+/**
+ * The line between the board and the console, made draggable.
+ *
+ * The split was a constant — a board capped at 38vh and a console taking the
+ * rest — which is the right default and the wrong final answer, the same way
+ * the columns were. A server that is failing to boot writes a stack trace you
+ * read in a 200px slot; a machine with six runtimes up wants the rows instead.
+ * Neither is a property of the app, so the number is handed back.
+ *
+ * `grows="down"` — the pane above the line is the board, so dragging down
+ * gives the board the pixels and takes them from the console.
+ */
+const root = ref<HTMLElement | null>(null)
+const board = ref<HTMLElement | null>(null)
+const panelH = ref(0)
+/**
+ * The board's own height, watched so the handle has somewhere to start:
+ * untouched, `layout.board` is null and the first pixel of a drag would have
+ * no number to work from. Measuring also means the handle picks up where the
+ * board actually is after a topic started a seventh server.
+ */
+const measuredBoard = ref(LAYOUT_LIMITS.board.min)
+
+/** `.lhead`'s height, which is all that is left of the console when it is shut. */
+const LOG_HEAD_H = 28
+
+/**
+ * The ceiling is the tab, not a constant — and it stops at the console's own
+ * header rather than short of it, because "drag it shut" is the answer to how
+ * the console is hidden. Closed, that header is still drawn: it says which
+ * server it belongs to, and it is the thing directly under the handle that
+ * brings the output back. A window that shrinks afterwards pulls the board
+ * down with it rather than pushing the console off the bottom.
+ */
+const boardMax = computed(() =>
+  Math.max(LAYOUT_LIMITS.board.min, Math.min(LAYOUT_LIMITS.board.max, panelH.value - LOG_HEAD_H)),
+)
+
+
+let ro: ResizeObserver | null = null
+let boardRo: ResizeObserver | null = null
+onMounted(() => {
+  ro = new ResizeObserver(([e]) => {
+    if (!e) return
+    panelH.value = e.contentRect.height
+    if (layout.board && layout.board > boardMax.value) setBoardHeight(boardMax.value)
+  })
+  if (root.value) ro.observe(root.value)
+
+  boardRo = new ResizeObserver(([e]) => {
+    if (e) measuredBoard.value = (e.target as HTMLElement).offsetHeight
+  })
+  if (board.value) boardRo.observe(board.value)
+})
+onBeforeUnmount(() => {
+  ro?.disconnect()
+  boardRo?.disconnect()
+})
 </script>
 
 <template>
-  <div class="servers">
+  <div ref="root" class="servers">
     <!-- ── the board ──────────────────────────────────────────────────── -->
-    <div class="board">
+    <div
+      ref="board"
+      class="board"
+      :class="{ sized: layout.board !== null }"
+      :style="layout.board !== null ? { height: layout.board + 'px' } : undefined"
+    >
       <div class="bhead">
         <span>Running</span>
         <button class="icon-btn" title="Re-probe every runtime" @click="refreshBoard()">
@@ -132,7 +211,7 @@ function reveal(id: string) {
         </button>
       </div>
 
-      <div v-if="!rows.length" class="empty">Nothing with a runtime yet.</div>
+      <div v-if="!rows.length" class="empty">Nothing in this project has a runtime yet.</div>
 
       <button
         v-for="r in rows"
@@ -173,6 +252,17 @@ function reveal(id: string) {
       </button>
     </div>
 
+    <Splitter
+      :size="layout.board ?? measuredBoard"
+      :min="LAYOUT_LIMITS.board.min"
+      :max="boardMax"
+      grows="down"
+      label="Height of the running board"
+      @resize="setBoardHeight"
+      @done="saveLayout"
+      @reset="resetBoardHeight"
+    />
+
     <!-- ── the output ─────────────────────────────────────────────────── -->
     <div class="log">
       <div class="lhead">
@@ -211,6 +301,12 @@ function reveal(id: string) {
   border-bottom: 1px solid var(--line);
   overflow-y: auto;
   max-height: clamp(90px, 38vh, 340px);
+}
+/* Dragged: the height is the answer, so the cap that stood in for one goes —
+   otherwise the clamp would quietly refuse the last two thirds of the range. */
+.board.sized {
+  flex: none;
+  max-height: none;
 }
 .bhead {
   display: flex;
@@ -297,7 +393,10 @@ function reveal(id: string) {
 .mini .lucide { width: 14px; height: 14px; }
 
 /* ── log ───────────────────────────────────────────────────────────── */
-.log { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+/* `overflow: hidden` because the console can be shut: squeezed to its header
+   the body is still 16px of its own padding, and without this that spills past
+   the bottom of the tab as a band of empty text. */
+.log { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .lhead {
   display: flex;
   align-items: center;
