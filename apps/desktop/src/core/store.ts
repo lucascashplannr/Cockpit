@@ -3108,6 +3108,17 @@ export function askDeleteTopic(topicId: string): void {
   if (unpushed.length) {
     body.push(unpushed.join(', ') + ': commits that no remote has a copy of.')
   }
+  // The delete discards this rather than refusing over it, which is only
+  // honest if it is said before the click and not only in the plan behind it.
+  const dirty = wss
+    .map((w) => ({ name: w.name, n: (w.git?.staged ?? 0) + (w.git?.unstaged ?? 0) }))
+    .filter((x) => x.n > 0)
+  if (dirty.length) {
+    body.push(
+      dirty.map((x) => x.name + ' (' + x.n + ')').join(', ') +
+        ': uncommitted changes, discarded with the checkout.',
+    )
+  }
 
   state.pendingConfirm = {
     title: 'Delete "' + f.name + '"?',
@@ -3142,8 +3153,11 @@ async function askDeletePlan(f: Topic, deleteBranches: boolean, force: boolean):
   if (!res) return false
 
   if (!res.ok) {
-    // Anything not marked forceable is a state to fix, not a prompt to click
-    // through: an agent still running, a runtime up, changes never committed.
+    // A delete refuses over one thing only: commits git could not give back.
+    // Everything else it used to refuse over — a dirty tree, an agent still
+    // talking, a runtime up — it now discards or stops, because discarding is
+    // what the command is for. Anything else that arrives here is a real
+    // failure to read, not a prompt to click through.
     if (!res.forceable) {
       toast('error', res.detail)
       return false

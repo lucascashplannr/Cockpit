@@ -34,6 +34,17 @@ interface StoredPlan extends PlanPreview {
    * what can be probed, and never remember something that is not there).
    */
   onApplied?: (res: { output: string }) => void | Promise<void>
+  /**
+   * Run once, after the restore point and before the first step — for the
+   * part of an operation git has no command for. Deleting a topic has to
+   * bring down the runtime and stop the agents standing in the folder a
+   * later step removes; both are processes this core owns, not commands.
+   *
+   * It is announced in the plan's warnings rather than drawn as a step,
+   * because a step is a command anyone can read and re-run, and this is not
+   * one (§3.7).
+   */
+  onBefore?: () => void | Promise<void>
 }
 
 const plans = new Map<string, StoredPlan>()
@@ -47,6 +58,7 @@ function gc(): void {
 export interface RegisterOptions {
   workspaceIds: string[]
   onApplied?: StoredPlan['onApplied']
+  onBefore?: StoredPlan['onBefore']
   /**
    * §16 — "Aucun environnement de process journalisé." Passed to every step and
    * never serialized: this is how a database password reaches `mysql` without
@@ -83,6 +95,7 @@ export function register(preview: PlanPreview, opts: RegisterOptions): PlanPrevi
     stepOwner: ownersFor(preview.steps, opts.workspaceIds),
     env: opts.env,
     onApplied: opts.onApplied,
+    onBefore: opts.onBefore,
   })
   append({
     type: 'git.plan',
@@ -446,6 +459,11 @@ export async function apply(planId: string): Promise<ApplyResult> {
       restorePoint ??= rp?.head ?? null
     }
   }
+
+  // Whatever the steps cannot say: processes brought down so the folder a
+  // step removes is not held open. After the restore point, so a failure here
+  // still leaves the anchor behind.
+  if (stored.onBefore) await stored.onBefore()
 
   const lines: string[] = []
   /** Steps that already ran, newest last — the rollback order is their reverse. */

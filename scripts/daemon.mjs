@@ -24,11 +24,21 @@ const electron = join(ROOT, 'apps', 'desktop', 'node_modules', '.bin', 'electron
 const tsx = require.resolve('tsx/cli')
 const entry = join(ROOT, 'packages', 'core', 'src', 'index.ts')
 
-const child = spawn(electron, [tsx, 'watch', entry], {
-  cwd: ROOT,
-  stdio: 'inherit',
-  env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-})
+/**
+ * The same descriptor floor the app gives the core it starts
+ * (apps/desktop/electron/main.cjs): a core out of descriptors fails every
+ * spawn with EBADF, which names nothing and looks like a git problem.
+ * `exec` replaces the shell, so this is still one process.
+ */
+const child = spawn(
+  '/bin/sh',
+  ['-c', 'ulimit -n 65536 2>/dev/null || ulimit -n 10240 2>/dev/null; exec "$@"', 'sh', electron, tsx, 'watch', entry],
+  {
+    cwd: ROOT,
+    stdio: 'inherit',
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  },
+)
 
 child.on('exit', (code) => process.exit(code ?? 0))
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill(sig))

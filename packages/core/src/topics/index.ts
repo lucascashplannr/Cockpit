@@ -10,6 +10,7 @@ import * as plans from '../plans.js'
 import * as registry from '../registry.js'
 import { moveToTrash } from '../files.js'
 import * as runtime from '../runtime/index.js'
+import * as agents from '../agents.js'
 
 /**
  * §15 — the branch this path's project says it works against, and only then
@@ -1212,9 +1213,18 @@ export interface DeleteTopicInput {
 
 /**
  * §16 — the difference between this and `close`: close archives and keeps
- * everything, delete drops the record for good. So every refusal here is a
- * refusal to lose work, and the one thing that cannot be undone — deleting a
- * branch holding unmerged commits — needs `force` said out loud.
+ * everything, delete drops the record for good.
+ *
+ * So the refusals belong to `close`, not here. Closing over a dirty tree is a
+ * refusal to lose work the user still wants; refusing to *delete* over the
+ * same tree refuses to do the one thing the command is for — and left no way
+ * to get rid of a topic short of the shell the window exists to replace. A
+ * delete throws away the uncommitted work, brings the runtime down and stops
+ * the agents, and says all three out loud in the warnings first.
+ *
+ * What still needs saying out loud is the half git cannot give back: deleting
+ * a branch that holds commits no remote has, or commits not merged into the
+ * base. Those need `force`.
  */
 export async function deletePlan(
   input: DeleteTopicInput,
@@ -1224,19 +1234,23 @@ export async function deletePlan(
 
   const wss = workspacesOf(input.topicId)
   const warnings: string[] = []
-  const blockers: string[] = []
 
   const unpushed: Workspace[] = []
+  /** Thrown away with the checkout, not refused over: this is the discard. */
+  const dirty: { ws: Workspace; count: number }[] = []
+  /** Processes standing in a folder a step removes — stopped, not waited for. */
+  const running: Workspace[] = []
+  const talking: { ws: Workspace; sessions: string[] }[] = []
   for (const w of wss) {
-    if (w.agentSessions.length) blockers.push(w.name + ': an agent session is open')
-    if (w.runtime?.status === 'up' || w.runtime?.status === 'starting') blockers.push(w.name + ': runtime is up')
-    if ((w.git?.staged ?? 0) + (w.git?.unstaged ?? 0) > 0) blockers.push(w.name + ': uncommitted changes')
+    if (w.agentSessions.length) talking.push({ ws: w, sessions: [...w.agentSessions] })
+    if (w.runtime?.status === 'up' || w.runtime?.status === 'starting') running.push(w)
+    const changes = (w.git?.staged ?? 0) + (w.git?.unstaged ?? 0)
+    if (changes > 0) dirty.push({ ws: w, count: changes })
     // Not a blocker but a question. Discarding a topic IS discarding its
     // commits; refusing outright left no way to say so anywhere but the
     // shell, which is the thing the window exists to replace (§16).
     if (w.git?.hasUnpushedWork) unpushed.push(w)
   }
-  if (blockers.length) return { ok: false, detail: blockers.join('; '), warnings: [], forceable: false, plan: null }
 
   // Only deleting the branch loses them. Keeping it — the default — leaves
   // every commit reachable after the checkout is gone, so there is nothing
@@ -1306,6 +1320,27 @@ export async function deletePlan(
     }
   }
 
+  // §16 — what the delete throws away, said before it is thrown. Only when
+  // the checkouts actually go: leaving them on disk leaves the work on disk
+  // with them, and there is nothing standing in the way to bring down.
+  if (input.removeWorktrees) {
+    for (const { ws, count } of dirty) {
+      warnings.push(
+        ws.name + ': ' + count + ' uncommitted change(s) go with the checkout. ' +
+          'Nothing keeps a copy — not a stash, not the Trash.',
+      )
+    }
+    for (const { ws, sessions } of talking) {
+      warnings.push(
+        ws.name + ': ' + (sessions.length > 1 ? sessions.length + ' agent sessions are' : 'its agent session is') +
+          ' stopped first. The journal keeps what was said.',
+      )
+    }
+    for (const w of running) {
+      warnings.push(w.name + ': its runtime is brought down first — the folder cannot go while it is up.')
+    }
+  }
+
   // §10 — a database left behind after the topic is gone is the silent
   // accumulation §16 warns about: nothing lists it and nobody remembers it.
   const dbEnv: Record<string, string> = {}
@@ -1353,6 +1388,41 @@ export async function deletePlan(
     }
   }
 
+  /**
+   * The half of the delete git has no command for. A dev server or an engine
+   * whose cwd is about to be removed is not a reason to refuse — it is a
+   * process this core started, so this is where it stops it.
+   *
+   * Never fatal: a runtime that will not come down is worth a line in the
+   * output, not a topic that cannot be deleted.
+   */
+  const isLive = (id: string) => {
+    const c = agents.get(id)
+    return !!c && c.status !== 'ended' && c.status !== 'failed'
+  }
+  const stopWhatStands = async () => {
+    const stopping: string[] = []
+    for (const { sessions } of talking) {
+      for (const id of sessions) {
+        agents.stop(id)
+        stopping.push(id)
+      }
+    }
+    // A moment for SIGTERM to land, so the engine is not still writing into
+    // the folder the next step removes. Bounded: a process that ignores it
+    // does not get to hold the delete.
+    for (let i = 0; i < 30 && stopping.some((id) => isLive(id)); i++) {
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    for (const w of running) {
+      try {
+        await runtime.down(w)
+      } catch {
+        // Down is best effort; `git worktree remove --force` does not need it.
+      }
+    }
+  }
+
   const finish = async () => {
     if (input.removeWorktrees && f.rootPath) await moveToTrash(f.rootPath)
     store.remove(input.topicId)
@@ -1372,6 +1442,7 @@ export async function deletePlan(
 
   // Nothing for git to do: the record is the only thing left to remove.
   if (!steps.length) {
+    if (input.removeWorktrees) await stopWhatStands()
     await finish()
     return { ok: true, detail: 'deleted "' + f.name + '"', warnings, forceable: false, plan: null }
   }
@@ -1390,6 +1461,7 @@ export async function deletePlan(
   plans.register(preview, {
     workspaceIds: [...wss.map((w) => w.id), ...repos.map((r) => r.id)],
     ...(Object.keys(dbEnv).length ? { env: dbEnv } : {}),
+    ...(input.removeWorktrees ? { onBefore: stopWhatStands } : {}),
     onApplied: finish,
   })
   return { ok: true, detail: 'plan ready', warnings, forceable: false, plan: preview }

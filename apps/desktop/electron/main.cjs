@@ -211,6 +211,19 @@ function coreLog() {
   }
 }
 
+/**
+ * The core watches every workspace and spawns a git for each refresh, and on
+ * macOS a process gets 10 240 descriptors unless someone says otherwise — 256
+ * when launchd starts it from the Dock rather than a shell.
+ *
+ * Running out does not look like running out. libuv takes the `posix_spawn`
+ * path and reports **EBADF** rather than EMFILE, so the symptom is every
+ * `git` in the core failing at once with an error that names no resource.
+ *
+ * `exec` replaces the shell, so the pid below is still the core's own.
+ */
+const FD_FLOOR = 'ulimit -n 65536 2>/dev/null || ulimit -n 10240 2>/dev/null; exec "$@"'
+
 async function ensureCore() {
   if (await probeCore(CORE_PORT)) {
     console.log('[cockpit] core already running on ' + CORE_PORT)
@@ -223,7 +236,7 @@ async function ensureCore() {
   }
   // Detached: the core outlives this window, and this app on quit.
   const log = coreLog()
-  const child = spawn(process.execPath, launcher.args, {
+  const child = spawn('/bin/sh', ['-c', FD_FLOOR, 'sh', process.execPath, ...launcher.args], {
     detached: true,
     stdio: ['ignore', log, log],
     env: Object.assign({}, process.env, {
