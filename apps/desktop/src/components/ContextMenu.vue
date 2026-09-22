@@ -2,11 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Archive, CirclePlay, CircleStop, Copy, FileCode, FolderOpen, Info, MessageSquarePlus, Pause, Play,
-  Trash2,
+  Stamp, Trash2,
 } from '@lucide/vue'
 import {
-  askDeleteTopic, client, closeTopic, guard, newConversationOn, startTopic, state, stopTopic, toast,
-  toggleWorkspaceRuntime,
+  adoptTopic, askDeleteTopic, client, closeTopic, guard, newConversationOn, startTopic, state,
+  stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -38,6 +38,8 @@ const serverRunning = computed(
 )
 /** An inferred topic has nowhere to keep a state, so it has no switch and nothing to close. */
 const topicOwned = computed(() => !!topic.value && !topic.value.derived && topic.value.state !== 'closed')
+/** … and the one verb that ends that: the record it never had, written. */
+const adoptable = computed(() => !!topic.value && topic.value.derived)
 
 function close() {
   state.contextMenu = null
@@ -161,6 +163,16 @@ async function copyPath(path: string) {
         {{ topic.state === 'running' ? 'Stop the servers' : 'Start the servers' }}
       </button>
       <span class="rule" />
+      <!-- The gap this closes: an inferred topic had no verb but a conversation
+           and a look, because every other one begins by reading a record that
+           was never written. This writes it, and nothing else. -->
+      <button
+        v-if="adoptable"
+        title="Record that these branches are one piece of work. Nothing on disk moves — the topic simply gains a name, a state, and the close and delete verbs."
+        @click="act(() => adoptTopic(topic!.id))"
+      >
+        <Stamp /> Take over this topic
+      </button>
       <button @click="act(() => (state.detailsFor = { kind: 'topic', id: topic!.id }))">
         <Info /> Details…
       </button>

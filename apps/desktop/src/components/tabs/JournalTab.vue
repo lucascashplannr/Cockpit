@@ -111,6 +111,7 @@ const TITLES: Partial<Record<EventType, string>> = {
   'project.moved': 'Project moved',
   'project.trashed': 'Project trashed',
   'topic.opened': 'Topic opened',
+  'topic.adopted': 'Topic taken over',
   'topic.started': 'Topic started',
   'topic.stopped': 'Topic stopped',
   'topic.renamed': 'Topic renamed',
@@ -260,6 +261,9 @@ function detailOf(e: CockpitEvent): string {
 
     // topics ───────────────────────────────────────────────────────────
     case 'topic.opened': out = join(s('name') || s('topicId'), count(arr('repos').length, 'repository', 'repositories')); break
+    // Nothing was created, so the repository count is the whole of it: which
+    // checkouts the inference had grouped when it was written down.
+    case 'topic.adopted': out = join(s('name') || s('topicId'), count(arr('repos').length, 'repository', 'repositories'), s('rootPath') ? 'with a folder' : 'no folder'); break
     case 'topic.started': out = join(count(arr('workspaces').length, 'repository', 'repositories'), arr('failed').length ? arr('failed').join(', ') + ' failed' : ''); break
     case 'topic.stopped': out = s('reason') || s('topicId'); break
 

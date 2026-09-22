@@ -490,6 +490,16 @@ export interface Rpc {
   /** Archiving is not a one-way door; this is how a closed topic comes back. */
   'topic.reopen': { params: { topicId: string }; result: { ok: boolean; detail: string } }
   /**
+   * §4 — write the record an inferred topic never had.
+   *
+   * An inferred topic is a pattern in branch names, not an object: nothing
+   * persists it, so there is nothing to name, park, close or delete. This is
+   * the one verb that changes that, and it touches no branch and no checkout —
+   * the group on screen stays exactly as it is and becomes the topic's
+   * membership, probed as it always was.
+   */
+  'topic.adopt': { params: { topicId: string }; result: { ok: boolean; detail: string } }
+  /**
    * §16 — the record goes for good. Refuses over anything that would lose work;
    * deleting a branch with unmerged commits is the one thing `force` unlocks,
    * because it is the one thing nothing can undo.

@@ -178,6 +178,28 @@ const ATTENTION_TEXT: Record<string, string> = {
               <span v-if="unpushed(g.workspaces)" class="up">
                 <ArrowUp class="sm" />{{ unpushed(g.workspaces) }}
               </span>
+              <!-- §4 — an inferred topic looks exactly like an opened one here, and
+                   then behaves like neither: half its verbs are missing from the
+                   menu with nothing on the row to have warned you.
+
+                   A word, not a glyph. The dashed outline this replaces was the
+                   honest try at a mark for "provisional", and it read as noise:
+                   nothing in that icon says which of the two kinds of topic it
+                   means. The list already speaks in small dim capitals — "not in
+                   a topic" one group down — so this is that vocabulary rather
+                   than a new one, and it doubles as the way into the sheet that
+                   explains it.
+
+                   Last, so it is the thing against the edge: what a topic *is*
+                   holds still, while the counters beside it come and go. -->
+              <button
+                v-if="g.topic?.derived"
+                class="inferred"
+                title="Inferred from branches sharing this name — not a topic opened here, so it cannot be renamed, started, closed or deleted. Click for what that means."
+                @click.stop="state.detailsFor = { kind: 'topic', id: g.topicId! }"
+              >
+                inferred
+              </button>
               <!-- How many branches are under it was here, folded or not. It
                    is the least interesting true thing about a topic: open, the
                    rows say it; folded, it is a number nobody acts on. -->
@@ -330,6 +352,25 @@ const ATTENTION_TEXT: Record<string, string> = {
   letter-spacing: -0.01em;
   color: var(--text);
 }
+/* Dim and unfilled, like the thing it marks. It sits after the name rather
+   than among the counters on the right: those say what the work is doing, and
+   this says what the row *is*. */
+.summary .inferred {
+  flex: none;
+  padding: 1px 5px;
+  /* The pill keeps its breathing room; the negative margin puts the *letters*
+     where a counter's digits would be, so the column's right edge is one line
+     rather than two. */
+  margin-right: -5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.summary .inferred:hover { color: var(--text); background: var(--line-soft); }
+
 .summary { flex: none; display: flex; align-items: center; gap: 9px; font-size: var(--fs-xs); }
 .summary .up { color: var(--ok); display: inline-flex; align-items: center; gap: 2px; }
 .summary .up .lucide { width: 11px; height: 11px; stroke-width: 2.4; }

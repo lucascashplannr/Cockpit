@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { newId, stableId } from '@cockpit/shared'
 import type {
   Setup, DatabasePlan, Topic, PlanPreview, PlanStep, SeedProposal, Workspace,
@@ -874,6 +874,112 @@ export async function mergePlan(
   }
   plans.register(preview, { workspaceIds: mains.map((m) => m.id) })
   return { ok: true, detail: 'plan ready', plan: preview }
+}
+
+/**
+ * The folder an inferred topic is *already* laid out in, or null.
+ *
+ * An inference knows nothing about layout: it grouped worktrees that happen to
+ * share a branch name, wherever they sit. But a group whose every member is
+ * exactly where Cockpit would have put it — `worktrees/<slug>/<repo>` §(21.4)
+ * — has a parent folder that *is* the topic root, and claiming it is the
+ * difference between a topic that can hold a memory and one that cannot (§7).
+ *
+ * All or nothing: one member elsewhere and there is no single folder to claim,
+ * so the topic is adopted without one rather than with a guess.
+ */
+function laidOutRoot(f: Topic): string | null {
+  const wss = workspacesOf(f.id).filter((w) => w.kind === 'worktree')
+  if (!wss.length) return null
+
+  const repos = registry.allWorkspaces(f.projectId).filter((w) => w.kind === 'main' && w.repo)
+  let root: string | null = null
+  for (const w of wss) {
+    const owner = repos.find((m) => basename(m.path) === basename(w.path))
+    if (!owner) return null
+    if (resolve(plans.topicWorktreePath(owner.path, f.slug)) !== resolve(w.path)) return null
+    const candidate = resolve(plans.topicRootPath(owner.path, f.slug))
+    if (root && candidate !== root) return null
+    root = candidate
+  }
+  return root && existsSync(root) ? root : null
+}
+
+/**
+ * §4 — the inference promoted to an object, which is the only thing it was
+ * ever missing.
+ *
+ * `deriveTopics` groups worktrees that share a branch name so the list reads
+ * as the work rather than as N checkouts; what it cannot do is persist the
+ * claim that they *are* one piece of work, because nothing said so. Every verb
+ * past "open a conversation" reads the record — start, close, rename, delete
+ * all begin with `store.get` — so an inferred topic has none of them, and the
+ * menus drop them rather than disable them (§3.9).
+ *
+ * Adopting writes that record and stops. No branch is created, nothing is
+ * checked out, nothing moves on disk: membership is probed by branch name
+ * exactly as it was a moment earlier (§3.4), and the id is the same
+ * `stableId('feat', project, slug)` the inference used, so the selection, the
+ * conversations aimed at it and the journal all survive the promotion.
+ */
+export async function adopt(topicId: string): Promise<{ ok: boolean; detail: string }> {
+  const f = registry.getTopic(topicId)
+  if (!f) throw new Error('unknown topic: ' + topicId)
+  if (!f.derived) return { ok: true, detail: '"' + f.name + '" is already on the record' }
+
+  // A closed record holding this branch is why the leftovers were re-derived
+  // in the first place (see `deriveTopics`); adopting over it would hide it
+  // for good. Reopening is the verb for that one.
+  const clash = store.bySlug(f.projectId, f.slug)
+  if (clash) {
+    return {
+      ok: false,
+      detail:
+        '"' + clash.name + '" already holds the branch ' + f.slug +
+        (clash.state === 'closed' ? ' — it is closed, so reopen it rather than taking it over' : ''),
+    }
+  }
+
+  const rootPath = laidOutRoot(f)
+  const wss = workspacesOf(f.id)
+  const now = Date.now()
+
+  store.save({
+    id: f.id,
+    projectId: f.projectId,
+    name: f.name,
+    slug: f.slug,
+    rootPath,
+    // Parked, never running: the record is new, and claiming its servers are
+    // up because something is listening would be the invention §3.4 forbids.
+    state: 'stopped',
+    // What was found, not what was arranged: a folder per repository is the
+    // most an inference can attest to — whether seeds were carried or servers
+    // ever came up is not written anywhere it could read.
+    setup: 'isolated',
+    ticket: f.ticket,
+    review: f.review,
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  // Only when the folder is genuinely the topic's own. Idempotent, and it adds
+  // the two files §7 asks for without touching anything already there.
+  if (rootPath) scaffold(rootPath, f.name, f.slug, wss)
+
+  append({
+    type: 'topic.adopted',
+    projectId: f.projectId,
+    payload: { topicId, name: f.name, slug: f.slug, rootPath, repos: wss.map((w) => w.name) },
+  })
+  await registry.reconcile(f.projectId)
+
+  return {
+    ok: true,
+    detail: rootPath
+      ? 'taken over — it can now be renamed, parked, closed and deleted, and its folder holds the memory'
+      : 'taken over — it can now be renamed, parked, closed and deleted',
+  }
 }
 
 export function rename(topicId: string, name: string): void {

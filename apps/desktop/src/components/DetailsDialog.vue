@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Copy, FolderOpen, GitBranch, Layers, SquareDot, X } from '@lucide/vue'
+import { Copy, FolderOpen, GitBranch, Layers, SquareDot, Stamp, X } from '@lucide/vue'
 import type { WorkspaceDetails } from '@cockpit/shared'
-import { client, guard, renameTopic, state, toast } from '../core/store.js'
+import { adoptTopic, client, guard, renameTopic, state, toast } from '../core/store.js'
 
 /**
  * The details sheet of one row of the list: what it is, where it came from,
@@ -92,6 +92,32 @@ const saving = ref(false)
 watch(topic, (f) => { name.value = f?.name ?? '' }, { immediate: true })
 
 const renamable = computed(() => !!topic.value && !topic.value.derived && topic.value.state !== 'closed')
+
+/**
+ * §4 — why half this sheet is missing, said once and in full.
+ *
+ * An inferred topic is the shape of the work without the record of it: the
+ * window noticed several checkouts sharing a branch name and drew a bracket
+ * around them. Every verb past "open a conversation" starts by reading a row
+ * that was never written, so the menus drop them (§3.9 — absent, not
+ * disabled), and a row that is simply missing explains nothing. This is where
+ * it gets explained, next to the button that fixes it.
+ */
+const inferred = computed(() => !!topic.value?.derived)
+const adopting = ref(false)
+
+async function adopt() {
+  const f = topic.value
+  if (!f || adopting.value) return
+  adopting.value = true
+  try {
+    // The id survives the promotion — same `stableId` on both sides — so the
+    // sheet stays open on the same row and simply grows the rest of itself.
+    await adoptTopic(f.id)
+  } finally {
+    adopting.value = false
+  }
+}
 const nameChanged = computed(() => !!topic.value && !!name.value.trim() && name.value.trim() !== topic.value.name)
 
 const topicRepos = computed(() =>
@@ -263,6 +289,23 @@ function reveal(workspaceId: string) {
 
       <!-- ── A topic ── -->
       <div v-else-if="topic" class="body">
+        <section v-if="inferred" class="inferred">
+          <h3 class="ititle">Inferred — not a topic opened here</h3>
+          <p class="iprose">
+            {{ topicRepos.length }} checkout{{ topicRepos.length === 1 ? '' : 's' }} share the
+            branch <code class="mono">{{ topic.slug }}</code>, so the window groups them. Nothing
+            recorded that they are one piece of work, so there is no row to hold a name, a state or
+            a memory — which is why <strong>Rename</strong>, <strong>Start the servers</strong>,
+            <strong>Close</strong> and <strong>Delete</strong> are absent rather than greyed out.
+          </p>
+          <div class="irow">
+            <button class="btn primary" :disabled="adopting" @click="adopt">
+              <Stamp class="sm" />
+              {{ adopting ? 'Taking over…' : 'Take over this topic' }}
+            </button>
+          </div>
+        </section>
+
         <label v-if="renamable" class="field">
           <span class="lbl">Name</span>
           <div class="row">
@@ -462,6 +505,34 @@ function reveal(workspaceId: string) {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+/* A panel rather than a `.note`: it is the answer to "why is this sheet
+   half empty", which is a paragraph and a verb, not an aside. */
+.inferred {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-input);
+}
+.ititle {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 620;
+  color: var(--text);
+}
+.iprose {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+.iprose strong { color: var(--text); font-weight: 600; }
+.iprose code { color: var(--text); }
+.irow { display: flex; margin-top: 3px; }
+.irow .btn { flex: none; }
 
 .field { display: flex; flex-direction: column; gap: 7px; }
 .lbl {

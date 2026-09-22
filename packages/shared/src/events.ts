@@ -51,6 +51,12 @@ export type EventType =
   | 'project.trashed'
   // topics — the durable unit of work (§4)
   | 'topic.opened'
+  /**
+   * §4 — an inference promoted to a record. Distinct from `topic.opened`:
+   * nothing was created, nothing was checked out; the branches were already
+   * there and Cockpit merely agreed to own the grouping.
+   */
+  | 'topic.adopted'
   | 'topic.started'
   | 'topic.stopped'
   | 'topic.renamed'

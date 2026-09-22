@@ -364,6 +364,16 @@ const handlers: Record<string, Handler> = {
     pushWorkspaces()
     return registry.getTopic(p.topicId)
   },
+  /**
+   * §4 — an inferred topic given the record it never had. It reconciles
+   * itself, so all that is left here is to tell every window: the same row is
+   * about to grow every verb it was missing.
+   */
+  'topic.adopt': async (p: { topicId: string }) => {
+    const res = await topics.adopt(p.topicId)
+    pushAll()
+    return res
+  },
   'topic.reopen': async (p: { topicId: string }) => {
     const res = topics.reopen(p.topicId)
     const f = registry.getTopic(p.topicId)

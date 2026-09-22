@@ -3052,6 +3052,26 @@ export const archivedTopics = computed(() =>
   state.topics.filter((f) => f.projectId === state.activeProjectId && f.state === 'closed'),
 )
 
+/**
+ * §4 — the one verb an inferred topic has, and the one that gives it the
+ * rest.
+ *
+ * Nothing on disk moves: it writes the record that the grouping is deliberate,
+ * after which the row is an ordinary topic. Reversible in the plainest way —
+ * deleting it keeps the branches by default, which puts the inference back.
+ */
+export async function adoptTopic(topicId: string): Promise<boolean> {
+  const res = await guard(() => client.call('topic.adopt', { topicId }))
+  if (!res) return false
+  if (!res.ok) {
+    toast('error', res.detail)
+    return false
+  }
+  await refreshTopics()
+  toast('ok', res.detail)
+  return true
+}
+
 export async function reopenTopic(topicId: string): Promise<void> {
   const res = await guard(() => client.call('topic.reopen', { topicId }))
   if (!res) return

@@ -6,13 +6,13 @@ import {
   Columns2, CornerDownLeft, FileCode,
   FolderOpen,
   FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
-  Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, TextSearch,
+  Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, Stamp, TextSearch,
   Trash2, Undo2,
   RotateCcw, Archive, Zap, Activity,
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, archivedTopics, askDeleteTopic, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
+  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askDeleteTopic, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -128,7 +128,19 @@ const commands = computed<Item[]>(() => {
     })
   }
   for (const f of projectTopics.value) {
-    if (f.derived) continue
+    // An inferred topic has one verb and it is the one that gives it the
+    // others. Listing the rest would offer acts with nothing to act on.
+    if (f.derived) {
+      out.push({
+        id: 'topic:adopt:' + f.id,
+        label: 'Take over ' + f.name,
+        hint: 'inferred from the branch name — records it as a topic of its own; nothing on disk moves',
+        group: 'Topic',
+        icon: Stamp,
+        run: act(() => adoptTopic(f.id)),
+      })
+      continue
+    }
     const isLive = f.state === 'running'
     out.push({
       id: 'topic:land:' + f.id,
