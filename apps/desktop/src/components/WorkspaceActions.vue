@@ -6,8 +6,8 @@ import {
 } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
 import {
-  activeWorkspace, askCommand, chooseCommand, chosenCommand, client, gitBusy, guard,
-  openDeclarations, requestPlan, state, toggleWorkspaceRuntime,
+  activeWorkspace, askCommand, chooseCommand, chooseServer, chosenCommand, chosenServer, client,
+  gitBusy, guard, openDeclarations, requestPlan, runningServers, state, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -165,15 +165,66 @@ const catchUpTitle = computed(() => {
   return n ? from + ' — ' + n + ' commit(s) behind' : from + ' — already up to date'
 })
 
-const running = computed(
-  () => w.value?.runtime?.status === 'up' || w.value?.runtime?.status === 'starting',
+/* ── the switch (§8) ──────────────────────────────────────────────────
+ *
+ * The same split as the Run button, for the same reason and with one
+ * difference: servers have a meaningful *all*, so that is what the button
+ * points at until you pick otherwise. Picking one leaves it there, and
+ * `chosenServer` falls back to all of them the moment that name stops being
+ * declared.
+ */
+const servers = computed(() => state.servers)
+const alive = computed(() => runningServers(w.value))
+const target = computed(() => chosenServer.value)
+
+/** Only worth a menu where there are names in it — see `runtime.servers`. */
+const pickable = computed(() => servers.value.length > 0)
+
+/**
+ * `starting` counts as running: a server still coming up is one you stop, not
+ * one you start again. Offering Start there is how two of the same server end
+ * up fighting over one port.
+ *
+ * Pointed at one server, the question is that server's own process rather
+ * than the workspace's status word — `up` is a statement about everything on
+ * `start:`, and answering with it would draw Stop on a `worker` that is down
+ * because `web` happens to be serving.
+ */
+const running = computed(() =>
+  target.value
+    ? alive.value.has(target.value)
+    : w.value?.runtime?.status === 'up' || w.value?.runtime?.status === 'starting',
 )
+
+/** What the left half says: the server it is pointed at, or the plain verb. */
+const switchLabel = computed(() => {
+  if (target.value) return target.value
+  return w.value?.runtime?.status === 'starting' ? 'Starting' : running.value ? 'Stop' : 'Start'
+})
+
+const switchTitle = computed(() => {
+  const verb = running.value ? 'Stop' : 'Start'
+  if (!target.value) return running.value ? 'Stop the servers' : 'Start the servers'
+  const s = servers.value.find((x) => x.name === target.value)
+  const where = s?.port ? ' — port ' + s.port : s?.url ? ' — ' + s.url : ''
+  return verb + ' ' + target.value + where
+})
+
+/** The state dot in the menu, and the tail that says what it is. */
+function noteOf(s: { name: string; port: number | null; inStart: boolean; unresolved: string[] }): string {
+  if (s.unresolved.length) return 'nothing named ' + s.unresolved.map((u) => '{{' + u + '}}').join(', ')
+  if (alive.value.has(s.name)) return s.port ? ':' + s.port : 'running'
+  // Said only when it is false, because it is the surprising half: a server
+  // off `start:` is one the plain Start will not touch, and until it could be
+  // named there was no way to run it at all.
+  return s.inStart ? '' : 'not on Start'
+}
 
 /** One path for the bar and the row alike, so they cannot come to disagree
  *  about what starting a server means or what to say when it fails. */
 async function toggleRuntime() {
   const ws = w.value
-  if (ws) await toggleWorkspaceRuntime(ws)
+  if (ws) await toggleWorkspaceRuntime(ws, target.value)
 }
 
 async function openIde() {
@@ -197,18 +248,72 @@ async function undo() {
 
 <template>
   <div v-if="w" class="verbs">
-    <!-- Always: it is the switch, and it is what the window is open for. -->
+    <!-- Always: it is the switch, and it is what the window is open for.
+
+         A plain button where there is nothing to pick — a detected `node`
+         project, Herd, Compose all have one opaque "the servers" and no
+         handle on any part of it, so a chevron there would open onto a list
+         of one thing it already says. -->
     <button
-      v-if="w.runtime"
+      v-if="w.runtime && !pickable"
       class="btn ghost sw"
       :class="{ on: running }"
       :disabled="busy"
-      :title="running ? 'Stop the servers' : 'Start the servers'"
+      :title="switchTitle"
       @click="toggleRuntime"
     >
       <component :is="running ? CircleStop : CirclePlay" />
-      <span class="vl">{{ w.runtime.status === 'starting' ? 'Starting' : running ? 'Stop' : 'Start' }}</span>
+      <span class="vl">{{ switchLabel }}</span>
     </button>
+
+    <!-- §8 — and the split one wherever the servers have names.
+
+         Left half: whatever it is pointed at, which is every server on
+         `start:` until you pick one. Right half: each of them, with its own
+         dot and its own switch — including the ones off `start:`, which had
+         no way in at all before this. -->
+    <div v-else-if="w.runtime" class="split" :class="{ off: busy }">
+      <!-- `sw` is what drops the label first on a narrow column, and it is
+           only right while the label is the word `Start`: its icon is a play
+           triangle and nothing else on the bar is. Pointed at a named server
+           the label is the name, and an unlabelled triangle would no longer
+           say which one — so it keeps its word as long as the Run button
+           beside it keeps its own. -->
+      <button
+        class="btn ghost run"
+        :class="{ on: running, sw: !target }"
+        :disabled="busy"
+        :title="switchTitle"
+        @click="toggleRuntime"
+      >
+        <component :is="running ? CircleStop : CirclePlay" />
+        <span class="vl">{{ switchLabel }}</span>
+      </button>
+      <span class="div" />
+      <OverflowMenu class="pick" label="Pick what this switch starts" :disabled="busy">
+        <template #trigger><ChevronDown /></template>
+        <!-- First, and separated: it is not one of the servers, it is all of
+             them, and it is what the button does by default. -->
+        <button @click="chooseServer(null)">
+          <component :is="running && !target ? CircleStop : CirclePlay" />
+          All servers
+          <span v-if="!target" class="sc">on the button</span>
+        </button>
+        <span class="rule" />
+        <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
+          <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
+          {{ s.name }}
+          <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
+        </button>
+        <span class="rule" />
+        <!-- Its own half of the sheet. This menu is about servers, so the way
+             out of it is about servers: the commands were a second list to
+             scroll past on the way to the one thing that had been asked for. -->
+        <button @click="openDeclarations(w.repoName, 'server')">
+          <SlidersHorizontal /> Servers…
+        </button>
+      </OverflowMenu>
+    </div>
 
     <!-- §8 — next to the switch, because they are the same kind of act: the
          things this checkout runs. It names the command rather than the
@@ -237,9 +342,10 @@ async function undo() {
         </button>
         <span class="rule" />
         <!-- The list and the way to change it, in one place: the menu naming
-             what exists is where anyone looks to add the next one. -->
-        <button @click="openDeclarations(w.repoName)">
-          <SlidersHorizontal /> Servers and commands…
+             what exists is where anyone looks to add the next one. Commands
+             only, for the same reason the Start menu offers servers only. -->
+        <button @click="openDeclarations(w.repoName, 'command')">
+          <SlidersHorizontal /> Commands…
         </button>
       </OverflowMenu>
     </div>
@@ -383,6 +489,15 @@ async function undo() {
   border-radius: var(--radius-sm);
 }
 .split:hover { border-color: var(--line-strong); }
+/* One border for one control.
+ *
+ * `.btn:hover` in base.css raises `border-color` to `--line-strong`, and
+ * `.btn.ghost:hover` — more specific — overrides only the background and the
+ * colour, so every ghost button reveals a border when hovered. That is right
+ * for a button standing on its own and wrong for a half of something: the
+ * shape around these two already draws the border, so the half drew a second
+ * one inside it and the pair read as a button inside a button. */
+.verbs .split :deep(.btn:hover:not(:disabled)) { border-color: transparent; }
 /* The whole control goes quiet together while a plan holds the repository —
    each half is disabled in its own right, but the border is the shape's. */
 .split.off { opacity: 0.4; }
@@ -410,6 +525,21 @@ async function undo() {
    for one. */
 .verbs .split :deep(.pick .btn) { padding: 0 5px; border-radius: 0 6px 6px 0; }
 .verbs .split :deep(.pick .lucide) { width: 13px; height: 13px; }
+/* A server's state in the menu, the same dot the bar uses for the workspace:
+   filled when something is answering to that name, hollow when nothing is,
+   and warned when the line still holds a placeholder and would refuse. It
+   takes the icon slot, so it lines up with the icons on the rows around it. */
+.sd {
+  flex: none;
+  width: var(--ic-sm);
+  height: var(--ic-sm);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--text-dim);
+  transform: scale(0.5);
+}
+.sd.on { background: var(--ok); box-shadow: none; }
+.sd.bad { background: var(--warn); box-shadow: none; }
+
 /* Where a project-level command runs, at the right edge of its own row. The
    menu's `.kb` slot is the same shape, and is the keystroke's — a word that is
    not one has no business borrowing it. */

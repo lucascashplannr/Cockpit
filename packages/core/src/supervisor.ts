@@ -225,6 +225,47 @@ export function stopWorkspace(workspaceId: string): number {
   return n
 }
 
+/**
+ * §8 — the same group stop, narrowed to servers named in the manifest.
+ *
+ * By label, because that is the only thread between a `servers:` key and a
+ * running process: `declaredRuntime` starts each one with `label: s.name`.
+ * Adopted rows are matched the same way, so a server this core did not spawn
+ * is still stoppable by name — the case `stopWorkspace` had to grow a second
+ * half for, and for the same reason.
+ */
+export function stopLabelled(workspaceId: string, names: string[]): number {
+  const wanted = new Set(names)
+  let n = 0
+  const own = new Set<string>()
+  for (const m of [...live.values()]) {
+    if (m.workspaceId === workspaceId && wanted.has(m.label)) {
+      own.add(m.id)
+      killTree(m.child.pid)
+      n++
+    }
+  }
+  const rows = getDb()
+    .prepare("SELECT id, label FROM processes WHERE workspace_id = ? AND status = 'running'")
+    .all(workspaceId) as { id: string; label: string }[]
+  n += stopAdopted(
+    rows.filter((r) => wanted.has(r.label) && !own.has(r.id)).map((r) => r.id),
+  )
+  return n
+}
+
+/**
+ * The labels this workspace has a live process for.
+ *
+ * Over `listForWorkspace` rather than over `live`, so it answers the same way
+ * the window's own process list does: a row whose pid is gone is not running
+ * however the table remembers it, and a process adopted from a previous core
+ * is (§13).
+ */
+export function runningLabels(workspaceId: string): Set<string> {
+  return new Set(listForWorkspace(workspaceId).map((p) => p.label))
+}
+
 /** Kills by recorded pid and settles the row; the child emits no exit here. */
 function stopAdopted(ids: string[]): number {
   if (!ids.length) return 0

@@ -540,20 +540,22 @@ const handlers: Record<string, Handler> = {
     return log(ws.path, p.limit ?? 40)
   },
 
-  'runtime.up': async (p: { workspaceId: string }) => {
+  'runtime.up': async (p: { workspaceId: string; names?: string[] }) => {
     const ws = registry.requireWorkspace(p.workspaceId)
-    const res = await runtime.up(ws)
+    const res = await runtime.up(ws, p.names)
     await registry.probeWorkspace(p.workspaceId)
     pushWorkspaces()
     return res
   },
-  'runtime.down': async (p: { workspaceId: string }) => {
+  'runtime.down': async (p: { workspaceId: string; names?: string[] }) => {
     const ws = registry.requireWorkspace(p.workspaceId)
-    const res = await runtime.down(ws)
+    const res = await runtime.down(ws, p.names)
     await registry.probeWorkspace(p.workspaceId)
     pushWorkspaces()
     return res
   },
+  'runtime.servers': (p: { workspaceId: string }) =>
+    runtime.servers(registry.requireWorkspace(p.workspaceId)),
   'runtime.health': async (p: { workspaceId: string }) =>
     runtime.health(registry.requireWorkspace(p.workspaceId)),
   'runtime.preview': async (p: { workspaceId: string }) =>

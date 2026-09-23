@@ -2,7 +2,7 @@ import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
   AddRepoSource, AgentScope, AgentScopePreview, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
-  CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, EngineOptions, PermissionMode,
+  CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, PermissionMode,
   DatabasePlan, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, ServerBoardRow, StashEntry, Workspace,
@@ -338,6 +338,8 @@ export const state = reactive({
    * which folder is about to be built.
    */
   commands: [] as DeclaredCommand[],
+  /** §8 — the declared servers of the selected checkout, for the Start menu. */
+  servers: [] as DeclaredServer[],
   pendingCommand: null as { command: DeclaredCommand; answers: Record<string, string> } | null,
 
   /** §8 — the editor for what this project declares. Project-scoped (§8). */
@@ -353,6 +355,17 @@ export const state = reactive({
    * it open.
    */
   declareLock: null as string | null,
+  /**
+   * The half it opens on: servers, commands, or null for both.
+   *
+   * Same argument as `declareLock`, one level down. Reached from the Start
+   * menu the sheet is about servers and reached from the Run menu it is about
+   * commands — the click already said which, and showing the other half is
+   * two lists to read where one was asked for. The general ways in (the ⋯
+   * menu, the palette, project settings) still open on both, because from
+   * there the question really is open.
+   */
+  declareSection: null as 'server' | 'command' | null,
   declarations: null as Declarations | null,
   planBusy: false,
   toasts: [] as ToastItem[],
@@ -2427,8 +2440,9 @@ function release(toastId: number): void {
 
 /* ── editing what a project declares (§8) ───────────────────────────── */
 
-export function openDeclarations(scope?: string): void {
+export function openDeclarations(scope?: string, section?: 'server' | 'command'): void {
   state.declareLock = scope ?? null
+  state.declareSection = section ?? null
   state.declareOpen = true
   void loadDeclarations()
 }
@@ -2490,12 +2504,27 @@ export async function refreshCommands(): Promise<void> {
   const id = state.activeWorkspaceId
   if (!id) {
     state.commands = []
+    state.servers = []
     return
   }
   const got = await client.call('commands.list', { workspaceId: id }).catch(() => [])
   // A slow answer for a workspace nobody is looking at any more is not an
   // answer to anything: dropping it is what keeps the palette honest.
   if (state.activeWorkspaceId === id) state.commands = got
+  await refreshServers(id)
+}
+
+/**
+ * §8 — the declared servers of the same checkout, by name.
+ *
+ * Fetched beside the commands and on the same occasions, because they change
+ * on the same occasion: the manifest being written. Nothing here says whether
+ * a server is *running* — that rides on the workspace push, which arrives far
+ * more often than this does.
+ */
+async function refreshServers(id: string): Promise<void> {
+  const got = await client.call('runtime.servers', { workspaceId: id }).catch(() => [])
+  if (state.activeWorkspaceId === id) state.servers = got
 }
 
 /* ── which command the Run button presses ────────────────────────────
@@ -2516,11 +2545,12 @@ export async function refreshCommands(): Promise<void> {
  */
 const RUN_KEY = 'cockpit.run'
 
-const runChoice = ref<Record<string, string>>(readRunChoice())
+const runChoice = ref<Record<string, string>>(readChoice(RUN_KEY))
 
-function readRunChoice(): Record<string, string> {
+/** One stored habit: a map of scope → name, and nothing else it might be. */
+function readChoice(key: string): Record<string, string> {
   try {
-    const raw: unknown = JSON.parse(localStorage.getItem(RUN_KEY) ?? '{}')
+    const raw: unknown = JSON.parse(localStorage.getItem(key) ?? '{}')
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
     return Object.fromEntries(
       Object.entries(raw as Record<string, unknown>).filter(
@@ -3686,19 +3716,75 @@ export async function stopTopic(topicId: string): Promise<void> {
  * function behind the Start button on the bar and the play control on the row,
  * so they cannot drift into saying different things about the same act.
  */
-export async function toggleWorkspaceRuntime(w: Workspace): Promise<void> {
+/**
+ * The switch, for every server on `start:` or for one named server.
+ *
+ * `name` null is the plain Start this has always been. Named, it is one
+ * server — and `start:` is not consulted, which is what makes a server left
+ * off that list reachable at all.
+ */
+export async function toggleWorkspaceRuntime(w: Workspace, name?: string | null): Promise<void> {
   if (!w.runtime) return
-  const running = w.runtime.status === 'up' || w.runtime.status === 'starting'
+  const names = name ? [name] : undefined
+  const label = name ?? w.name
+  const running = name ? runningServers(w).has(name) : w.runtime.status === 'up' || w.runtime.status === 'starting'
+
   if (running) {
-    const res = await guard(() => client.call('runtime.down', { workspaceId: w.id }))
+    const res = await guard(() => client.call('runtime.down', { workspaceId: w.id, ...(names ? { names } : {}) }))
     await refreshBoard()
-    if (res) toast('info', 'stopped', { icon: 'stop' })
+    if (res) toast('info', name ? 'stopped ' + name : 'stopped', { icon: 'stop' })
     return
   }
-  const res = await guard(() => client.call('runtime.up', { workspaceId: w.id }))
+  const res = await guard(() => client.call('runtime.up', { workspaceId: w.id, ...(names ? { names } : {}) }))
   await refreshBoard()
   if (!res) return
-  reportStart({ servers: [{ name: w.name, ok: res.ok, status: res.status, log: res.log }] })
+  reportStart({ servers: [{ name: label, ok: res.ok, status: res.status, log: res.log }] })
+}
+
+/**
+ * Which declared servers have a live process, read off the workspace itself.
+ *
+ * `RuntimeState.processes` is pushed with every probe and `declaredRuntime`
+ * labels each process with the server's name, so this is current without
+ * anything having to ask.
+ */
+export function runningServers(w: Workspace | null): Set<string> {
+  return new Set((w?.runtime?.processes ?? []).map((p) => p.label))
+}
+
+/* ── which server the Start button switches ──────────────────────────
+ *
+ * The same habit the Run button keeps, and the same storage (see
+ * `chosenCommand`): the last thing you asked for here is what the button is
+ * pointed at next time. The difference is that servers have a meaningful
+ * *all*, which is the default and is what `''` means — so a checkout nobody
+ * has picked a server in behaves exactly as it did before any of this.
+ */
+const SERVER_KEY = 'cockpit.server'
+
+const serverChoice = ref<Record<string, string>>(readChoice(SERVER_KEY))
+
+/** The name the button switches, or null for every server on `start:`. */
+export const chosenServer = computed<string | null>(() => {
+  const w = activeWorkspace.value
+  if (!w) return null
+  const want = serverChoice.value[runKeyFor(w)]
+  // A name that is no longer declared is not a target; fall back to all of
+  // them rather than to a button that refers to nothing.
+  return want && state.servers.some((s) => s.name === want) ? want : null
+})
+
+/** Switch it, and leave the button pointed at it. */
+export async function chooseServer(name: string | null): Promise<void> {
+  const w = activeWorkspace.value
+  if (!w) return
+  serverChoice.value = { ...serverChoice.value, [runKeyFor(w)]: name ?? '' }
+  try {
+    localStorage.setItem(SERVER_KEY, JSON.stringify(serverChoice.value))
+  } catch {
+    // Same as the Run button: no storage means the choice lasts the session.
+  }
+  await toggleWorkspaceRuntime(w, name)
 }
 
 /** §16 — refuses over unpushed work; removing the checkouts is its own plan. */

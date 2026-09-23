@@ -8,6 +8,7 @@ import type { CockpitEvent } from './events.js'
 import type {
   AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, TranscriptFile, CockpitSettings,
   CommandRunResult, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
+  DeclaredServer,
   DatabasePlan,
   DiffFile, Topic,
   FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
@@ -663,8 +664,26 @@ export interface Rpc {
    * as long as the server takes to boot; `status` distinguishes a server that
    * is up from one that is merely still coming up.
    */
-  'runtime.up': { params: { workspaceId: string }; result: RuntimeUpResult }
-  'runtime.down': { params: { workspaceId: string }; result: { ok: boolean; detail: string } }
+  /**
+   * `names` narrows it to those servers by name; omit it for the plain Start,
+   * which is every server on `start:`. Named, `start:` is not consulted at all
+   * — asking for a server by name is the answer to "should this one start".
+   * A runtime with no named servers (a detected `node`, Herd, Compose) ignores
+   * it and starts what it always starts.
+   */
+  'runtime.up': { params: { workspaceId: string; names?: string[] }; result: RuntimeUpResult }
+  'runtime.down': {
+    params: { workspaceId: string; names?: string[] }
+    result: { ok: boolean; detail: string }
+  }
+  /**
+   * §8 — the declared servers of this checkout, one row each, `start:` or not.
+   *
+   * Workspace-scoped for the same reason `commands.list` is: the same `web` is
+   * a different process on a topic and on main, with a different port, and
+   * only the checkout you are standing in says which.
+   */
+  'runtime.servers': { params: { workspaceId: string }; result: DeclaredServer[] }
   'runtime.health': { params: { workspaceId: string }; result: { status: string; detail: string } }
   'runtime.preview': { params: { workspaceId: string }; result: { kind: 'url' | 'qr' | 'none'; value?: string } }
   /**

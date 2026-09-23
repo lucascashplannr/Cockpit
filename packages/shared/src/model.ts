@@ -354,6 +354,36 @@ export interface Declarations {
   declarations: Declaration[]
 }
 
+/**
+ * §8 — one declared server, resolved for the checkout you are standing in.
+ *
+ * The one-shot's twin (`DeclaredCommand`), and it exists for the same reason:
+ * until now the window knew a workspace had *servers*, plural and nameless —
+ * a status word and a row of ports — so the only act it could offer was all of
+ * them at once. A server left off `start:` had no way in at all, which made
+ * "Start it with one click" a checkbox that could turn a server off for good.
+ */
+export interface DeclaredServer {
+  name: string
+  /** The line as it will be spawned, placeholders already filled. */
+  cmd: string
+  url: string | null
+  port: number | null
+  /** Whether the plain Start starts it. */
+  inStart: boolean
+  /**
+   * Deliberately not here: whether it is running.
+   *
+   * `RuntimeState.processes` already carries a label per live process and is
+   * pushed with every probe, so the window reads the dot from the workspace it
+   * is already holding. Answering it here too would be a second source of
+   * truth that goes stale between fetches — and this list only changes when
+   * the manifest does.
+   */
+  /** Placeholders that resolved to nothing: it would refuse to start (§7). */
+  unresolved: string[]
+}
+
 /** §8 — a declared one-shot, resolved for the environment that will run it. */
 export interface DeclaredCommand {
   name: string

@@ -267,12 +267,35 @@ export async function resolveEnvironment(ws: Workspace): Promise<ResolvedServer[
   return out
 }
 
+/**
+ * Every server this workspace itself runs, `start:` or not.
+ *
+ * `start:` says what *one press* starts, which is a different question from
+ * what exists here — and conflating the two is how a server left off the list
+ * became unstartable rather than merely not-automatic. This is the list the
+ * window offers by name; `serversOf` below is the one press.
+ */
+export async function hostedServersOf(ws: Workspace): Promise<ResolvedServer[]> {
+  const all = await resolveEnvironment(ws)
+  return all.filter((s) => s.workspaceId === ws.id)
+}
+
+/**
+ * Whether one press of Start would start this name — i.e. whether it is on
+ * `start:`, an absent list meaning every server (§8).
+ */
+export function startsOnPress(ws: Workspace): (name: string) => boolean {
+  const start = manifestFor(ws)?.start
+  const set = start?.length ? new Set(start) : null
+  return (name) => !set || set.has(name)
+}
+
 /** The servers this workspace itself runs, which is what Start starts. */
 export async function serversOf(ws: Workspace): Promise<ResolvedServer[]> {
-  const all = await resolveEnvironment(ws)
   const manifest = manifestFor(ws)
   const set = manifest?.start?.length ? new Set(manifest.start) : null
-  return all.filter((s) => s.workspaceId === ws.id && (!set || set.has(s.name)))
+  const hosted = await hostedServersOf(ws)
+  return set ? hosted.filter((s) => set.has(s.name)) : hosted
 }
 
 function probeUrl(url: string | null, health: string | undefined): string | null {

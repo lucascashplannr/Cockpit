@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { scopedName as scopedNameFor } from '@cockpit/shared'
-import type { RuntimeState, RuntimeUpResult, Workspace } from '@cockpit/shared'
+import type { DeclaredServer, RuntimeState, RuntimeUpResult, Workspace } from '@cockpit/shared'
 import type { Framework } from '../detect.js'
-import { needsInstall, resolveEnvironment, serversOf } from './declared.js'
+import { hostedServersOf, needsInstall, resolveEnvironment, serversOf, startsOnPress } from './declared.js'
 import { run } from '../exec.js'
 import { allocate, portKey } from '../ports.js'
 import { append } from '../journal.js'
@@ -32,8 +32,14 @@ export interface Runtime {
    * that dies on boot has to be reported, not waited out. One of them failing
    * is the environment failing.
    */
-  up(ws: Workspace): Promise<{ ok: boolean; detail: string; procIds?: string[] }>
-  down(ws: Workspace): Promise<{ ok: boolean; detail: string }>
+  /**
+   * `names` asks for those servers by name rather than for `start:`. Only the
+   * declared runtime has names to match, so every other one ignores it — which
+   * is correct, not a gap: Herd links a folder and Compose brings a project
+   * up, and neither has a handle for half of itself.
+   */
+  up(ws: Workspace, names?: string[]): Promise<{ ok: boolean; detail: string; procIds?: string[] }>
+  down(ws: Workspace, names?: string[]): Promise<{ ok: boolean; detail: string }>
   health(ws: Workspace): Promise<{ status: RuntimeState['status']; detail: string }>
   preview(ws: Workspace): Promise<NonNullable<RuntimeState['preview']>>
   ports(ws: Workspace): Promise<{ name: string; port: number }[]>
@@ -276,10 +282,20 @@ const declaredRuntime: Runtime = {
     const r = await run(pm, ['install'], { cwd: ws.path, timeoutMs: 600_000 })
     return { ok: r.ok, detail: r.ok ? pm + ' install done' : r.stderr.slice(-800) }
   },
-  async up(ws) {
-    const servers = await serversOf(ws)
+  async up(ws, names) {
+    // Named, `start:` is not consulted: asking for `worker` by name *is* the
+    // answer to "should this one start", and filtering it back out afterwards
+    // would refuse the only request the list was in the way of.
+    const servers = names?.length
+      ? (await hostedServersOf(ws)).filter((s) => names.includes(s.name))
+      : await serversOf(ws)
     if (!servers.length) {
-      return { ok: false, detail: 'no server declared for ' + (ws.repoName || basename(ws.path)) }
+      return {
+        ok: false,
+        detail: names?.length
+          ? 'nothing named ' + names.join(', ') + ' here'
+          : 'no server declared for ' + (ws.repoName || basename(ws.path)),
+      }
     }
     // Refusing to spawn a line that still has a placeholder in it: the process
     // would start, fail on a nonsense argument, and the log would show the
@@ -311,14 +327,21 @@ const declaredRuntime: Runtime = {
       .join(', ')
     return { ok: true, procIds, detail }
   },
-  async down(ws) {
-    const n = sup.stopWorkspace(ws.id)
+  async down(ws, names) {
+    const n = names?.length ? sup.stopLabelled(ws.id, names) : sup.stopWorkspace(ws.id)
     return { ok: true, detail: 'stopped ' + n + ' process(es)' }
   },
   async health(ws) {
     const procs = sup.listForWorkspace(ws.id)
     if (!procs.length) return { status: 'down', detail: 'no process' }
-    const servers = await serversOf(ws)
+
+    // What is *running*, not what `start:` says would run if you pressed the
+    // button. Those were the same list until a server could be started by
+    // name; now they are not, and reading the old one meant starting `worker`
+    // alone left the workspace `starting` forever, waiting on a `web` nobody
+    // had asked for.
+    const alive = sup.runningLabels(ws.id)
+    const servers = (await hostedServersOf(ws)).filter((s) => alive.has(s.name))
 
     // A server with no URL is judged on being alive, because there is nothing
     // else to ask it: a queue worker answers no request and is not unhealthy
@@ -332,9 +355,17 @@ const declaredRuntime: Runtime = {
     return { status: 'starting', detail: 'waiting on ' + late.map((s) => s.name).join(', ') }
   },
   async preview(ws) {
-    const servers = await serversOf(ws)
-    const withUrl = servers.find((s) => s.url)
-    return withUrl?.url ? { kind: 'url', value: withUrl.url } : { kind: 'none' }
+    // The address of something that is actually answering, and nothing else.
+    //
+    // It used to be the first declared server with a URL, which was the same
+    // answer while Start was all-or-nothing. It stopped being: start `worker`
+    // alone and this handed back `web`'s address — a link the window offers,
+    // on a port nothing is listening to. There is no useful fallback here,
+    // because a URL for a server that was never started is a connection
+    // refused with extra steps (§7: write the truth, never a guess).
+    const alive = sup.runningLabels(ws.id)
+    const serving = (await hostedServersOf(ws)).find((s) => s.url && alive.has(s.name))
+    return serving?.url ? { kind: 'url', value: serving.url } : { kind: 'none' }
   },
   async ports(ws) {
     const servers = await resolveEnvironment(ws)
@@ -578,7 +609,7 @@ async function settle(
   })
 }
 
-export async function up(ws: Workspace): Promise<RuntimeUpResult> {
+export async function up(ws: Workspace, names?: string[]): Promise<RuntimeUpResult> {
   const rt = runtimeFor(ws)
   if (!rt) return upResult({ status: 'unknown', detail: 'no runtime for this workspace' })
 
@@ -594,7 +625,7 @@ export async function up(ws: Workspace): Promise<RuntimeUpResult> {
     return upResult({ detail: prov.detail, log: prov.detail })
   }
 
-  const res = await rt.up(ws)
+  const res = await rt.up(ws, names)
   if (!res.ok) {
     append({
       type: 'runtime.up',
@@ -628,13 +659,43 @@ export function logs(ws: Workspace) {
   return sup.logsForWorkspace(ws.id)
 }
 
-export async function down(ws: Workspace) {
+export async function down(ws: Workspace, names?: string[]) {
   const rt = runtimeFor(ws)
   if (!rt) return { ok: false, detail: 'no runtime for this workspace' }
-  const res = await rt.down(ws)
-  sup.stopWorkspace(ws.id)
-  append({ type: 'runtime.down', workspaceId: ws.id, payload: { impl: rt.id, detail: res.detail } })
+  const res = await rt.down(ws, names)
+  // The sweep behind the runtime's own `down` exists because a runtime may
+  // detach what it started; narrowed with `names`, so stopping one server no
+  // longer takes the rest of the workspace down with it.
+  if (names?.length) sup.stopLabelled(ws.id, names)
+  else sup.stopWorkspace(ws.id)
+  append({
+    type: 'runtime.down',
+    workspaceId: ws.id,
+    payload: { impl: rt.id, detail: res.detail, names: names ?? null },
+  })
   return res
+}
+
+/**
+ * §8 — the declared servers of this checkout, by name, with what is true of
+ * each one now.
+ *
+ * Empty for every runtime but the declared one, and that is the honest answer
+ * rather than a missing feature: a detected `node` project, Herd and Compose
+ * have one opaque "the servers" and no handle on any part of it. The window
+ * reads an empty list as "nothing to pick" and keeps the plain switch.
+ */
+export async function servers(ws: Workspace): Promise<DeclaredServer[]> {
+  if (runtimeFor(ws)?.id !== 'declared') return []
+  const onStart = startsOnPress(ws)
+  return (await hostedServersOf(ws)).map((s) => ({
+    name: s.name,
+    cmd: s.cmd,
+    url: s.url,
+    port: s.port,
+    inStart: onStart(s.name),
+    unresolved: s.unresolved,
+  }))
 }
 
 export async function health(ws: Workspace) {

@@ -39,6 +39,14 @@ const d = computed(() => state.declarations)
  * flag never sees the change that brought it here.
  */
 const scope = ref(state.declareLock ?? '')
+/**
+ * The half this sheet was opened on, read at setup for the same reason the
+ * scope is: the component is mounted by `v-if` after the flag flipped.
+ *
+ * Null is both, which is what the general ways in still ask for.
+ */
+const section = ref(state.declareSection)
+const shows = (kind: Declaration['kind']) => !section.value || section.value === kind
 const editing = ref<Declaration | null>(null)
 const previousName = ref<string | undefined>(undefined)
 const confirming = ref<string | null>(null)
@@ -56,9 +64,13 @@ const locked = computed(() => state.declareLock !== null)
 const scopeLabel = computed(
   () => scopes.value.find((x) => x.repo === scope.value)?.label ?? scope.value,
 )
+/** What the sheet is of: one half names itself, both keep the old title. */
+const heading = computed(() =>
+  section.value === 'server' ? 'Servers' : section.value === 'command' ? 'Commands' : 'Servers and commands',
+)
 const title = computed(() => {
   if (editing.value) return previousName.value ?? 'New ' + editing.value.kind
-  return locked.value ? 'Servers and commands · ' + scopeLabel.value : 'Servers and commands'
+  return locked.value ? heading.value + ' · ' + scopeLabel.value : heading.value
 })
 const inScope = (kind: Declaration['kind']) =>
   (d.value?.declarations ?? []).filter((x) => x.kind === kind && x.repo === scope.value)
@@ -121,6 +133,7 @@ function back(): void {
 
 function close(): void {
   state.declareOpen = false
+  state.declareSection = null
   back()
 }
 
@@ -201,7 +214,7 @@ onMounted(() => {
         </div>
         <p class="folder mono" :title="folderOf">{{ folderShort }}</p>
 
-        <section>
+        <section v-if="shows('server')">
           <h3><Server class="sm" /> Servers <span class="dim">— what stays up</span></h3>
           <button v-for="x in servers" :key="x.name" class="row" @click="edit(x)">
             <span class="nm">{{ x.name }}</span>
@@ -217,7 +230,7 @@ onMounted(() => {
           <button class="add" @click="edit(null, 'server')"><Plus class="sm" /> Add a server</button>
         </section>
 
-        <section>
+        <section v-if="shows('command')">
           <h3><Terminal class="sm" /> Commands <span class="dim">— what you press</span></h3>
           <button v-for="x in commands" :key="x.name" class="row" @click="edit(x)">
             <span class="nm">{{ x.name }}</span>
