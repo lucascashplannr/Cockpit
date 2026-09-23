@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { FolderOpen, Lock, Plus, Trash2, TriangleAlert, X } from '@lucide/vue'
+import { FolderOpen, Lock, Plus, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
 import {
-  editingProject, forgetProject, moveProject, pickFolder, renameProject, setProjectSettings,
-  state, trashProject,
+  editingProject, forgetProject, loadDeclarations, moveProject, openDeclarations, pickFolder,
+  renameProject, setProjectSettings, state, trashProject,
 } from '../core/store.js'
 
 /**
@@ -14,6 +14,10 @@ import {
  */
 
 const p = computed(() => editingProject.value)
+
+watch(p, (proj) => {
+  if (proj) void loadDeclarations()
+})
 
 const name = ref('')
 const root = ref('')
@@ -101,6 +105,29 @@ const running = computed(() => workspaces.value.filter((w) => w.runtime?.status 
 function close() {
   if (busy.value) return
   state.editingProjectId = null
+}
+
+/**
+ * §8 — what the project declares, counted rather than listed.
+ *
+ * The list belongs to the editor; this line exists so the section says
+ * something true before it is opened, including when the answer is nothing.
+ */
+const declaredSummary = computed(() => {
+  const all = state.declarations?.declarations ?? []
+  if (!all.length) return 'Nothing declared yet.'
+  const servers = all.filter((d) => d.kind === 'server').length
+  const commands = all.length - servers
+  const say = (n: number, one: string) => n + ' ' + (n === 1 ? one : one + 's')
+  return [servers && say(servers, 'server'), commands && say(commands, 'command')]
+    .filter(Boolean)
+    .join(', ')
+})
+
+/** One sheet at a time: this one closes as the editor opens over it. */
+function editDeclarations(): void {
+  close()
+  openDeclarations('')
 }
 
 async function save() {
@@ -228,6 +255,27 @@ function onKey(e: KeyboardEvent) {
           Servers still up in {{ running.length }} of them — moving will be refused until
           {{ running.length === 1 ? 'it is' : 'they are' }} stopped.
         </p>
+
+        <!-- §8 — what this project runs. The bar is where you press them;
+             this is where they are written, beside the other things that are
+             true of the project rather than of the checkout you are standing
+             in. It is also the only place a project with nothing declared yet
+             can be given its first server. -->
+        <span class="section-label sep">Servers and commands</span>
+
+        <div class="field">
+          <div class="row">
+            <span class="help grow">{{ declaredSummary }}</span>
+            <button class="btn" @click="editDeclarations">
+              <SlidersHorizontal />Edit
+            </button>
+          </div>
+          <span class="help">
+            Written into <code class="mono">cockpit.yaml</code>, per repository or for the
+            project itself. A repository's runs in its own checkout — inside a topic, in that
+            topic's worktree; the project's runs in the folder holding the repositories.
+          </span>
+        </div>
 
         <span class="section-label sep">Git</span>
 

@@ -342,6 +342,17 @@ export const state = reactive({
 
   /** §8 — the editor for what this project declares. Project-scoped (§8). */
   declareOpen: false,
+  /**
+   * The scope it opens on and cannot leave: `''` the project, a repository
+   * folder name, or null for "you choose".
+   *
+   * Opened from somewhere that already means a scope — the bar, which is about
+   * a checkout; project settings, which are about the project — the chooser is
+   * noise: it offers to answer a question that was answered by the click that
+   * got you here. Only the palette, which stands nowhere in particular, leaves
+   * it open.
+   */
+  declareLock: null as string | null,
   declarations: null as Declarations | null,
   planBusy: false,
   toasts: [] as ToastItem[],
@@ -2416,7 +2427,8 @@ function release(toastId: number): void {
 
 /* ── editing what a project declares (§8) ───────────────────────────── */
 
-export function openDeclarations(): void {
+export function openDeclarations(scope?: string): void {
+  state.declareLock = scope ?? null
   state.declareOpen = true
   void loadDeclarations()
 }

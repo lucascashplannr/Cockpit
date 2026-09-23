@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ArrowLeft, Plus, Server, Terminal, Trash2, X } from '@lucide/vue'
 import DialogShell from './DialogShell.vue'
 import type { Declaration } from '@cockpit/shared'
@@ -31,7 +31,14 @@ import { loadDeclarations, removeDeclaration, saveDeclaration, state } from '../
 const T = { port: '{' + '{port}' + '}', api: '{' + '{api.url}' + '}', name: '{' + '{name}' + '}' }
 
 const d = computed(() => state.declarations)
-const scope = ref('')
+/**
+ * The scope this sheet opens on.
+ *
+ * Read at setup rather than in a watcher: App.vue mounts this component with
+ * `v-if`, so it is created *after* `declareOpen` flipped and a watcher on that
+ * flag never sees the change that brought it here.
+ */
+const scope = ref(state.declareLock ?? '')
 const editing = ref<Declaration | null>(null)
 const previousName = ref<string | undefined>(undefined)
 const confirming = ref<string | null>(null)
@@ -39,6 +46,20 @@ const busy = ref(false)
 const nameField = ref<HTMLInputElement | null>(null)
 
 const scopes = computed(() => d.value?.scopes ?? [])
+
+/**
+ * Locked to what the click meant, or free when nothing meant anything.
+ *
+ * `''` is a scope — the project — so this is a null check, never a falsy one.
+ */
+const locked = computed(() => state.declareLock !== null)
+const scopeLabel = computed(
+  () => scopes.value.find((x) => x.repo === scope.value)?.label ?? scope.value,
+)
+const title = computed(() => {
+  if (editing.value) return previousName.value ?? 'New ' + editing.value.kind
+  return locked.value ? 'Servers and commands · ' + scopeLabel.value : 'Servers and commands'
+})
 const inScope = (kind: Declaration['kind']) =>
   (d.value?.declarations ?? []).filter((x) => x.kind === kind && x.repo === scope.value)
 
@@ -142,21 +163,16 @@ function addPair(list: 'env' | 'ask'): void {
   else e.ask.push({ key: '', label: '' })
 }
 
-watch(
-  () => state.declareOpen,
-  (open) => {
-    if (!open) return
-    back()
-    scope.value = ''
-    void loadDeclarations()
-  },
-)
+onMounted(() => {
+  back()
+  void loadDeclarations()
+})
 </script>
 
 <template>
   <DialogShell
     v-if="state.declareOpen"
-    :title="editing ? (previousName ?? 'New ' + editing.kind) : 'Servers and commands'"
+    :title="title"
     @close="close"
   >
     <template #lead>
@@ -168,8 +184,10 @@ watch(
 <!-- ── the list ────────────────────────────────────────────────── -->
       <div v-if="!editing">
         <!-- Scope is chosen before anything else because it decides the
-             folder, and the folder is the part that surprises people. -->
-        <div class="scopes">
+             folder, and the folder is the part that surprises people — unless
+             the way in already chose it, and then showing the choice again is
+             offering to undo the click that got you here. -->
+        <div v-if="!locked" class="scopes">
           <button
             v-for="s in scopes"
             :key="s.repo"
@@ -225,7 +243,11 @@ watch(
 
         <div class="field">
           <span class="lbl">Runs in</span>
-          <div class="scopes">
+          <!-- Locked, the scope is a fact rather than a choice: moving this
+               entry to another repository from inside a sheet that only shows
+               one would make it vanish as it saved. -->
+          <p v-if="locked" class="folder mono" :title="folderOf">{{ folderShort }}</p>
+          <div v-else class="scopes">
             <button
               v-for="s in scopes"
               :key="s.repo"

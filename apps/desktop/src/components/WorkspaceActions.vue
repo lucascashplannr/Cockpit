@@ -2,11 +2,12 @@
 import { computed } from 'vue'
 import {
   AppWindow, ArrowDownToLine, ArrowUpFromLine, CirclePlay, CircleStop, FileCode,
-  GitCompareArrows, Undo2,
+  GitCompareArrows, SlidersHorizontal, Terminal, Undo2,
 } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
 import {
-  activeWorkspace, client, gitBusy, guard, requestPlan, toggleWorkspaceRuntime,
+  activeWorkspace, askCommand, client, gitBusy, guard, openDeclarations, requestPlan,
+  state, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -33,6 +34,17 @@ const w = computed(() => activeWorkspace.value)
  * that is mid-switch reads whichever half of the branch it happens to catch.
  */
 const busy = computed(() => !!(w.value && gitBusy[w.value.id]))
+
+/**
+ * §8 — the declared one-shots, beside Start.
+ *
+ * They were in the Servers tool, under the board, and that was the wrong
+ * place for the same reason the bar exists at all: a tool is where you look
+ * at something, the bar is where you act on it. Pressing `build` is not part
+ * of reading what is running — it is a verb this checkout has, like Push, and
+ * it belongs with the other verbs whatever you happen to be looking at.
+ */
+const commands = computed(() => state.commands)
 const preview = computed(() => w.value?.runtime?.preview ?? null)
 
 /**
@@ -177,6 +189,24 @@ async function undo() {
       <component :is="running ? CircleStop : CirclePlay" />
       <span class="vl">{{ w.runtime.status === 'starting' ? 'Starting' : running ? 'Stop' : 'Start' }}</span>
     </button>
+
+    <!-- §8 — next to the switch, because they are the same kind of act: the
+         things this checkout runs. Named rather than an ellipsis, so the one
+         verb here that is a *list* reads as one. -->
+    <OverflowMenu v-if="commands.length" label="Run a command here" :disabled="busy">
+      <template #trigger>
+        <Terminal /><span class="vl">Run</span>
+      </template>
+      <button v-for="c in commands" :key="c.name" @click="askCommand(c)">
+        <Terminal /> {{ c.name }}{{ c.inputs.length ? '…' : '' }}
+      </button>
+      <span class="rule" />
+      <!-- The list and the way to change it, in one place: the menu naming
+           what exists is where anyone looks to add the next one. -->
+      <button @click="openDeclarations(w.repoName)">
+        <SlidersHorizontal /> Servers and commands…
+      </button>
+    </OverflowMenu>
 
     <!-- Always, wherever there is a branch to push.
          Push is the one git verb that is never a surprise and never contextual

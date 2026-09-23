@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CirclePlay, CircleStop, ExternalLink, Plus, RotateCw, SlidersHorizontal, Terminal } from '@lucide/vue'
+import { CirclePlay, CircleStop, ExternalLink, RotateCw } from '@lucide/vue'
 import type { ProcessLog, ServerBoardRow, Workspace } from '@cockpit/shared'
 import {
-  LAYOUT_LIMITS, askCommand, client, guard, layout, loadRuntimeLogs, onRuntimeLogData, openDeclarations, refreshBoard,
+  LAYOUT_LIMITS, client, guard, layout, loadRuntimeLogs, onRuntimeLogData, refreshBoard,
   resetBoardHeight, saveLayout, setBoardHeight, state, toggleWorkspaceRuntime,
 } from '../../core/store.js'
 import Splitter from '../Splitter.vue'
@@ -206,11 +206,6 @@ onBeforeUnmount(() => {
     >
       <div class="bhead">
         <span>Running</span>
-        <!-- §8 — the file is still the source of truth, and this is the door
-             to it: what runs is edited where what runs is shown. -->
-        <button class="icon-btn" title="Edit servers and commands" @click="openDeclarations()">
-          <SlidersHorizontal class="sm" />
-        </button>
         <button class="icon-btn" title="Re-probe every runtime" @click="refreshBoard()">
           <RotateCw class="sm" />
         </button>
@@ -254,27 +249,6 @@ onBeforeUnmount(() => {
             <component :is="r.status === 'up' || r.status === 'starting' ? CircleStop : CirclePlay" />
           </span>
         </span>
-      </button>
-    </div>
-
-    <!-- §8 — the declared one-shots, beside the things that stay up. They
-         belong here rather than in a menu for the same reason Start is on the
-         row: the act and the thing it acts on should be within reach of each
-         other. A project that declares none shows nothing at all (§3.9). -->
-    <div v-if="state.commands.length || state.declarations" class="cmds">
-      <button
-        v-for="c in state.commands"
-        :key="c.name"
-        class="cmd"
-        :title="c.cmd + '  —  ' + c.cwd"
-        @click="askCommand(c)"
-      >
-        <Terminal class="sm" />
-        <span>{{ c.name }}</span>
-        <span v-if="c.inputs.length" class="ell">…</span>
-      </button>
-      <button class="cmd new" title="Add a server or a command" @click="openDeclarations()">
-        <Plus class="sm" />
       </button>
     </div>
 
@@ -333,48 +307,6 @@ onBeforeUnmount(() => {
 .board.sized {
   flex: none;
   max-height: none;
-}
-/* One line, scrolled sideways rather than wrapped: a project with nine
-   commands must not push the log off the bottom of the pane. */
-.cmds {
-  flex: none;
-  display: flex;
-  gap: 6px;
-  padding: 6px 10px;
-  overflow-x: auto;
-  border-top: 1px solid var(--line);
-}
-.cmd {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  padding: 4px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--bg-raised);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  cursor: pointer;
-}
-.cmd:hover { color: var(--text); border-color: var(--line-strong); }
-/* The ellipsis is the promise that a box opens rather than something running
-   the instant it is clicked — the platform's own convention, kept. */
-.cmd .ell { color: var(--text-muted); }
-.cmd.new { padding: 4px 8px; border-style: dashed; }
-
-.bhead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 8px 0 12px;
-  height: 28px;
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  position: sticky;
-  top: 0;
-  background: var(--surface-review);
-  z-index: 1;
 }
 .bhead span { flex: 1; }
 

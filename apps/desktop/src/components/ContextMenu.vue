@@ -2,11 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Archive, CirclePlay, CircleStop, Copy, FileCode, FolderOpen, Info, MessageSquarePlus, Pause, Play,
-  Stamp, Trash2,
+  SlidersHorizontal, Stamp, Trash2,
 } from '@lucide/vue'
 import {
-  adoptTopic, askDeleteTopic, client, closeTopic, guard, newConversationOn, startTopic, state,
-  stopTopic, toast, toggleWorkspaceRuntime,
+  adoptTopic, askDeleteTopic, client, closeTopic, guard, newConversationOn, openDeclarations,
+  startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -126,6 +126,15 @@ async function copyPath(path: string) {
     <template v-if="ws">
       <button @click="act(() => newConversationOn({ kind: 'workspace', workspaceId: ws!.id }))">
         <MessageSquarePlus /> New conversation here
+      </button>
+      <!-- §8 — on the repositories of the project, not on a branch's
+           worktree: a declaration belongs to the repository, and every
+           worktree of it already runs what the repository declares. -->
+      <button
+        v-if="ws.kind === 'main' && ws.repoName"
+        @click="act(() => openDeclarations(ws!.repoName))"
+      >
+        <SlidersHorizontal /> Servers and commands…
       </button>
       <button v-if="ws.runtime" @click="act(() => toggleWorkspaceRuntime(ws!))">
         <component :is="serverRunning ? CircleStop : CirclePlay" />

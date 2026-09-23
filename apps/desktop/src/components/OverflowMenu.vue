@@ -66,14 +66,17 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="root" class="more">
+    <!-- Named when it is a group of its own — Run — and an ellipsis when it
+         is the tail of the bar. Same menu either way: a second dropdown built
+         beside this one would be the fifth thing on that bar drawn its own
+         way. -->
     <button
-      class="icon-btn mb"
-      :class="{ on: open }"
+      :class="[$slots.trigger ? 'btn ghost' : 'icon-btn mb', { on: open }]"
       :disabled="disabled"
       :title="label ?? 'Everything else you can do here'"
       @click="open = !open"
     >
-      <Ellipsis class="sm" />
+      <slot name="trigger"><Ellipsis class="sm" /></slot>
     </button>
     <!-- Any click inside picks something, so any click inside closes it. -->
     <div v-if="open" class="menu" @click="open = false"><slot /></div>
