@@ -162,7 +162,15 @@ watch(
 .scrim {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  /* Above the other dialogs rather than beside them.
+   *
+   * Everything at 60 is a surface you work on; this is the question you are
+   * asked *about* something on one of them, so it is always the innermost
+   * thing on screen. At 60 it depended on the order of App.vue's template —
+   * a delete confirmed from the servers sheet rendered behind the sheet,
+   * scrim and all, and looked like nothing had happened. Below the toasts
+   * (70) and the connection banner (80), which outrank every dialog. */
+  z-index: 65;
   display: flex;
   align-items: center;
   justify-content: center;

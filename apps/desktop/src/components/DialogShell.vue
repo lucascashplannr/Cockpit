@@ -50,7 +50,12 @@ const emit = defineEmits<{ close: [] }>()
       <header class="head">
         <!-- Before the title: a back arrow, an icon, whatever the dialog leads with. -->
         <slot name="lead" />
-        <h2>{{ title }}</h2>
+        <!-- The title is a string for almost every dialog, and a string is
+             what most of them want. The slot is for the one that needs the
+             heading to be *composed* — an icon, a name and what it is scoped
+             to — rather than a sentence with a middle dot in it. It keeps the
+             h2, so the type and the clipping stay the shell's. -->
+        <h2><slot name="title">{{ title }}</slot></h2>
         <span class="grow" />
         <slot name="head" />
         <button class="icon-btn" title="Close (esc)" @click="emit('close')"><X class="sm" /></button>
@@ -120,6 +125,9 @@ const emit = defineEmits<{ close: [] }>()
 }
 .sheet .head h2 { font-size: var(--fs-lg); }
 .question .head h2 { font-size: var(--fs-md); }
+/* Composed titles lay themselves out; `overflow: hidden` on the h2 still
+   clips them, and whichever part they mark as flexible is the part that goes. */
+.head h2:has(> *) { display: flex; align-items: center; gap: 8px; }
 .grow { flex: 1; }
 
 .body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px 6px; }

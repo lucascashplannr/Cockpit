@@ -2484,6 +2484,49 @@ export async function saveDeclaration(
   return true
 }
 
+/**
+ * §8 — dropping a declaration, asked the way everything else here is asked.
+ *
+ * It used to arm the trash and wait for a second click on the same 20px
+ * target: no sentence, no undo, and nothing to say what else it would take
+ * with it. That is the third voice `ConfirmDialog` exists to prevent, and it
+ * was the one voice used for the only act in this sheet that destroys
+ * anything.
+ *
+ * The body is what the core will actually do beyond deleting the key — it
+ * rewrites `runs:` lists that name it and `start:` if it was a server — so
+ * the question can say it before rather than the file showing it after.
+ */
+export function askDeleteDeclaration(decl: Declaration): void {
+  const all = state.declarations?.declarations ?? []
+  const usedBy = all.filter((x) => x.kind === 'command' && x.runs.includes(decl.name))
+  const file = state.declarations?.manifestPath?.split('/').pop() ?? 'the manifest'
+
+  // The first line is the one the dialog draws in red, so it is the cost and
+  // nothing else. The reassurance goes after it, where reassurance belongs.
+  const body = ['Its line is removed from ' + file + '.']
+  if (usedBy.length) {
+    body.push(
+      usedBy.map((x) => '“' + x.name + '”').join(', ') +
+        (usedBy.length > 1 ? ' run it, and lose that step.' : ' runs it, and loses that step.'),
+    )
+  }
+  body.push(
+    decl.kind === 'server'
+      ? 'Anything already running under that name keeps running until you stop it.'
+      : 'Nothing that has already run is undone.',
+  )
+
+  state.pendingConfirm = {
+    title: 'Delete "' + decl.name + '"?',
+    body,
+    verb: 'Delete',
+    done: 'removed ' + decl.name,
+    danger: true,
+    run: () => removeDeclaration(decl.kind, decl.name),
+  }
+}
+
 export async function removeDeclaration(kind: Declaration['kind'], name: string): Promise<boolean> {
   const projectId = state.activeProjectId
   if (!projectId) return false

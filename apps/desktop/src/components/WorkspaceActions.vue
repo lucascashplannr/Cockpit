@@ -310,7 +310,7 @@ async function undo() {
              out of it is about servers: the commands were a second list to
              scroll past on the way to the one thing that had been asked for. -->
         <button @click="openDeclarations(w.repoName, 'server')">
-          <SlidersHorizontal /> Servers…
+          <SlidersHorizontal /> Edit servers…
         </button>
       </OverflowMenu>
     </div>
@@ -345,7 +345,7 @@ async function undo() {
              what exists is where anyone looks to add the next one. Commands
              only, for the same reason the Start menu offers servers only. -->
         <button @click="openDeclarations(w.repoName, 'command')">
-          <SlidersHorizontal /> Commands…
+          <SlidersHorizontal /> Edit commands…
         </button>
       </OverflowMenu>
     </div>
@@ -416,7 +416,7 @@ async function undo() {
            has no Run menu at all — and that is exactly the repository someone
            is trying to declare the first command in. -->
       <button @click="openDeclarations(w.repoName)">
-        <SlidersHorizontal /> Servers and commands…
+        <SlidersHorizontal /> Edit servers and commands…
       </button>
       <template v-if="git">
         <span class="rule" />
