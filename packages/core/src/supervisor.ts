@@ -123,6 +123,8 @@ export function start(opts: StartOptions): SupervisedProcess {
 
   child.on('exit', (code) => {
     live.delete(id)
+    for (const w of waiters.get(id) ?? []) w(code)
+    waiters.delete(id)
     managed.exit = { code, at: Date.now() }
     dead.set(id, managed)
     // Oldest first: a Map iterates in insertion order, so this is the corpse
@@ -294,6 +296,26 @@ export function statusOf(procId: string): { alive: boolean; exitCode: number | n
  * code 1" is unreadable when three servers started together, and "worker
  * exited with code 1" names the line to fix.
  */
+/**
+ * §8 — resolves when a process ends, for the one caller that must wait: a
+ * command whose `runs` list has to stop at the first failure.
+ *
+ * Nothing else here waits, and nothing else should — a dev server that ends
+ * is news, not a step completing.
+ */
+const waiters = new Map<string, ((code: number | null) => void)[]>()
+
+export function waitFor(procId: string): Promise<number | null> {
+  const known = statusOf(procId)
+  if (!known) return Promise.resolve(null)
+  if (!known.alive) return Promise.resolve(known.exitCode)
+  return new Promise((resolve) => {
+    const list = waiters.get(procId) ?? []
+    list.push(resolve)
+    waiters.set(procId, list)
+  })
+}
+
 export function labelOf(procId: string): string {
   return live.get(procId)?.label ?? dead.get(procId)?.label ?? 'server'
 }

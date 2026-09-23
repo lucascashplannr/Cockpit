@@ -3,12 +3,13 @@ import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@cockpit/shared'
 import type {
-  AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, RpcRequest, RpcResponse,
+  AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
   ProjectSettings, ServerBoardRow, ServerPush,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, forSession, tail } from './journal.js'
 import * as commands from './commands.js'
+import * as declare from './declare.js'
 import * as registry from './registry.js'
 import * as scaffold from './scaffold.js'
 import * as files from './files.js'
@@ -560,10 +561,33 @@ const handlers: Record<string, Handler> = {
   'runtime.logs': (p: { workspaceId: string }) =>
     runtime.logs(registry.requireWorkspace(p.workspaceId)),
 
+  'declare.list': (p: { projectId: string }) => declare.declarationsOf(p.projectId),
+  'declare.save': async (p: { projectId: string; declaration: Declaration; previousName?: string }) => {
+    const res = declare.saveDeclaration(p.projectId, p.declaration, p.previousName)
+    // The manifest is not watched, so the capability set only learns about a
+    // new server if something asks. This is that something.
+    if (res.ok) {
+      await registry.reconcile(p.projectId)
+      pushAll()
+    }
+    return res
+  },
+  'declare.remove': async (p: { projectId: string; kind: 'server' | 'command'; name: string }) => {
+    const res = declare.removeDeclaration(p.projectId, p.kind, p.name)
+    if (res.ok) {
+      await registry.reconcile(p.projectId)
+      pushAll()
+    }
+    return res
+  },
+
   'commands.list': (p: { workspaceId: string }) =>
     commands.listCommands(registry.requireWorkspace(p.workspaceId)),
   'commands.run': async (p: { workspaceId: string; name: string; answers?: Record<string, string> }) => {
     const res = await commands.runCommand(p.workspaceId, p.name, p.answers ?? {})
+    // Whatever it started has to be re-probed, or the board keeps reporting
+    // the state it recorded before the command ran (§8).
+    for (const id of res.touched) await registry.probeWorkspace(id).catch(() => null)
     pushWorkspaces()
     return res
   },

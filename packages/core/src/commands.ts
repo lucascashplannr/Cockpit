@@ -3,7 +3,8 @@ import { findManifest, readManifest } from './detect.js'
 import { getProject, requireWorkspace } from './registry.js'
 import { append } from './journal.js'
 import * as sup from './supervisor.js'
-import { baseLookup, hostWorkspaceFor, resolveEnvironment } from './runtime/declared.js'
+import { baseLookup, hostWorkspaceFor, resolveEnvironment, serversOf } from './runtime/declared.js'
+import * as runtime from './runtime/index.js'
 import { fill, splitArgs } from './runtime/template.js'
 
 /**
@@ -45,7 +46,8 @@ export function listCommands(ws: Workspace): DeclaredCommand[] {
       name,
       workspaceId: host.ws.id,
       cwd: host.ws.path,
-      cmd: decl.cmd,
+      cmd: decl.cmd ?? '',
+      runs: decl.runs ?? [],
       inputs: inputsOf(decl),
       confirm: decl.confirm === true ? 'Run ' + name + '?' : decl.confirm ? String(decl.confirm) : null,
       fellBack: host.fellBack,
@@ -68,18 +70,24 @@ export async function runCommand(
 ): Promise<CommandRunResult> {
   const ws = requireWorkspace(workspaceId)
   const decl = manifestFor(ws)?.commands?.[name]
-  if (!decl) return { ok: false, detail: 'no command named ' + name, procId: null, cmd: '', cwd: '' }
+  if (!decl) return { ok: false, detail: 'no command named ' + name, touched: [], procId: null, cmd: '', cwd: '' }
 
   const host = hostWorkspaceFor(ws, decl.repo)
   if (!host) {
-    return { ok: false, detail: 'no checkout of ' + decl.repo + ' here', procId: null, cmd: decl.cmd, cwd: '' }
+    return { ok: false, detail: 'no checkout of ' + decl.repo + ' here', touched: [], procId: null, cmd: decl.cmd ?? '', cwd: '' }
   }
 
+  // §8 — a list, run in order. The caller waits, the same way it waits for a
+  // server to answer: the output is streaming into the log pane meanwhile, so
+  // waiting is not the same as being blind.
+  if (decl.runs?.length) return runSequence(ws, name, decl.runs, answers, host.ws.path)
+
+  const line = decl.cmd ?? ''
   const base = baseLookup(host.ws)
-  const wantsServers = /\{\{[\w-]+\.(url|port)\}\}/.test(decl.cmd)
+  const wantsServers = /\{\{[\w-]+\.(url|port)\}\}/.test(line)
   const servers = wantsServers ? await resolveEnvironment(ws) : []
 
-  const { text, missing } = fill(decl.cmd, (key) => {
+  const { text, missing } = fill(line, (key) => {
     if (key in answers) return answers[key] ?? null
     const own = base(key)
     if (own !== null) return own
@@ -99,6 +107,7 @@ export async function runCommand(
     return {
       ok: false,
       detail: 'nothing named ' + missing.map((m) => '{{' + m + '}}').join(', '),
+      touched: [],
       procId: null,
       cmd: text,
       cwd: host.ws.path,
@@ -107,7 +116,7 @@ export async function runCommand(
 
   const argv = splitArgs(text)
   if (!argv.length) {
-    return { ok: false, detail: 'empty command', procId: null, cmd: text, cwd: host.ws.path }
+    return { ok: false, detail: 'empty command', touched: [], procId: null, cmd: text, cwd: host.ws.path }
   }
 
   const proc = sup.start({
@@ -123,5 +132,85 @@ export async function runCommand(
     actor: { kind: 'human' },
     payload: { name, cmd: text, cwd: host.ws.path, procId: proc.id },
   })
-  return { ok: true, detail: 'running ' + name, procId: proc.id, cmd: text, cwd: host.ws.path }
+  return { ok: true, detail: 'running ' + name, touched: [host.ws.id], procId: proc.id, cmd: text, cwd: host.ws.path }
+}
+
+/**
+ * §8 — run a `runs:` list, in order, stopping at the first failure.
+ *
+ * A name in the list is a command or a server, and the difference is what
+ * "done" means: a command is done when it exits, a server when it is up. That
+ * is the only reason this has two branches — the user writing `up: { runs:
+ * [api, web] }` should not have to say which kind each one is.
+ */
+async function runSequence(
+  ws: Workspace,
+  name: string,
+  steps: string[],
+  answers: Record<string, string>,
+  cwd: string,
+): Promise<CommandRunResult> {
+  const manifest = manifestFor(ws)
+  const done: string[] = []
+  const touched = new Set<string>()
+
+  for (const step of steps) {
+    if (manifest?.commands?.[step]) {
+      const res = await runCommand(ws.id, step, answers)
+      if (!res.ok) {
+        return { ok: false, detail: failure(done, step, res.detail), touched: [...touched], procId: null, cmd: name, cwd }
+      }
+      for (const id of res.touched) touched.add(id)
+      const code = res.procId ? await sup.waitFor(res.procId) : 0
+      if (code !== 0) {
+        return {
+          ok: false,
+          detail: failure(done, step, 'exited with code ' + (code ?? '?')),
+          touched: [...touched],
+          procId: res.procId,
+          cmd: name,
+          cwd,
+        }
+      }
+      done.push(step)
+      continue
+    }
+
+    if (manifest?.servers?.[step]) {
+      // Start the workspace that hosts it, which is what `runtime.up` takes.
+      const all = await resolveEnvironment(ws)
+      const target = all.find((s) => s.name === step)
+      const hostWs = target ? getWorkspaceOf(target.workspaceId) : null
+      if (!hostWs) {
+        return { ok: false, detail: failure(done, step, 'nowhere to run it'), touched: [...touched], procId: null, cmd: name, cwd }
+      }
+      // Already up is success, not a second start: pressing `up` twice should
+      // be boring rather than an error or a duplicate process.
+      const running = (await serversOf(hostWs)).length && (await runtime.health(hostWs)).status === 'up'
+      const res = running ? { ok: true, detail: 'already up' } : await runtime.up(hostWs)
+      touched.add(hostWs.id)
+      if (!res.ok) {
+        return { ok: false, detail: failure(done, step, res.detail), touched: [...touched], procId: null, cmd: name, cwd }
+      }
+      done.push(step)
+      continue
+    }
+
+    return { ok: false, detail: failure(done, step, 'nothing named ' + step), touched: [...touched], procId: null, cmd: name, cwd }
+  }
+
+  return { ok: true, detail: done.join(', then '), touched: [...touched], procId: null, cmd: name, cwd }
+}
+
+function failure(done: string[], step: string, why: string): string {
+  const before = done.length ? done.join(', ') + ' ran, then ' : ''
+  return before + step + ' failed — ' + why
+}
+
+function getWorkspaceOf(id: string): Workspace | null {
+  try {
+    return requireWorkspace(id)
+  } catch {
+    return null
+  }
 }

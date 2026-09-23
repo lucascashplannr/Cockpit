@@ -82,8 +82,18 @@ export interface ServerDecl {
 
 /** §8 — a one-shot: the thing you press. Same runner, different lifetime. */
 export interface CommandDecl {
+  /** Repository folder this runs in. Omit to run in the project's own folder. */
   repo?: string
-  cmd: string
+  /** Required unless `runs` is given. */
+  cmd?: string
+  /**
+   * Other declarations to run, in order — the project-level verb.
+   *
+   * A name here is a command, run to completion, or a server, started and
+   * left running. Order is the contract: the list stops at the first command
+   * that fails, because "build then publish" must not publish.
+   */
+  runs?: string[]
   /** Inputs to ask for first; each key is usable as `{{key}}` in `cmd`. */
   ask?: Record<string, string>
   /** A guard before running, for the ones that throw work away. */
@@ -219,8 +229,17 @@ export function validateManifest(raw: unknown): ParsedManifest {
     }
     for (const [name, decl] of Object.entries(decls as Record<string, unknown>)) {
       const d = decl as Record<string, unknown> | null
-      if (!d || typeof d !== 'object' || typeof d.cmd !== 'string' || !d.cmd.trim()) {
-        issues.push({ path: key + '.' + name, message: 'needs a cmd', severity: 'warning' })
+      const hasCmd = !!d && typeof d.cmd === 'string' && !!d.cmd.trim()
+      // A command may say what to run, or which others to run; a server only
+      // ever says the first, because there is nothing to compose about a
+      // process that stays up — `start:` already names that set.
+      const hasRuns = key === 'commands' && Array.isArray(d?.runs) && d.runs.length > 0
+      if (!d || typeof d !== 'object' || (!hasCmd && !hasRuns)) {
+        issues.push({
+          path: key + '.' + name,
+          message: key === 'commands' ? 'needs a cmd or a runs list' : 'needs a cmd',
+          severity: 'warning',
+        })
         delete (decls as Record<string, unknown>)[name]
       }
     }

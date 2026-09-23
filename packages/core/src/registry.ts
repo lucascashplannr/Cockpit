@@ -360,7 +360,7 @@ function buildProject(root: string): Project {
 
   const name = configNameFor(root) ?? projectNameFor(root, manifest)
   const defaultSetup = (manifest?.setup ?? 'branch') as Setup
-  const caps = detectCapabilities(root, manifest)
+  const caps = detectCapabilities(root, manifest, '')
 
   // Which folders hold repos: declared, or discovered one level down, or the
   // root itself for the plain mono-repo case.
@@ -391,7 +391,12 @@ function buildProject(root: string): Project {
     const id = stableId('ws', path)
     if (seen.has(id)) return
     seen.add(id)
-    const wsCaps: Capability[] = detectCapabilities(path, manifest)
+    // §8 — only a checkout of a repository has a repository's identity. The
+    // project folder is not one, and letting it answer to a repo name is how
+    // `Developpement/Schoolgen` (the project) claimed `repo: Schoolgen` (the
+    // repo inside it) and allocated itself a second port for the same server.
+    const repoName = kind === 'main' || kind === 'worktree' ? basename(path) : ''
+    const wsCaps: Capability[] = detectCapabilities(path, manifest, repoName)
     const prev = workspaces.get(id)
     const ws: Workspace = {
       id,
@@ -399,7 +404,7 @@ function buildProject(root: string): Project {
       kind,
       name: displayName ?? basename(path),
       path,
-      repoName: basename(path),
+      repoName,
       repo: isRepo(path) ? path : null,
       git: prev?.git ?? null,
       runtime: prev?.runtime ?? null,

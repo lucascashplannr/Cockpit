@@ -12,7 +12,7 @@ import {
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askCommand, askDeleteTopic, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
+  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askCommand, askDeleteTopic, openDeclarations, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -285,6 +285,15 @@ const commands = computed<Item[]>(() => {
         })
       }
     }
+
+    out.push({
+      id: 'declare',
+      label: 'Edit servers and commands',
+      hint: 'what this project runs, per repository or for the project itself',
+      group: 'Run',
+      icon: SlidersHorizontal,
+      run: act(() => openDeclarations()),
+    })
 
     // §8 — the declared one-shots, in the order the manifest lists them.
     // They sit under their own heading rather than among the git verbs: what

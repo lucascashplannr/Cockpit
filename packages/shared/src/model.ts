@@ -314,6 +314,46 @@ export interface RuntimeState {
   processes: SupervisedProcess[]
 }
 
+/** §8 — a scope a declaration can belong to: a repository, or the project. */
+export interface DeclarationScope {
+  /** The repository folder name; empty means the project's own folder. */
+  repo: string
+  label: string
+  path: string
+}
+
+/**
+ * §8 — one `servers:` or `commands:` entry, flattened for editing.
+ *
+ * One shape for both because the window edits them side by side and the
+ * difference is four fields, not two forms. The core writes back only what was
+ * filled in, so the file keeps the shape a person would have typed.
+ */
+export interface Declaration {
+  kind: 'server' | 'command'
+  name: string
+  /** Empty means the project's own folder (§8). */
+  repo: string
+  cmd: string
+  url: string
+  health: string
+  env: { key: string; value: string }[]
+  ask: { key: string; label: string }[]
+  runs: string[]
+  /** '' none, 'true' the default question, or the question itself. */
+  confirm: string
+  /** Servers only: whether one click starts it. */
+  inStart: boolean
+}
+
+export interface Declarations {
+  projectId: string
+  /** Null when nothing has been declared and no manifest exists yet. */
+  manifestPath: string | null
+  scopes: DeclarationScope[]
+  declarations: Declaration[]
+}
+
 /** §8 — a declared one-shot, resolved for the environment that will run it. */
 export interface DeclaredCommand {
   name: string
@@ -321,6 +361,8 @@ export interface DeclaredCommand {
   cwd: string
   /** The line as declared, placeholders intact — shown before anything is asked. */
   cmd: string
+  /** §8 — the other declarations this one runs, in order. Empty for a plain command. */
+  runs: string[]
   inputs: { key: string; label: string }[]
   /** The question to ask first, or null when it just runs. */
   confirm: string | null
@@ -331,6 +373,14 @@ export interface DeclaredCommand {
 export interface CommandRunResult {
   ok: boolean
   detail: string
+  /**
+   * §8 — the workspaces this touched, for the caller to re-probe.
+   *
+   * The board reports the runtime state recorded at the last probe, so a
+   * command whose `runs:` list started two servers leaves two rows saying
+   * `down` about something answering on its port unless someone asks again.
+   */
+  touched: string[]
   procId: string | null
   /** What was actually spawned, so the window never has to guess (§3.7). */
   cmd: string

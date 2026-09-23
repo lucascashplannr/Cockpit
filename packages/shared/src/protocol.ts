@@ -7,7 +7,7 @@ import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
   AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, TranscriptFile, CockpitSettings,
-  CommandRunResult, CommitPreview, CoreStatus, DeclaredCommand,
+  CommandRunResult, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DatabasePlan,
   DiffFile, Topic,
   FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
@@ -681,6 +681,20 @@ export interface Rpc {
    * run: the same `build` is a different act in a topic and on main.
    */
   'commands.list': { params: { workspaceId: string }; result: DeclaredCommand[] }
+  /**
+   * §8 — what the project declares, for editing. Project-scoped, not
+   * workspace-scoped: a declaration belongs to the repository or to the
+   * project, never to the topic you happen to be standing in.
+   */
+  'declare.list': { params: { projectId: string }; result: Declarations }
+  'declare.save': {
+    params: { projectId: string; declaration: Declaration; previousName?: string }
+    result: { ok: boolean; detail: string; manifestPath: string | null }
+  }
+  'declare.remove': {
+    params: { projectId: string; kind: 'server' | 'command'; name: string }
+    result: { ok: boolean; detail: string; manifestPath: string | null }
+  }
   'commands.run': {
     params: { workspaceId: string; name: string; answers?: Record<string, string> }
     result: CommandRunResult

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import {
   Check, ChevronDown, CircleAlert, CircleCheck, CircleStop, Clock, Copy, Info, Play,
   RefreshCw, Save, Server, TriangleAlert, Trash2, Undo2, X,
@@ -46,11 +46,39 @@ function glyph(t: ToastItem) {
 
 /** Folded detail, by toast id. An error opens itself; nothing else does. */
 const open = ref(new Set<number>())
+const panes = ref<HTMLElement[]>([])
 const copied = ref<number | null>(null)
 
-function expanded(t: ToastItem): boolean {
-  return t.kind === 'error' ? !open.value.has(t.id) : open.value.has(t.id)
+/**
+ * Errors and streaming cards start open; everything else starts folded.
+ *
+ * `open` holds the *exception* rather than the state, so one Set covers both
+ * directions: for a card that starts open, being in it means folded.
+ */
+function startsOpen(t: ToastItem): boolean {
+  return t.kind === 'error' || !!t.stream
 }
+
+function expanded(t: ToastItem): boolean {
+  return startsOpen(t) ? !open.value.has(t.id) : open.value.has(t.id)
+}
+
+/**
+ * Output is read from the bottom, so a card that is following a process stays
+ * pinned there as lines arrive. Only while it is already at the bottom: a
+ * reader who has scrolled up is reading something, and yanking them back down
+ * is the behaviour every log view gets wrong.
+ */
+watch(
+  () => state.toasts.map((t) => t.detail ?? '').join('\u0000'),
+  async () => {
+    const at = panes.value.map((el) => el.scrollHeight - el.scrollTop - el.clientHeight < 24)
+    await nextTick()
+    panes.value.forEach((el, i) => {
+      if (at[i] !== false) el.scrollTop = el.scrollHeight
+    })
+  },
+)
 
 function toggle(t: ToastItem): void {
   const s = new Set(open.value)
@@ -81,7 +109,7 @@ function act(t: ToastItem): void {
         v-for="t in state.toasts"
         :key="t.id"
         class="toast"
-        :class="t.kind"
+        :class="[t.kind, { wide: t.stream }]"
         @mouseenter="holdToast(t.id, true)"
         @mouseleave="holdToast(t.id, false)"
       >
@@ -94,7 +122,12 @@ function act(t: ToastItem): void {
           <button class="x" title="Dismiss" @click="dismissToast(t.id)"><X class="sm" /></button>
         </div>
 
-        <pre v-if="t.detail && expanded(t)" class="detail selectable">{{ t.detail }}</pre>
+        <pre
+          v-if="t.detail && expanded(t)"
+          ref="panes"
+          class="detail selectable"
+          :class="{ stream: t.stream }"
+        >{{ t.detail }}</pre>
 
         <div v-if="t.detail" class="foot">
           <button class="link" @click="toggle(t)">
@@ -126,7 +159,7 @@ function act(t: ToastItem): void {
      against the window's corner rather than a ragged left margin. */
   align-items: flex-end;
   gap: 8px;
-  width: min(440px, calc(100vw - var(--rail-w) - 44px));
+  width: min(520px, calc(100vw - var(--rail-w) - 44px));
   /* Only the cards take the pointer — the space above and beside them, which
      is most of the deck most of the time, stays clickable. */
   pointer-events: none;
@@ -195,6 +228,19 @@ function act(t: ToastItem): void {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
+}
+
+/* A card sizes to its message, which is right for a sentence and wrong for
+   output: lines would land at whatever width the first one happened to be,
+   and rewrap as the next arrived. One that is showing work takes the deck. */
+.toast.wide { width: 100%; }
+
+/* §8 — a card carrying a process's output is not reporting a reason, it is
+   showing the work. Twelve lines rather than six, and the colour of text
+   rather than of a footnote, because this is what the click was for. */
+.detail.stream {
+  max-height: 232px;
+  color: var(--text);
 }
 
 .foot {

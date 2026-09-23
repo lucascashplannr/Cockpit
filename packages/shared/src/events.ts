@@ -92,6 +92,8 @@ export type EventType =
   | 'runtime.log'
   // §8 — a declared one-shot: build, release, migrate
   | 'command.run'
+  // §8 — servers or commands edited from the window
+  | 'manifest.written'
   // process supervision
   | 'process.spawned'
   | 'process.exited'

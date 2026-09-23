@@ -69,24 +69,42 @@ function manifestFor(ws: Workspace): ManifestV1 | null {
  * rather than to nothing. `fellBack` is carried so the window can say so.
  */
 function hostFor(
-  decl: ServerDecl,
+  decl: { repo?: string },
   env: Map<string, Workspace>,
   mains: Workspace[],
+  root: Workspace | null,
 ): { ws: Workspace; fellBack: boolean } | null {
   const wanted = decl.repo ? basename(decl.repo) : null
 
-  if (!wanted) {
-    // No `repo:` at all is the mono-repo case: there is one checkout and it is
-    // the answer. With several, a server that does not say where it runs is a
-    // manifest bug, not something to guess at.
-    const only = env.size === 1 ? [...env.values()][0] : undefined
-    return only ? { ws: only, fellBack: false } : null
-  }
+  // §8 — no `repo:` means the project, and the project has a folder: the one
+  // holding the repositories. In a topic that folder is the topic's own, so
+  // `start-all` declared once runs across the main checkouts and across each
+  // topic's worktrees without naming either.
+  if (!wanted) return root ? { ws: root, fellBack: false } : null
 
   const here = env.get(wanted)
   if (here) return { ws: here, fellBack: false }
   const main = mains.find((w) => w.repoName === wanted)
   return main ? { ws: main, fellBack: true } : null
+}
+
+/**
+ * The folder a project-level declaration runs in.
+ *
+ * Inside a topic that is the topic's own folder — the one holding its
+ * worktrees and its memory (§7) — because a project-level command asked for
+ * from a topic means *this* topic. Outside one it is the project root. A
+ * mono-repo whose root is itself the checkout answers with that checkout,
+ * which is the same folder by another name.
+ */
+function rootWorkspaceOf(ws: Workspace): Workspace | null {
+  const all = allWorkspaces(ws.projectId)
+  if (ws.topicId) {
+    const topicRoot = all.find((w) => w.kind === 'group' && w.topicId === ws.topicId)
+    if (topicRoot) return topicRoot
+  }
+  const root = getProject(ws.projectId)?.root
+  return all.find((w) => w.path === root) ?? null
 }
 
 /**
@@ -112,7 +130,7 @@ export function hostWorkspaceFor(
   repo?: string,
 ): { ws: Workspace; fellBack: boolean } | null {
   const mains = allWorkspaces(ws.projectId).filter((w) => w.kind === 'main')
-  return hostFor({ cmd: '', ...(repo ? { repo } : {}) }, environmentOf(ws), mains)
+  return hostFor(repo ? { repo } : {}, environmentOf(ws), mains, rootWorkspaceOf(ws))
 }
 
 /** The placeholders every declared line can use, whatever its lifetime. */
@@ -166,10 +184,11 @@ export async function resolveEnvironment(ws: Workspace): Promise<ResolvedServer[
 
   const env = environmentOf(ws)
   const mains = allWorkspaces(ws.projectId).filter((w) => w.kind === 'main')
+  const root = rootWorkspaceOf(ws)
 
   const hosted: { name: string; decl: ServerDecl; ws: Workspace; fellBack: boolean }[] = []
   for (const [name, decl] of Object.entries(declared)) {
-    const host = hostFor(decl, env, mains)
+    const host = hostFor(decl, env, mains, root)
     if (host) hosted.push({ name, decl, ws: host.ws, fellBack: host.fellBack })
   }
 

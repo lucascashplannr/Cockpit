@@ -2,7 +2,7 @@ import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
   AddRepoSource, AgentScope, AgentScopePreview, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
-  CommitPreview, CoreStatus, DeclaredCommand, EngineOptions, PermissionMode,
+  CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, EngineOptions, PermissionMode,
   DatabasePlan, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, ServerBoardRow, StashEntry, Workspace,
@@ -339,6 +339,10 @@ export const state = reactive({
    */
   commands: [] as DeclaredCommand[],
   pendingCommand: null as { command: DeclaredCommand; answers: Record<string, string> } | null,
+
+  /** §8 — the editor for what this project declares. Project-scoped (§8). */
+  declareOpen: false,
+  declarations: null as Declarations | null,
   planBusy: false,
   toasts: [] as ToastItem[],
   theme: (localStorage.getItem('cockpit.theme') ?? 'system') as 'system' | 'dark' | 'light',
@@ -419,7 +423,8 @@ export const client = new CoreClient(CORE_URL, {
   onTermExit(termId) {
     for (const fn of termListeners.get(termId) ?? []) fn('\r\n\x1b[2m[process exited]\x1b[0m\r\n')
   },
-  onRuntimeLog(workspaceId, _procId, _label, chunk) {
+  onRuntimeLog(workspaceId, procId, _label, chunk) {
+    for (const fn of procListeners.get(procId) ?? []) fn(chunk)
     if (!workspaceId) return
     const next = (state.runtimeLogs[workspaceId] ?? '') + chunk
     // A dev server left running all day would grow this without bound, and
@@ -441,6 +446,27 @@ export function onRuntimeLogData(workspaceId: string, fn: (d: string) => void): 
   return () => {
     const cur = logListeners.get(workspaceId) ?? []
     logListeners.set(workspaceId, cur.filter((f) => f !== fn))
+  }
+}
+
+/**
+ * §8 — one process's output, for the toast that is reporting on it.
+ *
+ * Beside `onRuntimeLogData` rather than filtered out of it: a workspace with
+ * three servers up writes continuously, and a toast about `build` must show
+ * what `build` wrote, not what the dev server happened to say meanwhile.
+ */
+const procListeners = new Map<string, ((d: string) => void)[]>()
+
+export function onProcOutput(procId: string, fn: (d: string) => void): () => void {
+  const arr = procListeners.get(procId) ?? []
+  arr.push(fn)
+  procListeners.set(procId, arr)
+  return () => {
+    const cur = procListeners.get(procId) ?? []
+    const left = cur.filter((f) => f !== fn)
+    if (left.length) procListeners.set(procId, left)
+    else procListeners.delete(procId)
   }
 }
 
@@ -1909,6 +1935,12 @@ export type ToastIcon =
 export type ToastItem = {
   id: number
   kind: ToastKind
+  /**
+   * §8 — this card is watching a process, so its body is output rather than a
+   * reason. It opens without being asked and it is given more room, because
+   * what it holds is the thing you pressed the button to see.
+   */
+  stream?: boolean
   /** One line, and it should read as one: the whole of a routine message. */
   text: string
   /**
@@ -1985,7 +2017,7 @@ function lifeOf(kind: ToastKind, action: ToastAction | undefined): number | null
 export function toast(
   kind: ToastKind,
   text: string,
-  extra?: ToastAction | { detail?: string; action?: ToastAction; icon?: ToastIcon },
+  extra?: ToastAction | { detail?: string; action?: ToastAction; icon?: ToastIcon; stream?: boolean },
 ): number {
   // Never an empty toast: an icon and a close button say only that something
   // went wrong somewhere.
@@ -2013,7 +2045,9 @@ export function toast(
   // The same failure twice over is one failure that happened twice. Stacking a
   // second copy underneath the first says nothing the first did not, so the
   // one already on screen is given its time back instead.
-  const twin = state.toasts.find((t) => t.kind === kind && t.text === text && t.detail === detail)
+  const twin = opts.stream
+    ? undefined
+    : state.toasts.find((t) => t.kind === kind && t.text === text && t.detail === detail)
   if (twin) {
     twin.action = action
     twin.life = life
@@ -2028,6 +2062,7 @@ export function toast(
     ...(detail ? { detail } : {}),
     ...(action ? { action } : {}),
     ...(opts.icon ? { icon: opts.icon } : {}),
+    ...(opts.stream ? { stream: true } : {}),
     life,
     expiresAt: life === null ? null : Date.now() + life,
   }
@@ -2324,6 +2359,118 @@ export function selectWorkspace(id: string): void {
   remember(id)
 }
 
+/**
+ * §8 — put what a command is writing inside the toast announcing it.
+ *
+ * Seeded from what the process has already written rather than only from what
+ * arrives next: a command that finishes in 40ms is done before anything could
+ * subscribe, and a toast that says "Running build" over an empty box is worse
+ * than one that says nothing.
+ *
+ * The toast is held open while the process is alive and let go when it ends,
+ * so a build keeps its card until it has something to report.
+ */
+const STREAM_MAX = 8_000
+
+async function followProcess(toastId: number, procId: string, workspaceId: string): Promise<void> {
+  const at = () => state.toasts.find((t) => t.id === toastId)
+  const alive = at()
+  if (!alive) return
+  alive.expiresAt = null
+
+  let text = ''
+  const paint = () => {
+    const t = at()
+    if (!t) return false
+    t.detail = text.trimEnd() || undefined
+    return true
+  }
+
+  const logs = await client.call('runtime.logs', { workspaceId }).catch(() => [])
+  const seen = logs.find((l) => l.procId === procId)
+  text = seen?.text ?? ''
+  if (text) paint()
+
+  if (seen && seen.status !== 'running') {
+    release(toastId)
+    return
+  }
+
+  const off = onProcOutput(procId, (chunk) => {
+    text = (text + chunk).slice(-STREAM_MAX)
+    if (!paint()) off()
+  })
+  // Nothing tells the window a process ended, so the toast stops following it
+  // on its own rather than holding a card open for the rest of the session.
+  window.setTimeout(() => {
+    off()
+    release(toastId)
+  }, 120_000)
+}
+
+/** Hands the toast back its clock, so it fades like any other. */
+function release(toastId: number): void {
+  const t = state.toasts.find((x) => x.id === toastId)
+  if (t && t.life !== null) t.expiresAt = Date.now() + t.life
+}
+
+/* ── editing what a project declares (§8) ───────────────────────────── */
+
+export function openDeclarations(): void {
+  state.declareOpen = true
+  void loadDeclarations()
+}
+
+export async function loadDeclarations(): Promise<void> {
+  const projectId = state.activeProjectId
+  if (!projectId) return
+  const got = await client.call('declare.list', { projectId }).catch(() => null)
+  if (got && state.activeProjectId === projectId) state.declarations = got
+}
+
+/**
+ * Writes one entry back into `cockpit.yaml`.
+ *
+ * `previousName` is what makes a rename a rename rather than a copy — without
+ * it the old key stays behind and the project quietly has two servers where
+ * the user believes it has one.
+ */
+export async function saveDeclaration(
+  declaration: Declaration,
+  previousName?: string,
+): Promise<boolean> {
+  const projectId = state.activeProjectId
+  if (!projectId) return false
+  const res = await guard(() =>
+    client.call('declare.save', {
+      projectId,
+      declaration,
+      ...(previousName ? { previousName } : {}),
+    }),
+  )
+  if (!res) return false
+  if (!res.ok) {
+    toast('error', res.detail)
+    return false
+  }
+  await Promise.all([loadDeclarations(), refreshCommands()])
+  toast('ok', res.detail, { detail: res.manifestPath ?? undefined })
+  return true
+}
+
+export async function removeDeclaration(kind: Declaration['kind'], name: string): Promise<boolean> {
+  const projectId = state.activeProjectId
+  if (!projectId) return false
+  const res = await guard(() => client.call('declare.remove', { projectId, kind, name }))
+  if (!res?.ok) {
+    if (res) toast('error', res.detail)
+    return false
+  }
+  await Promise.all([loadDeclarations(), refreshCommands()])
+  toast('info', res.detail, { icon: 'discard' })
+  return true
+}
+
 /* ── declared commands (§8) ─────────────────────────────────────────── */
 
 /** Reads the list for the current selection; absent manifest means none. */
@@ -2370,9 +2517,15 @@ export async function runCommandNow(
   }
   // The line goes in the detail, not in the sentence: `asSentence` would
   // capitalise it, and `Node -e …` is a command nobody can paste.
-  toast('ok', 'Running ' + command.name, { detail: res.cmd, icon: 'play' })
-  // Its output goes where every other process's output goes (§8).
+  const id = toast('ok', 'Running ' + command.name, { detail: res.cmd, icon: 'play', stream: true })
+  if (res.procId) void followProcess(id, res.procId, command.workspaceId)
+  // Its output goes where every other process's output goes (§8) — the toast
+  // is the glance, the log pane is the record.
   state.reviewTool = 'servers'
+  // A `runs:` list may have started servers, and the board is fetched rather
+  // than pushed — without this it reports `down` for something answering on
+  // its port, which is the one thing the board exists not to do.
+  void refreshBoard()
 }
 
 /* ── recency ───────────────────────────────────────────────────────────
