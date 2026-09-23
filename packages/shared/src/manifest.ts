@@ -46,6 +46,50 @@ export interface WorktreeSeed {
   set?: Record<string, Record<string, string>>
 }
 
+/**
+ * §8 — a long-lived process: the thing Start starts.
+ *
+ * This is the half of "how this project runs" that used to exist nowhere the
+ * user could read. A runtime adapter knew the command, the port style and the
+ * URL, and none of the three were written down — so "what will Start do?" was
+ * answerable only by reading `runtime/index.ts`, and changing it meant editing
+ * an adapter. A declared server is that knowledge, in the repository, in one
+ * legible line: `pnpm dev --port={{port}}` says what the `PORT_STYLES` table
+ * used to decide silently.
+ */
+export interface ServerDecl {
+  /** Repository folder this runs in. Omit in a mono-repo. */
+  repo?: string
+  /** The command line. `{{port}}` is this server's own allocated port. */
+  cmd: string
+  /**
+   * Where it answers once up. Omit for something with no address of its own —
+   * a queue worker runs and is watched like the rest, it simply has no URL.
+   *
+   * Resolved before anything spawns, and may NOT reference another server:
+   * that is what keeps `{{api.url}}` free of cycles and of start ordering.
+   */
+  url?: string
+  /** Path appended to `url` for the health check. Defaults to the URL itself. */
+  health?: string
+  /**
+   * Extra environment for this command, resolved like everything else.
+   * `{{api.url}}` here is the whole wiring story: it is injected at spawn, so
+   * it is per-run and per-environment, and nothing is written into a file.
+   */
+  env?: Record<string, string>
+}
+
+/** §8 — a one-shot: the thing you press. Same runner, different lifetime. */
+export interface CommandDecl {
+  repo?: string
+  cmd: string
+  /** Inputs to ask for first; each key is usable as `{{key}}` in `cmd`. */
+  ask?: Record<string, string>
+  /** A guard before running, for the ones that throw work away. */
+  confirm?: boolean | string
+}
+
 export interface ManifestV1 {
   version: 1
   name: string
@@ -59,6 +103,13 @@ export interface ManifestV1 {
     /** §7 — the gitignored local config a new worktree cannot check out. */
     seed?: WorktreeSeed[]
   }
+  /** §8 — what stays up. The list Start reads. */
+  servers?: Record<string, ServerDecl>
+  /** §8 — which servers one click starts. Absent means all of them. */
+  start?: string[]
+  /** §8 — what you press: one-shot commands, in the palette and the Run view. */
+  commands?: Record<string, CommandDecl>
+  /** The escape hatch, for a stack whose command is not yours to write. */
   runtime?: string
   tickets?: { provider: string; repo?: string; project?: string; baseUrl?: string }
   review?: { provider: string; repo?: string }
@@ -154,6 +205,47 @@ export function validateManifest(raw: unknown): ParsedManifest {
     }
   }
 
+  // §8 — servers and commands are the same shape with different lifetimes, so
+  // one validator covers both. Lenient like the rest: an entry missing its
+  // `cmd` is dropped and named, and every other entry still runs. A project
+  // whose fourth server has a typo must still start the first three.
+  for (const key of ['servers', 'commands'] as const) {
+    const decls = o[key]
+    if (decls === undefined) continue
+    if (typeof decls !== 'object' || decls === null || Array.isArray(decls)) {
+      issues.push({ path: key, message: 'must be a mapping of name -> { cmd }', severity: 'warning' })
+      delete o[key]
+      continue
+    }
+    for (const [name, decl] of Object.entries(decls as Record<string, unknown>)) {
+      const d = decl as Record<string, unknown> | null
+      if (!d || typeof d !== 'object' || typeof d.cmd !== 'string' || !d.cmd.trim()) {
+        issues.push({ path: key + '.' + name, message: 'needs a cmd', severity: 'warning' })
+        delete (decls as Record<string, unknown>)[name]
+      }
+    }
+  }
+
+  if (o.start !== undefined) {
+    if (!Array.isArray(o.start)) {
+      issues.push({ path: 'start', message: 'must be a list of server names', severity: 'warning' })
+      delete o.start
+    } else {
+      const servers = (o.servers ?? {}) as Record<string, unknown>
+      // Naming a server that does not exist is the one mistake here that is
+      // silent otherwise: Start would simply do less than it was asked to.
+      const unknown = (o.start as unknown[]).filter((n) => !(String(n) in servers))
+      if (unknown.length) {
+        issues.push({
+          path: 'start',
+          message: 'no server named ' + unknown.map(String).join(', '),
+          severity: 'warning',
+        })
+        o.start = (o.start as unknown[]).filter((n) => String(n) in servers)
+      }
+    }
+  }
+
   if (o.ports !== undefined && (typeof o.ports !== 'object' || o.ports === null)) {
     issues.push({
       path: 'ports',
@@ -181,7 +273,29 @@ export const MANIFEST_TEMPLATE = [
   'repos:',
   '  - path: .',
   '',
-  '# Block specific to the chosen runtime, not a universal schema (§8)',
+  '# What stays up. `{{port}}` is this server\'s own port, allocated per',
+  '# environment — so the same lines run on main and in every topic (§8).',
+  '# servers:',
+  '#   api:',
+  '#     repo: api',
+  '#     cmd: php artisan serve --port={{port}}',
+  '#     url: http://localhost:{{port}}',
+  '#   web:',
+  '#     repo: web',
+  '#     cmd: pnpm dev --port={{port}}',
+  '#     url: http://localhost:{{port}}',
+  '#     env:',
+  '#       VITE_API_URL: "{{api.url}}"   # the wiring, injected at spawn',
+  '',
+  '# What one click starts. Omit to start every server.',
+  '# start: [api, web]',
+  '',
+  '# What you press: one-shot, in the Run view and the palette (§8)',
+  '# commands:',
+  '#   build: { repo: web, cmd: pnpm build }',
+  '#   release: { cmd: pnpm release {{version}}, ask: { version: Version number } }',
+  '',
+  '# The escape hatch, when the command is not yours to write',
   '# runtime: compose',
   '# compose:',
   '#   file: compose.yaml',
@@ -190,10 +304,6 @@ export const MANIFEST_TEMPLATE = [
   '# worktrees:',
   '#   seed:',
   '#     - copy: [.env, auth.json]',
-  '#       set:',
-  '#         .env:',
-  '#           APP_URL: https://{{host}}',
-  '#           DB_DATABASE: "{{db}}"',
   '',
   '# tickets: { provider: github, repo: owner/name }',
   '# docs: docs/',

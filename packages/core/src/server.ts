@@ -8,6 +8,7 @@ import type {
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, forSession, tail } from './journal.js'
+import * as commands from './commands.js'
 import * as registry from './registry.js'
 import * as scaffold from './scaffold.js'
 import * as files from './files.js'
@@ -558,6 +559,14 @@ const handlers: Record<string, Handler> = {
     runtime.preview(registry.requireWorkspace(p.workspaceId)),
   'runtime.logs': (p: { workspaceId: string }) =>
     runtime.logs(registry.requireWorkspace(p.workspaceId)),
+
+  'commands.list': (p: { workspaceId: string }) =>
+    commands.listCommands(registry.requireWorkspace(p.workspaceId)),
+  'commands.run': async (p: { workspaceId: string; name: string; answers?: Record<string, string> }) => {
+    const res = await commands.runCommand(p.workspaceId, p.name, p.answers ?? {})
+    pushWorkspaces()
+    return res
+  },
 
   'ports.map': () => portMap(),
   'runtime.board': () => serverBoard(),

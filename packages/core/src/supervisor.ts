@@ -287,6 +287,17 @@ export function statusOf(procId: string): { alive: boolean; exitCode: number | n
   return null
 }
 
+/**
+ * What this process was called, alive or dead.
+ *
+ * Only worth having because a workspace can hold several (§8): "exited with
+ * code 1" is unreadable when three servers started together, and "worker
+ * exited with code 1" names the line to fix.
+ */
+export function labelOf(procId: string): string {
+  return live.get(procId)?.label ?? dead.get(procId)?.label ?? 'server'
+}
+
 /** The last `n` non-empty lines, which is what a failure is usually made of. */
 export function tail(procId: string, n = 12): string {
   return logsFor(procId)

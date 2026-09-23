@@ -105,12 +105,21 @@ function unquote(v: string): string {
   return m ? m[2]! : v
 }
 
+/**
+ * Loopback is the same address in every worktree, which is the point: what
+ * tells two checkouts apart there is the port, not the name. Rewriting
+ * `http://localhost:3000` into `http://web-2fa.test:3000` produced a hostname
+ * nothing serves and nothing resolves — §11 allocates the port, and that is
+ * the whole of the answer for a checkout that lives on localhost.
+ */
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0'])
+
 /** The hostname the main checkout answers on, read out of its own config. */
 function currentHost(lines: EnvLine[], repoFolder: string, tld: string): string | null {
   for (const key of ['APP_URL', 'ASSET_URL', 'VITE_APP_URL', 'API_PROXY']) {
     const v = lines.find((l) => l.key === key)?.value
     const host = v ? hostOf(v) : null
-    if (host) return host
+    if (host) return LOOPBACK.has(host.toLowerCase()) ? null : host
   }
   // Nothing declared it, but Herd serves the folder name by convention.
   return repoFolder + '.' + tld
@@ -152,22 +161,45 @@ function escapeRe(s: string): string {
 /**
  * What in this file is per-worktree. Returns templates, not values: the
  * template is what goes in the manifest and stays true for the next topic.
+ *
+ * `wired` says this repository hosts a declared server (§8), and it takes two
+ * of the three rules away. Addresses and ports are resolved per environment
+ * and handed to the process at spawn now, so rewriting them into a file as
+ * well would be two mechanisms answering one question — and the file would be
+ * the stale one, because it is written once when the worktree is created and
+ * the declaration is read every time something starts.
+ *
+ * The database rule survives `wired`, and has to: nothing spawns a database.
+ * It is a name the checkout must carry on disk, so the seed is still the only
+ * thing that can put it there.
  */
-function changesFor(rel: string, text: string, repoFolder: string, tld: string): SeedRule[] {
+function changesFor(
+  rel: string,
+  text: string,
+  repoFolder: string,
+  tld: string,
+  wired: boolean,
+): SeedRule[] {
   if (!isEnvShaped(rel)) return []
   const lines = parseEnv(text)
-  const host = currentHost(lines, repoFolder, tld)
+  const host = wired ? null : currentHost(lines, repoFolder, tld)
   const out: SeedRule[] = []
 
   for (const { key, value } of lines) {
     // 1. Anything pointing at the hostname this checkout already serves on.
     //    The strongest rule, because it is read off the file rather than
     //    assumed about the framework.
-    if (host && value.includes(host)) {
+    //
+    //    Matched at a boundary, never as a bare substring. `api.cp.test`
+    //    *contains* `cp.test` and is a different machine: rewriting it gave
+    //    the worktree `api.cp-2fa.test`, a hostname nothing serves, and the
+    //    reason shown at approval — "points at cp.test, which is the
+    //    repository itself" — read as true while being wrong.
+    if (host && new RegExp('(?<![\\w.-])' + escapeRe(host)).test(value)) {
       out.push({
         key,
         from: value,
-        template: value.replace(new RegExp(escapeRe(host), 'g'), '{{host}}'),
+        template: value.replace(new RegExp('(?<![\\w.-])' + escapeRe(host), 'g'), '{{host}}'),
         reason: 'points at ' + host + ', which is the repository itself — every branch needs its own',
       })
       continue
@@ -190,7 +222,7 @@ function changesFor(rel: string, text: string, repoFolder: string, tld: string):
     //    Rewriting one points the worktree at a database that does not exist —
     //    a silent breakage far worse than leaving a listen port alone, which
     //    the user can add during approval.
-    const service = listenPort(key, value)
+    const service = wired ? null : listenPort(key, value)
     if (service) {
       out.push({
         key,
@@ -307,6 +339,18 @@ export async function propose(input: ProposeInput): Promise<SeedProposal> {
   const declared = (manifest?.worktrees?.seed ?? []).filter((e) => !e.repo || e.repo === repo)
   const fromManifest = declared.length > 0
 
+  /**
+   * §8 — does anything in this repository run from a declared server?
+   *
+   * If it does, its address and its port are resolved per environment and
+   * injected at spawn, so the seed has no business writing either into a
+   * file. What it still has business writing is the database name, which no
+   * process receives.
+   */
+  const wired = Object.values(manifest?.servers ?? {}).some(
+    (d) => !d.repo || basename(d.repo) === repo,
+  )
+
   const files: SeedProposal['files'] = []
   const skipped: SeedProposal['skipped'] = []
 
@@ -343,7 +387,10 @@ export async function propose(input: ProposeInput): Promise<SeedProposal> {
   for (const rel of present) {
     if (!isEnvShaped(rel) || fromManifest) continue
     try {
-      rulesFor.set(rel, changesFor(rel, readFileSync(join(input.repoPath, rel), 'utf8'), repo, tld))
+      rulesFor.set(
+        rel,
+        changesFor(rel, readFileSync(join(input.repoPath, rel), 'utf8'), repo, tld, wired),
+      )
     } catch {
       // Reported per file below, where the path is already being walked.
     }
@@ -425,6 +472,7 @@ export async function propose(input: ProposeInput): Promise<SeedProposal> {
     repoPath: input.repoPath,
     target: ctx.path,
     source: fromManifest ? 'manifest' : 'detected',
+    wired,
     manifestPath,
     context: ctx,
     files,

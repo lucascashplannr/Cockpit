@@ -90,6 +90,8 @@ export type EventType =
   | 'runtime.down'
   | 'runtime.health'
   | 'runtime.log'
+  // §8 — a declared one-shot: build, release, migrate
+  | 'command.run'
   // process supervision
   | 'process.spawned'
   | 'process.exited'

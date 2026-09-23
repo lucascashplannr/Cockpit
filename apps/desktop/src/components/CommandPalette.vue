@@ -7,12 +7,12 @@ import {
   FolderOpen,
   FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, Stamp, TextSearch,
-  Trash2, Undo2,
+  Terminal, Trash2, Undo2,
   RotateCcw, Archive, Zap, Activity,
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askDeleteTopic, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
+  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askCommand, askDeleteTopic, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -284,6 +284,20 @@ const commands = computed<Item[]>(() => {
           run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'browser' }))),
         })
       }
+    }
+
+    // §8 — the declared one-shots, in the order the manifest lists them.
+    // They sit under their own heading rather than among the git verbs: what
+    // they have in common is that the project declared them, not what they do.
+    for (const c of state.commands) {
+      out.push({
+        id: 'cmd:' + c.name,
+        label: c.name,
+        hint: c.cmd,
+        group: 'Run',
+        icon: Terminal,
+        run: act(() => askCommand(c)),
+      })
     }
 
     // §3.7 — a stopped rebase replaces the git verbs rather than sitting beside

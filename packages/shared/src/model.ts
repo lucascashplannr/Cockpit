@@ -218,6 +218,13 @@ export interface SeedProposal {
   /** Where the worktree will land. */
   target: string
   source: 'manifest' | 'detected'
+  /**
+   * §8 — this repository runs from a declared server, so its address and its
+   * ports are resolved per environment at start and are deliberately not
+   * rewritten into any file here. Said out loud because the absence is the
+   * surprising part for anyone who saw the old proposal.
+   */
+  wired: boolean
   /** Where an approval would be written, or null when there is no manifest. */
   manifestPath: string | null
   context: SeedContext
@@ -307,6 +314,29 @@ export interface RuntimeState {
   processes: SupervisedProcess[]
 }
 
+/** §8 — a declared one-shot, resolved for the environment that will run it. */
+export interface DeclaredCommand {
+  name: string
+  workspaceId: string
+  cwd: string
+  /** The line as declared, placeholders intact — shown before anything is asked. */
+  cmd: string
+  inputs: { key: string; label: string }[]
+  /** The question to ask first, or null when it just runs. */
+  confirm: string | null
+  /** True when its repository has no checkout here and main was used. */
+  fellBack: boolean
+}
+
+export interface CommandRunResult {
+  ok: boolean
+  detail: string
+  procId: string | null
+  /** What was actually spawned, so the window never has to guess (§3.7). */
+  cmd: string
+  cwd: string
+}
+
 export interface PortAllocation {
   /** Logical name inside the project, e.g. `web`, `api`, `bundler`. */
   name: string
@@ -377,6 +407,17 @@ export interface Workspace {
   /** Display name; for a worktree, usually the branch. */
   name: string
   path: string
+  /**
+   * §8 — the repository this is a checkout *of*, by folder name.
+   *
+   * Not derivable from the path, which is the reason it is stored: a topic's
+   * worktree sits at `worktrees/<slug>/api` and a branch worktree at
+   * `worktrees/api/<branch>`, so `basename` answers "api" for one and the
+   * branch name for the other. This is what `servers[].repo` matches, and it
+   * has to mean the same thing in the main checkout and in every worktree of
+   * it — otherwise the same manifest line would run in one and not the other.
+   */
+  repoName: string
   /** Absent for `external` workspaces with no repo (§7). */
   repo: string | null
   git: GitState | null

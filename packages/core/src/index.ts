@@ -58,6 +58,13 @@ async function main(): Promise<void> {
     },
   })
 
+  // Before the socket, not after: `startServer` answers the first request that
+  // arrives, and the first reconciliation below takes seconds because it goes
+  // to origin. A window connecting inside that gap was handed an empty list
+  // and an "unknown workspace" for the one it was already looking at. This is
+  // the same enumeration without the probe, so it costs milliseconds.
+  await registry.hydrate()
+
   const server = startServer(port)
   server.on('listening', () => {
     process.stdout.write('[cockpit-core] listening on ws://127.0.0.1:' + port + '\n')

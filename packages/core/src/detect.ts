@@ -158,10 +158,30 @@ function gitRemoteProvider(dir: string): { provider: string; repo: string } | nu
  * §3.9 / §5 — anything not returned here simply does not exist in the UI.
  * A capability is never emitted in a disabled state.
  */
-export function detectCapabilities(dir: string, manifest: ManifestV1 | null): Capability[] {
+export function detectCapabilities(
+  dir: string,
+  manifest: ManifestV1 | null,
+  /** §8 — the repository this dir is a checkout of; a worktree's is not its basename. */
+  repoName = basename(dir),
+): Capability[] {
   const caps: Capability[] = []
   const push = (c: Capability) => {
     if (!caps.some((x) => x.id === c.id)) caps.push(c)
+  }
+
+  // §8 — a declared server beats everything below it, including detection and
+  // the `runtime:` escape hatch. It is the only one of the three the user
+  // wrote down, so it is the only one that can be wrong on purpose.
+  const declared = Object.entries(manifest?.servers ?? {}).filter(
+    ([, d]) => !d.repo || basename(d.repo) === repoName,
+  )
+  if (declared.length) {
+    push({
+      id: 'runtime',
+      impl: 'declared',
+      source: 'manifest',
+      detail: { servers: declared.map(([name]) => name) },
+    })
   }
 
   if (manifest?.runtime) {

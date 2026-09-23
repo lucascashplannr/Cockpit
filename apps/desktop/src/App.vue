@@ -7,6 +7,7 @@ import ScopeBar from './components/ScopeBar.vue'
 import ConflictPanel from './components/ConflictPanel.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import RunCommandDialog from './components/RunCommandDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import DetailsDialog from './components/DetailsDialog.vue'
 import AttachmentViewer from './components/AttachmentViewer.vue'
@@ -271,6 +272,7 @@ onUnmounted(() => {
     <AttachmentViewer />
     <PlanDialog v-if="state.pendingPlan" />
     <ConfirmDialog v-if="state.pendingConfirm" />
+    <RunCommandDialog v-if="state.pendingCommand" />
     <RevertDialog />
     <ProjectDialog />
     <DetailsDialog />

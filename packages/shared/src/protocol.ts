@@ -7,7 +7,7 @@ import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
   AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, TranscriptFile, CockpitSettings,
-  CommitPreview, CoreStatus,
+  CommandRunResult, CommitPreview, CoreStatus, DeclaredCommand,
   DatabasePlan,
   DiffFile, Topic,
   FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
@@ -674,6 +674,17 @@ export interface Rpc {
    * to boot and one that booted looked identical from the window.
    */
   'runtime.logs': { params: { workspaceId: string }; result: ProcessLog[] }
+
+  /**
+   * §8 — the declared one-shots available where you are standing. Listed per
+   * workspace rather than per project because that is what decides where they
+   * run: the same `build` is a different act in a topic and on main.
+   */
+  'commands.list': { params: { workspaceId: string }; result: DeclaredCommand[] }
+  'commands.run': {
+    params: { workspaceId: string; name: string; answers?: Record<string, string> }
+    result: CommandRunResult
+  }
 
   'ports.map': { params: void; result: { port: number; owner: string; name: string }[] }
   /**

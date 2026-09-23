@@ -3,6 +3,7 @@ import { basename, join } from 'node:path'
 import { scopedName as scopedNameFor } from '@cockpit/shared'
 import type { RuntimeState, RuntimeUpResult, Workspace } from '@cockpit/shared'
 import type { Framework } from '../detect.js'
+import { needsInstall, resolveEnvironment, serversOf } from './declared.js'
 import { run } from '../exec.js'
 import { allocate, portKey } from '../ports.js'
 import { append } from '../journal.js'
@@ -21,12 +22,17 @@ export interface Runtime {
   exclusive: boolean
   provision(ws: Workspace): Promise<{ ok: boolean; detail: string }>
   /**
-   * `procId` is how `up` below watches what it started: a process that dies
+   * `procIds` is how `up` below watches what it started: a process that dies
    * during the wait is the answer, and the fastest one available. A runtime
    * with nothing to supervise — Herd links a folder, Compose detaches — simply
    * omits it and is judged on its health check alone.
+   *
+   * A list rather than one id because a declared repository may hold several
+   * servers (§8): an API and its queue worker start together, and a worker
+   * that dies on boot has to be reported, not waited out. One of them failing
+   * is the environment failing.
    */
-  up(ws: Workspace): Promise<{ ok: boolean; detail: string; procId?: string }>
+  up(ws: Workspace): Promise<{ ok: boolean; detail: string; procIds?: string[] }>
   down(ws: Workspace): Promise<{ ok: boolean; detail: string }>
   health(ws: Workspace): Promise<{ status: RuntimeState['status']; detail: string }>
   preview(ws: Workspace): Promise<NonNullable<RuntimeState['preview']>>
@@ -83,6 +89,23 @@ const LOOPBACKS = ['127.0.0.1', '[::1]'] as const
 /** True as soon as either family answers. */
 async function listening(port: number, path = ''): Promise<boolean> {
   const tries = await Promise.all(LOOPBACKS.map((h) => httpOk('http://' + h + ':' + port + path)))
+  return tries.some(Boolean)
+}
+
+/**
+ * §8 — a declared URL, polled the way the port checks are.
+ *
+ * `localhost` is not enough on its own here. Vite binds `[::1]` and nothing
+ * else, and a `localhost` that resolves to `127.0.0.1` first is refused by a
+ * server that is up and serving — the exact fault that used to report
+ * `starting` forever. So a loopback URL is tried on both families and the
+ * first answer wins; anything else is fetched as written.
+ */
+async function reachable(url: string): Promise<boolean> {
+  const m = /^(https?:\/\/)(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(.*)$/i.exec(url)
+  if (!m) return httpOk(url)
+  const [, scheme, , port = '', rest = ''] = m
+  const tries = await Promise.all(LOOPBACKS.map((h) => httpOk(scheme + h + port + rest)))
   return tries.some(Boolean)
 }
 
@@ -171,7 +194,7 @@ const nodeRuntime: Runtime = {
     })
     return {
       ok: true,
-      procId: proc.id,
+      procIds: [proc.id],
       detail: style.flag
         ? 'port ' + port + ' via ' + style.flag
         : 'port ' + port + ' via PORT (no framework recognised — if the server picks its own port, set it in the script)',
@@ -214,7 +237,7 @@ const expoRuntime: Runtime = {
       command: 'npx',
       args: ['expo', 'start', '--port', String(port)],
     })
-    return { ok: true, procId: proc.id, detail: 'bundler on ' + port }
+    return { ok: true, procIds: [proc.id], detail: 'bundler on ' + port }
   },
   async preview(ws) {
     const port = await allocate(portKey(ws.projectId, ws.id, 'bundler'))
@@ -231,6 +254,93 @@ const expoRuntime: Runtime = {
   },
   async ports(ws) {
     return [{ name: 'bundler', port: await allocate(portKey(ws.projectId, ws.id, 'bundler')) }]
+  },
+}
+
+/**
+ * §8 — the declared runtime: the command comes from `cockpit.yaml`.
+ *
+ * Every other adapter in this file knows a stack and infers the command. This
+ * one knows nothing and reads it, which is why it is the default whenever a
+ * manifest declares `servers:`. What used to be the `PORT_STYLES` table is now
+ * whatever the user wrote after `cmd:`, and `--port={{port}}` is legible in
+ * the repository instead of decided here.
+ */
+const declaredRuntime: Runtime = {
+  id: 'declared',
+  portable: true,
+  exclusive: false,
+  async provision(ws) {
+    if (!needsInstall(ws.path)) return { ok: true, detail: 'nothing to provision' }
+    const pm = packageManager(ws.path)
+    const r = await run(pm, ['install'], { cwd: ws.path, timeoutMs: 600_000 })
+    return { ok: r.ok, detail: r.ok ? pm + ' install done' : r.stderr.slice(-800) }
+  },
+  async up(ws) {
+    const servers = await serversOf(ws)
+    if (!servers.length) {
+      return { ok: false, detail: 'no server declared for ' + (ws.repoName || basename(ws.path)) }
+    }
+    // Refusing to spawn a line that still has a placeholder in it: the process
+    // would start, fail on a nonsense argument, and the log would show the
+    // symptom rather than the line to fix (§7 — write the truth, never a guess).
+    const broken = servers.filter((s) => s.unresolved.length)
+    if (broken.length) {
+      return {
+        ok: false,
+        detail: broken
+          .map((s) => s.name + ': nothing named ' + s.unresolved.map((u) => '{{' + u + '}}').join(', '))
+          .join('; '),
+      }
+    }
+
+    const procIds: string[] = []
+    for (const s of servers) {
+      const proc = sup.start({
+        workspaceId: ws.id,
+        label: s.name,
+        cwd: s.cwd,
+        command: s.command,
+        args: s.args,
+        env: s.env,
+      })
+      procIds.push(proc.id)
+    }
+    const detail = servers
+      .map((s) => s.name + (s.port ? ' on ' + s.port : '') + (s.fellBack ? ' (main checkout)' : ''))
+      .join(', ')
+    return { ok: true, procIds, detail }
+  },
+  async down(ws) {
+    const n = sup.stopWorkspace(ws.id)
+    return { ok: true, detail: 'stopped ' + n + ' process(es)' }
+  },
+  async health(ws) {
+    const procs = sup.listForWorkspace(ws.id)
+    if (!procs.length) return { status: 'down', detail: 'no process' }
+    const servers = await serversOf(ws)
+
+    // A server with no URL is judged on being alive, because there is nothing
+    // else to ask it: a queue worker answers no request and is not unhealthy
+    // for it. Only the ones that declared an address get polled.
+    const addressed = servers.filter((s) => s.probe)
+    if (!addressed.length) return { status: 'up', detail: procs.length + ' running' }
+
+    const answers = await Promise.all(addressed.map((s) => reachable(s.probe!)))
+    const late = addressed.filter((_, i) => !answers[i])
+    if (!late.length) return { status: 'up', detail: addressed.map((s) => s.name).join(', ') }
+    return { status: 'starting', detail: 'waiting on ' + late.map((s) => s.name).join(', ') }
+  },
+  async preview(ws) {
+    const servers = await serversOf(ws)
+    const withUrl = servers.find((s) => s.url)
+    return withUrl?.url ? { kind: 'url', value: withUrl.url } : { kind: 'none' }
+  },
+  async ports(ws) {
+    const servers = await resolveEnvironment(ws)
+    return servers
+      .filter((s) => s.workspaceId === ws.id && s.port !== null)
+      .map((s) => ({ name: s.name, port: s.port! }))
   },
 }
 
@@ -338,6 +448,7 @@ const devcontainerRuntime: Runtime = {
 const REGISTRY: Record<string, Runtime> = {
   node: nodeRuntime,
   expo: expoRuntime,
+  declared: declaredRuntime,
   compose: composeRuntime,
   herd: herdRuntime,
   devcontainer: devcontainerRuntime,
@@ -401,11 +512,14 @@ function upResult(over: Partial<RuntimeUpResult>): RuntimeUpResult {
 async function settle(
   ws: Workspace,
   rt: Runtime,
-  procId: string | null,
+  procIds: string[],
   timeoutMs: number,
 ): Promise<RuntimeUpResult> {
   const started = Date.now()
   let lastDetail = ''
+  // The first process is the one whose output is shown when there is nothing
+  // more specific to show: it is the server the declaration named first.
+  const lead = procIds[0] ?? null
 
   for (;;) {
     const waitedMs = Date.now() - started
@@ -413,15 +527,15 @@ async function settle(
     // A process that exited is the answer, and the fastest one there is —
     // there is no point polling a port for 45 seconds when the thing that was
     // meant to bind it is already gone.
-    if (procId) {
-      const st = sup.statusOf(procId)
+    for (const id of procIds) {
+      const st = sup.statusOf(id)
       if (st && !st.alive) {
         return upResult({
           ok: false,
           status: 'down',
-          detail: 'exited with code ' + (st.exitCode ?? '?') + ' before it answered',
+          detail: sup.labelOf(id) + ' exited with code ' + (st.exitCode ?? '?') + ' before it answered',
           waitedMs,
-          log: sup.tail(procId, 24),
+          log: sup.tail(id, 24),
         })
       }
     }
@@ -437,7 +551,7 @@ async function settle(
         detail: h.detail,
         url: preview?.kind === 'url' ? (preview.value ?? null) : null,
         waitedMs: Date.now() - started,
-        log: procId ? sup.tail(procId, 8) : '',
+        log: lead ? sup.tail(lead, 8) : '',
       })
     }
     if (h.status === 'unhealthy') {
@@ -446,7 +560,7 @@ async function settle(
         status: 'unhealthy',
         detail: h.detail,
         waitedMs: Date.now() - started,
-        log: procId ? sup.tail(procId, 24) : '',
+        log: lead ? sup.tail(lead, 24) : '',
       })
     }
 
@@ -460,7 +574,7 @@ async function settle(
     status: 'starting',
     detail: 'still starting after ' + Math.round(timeoutMs / 1000) + 's — ' + lastDetail,
     waitedMs: Date.now() - started,
-    log: procId ? sup.tail(procId, 12) : '',
+    log: lead ? sup.tail(lead, 12) : '',
   })
 }
 
@@ -491,7 +605,7 @@ export async function up(ws: Workspace): Promise<RuntimeUpResult> {
     return upResult({ detail: res.detail, log: res.detail })
   }
 
-  const settled = await settle(ws, rt, res.procId ?? null, UP_TIMEOUT_MS)
+  const settled = await settle(ws, rt, res.procIds ?? [], UP_TIMEOUT_MS)
   append({
     type: 'runtime.up',
     level: settled.ok ? 'info' : 'error',

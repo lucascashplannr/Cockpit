@@ -248,6 +248,12 @@ async function submit() {
               <span class="rname">{{ p.repo }}</span>
               <span v-if="p.source === 'manifest'" class="src">declared in cockpit.yaml</span>
             </div>
+            <!-- §8 — why this list is shorter than it used to be: the address
+                 and the ports are not carried in a file any more, they are
+                 resolved when something starts. -->
+            <p v-if="p.wired" class="none">
+              Its address and ports come from <code class="mono">cockpit.yaml</code> at start.
+            </p>
             <p v-if="!p.files.length" class="none">
               Nothing to carry — this branch checks out everything it needs.
             </p>

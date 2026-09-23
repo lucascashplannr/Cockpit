@@ -2,7 +2,7 @@ import { computed, reactive, ref, shallowRef } from 'vue'
 import type {
   AddRepoSource, AgentScope, AgentScopePreview, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
-  CommitPreview, CoreStatus, EngineOptions, PermissionMode,
+  CommitPreview, CoreStatus, DeclaredCommand, EngineOptions, PermissionMode,
   DatabasePlan, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, ServerBoardRow, StashEntry, Workspace,
@@ -327,6 +327,18 @@ export const state = reactive({
         base: string }
     | null,
   pendingConfirm: null as PendingConfirm | null,
+
+  /**
+   * §8 — the declared one-shots for wherever you are standing, and the one
+   * being asked about.
+   *
+   * Per workspace rather than per project because that is what decides where
+   * they run: the same `build` is a different act in a topic and on main, and
+   * a list that did not follow the selection would be quietly lying about
+   * which folder is about to be built.
+   */
+  commands: [] as DeclaredCommand[],
+  pendingCommand: null as { command: DeclaredCommand; answers: Record<string, string> } | null,
   planBusy: false,
   toasts: [] as ToastItem[],
   theme: (localStorage.getItem('cockpit.theme') ?? 'system') as 'system' | 'dark' | 'light',
@@ -346,6 +358,10 @@ export const client = new CoreClient(CORE_URL, {
   onProjects(p) {
     state.projects = p
     ensureSelection()
+    // §8 — the manifest is not watched, so a rescan is the moment a newly
+    // declared command can appear. Projects are pushed far less often than
+    // workspaces, which is why the refresh hangs off this one and not that.
+    void refreshCommands()
   },
   onTopics(f) {
     state.topics = f
@@ -481,9 +497,13 @@ function ensureSelection(): void {
     state.activeProjectId = state.projects[0]!.id
   }
   const inProject = state.workspaces.filter((w) => w.projectId === state.activeProjectId)
+  const before = state.activeWorkspaceId
   if (!state.activeWorkspaceId || !inProject.some((w) => w.id === state.activeWorkspaceId)) {
     state.activeWorkspaceId = inProject[0]?.id ?? null
   }
+  // §8 — the selection settling is what decides which commands exist, and it
+  // settles here on the first bootstrap as well as on every reconcile.
+  if (state.activeWorkspaceId !== before) void refreshCommands()
 }
 
 export const activeProject = computed(() => state.projects.find((p) => p.id === state.activeProjectId) ?? null)
@@ -2068,6 +2088,11 @@ export async function guard<T>(fn: () => Promise<T>, okMessage?: string): Promis
     return r
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
+    // A call that left while the socket was down, or was cut off when it went
+    // down, is the disconnection and nothing else. The banner is already
+    // saying so, in a place that clears itself when the core comes back — a
+    // toast on top of it names the same fact a second time and outlives it.
+    if (message === 'core is not connected' || message === 'core disconnected') return null
     // The stack is the only part that ever says where, and it is exactly the
     // part a one-line toast used to throw away.
     const stack = e instanceof Error ? e.stack : undefined
@@ -2287,6 +2312,7 @@ async function refreshProjects(): Promise<void> {
 
 export function selectWorkspace(id: string): void {
   state.activeWorkspaceId = id
+  void refreshCommands()
   // Clicking a row is saying "this one", so a scope wider than the row — the
   // topic it sits under, the project — stops being the answer. Dropping it
   // lets activeAgentScope fall back to this workspace; a folder scope inside
@@ -2296,6 +2322,57 @@ export function selectWorkspace(id: string): void {
   const w = state.workspaces.find((x) => x.id === id)
   if (w && w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
   remember(id)
+}
+
+/* ── declared commands (§8) ─────────────────────────────────────────── */
+
+/** Reads the list for the current selection; absent manifest means none. */
+export async function refreshCommands(): Promise<void> {
+  const id = state.activeWorkspaceId
+  if (!id) {
+    state.commands = []
+    return
+  }
+  const got = await client.call('commands.list', { workspaceId: id }).catch(() => [])
+  // A slow answer for a workspace nobody is looking at any more is not an
+  // answer to anything: dropping it is what keeps the palette honest.
+  if (state.activeWorkspaceId === id) state.commands = got
+}
+
+/**
+ * Press it. Anything it needs to ask is asked first, in one box.
+ *
+ * The line is shown with its placeholders still in it while the questions are
+ * open, and resolved only when the core runs it — §3.7's rule, applied to the
+ * one surface that never had it: you see what is about to run before it runs.
+ */
+export function askCommand(command: DeclaredCommand): void {
+  if (!command.inputs.length && !command.confirm) {
+    void runCommandNow(command, {})
+    return
+  }
+  const answers: Record<string, string> = {}
+  for (const i of command.inputs) answers[i.key] = ''
+  state.pendingCommand = { command, answers }
+}
+
+export async function runCommandNow(
+  command: DeclaredCommand,
+  answers: Record<string, string>,
+): Promise<void> {
+  const res = await guard(() =>
+    client.call('commands.run', { workspaceId: command.workspaceId, name: command.name, answers }),
+  )
+  if (!res) return
+  if (!res.ok) {
+    toast('error', command.name + ': ' + res.detail)
+    return
+  }
+  // The line goes in the detail, not in the sentence: `asSentence` would
+  // capitalise it, and `Node -e …` is a command nobody can paste.
+  toast('ok', 'Running ' + command.name, { detail: res.cmd, icon: 'play' })
+  // Its output goes where every other process's output goes (§8).
+  state.reviewTool = 'servers'
 }
 
 /* ── recency ───────────────────────────────────────────────────────────
