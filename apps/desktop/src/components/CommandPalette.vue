@@ -12,7 +12,7 @@ import {
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askCommand, askDeleteTopic, openDeclarations, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
+  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -305,7 +305,10 @@ const commands = computed<Item[]>(() => {
         hint: c.cmd,
         group: 'Run',
         icon: Terminal,
-        run: act(() => askCommand(c)),
+        // The same act as the bar's, so running `build` from here also leaves
+        // `build` on the bar's button: which command is "the one" is a habit,
+        // and a habit does not care which surface you pressed it from.
+        run: act(() => chooseCommand(c)),
       })
     }
 

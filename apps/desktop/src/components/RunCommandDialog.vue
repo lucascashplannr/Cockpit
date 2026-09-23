@@ -83,10 +83,16 @@ function onKey(e: KeyboardEvent): void {
     @close="close"
   >
 <!-- Where, before what: the same command is a different act in a topic
-             and on main, and the folder is the only thing that says which. -->
+             and on main, and the folder is the only thing that says which.
+
+             `fellBack` used to be said here too — "the main checkout, not
+             this branch". It cannot happen any more: a command is offered
+             only in the repository that declared it (`listCommands`), and
+             there the environment always holds this very checkout, so the
+             fallback it warned about is never the one taken. The flag stays
+             on the type because servers still reach for it. -->
         <p class="where">
           in <code class="mono">{{ c.command.cwd.split('/').slice(-2).join('/') }}</code>
-          <span v-if="c.command.fellBack" class="dim"> — the main checkout, not this branch</span>
         </p>
 
         <code class="mono line selectable">{{ preview }}</code>

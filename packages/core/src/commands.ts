@@ -1,3 +1,4 @@
+import { basename } from 'node:path'
 import type { CommandDecl, CommandRunResult, DeclaredCommand, ManifestV1, Workspace } from '@cockpit/shared'
 import { findManifest, readManifest } from './detect.js'
 import { getProject, requireWorkspace } from './registry.js'
@@ -33,17 +34,39 @@ function inputsOf(decl: CommandDecl): DeclaredCommand['inputs'] {
   return Object.entries(decl.ask ?? {}).map(([key, label]) => ({ key, label: String(label) }))
 }
 
-/** Every command this environment can run, in declaration order. */
+/**
+ * Every command you can press *here*, in declaration order.
+ *
+ * A command is declared for a repository or for the project, and that is not
+ * only where it is written — it is where it can be pressed. A `repo:` command
+ * is offered in checkouts of that repository and nowhere else; a command with
+ * no `repo:` belongs to the project as a whole, so it is offered under every
+ * repository in it, and runs in the project's own folder either way.
+ *
+ * Without the first half of that rule `hostWorkspaceFor`'s fallback answered
+ * for everything: a `build` declared for the API resolved to the API's main
+ * checkout from *any* repository in the project, so a repository with no
+ * commands of its own still carried a Run button, listing another
+ * repository's — and pressing it ran that other repository's build, from a bar
+ * whose name said you were somewhere else. The same fallback is right inside
+ * the repository it belongs to (a topic that only branches the frontend still
+ * builds the unbranched API), which is why it is a filter here rather than a
+ * change there. `servers:` has been scoped this way since capabilities were
+ * detected (`detectCapabilities`); this is commands catching up.
+ */
 export function listCommands(ws: Workspace): DeclaredCommand[] {
   const declared = manifestFor(ws)?.commands
   if (!declared) return []
 
   const out: DeclaredCommand[] = []
   for (const [name, decl] of Object.entries(declared)) {
+    const repo = decl.repo ? basename(decl.repo) : ''
+    if (repo && repo !== ws.repoName) continue
     const host = hostWorkspaceFor(ws, decl.repo)
     if (!host) continue
     out.push({
       name,
+      repo,
       workspaceId: host.ws.id,
       cwd: host.ws.path,
       cmd: decl.cmd ?? '',
@@ -165,7 +188,11 @@ async function runSequence(
       if (code !== 0) {
         return {
           ok: false,
-          detail: failure(done, step, 'exited with code ' + (code ?? '?')),
+          // A null code is a step that never became a process — a command line
+          // whose first word is not a program, most often. Saying "exited with
+          // code ?" about it is the wrong sentence twice over, and the right
+          // one is the line the spawn itself wrote.
+          detail: failure(done, step, whyItEnded(res.procId, code)),
           touched: [...touched],
           procId: res.procId,
           cmd: name,
@@ -200,6 +227,13 @@ async function runSequence(
   }
 
   return { ok: true, detail: done.join(', then '), touched: [...touched], procId: null, cmd: name, cwd }
+}
+
+/** What to say about a step that did not succeed, in the words it left. */
+function whyItEnded(procId: string | null, code: number | null): string {
+  if (code !== null) return 'exited with code ' + code
+  const said = procId ? sup.tail(procId, 1) : ''
+  return said ? 'did not start — ' + said : 'did not start'
 }
 
 function failure(done: string[], step: string, why: string): string {

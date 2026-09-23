@@ -2498,6 +2498,67 @@ export async function refreshCommands(): Promise<void> {
   if (state.activeWorkspaceId === id) state.commands = got
 }
 
+/* ── which command the Run button presses ────────────────────────────
+ *
+ * A repository has four or five commands and one of them is the one you press
+ * all afternoon. A menu makes every press cost two clicks and a read; a button
+ * that always pressed the first declaration makes the other four cost the same
+ * two clicks forever. So the button presses the last one run here, and the
+ * chevron beside it is how that changes — picking from the menu runs it *and*
+ * makes it the button's, until the next pick.
+ *
+ * Keyed by project and repository, which is the same pair a declaration is
+ * scoped to (`listCommands`): the choice follows the commands it is choosing
+ * between, so it survives moving to a topic's worktree of the same repository
+ * and does not leak into the repository next door. A habit of this machine,
+ * like `recentIds` below, so the core does not store it — and a name that is
+ * no longer declared simply falls back to the first one.
+ */
+const RUN_KEY = 'cockpit.run'
+
+const runChoice = ref<Record<string, string>>(readRunChoice())
+
+function readRunChoice(): Record<string, string> {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(RUN_KEY) ?? '{}')
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    return Object.fromEntries(
+      Object.entries(raw as Record<string, unknown>).filter(
+        (e): e is [string, string] => typeof e[1] === 'string',
+      ),
+    )
+  } catch {
+    return {}
+  }
+}
+
+function runKeyFor(w: Workspace): string {
+  return w.projectId + '/' + w.repoName
+}
+
+/** The one the button itself presses: the last chosen here, else the first. */
+export const chosenCommand = computed<DeclaredCommand | null>(() => {
+  const w = activeWorkspace.value
+  if (!w || !state.commands.length) return null
+  const want = runChoice.value[runKeyFor(w)]
+  return state.commands.find((c) => c.name === want) ?? state.commands[0]!
+})
+
+/** Run it, and leave it on the button. */
+export function chooseCommand(command: DeclaredCommand): void {
+  const w = activeWorkspace.value
+  if (w) {
+    runChoice.value = { ...runChoice.value, [runKeyFor(w)]: command.name }
+    try {
+      localStorage.setItem(RUN_KEY, JSON.stringify(runChoice.value))
+    } catch {
+      // A machine with no storage keeps the choice for the session; the button
+      // still works, which is the part that matters.
+    }
+  }
+  askCommand(command)
+}
+
 /**
  * Press it. Anything it needs to ask is asked first, in one box.
  *

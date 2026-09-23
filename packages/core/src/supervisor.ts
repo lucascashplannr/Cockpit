@@ -121,7 +121,16 @@ export function start(opts: StartOptions): SupervisedProcess {
     payload: { id, label: opts.label, pid: child.pid, command: opts.command, cwd: opts.cwd },
   })
 
-  child.on('exit', (code) => {
+  /**
+   * The end of this process, however it ends — including never having begun.
+   *
+   * One path, because everything downstream of a process ending is the same
+   * bookkeeping whether it ran for an hour or was never a process at all: the
+   * waiters are released, the corpse is kept for its output (`dead`), the row
+   * stops saying `running`, and the journal gets a line.
+   */
+  const finish = (code: number | null): void => {
+    if (!live.has(id)) return
     live.delete(id)
     for (const w of waiters.get(id) ?? []) w(code)
     waiters.delete(id)
@@ -142,6 +151,35 @@ export function start(opts: StartOptions): SupervisedProcess {
       workspaceId: opts.workspaceId,
       payload: { id, label: opts.label, code },
     })
+  }
+
+  child.on('exit', finish)
+
+  /**
+   * It never started — a mistyped command line, most often (§11: the manifest
+   * is hand-writable, so a typo in it is a normal Tuesday, not an incident).
+   *
+   * Three things were wrong without this, and only the first was visible.
+   * `ChildProcess` emits `error` and *no* `exit` when the spawn itself fails,
+   * and an unhandled `error` on an EventEmitter throws — so `spawn ddd ENOENT`
+   * came out of the core as an uncaught exception, survived only because
+   * `index.ts` installs a handler that writes it to stderr and shrugs.
+   *
+   * Underneath that: with no `exit`, nothing ever cleaned the process up. It
+   * stayed in `live` for the rest of the session, so the Servers tool reported
+   * a dev server `running` that had never existed, and its row in `processes`
+   * still says `running` in a database that outlives the window. And `waitFor`
+   * never resolved, so a `runs:` list with one bad line in it waited forever,
+   * on a step that had already failed, with no way to end it.
+   *
+   * The message goes through `record` rather than straight into the ring, so
+   * it reaches the window the way every other line of output does — the toast
+   * that is already streaming this process says what went wrong instead of
+   * staying blank.
+   */
+  child.on('error', (err: Error) => {
+    record(Buffer.from(String(err.message ?? err) + '\n', 'utf8'))
+    finish(null)
   })
 
   return {

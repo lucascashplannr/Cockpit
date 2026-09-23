@@ -357,6 +357,14 @@ export interface Declarations {
 /** §8 — a declared one-shot, resolved for the environment that will run it. */
 export interface DeclaredCommand {
   name: string
+  /**
+   * Which scope declared it: a repository's folder name, or `''` for the
+   * project. Not decoration — it is what decides where the command is offered
+   * at all (`listCommands`), and the window says it beside a project-level one
+   * so a command appearing under a repository that did not declare it reads as
+   * the project's rather than as a stray.
+   */
+  repo: string
   workspaceId: string
   cwd: string
   /** The line as declared, placeholders intact — shown before anything is asked. */

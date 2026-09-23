@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  AppWindow, ArrowDownToLine, ArrowUpFromLine, CirclePlay, CircleStop, FileCode,
+  AppWindow, ArrowDownToLine, ArrowUpFromLine, ChevronDown, CirclePlay, CircleStop, FileCode,
   GitCompareArrows, SlidersHorizontal, Terminal, Undo2,
 } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
 import {
-  activeWorkspace, askCommand, client, gitBusy, guard, openDeclarations, requestPlan,
-  state, toggleWorkspaceRuntime,
+  activeWorkspace, askCommand, chooseCommand, chosenCommand, client, gitBusy, guard,
+  openDeclarations, requestPlan, state, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -45,6 +45,26 @@ const busy = computed(() => !!(w.value && gitBusy[w.value.id]))
  * it belongs with the other verbs whatever you happen to be looking at.
  */
 const commands = computed(() => state.commands)
+
+/**
+ * The half of the split button that is a button: one command, pressed.
+ *
+ * Which one is the store's business (`chosenCommand`) — the last run here, and
+ * otherwise the first declared. The chevron beside it is the other half, and
+ * picking from it both runs the command and moves the button to it.
+ */
+const chosen = computed(() => chosenCommand.value)
+
+/** The name as the button prints it: an ellipsis when it asks something first. */
+const label = (c: { name: string; inputs: unknown[] }) => c.name + (c.inputs.length ? '…' : '')
+
+/** What it will do and where — the folder is the part that surprises people. */
+const runTitle = computed(() => {
+  const c = chosen.value
+  if (!c) return ''
+  const where = c.repo ? 'in ' + c.repo : 'in the project folder'
+  return 'Run ' + c.name + ' ' + where + (c.cmd ? ' — ' + c.cmd : '')
+})
 const preview = computed(() => w.value?.runtime?.preview ?? null)
 
 /**
@@ -191,22 +211,38 @@ async function undo() {
     </button>
 
     <!-- §8 — next to the switch, because they are the same kind of act: the
-         things this checkout runs. Named rather than an ellipsis, so the one
-         verb here that is a *list* reads as one. -->
-    <OverflowMenu v-if="commands.length" label="Run a command here" :disabled="busy">
-      <template #trigger>
-        <Terminal /><span class="vl">Run</span>
-      </template>
-      <button v-for="c in commands" :key="c.name" @click="askCommand(c)">
-        <Terminal /> {{ c.name }}{{ c.inputs.length ? '…' : '' }}
+         things this checkout runs. It names the command rather than the
+         category: `Run` was a word that opened a list, so the command pressed
+         all afternoon cost two clicks and a read every time. Now the left half
+         *is* that command and the chevron is the list — and picking from the
+         list leaves the button on what you picked.
+
+         Absent when this repository declares nothing, which is the whole of
+         §3.9 applied to a control that used to answer for the repository next
+         door: `listCommands` scopes the list, and an empty list is no button
+         rather than a button onto somebody else's build. -->
+    <div v-if="chosen" class="split" :class="{ off: busy }">
+      <button class="btn ghost run" :disabled="busy" :title="runTitle" @click="askCommand(chosen)">
+        <Terminal /><span class="vl">{{ label(chosen) }}</span>
       </button>
-      <span class="rule" />
-      <!-- The list and the way to change it, in one place: the menu naming
-           what exists is where anyone looks to add the next one. -->
-      <button @click="openDeclarations(w.repoName)">
-        <SlidersHorizontal /> Servers and commands…
-      </button>
-    </OverflowMenu>
+      <span class="div" />
+      <OverflowMenu class="pick" label="Pick the command this button runs" :disabled="busy">
+        <template #trigger><ChevronDown /></template>
+        <button v-for="c in commands" :key="c.name" @click="chooseCommand(c)">
+          <Terminal /> {{ label(c) }}
+          <!-- Said only when it is not this repository's: a command under a
+               repository that did not declare it is the project's, and that
+               is a different folder. -->
+          <span v-if="!c.repo" class="sc">project</span>
+        </button>
+        <span class="rule" />
+        <!-- The list and the way to change it, in one place: the menu naming
+             what exists is where anyone looks to add the next one. -->
+        <button @click="openDeclarations(w.repoName)">
+          <SlidersHorizontal /> Servers and commands…
+        </button>
+      </OverflowMenu>
+    </div>
 
     <!-- Always, wherever there is a branch to push.
          Push is the one git verb that is never a surprise and never contextual
@@ -269,6 +305,13 @@ async function undo() {
       <button @click="openIde">
         <FileCode /> Open in the editor <span class="kb">O</span>
       </button>
+      <!-- Also in the Run menu, and it has to be in both: with the list scoped
+           to what this repository declares, a repository that declares nothing
+           has no Run menu at all — and that is exactly the repository someone
+           is trying to declare the first command in. -->
+      <button @click="openDeclarations(w.repoName)">
+        <SlidersHorizontal /> Servers and commands…
+      </button>
       <template v-if="git">
         <span class="rule" />
         <button @click="undo">
@@ -320,12 +363,74 @@ async function undo() {
 .ready { color: var(--ok); }
 .verbs .btn.on { color: var(--ok); }
 
+/* ── the split Run (§8) ──────────────────────────────────────────────
+ *
+ * One control, two halves: *the command* and *which command*. The border is
+ * what makes them read as one thing — every other verb on this bar is ghost
+ * until hovered, and two transparent halves with a hairline floating between
+ * them read as two buttons that happen to be adjacent.
+ *
+ * No `overflow: hidden` to clip the halves to the corners, tempting as it is:
+ * the chevron's menu is absolutely positioned inside this box, and clipping
+ * the box clips the menu to a 26px strip. The halves round their own outer
+ * corners instead. */
+.split {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.split:hover { border-color: var(--line-strong); }
+/* The whole control goes quiet together while a plan holds the repository —
+   each half is disabled in its own right, but the border is the shape's. */
+.split.off { opacity: 0.4; }
+.split.off:hover { border-color: var(--line); }
+/* The halves: 24px inside a 26px box, and the outer corners follow the border
+   they sit against — 6px, which is the box's 7px less the 1px of border it
+   sits behind, so the hover fill does not square the corners off or float
+   inside them. Through
+   `:deep`, because the chevron's button belongs to OverflowMenu and carries
+   its scope, not this one — which is also why the Run trigger has been 32px
+   tall beside a 26px Push since the day it was added. */
+.verbs .split :deep(.btn) {
+  height: 24px;
+  border-radius: 0;
+}
+.verbs .split .btn.run { padding: 0 9px; border-radius: 6px 0 0 6px; }
+/* Disabled twice over: `.off` already dims the shape, so the halves must not
+   dim again inside it or the pair reads as a third state. */
+.split.off :deep(.btn:disabled) { opacity: 1; }
+/* The hairline between them, drawn short so it parts the halves without
+   reaching the border and making a cross of it. */
+.split .div { flex: none; width: 1px; height: 14px; background: var(--line); }
+/* The chevron is the narrowest thing on the bar that is still a target: it
+   says "there are others" and nothing else, so it gets no word and no room
+   for one. */
+.verbs .split :deep(.pick .btn) { padding: 0 5px; border-radius: 0 6px 6px 0; }
+.verbs .split :deep(.pick .lucide) { width: 13px; height: 13px; }
+/* Where a project-level command runs, at the right edge of its own row. The
+   menu's `.kb` slot is the same shape, and is the keystroke's — a word that is
+   not one has no business borrowing it. */
+.sc {
+  margin-left: auto;
+  padding-left: 14px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 /* Narrow column: the promoted verbs keep their labels — they are one or two,
    and a word is the whole reason they were promoted. The label the bar drops
    first is Start's, because its icon is a play triangle and nothing else here
-   is. */
+   is. The command's name is the last to go, and it goes only because a name
+   is a name: at this width there is nothing left to give. */
 @container (max-width: 620px) {
   .verbs .btn.sw .vl { display: none; }
   .verbs .btn { padding: 0 6px; }
+}
+@container (max-width: 520px) {
+  .verbs .split .btn.run .vl { display: none; }
+  .verbs .split .btn.run { padding: 0 6px; }
 }
 </style>
