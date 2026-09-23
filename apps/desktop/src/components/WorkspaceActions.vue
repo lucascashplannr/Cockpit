@@ -411,13 +411,6 @@ async function undo() {
       <button @click="openIde">
         <FileCode /> Open in the editor <span class="kb">O</span>
       </button>
-      <!-- Also in the Run menu, and it has to be in both: with the list scoped
-           to what this repository declares, a repository that declares nothing
-           has no Run menu at all — and that is exactly the repository someone
-           is trying to declare the first command in. -->
-      <button @click="openDeclarations(w.repoName)">
-        <SlidersHorizontal /> Edit servers and commands…
-      </button>
       <template v-if="git">
         <span class="rule" />
         <button @click="undo">
