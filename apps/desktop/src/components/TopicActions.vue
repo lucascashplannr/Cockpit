@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { ArrowUp, GitCompareArrows, GitMerge, Pause, Play } from '@lucide/vue'
+import { computed, ref, watch } from 'vue'
+import { ArrowUp, ChevronDown, GitCompareArrows, GitMerge, Pause, Play, Terminal } from '@lucide/vue'
+import type { DeclaredCommand, DeclaredServer } from '@cockpit/shared'
+import OverflowMenu from './OverflowMenu.vue'
 import type { ListGroup } from '../core/store.js'
-import { startTopic, mergeTopic, pushTopic, stopTopic, rebaseTopic } from '../core/store.js'
+import {
+  askCommand, chooseCommand, client, commandChoiceFor, mergeTopic, pointServer, pushTopic,
+  rebaseTopic, runningServers, serverChoiceFor, startTopic, state, stopTopic, toggleWorkspaceRuntime,
+} from '../core/store.js'
 
 /**
  * §4 — the verbs of the selected topic, on the bar of the column it is about.
@@ -125,28 +130,149 @@ const pushTitle = computed(() =>
     : 'Nothing to push: every branch is level with its remote',
 )
 
-async function toggle() {
+async function toggleTopic() {
   const topic = f.value
   if (!topic) return
   if (topic.state === 'running') await stopTopic(topic.id)
   else await startTopic(topic.id)
 }
+
+/* ── the project's own servers and commands, here (§8) ────────────────
+ *
+ * A declaration with no `repo:` belongs to the project and runs in the
+ * project's folder — which, inside a topic, is the topic's own folder. So the
+ * topic's bar is where they are pressed, with the same two split buttons a
+ * repository has and the same rules: a chevron only where there are names,
+ * a Run button only where something is declared, and no way into editing
+ * them — a topic is where declarations run, never where they are written.
+ */
+
+/** The topic's folder, which is the checkout the project's declarations run in. */
+const folder = computed(
+  () => state.workspaces.find((w) => w.kind === 'group' && w.topicId === f.value?.id) ?? null,
+)
+
+const servers = ref<DeclaredServer[]>([])
+const commands = ref<DeclaredCommand[]>([])
+
+async function load(): Promise<void> {
+  const w = folder.value
+  if (!w) {
+    servers.value = []
+    commands.value = []
+    return
+  }
+  const [c, s] = await Promise.all([
+    client.call('commands.list', { workspaceId: w.id }).catch(() => []),
+    w.runtime ? client.call('runtime.servers', { workspaceId: w.id }).catch(() => []) : [],
+  ])
+  // An answer for a topic nobody is looking at any more is not an answer.
+  if (folder.value?.id !== w.id) return
+  commands.value = c
+  servers.value = s
+}
+
+// The folder's runtime appears once the core has read a project server for it,
+// and the lists change whenever the manifest is written from the window.
+watch(
+  [() => folder.value?.id, () => folder.value?.runtime?.impl, () => state.declarations, () => state.commands],
+  () => void load(),
+  { immediate: true },
+)
+
+const alive = computed(() => runningServers(folder.value))
+/** Null is every server — the topic's own switch, as it has always been. */
+const target = computed(() => serverChoiceFor(folder.value, servers.value))
+
+const running = computed(() =>
+  target.value ? alive.value.has(target.value) : f.value?.state === 'running',
+)
+const switchLabel = computed(() => target.value ?? (running.value ? 'Stop' : 'Start'))
+const switchTitle = computed(() => {
+  if (target.value) return (running.value ? 'Stop ' : 'Start ') + target.value
+  return running.value
+    ? 'Stop the servers — the branches stay where they are'
+    : 'Start the servers for every repository in this topic'
+})
+
+async function toggle() {
+  const w = folder.value
+  if (target.value && w) await toggleWorkspaceRuntime(w, target.value)
+  else await toggleTopic()
+}
+
+/** Switch it, and leave the button pointed at it — `null` is the whole topic. */
+async function chooseServer(name: string | null) {
+  const w = folder.value
+  if (w) pointServer(w, name)
+  if (name && w) await toggleWorkspaceRuntime(w, name)
+  else await toggleTopic()
+}
+
+function noteOf(s: DeclaredServer): string {
+  if (s.unresolved.length) return 'nothing named ' + s.unresolved.map((u) => '{{' + u + '}}').join(', ')
+  if (alive.value.has(s.name)) return s.port ? ':' + s.port : 'running'
+  return s.inStart ? '' : 'not on Start'
+}
+
+const chosen = computed(() => commandChoiceFor(folder.value, commands.value))
+const label = (c: DeclaredCommand) => c.name + (c.inputs.length ? '…' : '')
+const runTitle = computed(() => {
+  const c = chosen.value
+  return c ? 'Run ' + c.name + ' in the topic folder' + (c.cmd ? ' — ' + c.cmd : '') : ''
+})
 </script>
 
 <template>
   <div v-if="togglable" class="verbs">
-    <!-- Always: it is the switch. -->
+    <!-- Always: it is the switch. Split once the project declares servers of
+         its own, exactly as a repository's is: the left half is the whole
+         topic until one of them is picked. -->
     <button
+      v-if="!servers.length"
       class="btn ghost sw"
-      :class="{ on: f!.state === 'running' }"
-      :title="f!.state === 'running'
-        ? 'Stop the servers — the branches stay where they are'
-        : 'Start the servers for every repository in this topic'"
+      :class="{ on: running }"
+      :title="switchTitle"
       @click="toggle"
     >
-      <component :is="f!.state === 'running' ? Pause : Play" />
-      <span class="vl">{{ f!.state === 'running' ? 'Stop' : 'Start' }}</span>
+      <component :is="running ? Pause : Play" />
+      <span class="vl">{{ switchLabel }}</span>
     </button>
+    <div v-else class="split">
+      <button class="btn ghost run" :class="{ on: running, sw: !target }" :title="switchTitle" @click="toggle">
+        <component :is="running ? Pause : Play" />
+        <span class="vl">{{ switchLabel }}</span>
+      </button>
+      <span class="div" />
+      <OverflowMenu class="pick" label="Pick what this switch starts">
+        <template #trigger><ChevronDown /></template>
+        <button @click="chooseServer(null)">
+          <component :is="f!.state === 'running' && !target ? Pause : Play" />
+          All servers
+          <span v-if="!target" class="sc">on the button</span>
+        </button>
+        <span class="rule" />
+        <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
+          <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
+          {{ s.name }}
+          <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
+        </button>
+      </OverflowMenu>
+    </div>
+
+    <!-- The project's commands, run in this topic's folder. -->
+    <div v-if="chosen" class="split">
+      <button class="btn ghost run" :title="runTitle" @click="askCommand(chosen)">
+        <Terminal /><span class="vl">{{ label(chosen) }}</span>
+      </button>
+      <span class="div" />
+      <OverflowMenu class="pick" label="Pick the command this button runs">
+        <template #trigger><ChevronDown /></template>
+        <button v-for="c in commands" :key="c.name" @click="chooseCommand(c, folder)">
+          <Terminal /> {{ label(c) }}
+        </button>
+      </OverflowMenu>
+    </div>
 
     <!-- The counterpart of a per-repository commit: nothing about a push is
          specific to one repository's diff, so it is one act across all of
@@ -230,6 +356,39 @@ async function toggle() {
 .nudge { color: var(--warn); }
 .ready { color: var(--ok); }
 .verbs .btn.on { color: var(--ok); }
+
+/* ── the split buttons, drawn as the repository bar draws them ─────── */
+.split {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.split:hover { border-color: var(--line-strong); }
+.verbs .split :deep(.btn:hover:not(:disabled)) { border-color: transparent; }
+.verbs .split :deep(.btn) { height: 24px; border-radius: 0; }
+.verbs .split .btn.run { padding: 0 9px; border-radius: 6px 0 0 6px; }
+.split .div { flex: none; width: 1px; height: 14px; background: var(--line); }
+.verbs .split :deep(.pick .btn) { padding: 0 5px; border-radius: 0 6px 6px 0; }
+.verbs .split :deep(.pick .lucide) { width: 13px; height: 13px; }
+.sd {
+  flex: none;
+  width: var(--ic-sm);
+  height: var(--ic-sm);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--text-dim);
+  transform: scale(0.5);
+}
+.sd.on { background: var(--ok); box-shadow: none; }
+.sd.bad { background: var(--warn); box-shadow: none; }
+.sc {
+  margin-left: auto;
+  padding-left: 14px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
 
 /* Narrow column: the switch drops its word — its icon is a play triangle and
    nothing else here is. The promoted git verbs keep theirs, which is the whole

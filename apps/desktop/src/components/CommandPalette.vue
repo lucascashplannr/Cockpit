@@ -288,7 +288,7 @@ const commands = computed<Item[]>(() => {
 
     out.push({
       id: 'declare',
-      label: 'Edit servers and commands',
+      label: 'Manage commands & servers',
       hint: 'what this project runs, per repository or for the project itself',
       group: 'Run',
       icon: SlidersHorizontal,

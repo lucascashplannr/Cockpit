@@ -65,7 +65,7 @@ const scopeLabel = computed(
 )
 /** What the sheet is of: one half names itself, both keep the old title. */
 const heading = computed(() =>
-  section.value === 'server' ? 'Servers' : section.value === 'command' ? 'Commands' : 'Servers and commands',
+  section.value === 'server' ? 'Servers' : section.value === 'command' ? 'Commands' : 'Commands & servers',
 )
 const title = computed(() => {
   if (editing.value) return previousName.value ?? 'New ' + editing.value.kind

@@ -36,6 +36,18 @@ const w = computed(() => activeWorkspace.value)
 const busy = computed(() => !!(w.value && gitBusy[w.value.id]))
 
 /**
+ * The repository's own checkout, not a topic's worktree of it. Declarations
+ * are written on the repository (§4: a topic is where they run, never where
+ * they are written), so only here does the way into editing them appear.
+ */
+const isBase = computed(() => w.value?.kind === 'main')
+
+/** Nothing declared here yet, so no chevron carries the way in. */
+const needsFirst = computed(
+  () => isBase.value && !(w.value?.runtime && pickable.value) && !chosen.value,
+)
+
+/**
  * §8 — the declared one-shots, beside Start.
  *
  * They were in the Servers tool, under the board, and that was the wrong
@@ -305,13 +317,17 @@ async function undo() {
           {{ s.name }}
           <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
         </button>
-        <span class="rule" />
         <!-- Its own half of the sheet. This menu is about servers, so the way
              out of it is about servers: the commands were a second list to
-             scroll past on the way to the one thing that had been asked for. -->
-        <button @click="openDeclarations(w.repoName, 'server')">
-          <SlidersHorizontal /> Edit servers…
-        </button>
+             scroll past on the way to the one thing that had been asked for.
+             Only on the repository itself: a topic's worktree runs what the
+             repository declares, it is not where that is written. -->
+        <template v-if="isBase">
+          <span class="rule" />
+          <button @click="openDeclarations(w.repoName, 'server')">
+            <SlidersHorizontal /> Manage servers
+          </button>
+        </template>
       </OverflowMenu>
     </div>
 
@@ -335,18 +351,17 @@ async function undo() {
         <template #trigger><ChevronDown /></template>
         <button v-for="c in commands" :key="c.name" @click="chooseCommand(c)">
           <Terminal /> {{ label(c) }}
-          <!-- Said only when it is not this repository's: a command under a
-               repository that did not declare it is the project's, and that
-               is a different folder. -->
-          <span v-if="!c.repo" class="sc">project</span>
         </button>
-        <span class="rule" />
         <!-- The list and the way to change it, in one place: the menu naming
              what exists is where anyone looks to add the next one. Commands
-             only, for the same reason the Start menu offers servers only. -->
-        <button @click="openDeclarations(w.repoName, 'command')">
-          <SlidersHorizontal /> Edit commands…
-        </button>
+             only, for the same reason the Start menu offers servers only —
+             and, like it, only on the repository itself. -->
+        <template v-if="isBase">
+          <span class="rule" />
+          <button @click="openDeclarations(w.repoName, 'command')">
+            <SlidersHorizontal /> Manage commands
+          </button>
+        </template>
       </OverflowMenu>
     </div>
 
@@ -410,6 +425,13 @@ async function undo() {
       </button>
       <button @click="openIde">
         <FileCode /> Open in the editor <span class="kb">O</span>
+      </button>
+      <!-- Only while neither chevron above offers its own way in: a repository
+           that declares nothing has no Start menu and no Run button, and that
+           is exactly the repository someone is about to declare the first one
+           in. Once one exists, the menu listing it is where it is managed. -->
+      <button v-if="needsFirst" @click="openDeclarations(w.repoName)">
+        <SlidersHorizontal /> Manage commands &amp; servers
       </button>
       <template v-if="git">
         <span class="rule" />

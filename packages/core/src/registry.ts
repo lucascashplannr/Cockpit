@@ -604,16 +604,33 @@ function deriveTopics(project: Project): void {
 }
 
 /**
+ * §8 — the part of the manifest a topic's folder runs: the servers declared
+ * for the project (no `repo:`), which run in the topic's own folder, and
+ * nothing else. The rest of the file — `runtime:`, tickets, review — is about
+ * the repositories, and a topic folder is not one.
+ */
+function projectLevelOf(manifest: ManifestV1 | null): ManifestV1 | null {
+  if (!manifest?.servers) return null
+  const servers = Object.fromEntries(Object.entries(manifest.servers).filter(([, d]) => !d.repo))
+  return { version: 1, name: manifest.name, servers, ...(manifest.start ? { start: manifest.start } : {}) }
+}
+
+/**
  * A topic's folder sits in `worktrees/<slug>/`, outside the project root, so
  * no amount of scanning finds it. It is registered explicitly: it is the group
  * workspace that holds the memory and the cross-repo CONTEXT.md (§7), and an
  * agent can be scoped to it to reach every repository at once.
  */
 function addTopicRoots(project: Project): void {
+  const caps = (dir: string) => detectCapabilities(dir, projectLevelOf(manifestOf(project)), '')
   for (const rec of topicStore.list(project.id)) {
     if (rec.state === 'closed' || !rec.rootPath || !existsSync(rec.rootPath)) continue
     const id = stableId('ws', rec.rootPath)
-    if (workspaces.has(id)) {
+    const known = workspaces.get(id)
+    if (known) {
+      // Re-read every time: the manifest is edited from the window, and a
+      // project server declared after the topic was opened belongs here too.
+      known.capabilities = caps(rec.rootPath)
       if (!project.workspaceIds.includes(id)) project.workspaceIds.push(id)
       continue
     }
@@ -629,7 +646,7 @@ function addTopicRoots(project: Project): void {
       git: null,
       runtime: null,
       topicId: rec.id,
-      capabilities: detectCapabilities(rec.rootPath, null),
+      capabilities: caps(rec.rootPath),
       agentSessions: [],
       lease: null,
       hasMemory: existsSync(join(rec.rootPath, '.cockpit', 'memory.md')),

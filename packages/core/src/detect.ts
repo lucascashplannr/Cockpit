@@ -172,8 +172,11 @@ export function detectCapabilities(
   // §8 — a declared server beats everything below it, including detection and
   // the `runtime:` escape hatch. It is the only one of the three the user
   // wrote down, so it is the only one that can be wrong on purpose.
-  const declared = Object.entries(manifest?.servers ?? {}).filter(
-    ([, d]) => !d.repo || basename(d.repo) === repoName,
+  // A repository runs its own servers; the project's (no `repo:`) run in the
+  // project's folder — a topic's folder inside a topic — and are that
+  // folder's to start, not every repository's. `repoName` '' is that folder.
+  const declared = Object.entries(manifest?.servers ?? {}).filter(([, d]) =>
+    repoName ? !!d.repo && basename(d.repo) === repoName : !d.repo,
   )
   if (declared.length) {
     push({
@@ -205,7 +208,11 @@ export function detectCapabilities(
 
   if (isRepo(dir)) push({ id: 'vcs', impl: 'git', source: 'detected' })
 
-  const rt = detectRuntime(dir)
+  // Guessing is for a project that has not said. Once it declares servers, the
+  // declaration is the whole answer: a repository with none of its own has no
+  // Start, even with a `package.json` that could have been guessed at.
+  const saysWhatRuns = Object.keys(manifest?.servers ?? {}).length > 0
+  const rt = saysWhatRuns ? null : detectRuntime(dir)
   if (rt) push({ id: 'runtime', impl: rt.impl, source: 'detected', detail: rt.detail })
 
   const docs = detectDocs(dir)

@@ -134,7 +134,7 @@ async function copyPath(path: string) {
         v-if="ws.kind === 'main' && ws.repoName"
         @click="act(() => openDeclarations(ws!.repoName))"
       >
-        <SlidersHorizontal /> Servers and commands…
+        <SlidersHorizontal /> Manage commands &amp; servers
       </button>
       <button v-if="ws.runtime" @click="act(() => toggleWorkspaceRuntime(ws!))">
         <component :is="serverRunning ? CircleStop : CirclePlay" />

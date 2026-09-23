@@ -261,13 +261,13 @@ function onKey(e: KeyboardEvent) {
              true of the project rather than of the checkout you are standing
              in. It is also the only place a project with nothing declared yet
              can be given its first server. -->
-        <span class="section-label sep">Servers and commands</span>
+        <span class="section-label sep">Commands &amp; servers</span>
 
         <div class="field">
           <div class="row">
             <span class="help grow">{{ declaredSummary }}</span>
             <button class="btn" @click="editDeclarations">
-              <SlidersHorizontal />Edit
+              <SlidersHorizontal />Manage
             </button>
           </div>
           <span class="help">

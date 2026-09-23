@@ -40,8 +40,9 @@ function inputsOf(decl: CommandDecl): DeclaredCommand['inputs'] {
  * A command is declared for a repository or for the project, and that is not
  * only where it is written — it is where it can be pressed. A `repo:` command
  * is offered in checkouts of that repository and nowhere else; a command with
- * no `repo:` belongs to the project as a whole, so it is offered under every
- * repository in it, and runs in the project's own folder either way.
+ * no `repo:` belongs to the project, so it is offered in the project's own
+ * folder — a topic's folder inside a topic — and not under each repository,
+ * where it made a repository that declares nothing look as if it did.
  *
  * Without the first half of that rule `hostWorkspaceFor`'s fallback answered
  * for everything: a `build` declared for the API resolved to the API's main
@@ -61,7 +62,7 @@ export function listCommands(ws: Workspace): DeclaredCommand[] {
   const out: DeclaredCommand[] = []
   for (const [name, decl] of Object.entries(declared)) {
     const repo = decl.repo ? basename(decl.repo) : ''
-    if (repo && repo !== ws.repoName) continue
+    if (repo !== ws.repoName) continue
     const host = hostWorkspaceFor(ws, decl.repo)
     if (!host) continue
     out.push({

@@ -2610,16 +2610,23 @@ function runKeyFor(w: Workspace): string {
 }
 
 /** The one the button itself presses: the last chosen here, else the first. */
-export const chosenCommand = computed<DeclaredCommand | null>(() => {
-  const w = activeWorkspace.value
-  if (!w || !state.commands.length) return null
+export const chosenCommand = computed<DeclaredCommand | null>(() =>
+  commandChoiceFor(activeWorkspace.value, state.commands),
+)
+
+/**
+ * The same choice for any checkout and its own list — a topic's folder keeps
+ * one for the project's commands, beside the ones its repositories keep.
+ */
+export function commandChoiceFor(w: Workspace | null, commands: DeclaredCommand[]): DeclaredCommand | null {
+  if (!w || !commands.length) return null
   const want = runChoice.value[runKeyFor(w)]
-  return state.commands.find((c) => c.name === want) ?? state.commands[0]!
-})
+  return commands.find((c) => c.name === want) ?? commands[0]!
+}
 
 /** Run it, and leave it on the button. */
-export function chooseCommand(command: DeclaredCommand): void {
-  const w = activeWorkspace.value
+export function chooseCommand(command: DeclaredCommand, on: Workspace | null = activeWorkspace.value): void {
+  const w = on
   if (w) {
     runChoice.value = { ...runChoice.value, [runKeyFor(w)]: command.name }
     try {
@@ -3808,25 +3815,38 @@ const SERVER_KEY = 'cockpit.server'
 const serverChoice = ref<Record<string, string>>(readChoice(SERVER_KEY))
 
 /** The name the button switches, or null for every server on `start:`. */
-export const chosenServer = computed<string | null>(() => {
-  const w = activeWorkspace.value
+export const chosenServer = computed<string | null>(() =>
+  serverChoiceFor(activeWorkspace.value, state.servers),
+)
+
+/** The same choice for any checkout and its own list of servers. */
+export function serverChoiceFor(w: Workspace | null, servers: { name: string }[]): string | null {
   if (!w) return null
   const want = serverChoice.value[runKeyFor(w)]
   // A name that is no longer declared is not a target; fall back to all of
   // them rather than to a button that refers to nothing.
-  return want && state.servers.some((s) => s.name === want) ? want : null
-})
+  return want && servers.some((s) => s.name === want) ? want : null
+}
 
-/** Switch it, and leave the button pointed at it. */
-export async function chooseServer(name: string | null): Promise<void> {
-  const w = activeWorkspace.value
-  if (!w) return
+/**
+ * Point the button at a server — or at all of them — without switching
+ * anything. The topic's button needs this half on its own: its *all* is the
+ * topic's switch, not this checkout's.
+ */
+export function pointServer(w: Workspace, name: string | null): void {
   serverChoice.value = { ...serverChoice.value, [runKeyFor(w)]: name ?? '' }
   try {
     localStorage.setItem(SERVER_KEY, JSON.stringify(serverChoice.value))
   } catch {
     // Same as the Run button: no storage means the choice lasts the session.
   }
+}
+
+/** Switch it, and leave the button pointed at it. */
+export async function chooseServer(name: string | null): Promise<void> {
+  const w = activeWorkspace.value
+  if (!w) return
+  pointServer(w, name)
   await toggleWorkspaceRuntime(w, name)
 }
 
