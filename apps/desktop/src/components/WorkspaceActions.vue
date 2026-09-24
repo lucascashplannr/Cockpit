@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import {
   AppWindow, ArrowDownToLine, ArrowUpFromLine, ChevronDown, CirclePlay, CircleStop, FileCode,
-  GitCompareArrows, SlidersHorizontal, Terminal, Undo2,
+  Check, GitCompareArrows, SlidersHorizontal, Terminal, Undo2,
 } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
 import {
@@ -211,7 +211,10 @@ const running = computed(() =>
 /** What the left half says: the server it is pointed at, or the plain verb. */
 const switchLabel = computed(() => {
   if (target.value) return target.value
-  return w.value?.runtime?.status === 'starting' ? 'Starting' : running.value ? 'Stop' : 'Start'
+  // "all" only where there is a menu to have picked one from: the plain
+  // button has one opaque set of servers, and "all" of one thing says nothing.
+  const all = pickable.value ? ' all' : ''
+  return w.value?.runtime?.status === 'starting' ? 'Starting' : (running.value ? 'Stop' : 'Start') + all
 })
 
 const switchTitle = computed(() => {
@@ -309,13 +312,14 @@ async function undo() {
         <button @click="chooseServer(null)">
           <component :is="running && !target ? CircleStop : CirclePlay" />
           All servers
-          <span v-if="!target" class="sc">on the button</span>
+          <Check v-if="!target" class="tick" aria-label="on the button" />
         </button>
         <span class="rule" />
         <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
           <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
           {{ s.name }}
           <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
+          <Check v-if="target === s.name" class="tick" aria-label="on the button" />
         </button>
         <!-- Its own half of the sheet. This menu is about servers, so the way
              out of it is about servers: the commands were a second list to
@@ -351,6 +355,7 @@ async function undo() {
         <template #trigger><ChevronDown /></template>
         <button v-for="c in commands" :key="c.name" @click="chooseCommand(c)">
           <Terminal /> {{ label(c) }}
+          <Check v-if="chosen?.name === c.name" class="tick" aria-label="on the button" />
         </button>
         <!-- The list and the way to change it, in one place: the menu naming
              what exists is where anyone looks to add the next one. Commands
@@ -554,6 +559,12 @@ async function undo() {
 }
 .sd.on { background: var(--ok); box-shadow: none; }
 .sd.bad { background: var(--warn); box-shadow: none; }
+
+/* What the button beside the chevron presses, on whichever row it is — the
+   same tick the model picker uses for the same fact. After the note when there
+   is one, at the right edge when there is not. */
+.menu button .tick { margin-left: auto; width: 13px; height: 13px; color: var(--accent); }
+.menu button .sc + .tick { margin-left: 8px; }
 
 /* Where a project-level command runs, at the right edge of its own row. The
    menu's `.kb` slot is the same shape, and is the keystroke's — a word that is

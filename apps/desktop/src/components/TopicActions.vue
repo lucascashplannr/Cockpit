@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ArrowUp, ChevronDown, GitCompareArrows, GitMerge, Pause, Play, Terminal } from '@lucide/vue'
+import { ArrowUp, Check, ChevronDown, GitCompareArrows, GitMerge, Pause, Play, Terminal } from '@lucide/vue'
 import type { DeclaredCommand, DeclaredServer } from '@cockpit/shared'
 import OverflowMenu from './OverflowMenu.vue'
 import type { ListGroup } from '../core/store.js'
@@ -187,7 +187,10 @@ const target = computed(() => serverChoiceFor(folder.value, servers.value))
 const running = computed(() =>
   target.value ? alive.value.has(target.value) : f.value?.state === 'running',
 )
-const switchLabel = computed(() => target.value ?? (running.value ? 'Stop' : 'Start'))
+/** "all" only on the split button — the plain one has nothing to pick between. */
+const switchLabel = computed(
+  () => target.value ?? (running.value ? 'Stop' : 'Start') + (servers.value.length ? ' all' : ''),
+)
 const switchTitle = computed(() => {
   if (target.value) return (running.value ? 'Stop ' : 'Start ') + target.value
   return running.value
@@ -249,13 +252,14 @@ const runTitle = computed(() => {
         <button @click="chooseServer(null)">
           <component :is="f!.state === 'running' && !target ? Pause : Play" />
           All servers
-          <span v-if="!target" class="sc">on the button</span>
+          <Check v-if="!target" class="tick" aria-label="on the button" />
         </button>
         <span class="rule" />
         <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
           <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
           {{ s.name }}
           <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
+          <Check v-if="target === s.name" class="tick" aria-label="on the button" />
         </button>
       </OverflowMenu>
     </div>
@@ -270,6 +274,7 @@ const runTitle = computed(() => {
         <template #trigger><ChevronDown /></template>
         <button v-for="c in commands" :key="c.name" @click="chooseCommand(c, folder)">
           <Terminal /> {{ label(c) }}
+          <Check v-if="chosen?.name === c.name" class="tick" aria-label="on the button" />
         </button>
       </OverflowMenu>
     </div>
@@ -383,6 +388,12 @@ const runTitle = computed(() => {
 }
 .sd.on { background: var(--ok); box-shadow: none; }
 .sd.bad { background: var(--warn); box-shadow: none; }
+
+/* What the button beside the chevron presses, on whichever row it is — the
+   same tick the model picker uses for the same fact. After the note when there
+   is one, at the right edge when there is not. */
+.menu button .tick { margin-left: auto; width: 13px; height: 13px; color: var(--accent); }
+.menu button .sc + .tick { margin-left: 8px; }
 .sc {
   margin-left: auto;
   padding-left: 14px;
