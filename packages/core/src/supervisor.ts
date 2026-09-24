@@ -360,6 +360,19 @@ export function logsForWorkspace(workspaceId: string): ProcessLog[] {
   return out.sort((a, b) => b.startedAt - a.startedAt)
 }
 
+/**
+ * §8 — the Clear on the output pane, and it forgets for real.
+ *
+ * Dropping the text in the window alone would bring every line back the next
+ * time the pane asked for the history, which is a Clear that lasts until you
+ * look away. A running process keeps running and writes into an empty ring;
+ * the finished ones go altogether, since their text was all that was left.
+ */
+export function clearWorkspace(workspaceId: string): void {
+  for (const m of live.values()) if (m.workspaceId === workspaceId) m.ring = []
+  for (const [id, m] of dead) if (m.workspaceId === workspaceId) dead.delete(id)
+}
+
 /** Whether a process this core started is still up, and how it ended if not. */
 export function statusOf(procId: string): { alive: boolean; exitCode: number | null } | null {
   if (live.has(procId)) return { alive: true, exitCode: null }

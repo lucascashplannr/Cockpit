@@ -659,6 +659,11 @@ export function logs(ws: Workspace) {
   return sup.logsForWorkspace(ws.id)
 }
 
+export function clearLogs(ws: Workspace) {
+  sup.clearWorkspace(ws.id)
+  return { ok: true as const }
+}
+
 export async function down(ws: Workspace, names?: string[]) {
   const rt = runtimeFor(ws)
   if (!rt) return { ok: false, detail: 'no runtime for this workspace' }

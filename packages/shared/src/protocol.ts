@@ -693,6 +693,8 @@ export interface Rpc {
    * to boot and one that booted looked identical from the window.
    */
   'runtime.logs': { params: { workspaceId: string }; result: ProcessLog[] }
+  /** §8 — the output pane's Clear: what has been written so far is forgotten. */
+  'runtime.clearLogs': { params: { workspaceId: string }; result: { ok: true } }
 
   /**
    * §8 — the declared one-shots available where you are standing. Listed per

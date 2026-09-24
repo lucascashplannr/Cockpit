@@ -111,16 +111,20 @@ const label = computed(() => scopeLabel(scope.value))
  *
  * They were three things on this line: a status dot, the name of the runner
  * ("node"), and a pill per bound port. Two of the three were noise wherever
- * you stood — the runner's name is in the Servers tool and never changes, and
+ * you stood — the runner's name never changes and says nothing, and
  * a port pill beside the word `down` advertises an address nothing is
  * listening on, which is how this bar came to read `node down · web :8611`.
  *
  * So: the ports while they are actually bound, the status while they are not,
  * and the whole of it opens the tool that holds the rest.
+ *
+ * Nothing at all while they are down: that is the resting state, the Start
+ * button beside it already says so, and a grey `down` on every bar was a word
+ * about nothing happening.
  */
 const servers = computed(() => {
   const rt = w.value?.runtime
-  if (!rt) return null
+  if (!rt || rt.status === 'down') return null
   const ports = rt.ports ?? []
   const bound = rt.status === 'up' && ports.length > 0
   return {
@@ -130,7 +134,7 @@ const servers = computed(() => {
       ' · servers ' +
       rt.status +
       (ports.length ? ' · ' + ports.map((p) => p.name + ' :' + p.port).join(', ') : '') +
-      ' — open the Servers tool',
+      ' — open the output',
   }
 })
 
@@ -217,7 +221,7 @@ const servers = computed(() => {
         v-if="servers"
         class="stat act"
         :title="servers.title"
-        @click="goTo('servers')"
+        @click="goTo('output')"
       >
         <i class="dot" :class="w.runtime!.status" />
         <span class="v">{{ servers.word }}</span>

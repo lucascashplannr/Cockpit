@@ -562,6 +562,8 @@ const handlers: Record<string, Handler> = {
     runtime.preview(registry.requireWorkspace(p.workspaceId)),
   'runtime.logs': (p: { workspaceId: string }) =>
     runtime.logs(registry.requireWorkspace(p.workspaceId)),
+  'runtime.clearLogs': (p: { workspaceId: string }) =>
+    runtime.clearLogs(registry.requireWorkspace(p.workspaceId)),
 
   'declare.list': (p: { projectId: string }) => declare.declarationsOf(p.projectId),
   'declare.save': async (p: { projectId: string; declaration: Declaration; previousName?: string }) => {

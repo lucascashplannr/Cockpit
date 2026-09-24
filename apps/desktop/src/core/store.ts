@@ -78,7 +78,7 @@ export const hostWindow = host?.platform === 'darwin' ? (host.window ?? null) : 
 const PORT = host?.corePort ?? 7717
 const CORE_URL = 'ws://127.0.0.1:' + PORT
 
-export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'servers' | 'journal' | 'terminal' | 'ticket'
+export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'output' | 'journal' | 'terminal' | 'ticket'
 
 /**
  * The four roles, in the order they are used.
@@ -90,7 +90,7 @@ export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'servers' | 'journal'
  *
  * The Agent owns the panel permanently; these are what open beside it.
  */
-export type ReviewTool = 'diff' | 'code' | 'servers' | 'journal' | 'terminal' | 'memory'
+export type ReviewTool = 'diff' | 'code' | 'output' | 'journal' | 'terminal' | 'memory'
 
 /**
  * §12 — how the window is divided between the two things it can show on the
@@ -192,14 +192,26 @@ export const state = reactive({
   transcripts: {} as Record<string, CockpitEvent[]>,
 
   /**
-   * §8 — what each workspace's servers are writing, live.
+   * §8 — what each process is writing, live, keyed by process.
    *
    * Beside the journal rather than in it, for the same reason agent deltas are
    * (§3.3): a dev server writes thousands of lines an hour and none of them
-   * are history. Bounded per workspace, and the oldest go first — a log view
-   * is read from the bottom.
+   * are history. Bounded per process, and the oldest go first — a log view is
+   * read from the bottom.
+   *
+   * Per process, not one string per workspace: the output pane shows each run
+   * under its own name, and a workspace string had no seams to cut it at. It
+   * also only holds what arrived *since the pane last read the history* —
+   * `loadRuntimeLogs` drops it — because keeping everything since the window
+   * opened printed every line twice, once from each.
    */
-  runtimeLogs: {} as Record<string, string>,
+  procOutput: {} as Record<string, { workspaceId: string; label: string; text: string; at: number }>,
+  /**
+   * How each process ended, as the journal reports it. Nothing else tells the
+   * window, and without it a `build` that finished a minute ago still read
+   * *running* under its own output.
+   */
+  procExits: {} as Record<string, number | null>,
 
   /** §11 — every checkout with a runtime, across every project. */
   board: [] as ServerBoardRow[],
@@ -415,6 +427,10 @@ export const client = new CoreClient(CORE_URL, {
   onEvent(e) {
     state.events.push(e)
     if (state.events.length > 800) state.events.splice(0, state.events.length - 800)
+    if (e.type === 'process.exited') {
+      const p = e.payload as { id?: string; code?: number | null }
+      if (p?.id) state.procExits[p.id] = p.code ?? null
+    }
     // A transcript already on screen is kept current by the same event that
     // updated the journal, rather than by re-fetching the thread. Only the
     // ones that have been opened: holding every conversation's would make this
@@ -450,16 +466,29 @@ export const client = new CoreClient(CORE_URL, {
   onRuntimeLog(workspaceId, procId, _label, chunk) {
     for (const fn of procListeners.get(procId) ?? []) fn(chunk)
     if (!workspaceId) return
-    const next = (state.runtimeLogs[workspaceId] ?? '') + chunk
+    const cur = state.procOutput[procId]
+    const next = (cur?.text ?? '') + chunk
     // A dev server left running all day would grow this without bound, and
     // nobody scrolls back through a megabyte of HMR notices.
-    state.runtimeLogs[workspaceId] = next.length > LOG_MAX ? next.slice(-LOG_MAX) : next
+    const text = next.length > LOG_MAX ? next.slice(-LOG_MAX) : next
+    if (cur) cur.text = text
+    else {
+      state.procOutput[procId] = { workspaceId, label: _label, text, at: Date.now() }
+      // Only the workspace in view is ever read back and dropped, so a
+      // machine running servers in six branches all day needs its own floor.
+      const ids = Object.keys(state.procOutput)
+      if (ids.length > PROC_MAX) {
+        ids.sort((x, y) => state.procOutput[x]!.at - state.procOutput[y]!.at)
+        for (const id of ids.slice(0, ids.length - PROC_MAX)) delete state.procOutput[id]
+      }
+    }
     for (const fn of logListeners.get(workspaceId) ?? []) fn(chunk)
   },
 })
 
-/** Roughly a screenful of scrollback per workspace, which is what it is for. */
+/** Roughly a screenful of scrollback per process, which is what it is for. */
 const LOG_MAX = 120_000
+const PROC_MAX = 48
 const logListeners = new Map<string, ((d: string) => void)[]>()
 
 /** Lets a log view follow one workspace's output without re-rendering on each chunk. */
@@ -576,10 +605,9 @@ export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
   const ids: ReviewTool[] = []
   if (w.git) ids.push('diff')
   ids.push('code')
-  // §3.9 — a checkout with nothing to run has no Servers tool, rather than one
-  // that opens on an empty list. The board it opens on is machine-wide, but
-  // the strip is still the strip of *this* workspace.
-  if (w.runtime) ids.push('servers')
+  // §3.9 — a checkout with nothing to run has no Output, rather than one that
+  // opens on nothing. A declared command counts: its output lands here too.
+  if (w.runtime || (w.id === state.activeWorkspaceId && state.commands.length)) ids.push('output')
   ids.push('journal', 'terminal')
   // §6 — the memory, last.
   //
@@ -953,18 +981,6 @@ export const LAYOUT_LIMITS = {
    * form.
    */
   commit: { min: 132, max: 560 },
-  /**
-   * The running board over the server output, in the Servers tab.
-   *
-   * The same boundary argument one level down again: a machine with six
-   * runtimes up wants the board, and a server that is failing to boot wants
-   * the console under it — and which of those you are doing is not something
-   * the app can know. The floor is two rows and the header, so the board
-   * always says *something*. There is no useful ceiling in here: the real one
-   * is the height of the tab, worked out in `ServersTab`, and it goes all the
-   * way — a board dragged to the bottom is how the console is put away.
-   */
-  board: { min: 84, max: 1400 },
 }
 
 /** What a fresh install starts from, and what a double-click goes back to. */
@@ -973,14 +989,13 @@ export const LAYOUT_DEFAULTS = { list: 340, review: 440 }
 export const layout = reactive(readLayout())
 
 /**
- * The commit box and the running board are the two panes with no default
- * height: left alone each is as tall as what is in it, which is right nearly
- * always — a number here would mean padding an empty box out or scrolling a
+ * The commit box is the one pane with no default height: left alone it is as
+ * tall as what is in it, which is right nearly always — a number here would mean padding an empty box out or scrolling a
  * full one for no reason. Null is therefore a real value and not a missing
  * one, and it is what a double-click on the handle goes back to.
  */
-function readLayout(): { list: number; review: number; commit: number | null; board: number | null } {
-  const fallback = { ...LAYOUT_DEFAULTS, commit: null as number | null, board: null as number | null }
+function readLayout(): { list: number; review: number; commit: number | null } {
+  const fallback = { ...LAYOUT_DEFAULTS, commit: null as number | null }
   try {
     const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<typeof fallback> | null
     if (!raw) return fallback
@@ -989,8 +1004,6 @@ function readLayout(): { list: number; review: number; commit: number | null; bo
       review: clampTo(raw.review ?? fallback.review, LAYOUT_LIMITS.review),
       commit:
         typeof raw.commit === 'number' ? clampTo(raw.commit, LAYOUT_LIMITS.commit) : null,
-      board:
-        typeof raw.board === 'number' ? clampTo(raw.board, LAYOUT_LIMITS.board) : null,
     }
   } catch {
     return fallback
@@ -1013,16 +1026,6 @@ export function setCommitHeight(px: number): void {
 /** Back to a box the size of its contents — see `readLayout`. */
 export function resetCommitHeight(): void {
   layout.commit = null
-  saveLayout()
-}
-
-export function setBoardHeight(px: number): void {
-  layout.board = clampTo(px, LAYOUT_LIMITS.board)
-}
-
-/** Back to a board sized by its rows, capped by the stylesheet. */
-export function resetBoardHeight(): void {
-  layout.board = null
   saveLayout()
 }
 
@@ -2674,7 +2677,7 @@ export async function runCommandNow(
   if (res.procId) void followProcess(id, res.procId, command.workspaceId)
   // Its output goes where every other process's output goes (§8) — the toast
   // is the glance, the log pane is the record.
-  state.reviewTool = 'servers'
+  state.reviewTool = 'output'
   // A `runs:` list may have started servers, and the board is fetched rather
   // than pushed — without this it reports `down` for something answering on
   // its port, which is the one thing the board exists not to do.
@@ -3684,11 +3687,11 @@ function reportStart(res: { servers: { name: string; ok: boolean; status: string
     toast('error', first.name + ' did not start — ' + why.slice(0, 160), {
       ...(lines.length > 1 ? { detail: lines.slice(-40).join('\n') } : {}),
       ...(failed.length > 1
-        ? { action: { label: 'See all ' + failed.length, run: () => { state.reviewTool = 'servers' } } }
+        ? { action: { label: 'See all ' + failed.length, run: () => { state.reviewTool = 'output' } } }
         : {}),
     })
     // The rest of the reason is one click away rather than in a toast.
-    state.reviewTool = 'servers'
+    state.reviewTool = 'output'
     if (state.view === 'agent') state.view = 'split'
     return
   }
@@ -3747,8 +3750,30 @@ export async function refreshBoard(): Promise<void> {
   if (rows) state.board = rows
 }
 
+/**
+ * The history, and the live buffer for the same workspace let go of.
+ *
+ * Replies and pushes share one socket in order, so every chunk that arrived
+ * before this answer is already inside it — keeping them would print them
+ * twice. Whatever arrives after is new, and lands in `procOutput` again.
+ */
 export async function loadRuntimeLogs(workspaceId: string): Promise<ProcessLog[]> {
-  return (await client.call('runtime.logs', { workspaceId }).catch(() => [])) as ProcessLog[]
+  const logs = (await client.call('runtime.logs', { workspaceId }).catch(() => null)) as ProcessLog[] | null
+  if (!logs) return []
+  dropLiveOutput(workspaceId)
+  return logs
+}
+
+/** §8 — Clear: forgotten by the core too, so it stays cleared. */
+export async function clearRuntimeLogs(workspaceId: string): Promise<boolean> {
+  const res = await guard(() => client.call('runtime.clearLogs', { workspaceId }))
+  if (!res) return false
+  dropLiveOutput(workspaceId)
+  return true
+}
+
+function dropLiveOutput(workspaceId: string): void {
+  for (const [id, o] of Object.entries(state.procOutput)) if (o.workspaceId === workspaceId) delete state.procOutput[id]
 }
 
 export async function stopTopic(topicId: string): Promise<void> {
