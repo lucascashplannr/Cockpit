@@ -228,12 +228,57 @@ const runTitle = computed(() => {
 
 <template>
   <div v-if="togglable" class="verbs">
+    <!-- The counterpart of a per-repository commit: nothing about a push is
+         specific to one repository's diff, so it is one act across all of
+         them. -->
+    <span class="verb" :title="pushTitle">
+      <button
+        class="btn ghost"
+        :class="{ nudge: canPush }"
+        :disabled="!canPush"
+        @click="pushTopic(f!.id)"
+      >
+        <ArrowUp /><span class="vl">Push</span>
+        <span v-if="ahead" class="cnt">{{ ahead }}</span>
+      </button>
+    </span>
+
+    <!-- §4 — the step the lifecycle was missing: the branch goes onto the
+         base, in every repository the topic spans. Green once there is
+         something committed to send and nothing in the way of sending it. -->
+    <span class="verb" :title="mergeTitle">
+      <button
+        class="btn ghost"
+        :class="{ ready: canMerge && !dirty }"
+        :disabled="!canMerge"
+        @click="mergeTopic(f!.id, false)"
+      >
+        <GitMerge /><span class="vl">{{ sendLabel }}</span>
+        <span v-if="toLand" class="cnt">{{ toLand }}</span>
+      </button>
+    </span>
+    <!-- One plan across every repository it spans, stopping at the first
+         conflict and keeping what already replayed. -->
+    <button
+      class="btn ghost"
+      :class="{ nudge: behind > 0 }"
+      :title="catchUpTitle"
+      @click="rebaseTopic(f!.id)"
+    >
+      <GitCompareArrows /><span class="vl">Catch up</span>
+      <span v-if="behind" class="cnt">{{ behind }}</span>
+    </button>
+    <!-- The things this checkout runs, after the git verbs, parted from them
+         by a hairline. Each sits on a chip — the branch chip's ground — so a
+         label and its chevron read as one control and not as a word with a
+         stray arrow beside it. -->
+    <i class="sep" />
     <!-- Always: it is the switch. Split once the project declares servers of
          its own, exactly as a repository's is: the left half is the whole
          topic until one of them is picked. -->
     <button
       v-if="!servers.length"
-      class="btn ghost sw"
+      class="btn ghost sw solo"
       :class="{ on: running }"
       :title="switchTitle"
       @click="toggle"
@@ -278,47 +323,6 @@ const runTitle = computed(() => {
         </button>
       </OverflowMenu>
     </div>
-
-    <!-- The counterpart of a per-repository commit: nothing about a push is
-         specific to one repository's diff, so it is one act across all of
-         them. -->
-    <span class="verb" :title="pushTitle">
-      <button
-        class="btn ghost"
-        :class="{ nudge: canPush }"
-        :disabled="!canPush"
-        @click="pushTopic(f!.id)"
-      >
-        <ArrowUp /><span class="vl">Push</span>
-        <span v-if="ahead" class="cnt">{{ ahead }}</span>
-      </button>
-    </span>
-
-    <!-- §4 — the step the lifecycle was missing: the branch goes onto the
-         base, in every repository the topic spans. Green once there is
-         something committed to send and nothing in the way of sending it. -->
-    <span class="verb" :title="mergeTitle">
-      <button
-        class="btn ghost"
-        :class="{ ready: canMerge && !dirty }"
-        :disabled="!canMerge"
-        @click="mergeTopic(f!.id, false)"
-      >
-        <GitMerge /><span class="vl">{{ sendLabel }}</span>
-        <span v-if="toLand" class="cnt">{{ toLand }}</span>
-      </button>
-    </span>
-    <!-- One plan across every repository it spans, stopping at the first
-         conflict and keeping what already replayed. -->
-    <button
-      class="btn ghost"
-      :class="{ nudge: behind > 0 }"
-      :title="catchUpTitle"
-      @click="rebaseTopic(f!.id)"
-    >
-      <GitCompareArrows /><span class="vl">Catch up</span>
-      <span v-if="behind" class="cnt">{{ behind }}</span>
-    </button>
   </div>
 </template>
 
@@ -368,15 +372,18 @@ const runTitle = computed(() => {
   align-items: center;
   flex: none;
   height: 26px;
-  border: 1px solid var(--line);
   border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
 }
-.split:hover { border-color: var(--line-strong); }
+.split + .split, .solo + .split { margin-left: 4px; }
+.verbs .btn.solo { background: var(--bg-sunken); }
+.verbs .btn.solo:hover:not(:disabled) { background: var(--hover); }
 .verbs .split :deep(.btn:hover:not(:disabled)) { border-color: transparent; }
-.verbs .split :deep(.btn) { height: 24px; border-radius: 0; }
-.verbs .split .btn.run { padding: 0 9px; border-radius: 6px 0 0 6px; }
-.split .div { flex: none; width: 1px; height: 14px; background: var(--line); }
-.verbs .split :deep(.pick .btn) { padding: 0 5px; border-radius: 0 6px 6px 0; }
+.verbs .split :deep(.btn) { height: 26px; border-radius: 0; }
+.verbs .split .btn.run { padding: 0 6px 0 8px; border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.split .div { flex: none; width: 1px; height: 12px; background: var(--line); }
+.verbs .split :deep(.pick .btn) { padding: 0 4px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.sep { flex: none; width: 1px; height: 16px; margin: 0 6px; background: var(--line); }
 .verbs .split :deep(.pick .lucide) { width: 13px; height: 13px; }
 .sd {
   flex: none;

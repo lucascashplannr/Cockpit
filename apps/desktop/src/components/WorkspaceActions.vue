@@ -42,9 +42,20 @@ const busy = computed(() => !!(w.value && gitBusy[w.value.id]))
  */
 const isBase = computed(() => w.value?.kind === 'main')
 
+/**
+ * The declared lists are this checkout's, not the last one's or nobody's.
+ *
+ * Start and Run take their shape from them — a plain Start where nothing is
+ * named, a split one where servers are — so drawing them before the answer
+ * drew the plain Start on a repository that has named servers, and on a
+ * switch drew the previous repository's commands. Absent for the moment it
+ * takes the core to answer is right; the wrong button is not.
+ */
+const known = computed(() => !!w.value && state.declaredFor === w.value.id)
+
 /** Nothing declared here yet, so no chevron carries the way in. */
 const needsFirst = computed(
-  () => isBase.value && !(w.value?.runtime && pickable.value) && !chosen.value,
+  () => known.value && isBase.value && !(w.value?.runtime && pickable.value) && !chosen.value,
 )
 
 /**
@@ -263,113 +274,6 @@ async function undo() {
 
 <template>
   <div v-if="w" class="verbs">
-    <!-- Always: it is the switch, and it is what the window is open for.
-
-         A plain button where there is nothing to pick — a detected `node`
-         project, Herd, Compose all have one opaque "the servers" and no
-         handle on any part of it, so a chevron there would open onto a list
-         of one thing it already says. -->
-    <button
-      v-if="w.runtime && !pickable"
-      class="btn ghost sw"
-      :class="{ on: running }"
-      :disabled="busy"
-      :title="switchTitle"
-      @click="toggleRuntime"
-    >
-      <component :is="running ? CircleStop : CirclePlay" />
-      <span class="vl">{{ switchLabel }}</span>
-    </button>
-
-    <!-- §8 — and the split one wherever the servers have names.
-
-         Left half: whatever it is pointed at, which is every server on
-         `start:` until you pick one. Right half: each of them, with its own
-         dot and its own switch — including the ones off `start:`, which had
-         no way in at all before this. -->
-    <div v-else-if="w.runtime" class="split" :class="{ off: busy }">
-      <!-- `sw` is what drops the label first on a narrow column, and it is
-           only right while the label is the word `Start`: its icon is a play
-           triangle and nothing else on the bar is. Pointed at a named server
-           the label is the name, and an unlabelled triangle would no longer
-           say which one — so it keeps its word as long as the Run button
-           beside it keeps its own. -->
-      <button
-        class="btn ghost run"
-        :class="{ on: running, sw: !target }"
-        :disabled="busy"
-        :title="switchTitle"
-        @click="toggleRuntime"
-      >
-        <component :is="running ? CircleStop : CirclePlay" />
-        <span class="vl">{{ switchLabel }}</span>
-      </button>
-      <span class="div" />
-      <OverflowMenu class="pick" label="Pick what this switch starts" :disabled="busy">
-        <template #trigger><ChevronDown /></template>
-        <!-- First, and separated: it is not one of the servers, it is all of
-             them, and it is what the button does by default. -->
-        <button @click="chooseServer(null)">
-          <component :is="running && !target ? CircleStop : CirclePlay" />
-          All servers
-          <Check v-if="!target" class="tick" aria-label="on the button" />
-        </button>
-        <span class="rule" />
-        <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
-          <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
-          {{ s.name }}
-          <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
-          <Check v-if="target === s.name" class="tick" aria-label="on the button" />
-        </button>
-        <!-- Its own half of the sheet. This menu is about servers, so the way
-             out of it is about servers: the commands were a second list to
-             scroll past on the way to the one thing that had been asked for.
-             Only on the repository itself: a topic's worktree runs what the
-             repository declares, it is not where that is written. -->
-        <template v-if="isBase">
-          <span class="rule" />
-          <button @click="openDeclarations(w.repoName, 'server')">
-            <SlidersHorizontal /> Manage servers
-          </button>
-        </template>
-      </OverflowMenu>
-    </div>
-
-    <!-- §8 — next to the switch, because they are the same kind of act: the
-         things this checkout runs. It names the command rather than the
-         category: `Run` was a word that opened a list, so the command pressed
-         all afternoon cost two clicks and a read every time. Now the left half
-         *is* that command and the chevron is the list — and picking from the
-         list leaves the button on what you picked.
-
-         Absent when this repository declares nothing, which is the whole of
-         §3.9 applied to a control that used to answer for the repository next
-         door: `listCommands` scopes the list, and an empty list is no button
-         rather than a button onto somebody else's build. -->
-    <div v-if="chosen" class="split" :class="{ off: busy }">
-      <button class="btn ghost run" :disabled="busy" :title="runTitle" @click="askCommand(chosen)">
-        <Terminal /><span class="vl">{{ label(chosen) }}</span>
-      </button>
-      <span class="div" />
-      <OverflowMenu class="pick" label="Pick the command this button runs" :disabled="busy">
-        <template #trigger><ChevronDown /></template>
-        <button v-for="c in commands" :key="c.name" @click="chooseCommand(c)">
-          <Terminal /> {{ label(c) }}
-          <Check v-if="chosen?.name === c.name" class="tick" aria-label="on the button" />
-        </button>
-        <!-- The list and the way to change it, in one place: the menu naming
-             what exists is where anyone looks to add the next one. Commands
-             only, for the same reason the Start menu offers servers only —
-             and, like it, only on the repository itself. -->
-        <template v-if="isBase">
-          <span class="rule" />
-          <button @click="openDeclarations(w.repoName, 'command')">
-            <SlidersHorizontal /> Manage commands
-          </button>
-        </template>
-      </OverflowMenu>
-    </div>
-
     <!-- Always, wherever there is a branch to push.
          Push is the one git verb that is never a surprise and never contextual
          — you reach for it because you decided to, not because the window
@@ -424,6 +328,9 @@ async function undo() {
       <span class="cnt">{{ git.behind }}</span>
     </button>
 
+    <!-- The tail of the git verbs, and the end of that group: everything
+         else this repository can do, before the separator and the things it
+         runs. -->
     <OverflowMenu label="Everything else you can do here" :disabled="busy">
       <button v-if="preview && preview.kind === 'url'" @click="openPreview">
         <AppWindow /> Open the preview
@@ -445,6 +352,120 @@ async function undo() {
         </button>
       </template>
     </OverflowMenu>
+
+    <!-- The things this checkout runs, after the git verbs, parted from them
+         by a hairline. Each sits on a chip — the branch chip's ground — so a
+         label and its chevron read as one control and not as a word with a
+         stray arrow beside it. -->
+    <template v-if="known && (w.runtime || chosen)">
+      <i class="sep" />
+      <!-- Always: it is the switch, and it is what the window is open for.
+
+           A plain button where there is nothing to pick — a detected `node`
+           project, Herd, Compose all have one opaque "the servers" and no
+           handle on any part of it, so a chevron there would open onto a list
+           of one thing it already says. -->
+      <button
+        v-if="w.runtime && !pickable"
+        class="btn ghost sw solo"
+        :class="{ on: running }"
+        :disabled="busy"
+        :title="switchTitle"
+        @click="toggleRuntime"
+      >
+        <component :is="running ? CircleStop : CirclePlay" />
+        <span class="vl">{{ switchLabel }}</span>
+      </button>
+
+      <!-- §8 — and the split one wherever the servers have names.
+
+           Left half: whatever it is pointed at, which is every server on
+           `start:` until you pick one. Right half: each of them, with its own
+           dot and its own switch — including the ones off `start:`, which had
+           no way in at all before this. -->
+      <div v-else-if="w.runtime" class="split" :class="{ off: busy }">
+        <!-- `sw` is what drops the label first on a narrow column, and it is
+             only right while the label is the word `Start`: its icon is a play
+             triangle and nothing else on the bar is. Pointed at a named server
+             the label is the name, and an unlabelled triangle would no longer
+             say which one — so it keeps its word as long as the Run button
+             beside it keeps its own. -->
+        <button
+          class="btn ghost run"
+          :class="{ on: running, sw: !target }"
+          :disabled="busy"
+          :title="switchTitle"
+          @click="toggleRuntime"
+        >
+          <component :is="running ? CircleStop : CirclePlay" />
+          <span class="vl">{{ switchLabel }}</span>
+        </button>
+        <span class="div" />
+        <OverflowMenu class="pick" label="Pick what this switch starts" :disabled="busy">
+          <template #trigger><ChevronDown /></template>
+          <!-- First, and separated: it is not one of the servers, it is all of
+               them, and it is what the button does by default. -->
+          <button @click="chooseServer(null)">
+            <component :is="running && !target ? CircleStop : CirclePlay" />
+            All servers
+            <Check v-if="!target" class="tick" aria-label="on the button" />
+          </button>
+          <span class="rule" />
+          <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
+            <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
+            {{ s.name }}
+            <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
+            <Check v-if="target === s.name" class="tick" aria-label="on the button" />
+          </button>
+          <!-- Its own half of the sheet. This menu is about servers, so the way
+               out of it is about servers: the commands were a second list to
+               scroll past on the way to the one thing that had been asked for.
+               Only on the repository itself: a topic's worktree runs what the
+               repository declares, it is not where that is written. -->
+          <template v-if="isBase">
+            <span class="rule" />
+            <button @click="openDeclarations(w.repoName, 'server')">
+              <SlidersHorizontal /> Manage servers
+            </button>
+          </template>
+        </OverflowMenu>
+      </div>
+
+      <!-- §8 — next to the switch, because they are the same kind of act: the
+           things this checkout runs. It names the command rather than the
+           category: `Run` was a word that opened a list, so the command pressed
+           all afternoon cost two clicks and a read every time. Now the left half
+           *is* that command and the chevron is the list — and picking from the
+           list leaves the button on what you picked.
+
+           Absent when this repository declares nothing, which is the whole of
+           §3.9 applied to a control that used to answer for the repository next
+           door: `listCommands` scopes the list, and an empty list is no button
+           rather than a button onto somebody else's build. -->
+      <div v-if="chosen" class="split" :class="{ off: busy }">
+        <button class="btn ghost run" :disabled="busy" :title="runTitle" @click="askCommand(chosen)">
+          <Terminal /><span class="vl">{{ label(chosen) }}</span>
+        </button>
+        <span class="div" />
+        <OverflowMenu class="pick" label="Pick the command this button runs" :disabled="busy">
+          <template #trigger><ChevronDown /></template>
+          <button v-for="c in commands" :key="c.name" @click="chooseCommand(c)">
+            <Terminal /> {{ label(c) }}
+            <Check v-if="chosen?.name === c.name" class="tick" aria-label="on the button" />
+          </button>
+          <!-- The list and the way to change it, in one place: the menu naming
+               what exists is where anyone looks to add the next one. Commands
+               only, for the same reason the Start menu offers servers only —
+               and, like it, only on the repository itself. -->
+          <template v-if="isBase">
+            <span class="rule" />
+            <button @click="openDeclarations(w.repoName, 'command')">
+              <SlidersHorizontal /> Manage commands
+            </button>
+          </template>
+        </OverflowMenu>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -491,10 +512,15 @@ async function undo() {
 
 /* ── the split Run (§8) ──────────────────────────────────────────────
  *
- * One control, two halves: *the command* and *which command*. The border is
- * what makes them read as one thing — every other verb on this bar is ghost
- * until hovered, and two transparent halves with a hairline floating between
- * them read as two buttons that happen to be adjacent.
+ * One control, two halves: *the command* and *which command*, on one chip.
+ *
+ * It carried a border once, and that made it the only outlined control on a
+ * bar of ghosts — the loudest thing there for no reason of its own. Ghost on
+ * its own went too far the other way: a label, a gap, a hairline and a chevron
+ * read as two unrelated things. The ground under both is what makes them one,
+ * and it is the ground the branch chip already has — `main ⌄` is the same
+ * shape, a word and the list of its alternatives. The hairline inside says
+ * there are two halves; each half's hover says which one you are on.
  *
  * No `overflow: hidden` to clip the halves to the corners, tempting as it is:
  * the chevron's menu is absolutely positioned inside this box, and clipping
@@ -505,45 +531,50 @@ async function undo() {
   align-items: center;
   flex: none;
   height: 26px;
-  border: 1px solid var(--line);
   border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
 }
-.split:hover { border-color: var(--line-strong); }
-/* One border for one control.
+/* Two chips side by side are two controls, so they must not touch. */
+.split + .split, .solo + .split { margin-left: 4px; }
+/* The plain switch, where there are no servers to pick between, sits on the
+   same chip so the group reads as one kind of thing either way. */
+.verbs .btn.solo { background: var(--bg-sunken); }
+.verbs .btn.solo:hover:not(:disabled) { background: var(--hover); }
+/* No border on a half, even hovered.
  *
  * `.btn:hover` in base.css raises `border-color` to `--line-strong`, and
  * `.btn.ghost:hover` — more specific — overrides only the background and the
  * colour, so every ghost button reveals a border when hovered. That is right
- * for a button standing on its own and wrong for a half of something: the
- * shape around these two already draws the border, so the half drew a second
- * one inside it and the pair read as a button inside a button. */
+ * for a button standing on its own and wrong for a half of something: a
+ * bordered half with a hairline beside it reads as one button and a stray
+ * line. */
 .verbs .split :deep(.btn:hover:not(:disabled)) { border-color: transparent; }
 /* The whole control goes quiet together while a plan holds the repository —
-   each half is disabled in its own right, but the border is the shape's. */
+   each half is disabled in its own right, but the hairline is the shape's. */
 .split.off { opacity: 0.4; }
-.split.off:hover { border-color: var(--line); }
-/* The halves: 24px inside a 26px box, and the outer corners follow the border
-   they sit against — 6px, which is the box's 7px less the 1px of border it
-   sits behind, so the hover fill does not square the corners off or float
-   inside them. Through
+/* The halves: the bar's 26px, and their outer corners rounded so the hover
+   fill of the pair reads as one rounded shape cut in two. Through
    `:deep`, because the chevron's button belongs to OverflowMenu and carries
    its scope, not this one — which is also why the Run trigger has been 32px
    tall beside a 26px Push since the day it was added. */
 .verbs .split :deep(.btn) {
-  height: 24px;
+  height: 26px;
   border-radius: 0;
 }
-.verbs .split .btn.run { padding: 0 9px; border-radius: 6px 0 0 6px; }
+.verbs .split .btn.run { padding: 0 6px 0 8px; border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
 /* Disabled twice over: `.off` already dims the shape, so the halves must not
    dim again inside it or the pair reads as a third state. */
 .split.off :deep(.btn:disabled) { opacity: 1; }
 /* The hairline between them, drawn short so it parts the halves without
-   reaching the border and making a cross of it. */
-.split .div { flex: none; width: 1px; height: 14px; background: var(--line); }
+   cutting the chip in two. */
+.split .div { flex: none; width: 1px; height: 12px; background: var(--line); }
 /* The chevron is the narrowest thing on the bar that is still a target: it
    says "there are others" and nothing else, so it gets no word and no room
    for one. */
-.verbs .split :deep(.pick .btn) { padding: 0 5px; border-radius: 0 6px 6px 0; }
+.verbs .split :deep(.pick .btn) { padding: 0 4px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+/* Between the git verbs and the run group: two kinds of act, parted by the
+   same hairline the scope uses between its facts. */
+.sep { flex: none; width: 1px; height: 16px; margin: 0 6px; background: var(--line); }
 .verbs .split :deep(.pick .lucide) { width: 13px; height: 13px; }
 /* A server's state in the menu, the same dot the bar uses for the workspace:
    filled when something is answering to that name, hollow when nothing is,

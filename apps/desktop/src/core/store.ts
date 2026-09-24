@@ -1,4 +1,4 @@
-import { computed, reactive, ref, shallowRef } from 'vue'
+import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import type {
   AddRepoSource, AgentScope, AgentScopePreview, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
@@ -352,6 +352,14 @@ export const state = reactive({
   commands: [] as DeclaredCommand[],
   /** §8 — the declared servers of the selected checkout, for the Start menu. */
   servers: [] as DeclaredServer[],
+  /**
+   * The checkout `commands` and `servers` were read for, or null before the
+   * first answer. The bar draws its Start and Run from these two lists, and a
+   * list that belongs to nobody yet — or to the repository you just left —
+   * draws the wrong shape: a bare Start on a repository that has named
+   * servers. So it draws them only once this matches the selection.
+   */
+  declaredFor: null as string | null,
   pendingCommand: null as { command: DeclaredCommand; answers: Record<string, string> } | null,
 
   /** §8 — the editor for what this project declares. Project-scoped (§8). */
@@ -576,13 +584,9 @@ function ensureSelection(): void {
     state.activeProjectId = state.projects[0]!.id
   }
   const inProject = state.workspaces.filter((w) => w.projectId === state.activeProjectId)
-  const before = state.activeWorkspaceId
   if (!state.activeWorkspaceId || !inProject.some((w) => w.id === state.activeWorkspaceId)) {
     state.activeWorkspaceId = inProject[0]?.id ?? null
   }
-  // §8 — the selection settling is what decides which commands exist, and it
-  // settles here on the first bootstrap as well as on every reconcile.
-  if (state.activeWorkspaceId !== before) void refreshCommands()
 }
 
 export const activeProject = computed(() => state.projects.find((p) => p.id === state.activeProjectId) ?? null)
@@ -2374,7 +2378,6 @@ async function refreshProjects(): Promise<void> {
 
 export function selectWorkspace(id: string): void {
   state.activeWorkspaceId = id
-  void refreshCommands()
   // Clicking a row is saying "this one", so a scope wider than the row — the
   // topic it sits under, the project — stops being the answer. Dropping it
   // lets activeAgentScope fall back to this workspace; a folder scope inside
@@ -2551,27 +2554,38 @@ export async function refreshCommands(): Promise<void> {
   if (!id) {
     state.commands = []
     state.servers = []
+    state.declaredFor = null
     return
   }
-  const got = await client.call('commands.list', { workspaceId: id }).catch(() => [])
+  // The servers are fetched beside the commands because they change on the
+  // same occasion: the manifest being written. Nothing here says whether a
+  // server is *running* — that rides on the workspace push, which arrives far
+  // more often than this does.
+  const [commands, servers] = await Promise.all([
+    client.call('commands.list', { workspaceId: id }).catch(() => []),
+    client.call('runtime.servers', { workspaceId: id }).catch(() => []),
+  ])
   // A slow answer for a workspace nobody is looking at any more is not an
-  // answer to anything: dropping it is what keeps the palette honest.
-  if (state.activeWorkspaceId === id) state.commands = got
-  await refreshServers(id)
+  // answer to anything: dropping it is what keeps the palette honest. Both
+  // lists land in one tick, so the bar never draws one checkout's commands
+  // beside another's servers.
+  if (state.activeWorkspaceId !== id) return
+  state.commands = commands
+  state.servers = servers
+  state.declaredFor = id
 }
 
 /**
- * §8 — the declared servers of the same checkout, by name.
+ * §8 — whatever moves the selection, the lists follow it.
  *
- * Fetched beside the commands and on the same occasions, because they change
- * on the same occasion: the manifest being written. Nothing here says whether
- * a server is *running* — that rides on the workspace push, which arrives far
- * more often than this does.
+ * They used to be refreshed by hand at each place that assigned the id, and
+ * `selectProject` — the rail, which is how the window is entered after a
+ * launch — was one that did not: the bar kept the lists it had (none, on a
+ * fresh launch) and drew a bare Start on a repository with named servers
+ * until you went elsewhere and came back through `selectWorkspace`, which did.
+ * One watcher cannot be forgotten by the next place that selects something.
  */
-async function refreshServers(id: string): Promise<void> {
-  const got = await client.call('runtime.servers', { workspaceId: id }).catch(() => [])
-  if (state.activeWorkspaceId === id) state.servers = got
-}
+watch(() => state.activeWorkspaceId, () => void refreshCommands())
 
 /* ── which command the Run button presses ────────────────────────────
  *
