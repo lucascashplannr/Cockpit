@@ -34,6 +34,10 @@ const open = ref(false)
  * it is not red until the checkbox that removes them is ticked — and then it
  * is, under the hand that ticked it.
  */
+/** Typed back, for the questions that ask for it; everything else is always armed. */
+const typed = ref('')
+const armed = computed(() => !c.value?.typeToConfirm || typed.value.trim() === c.value.typeToConfirm)
+
 const danger = computed(() => !!c.value && (c.value.danger || !!(c.value.option?.danger && c.value.option.value)))
 
 function cancel(): void {
@@ -45,6 +49,7 @@ function cancel(): void {
 }
 
 async function go(): Promise<void> {
+  if (!armed.value || state.planBusy) return
   await applyPendingConfirm()
   open.value = false
 }
@@ -60,6 +65,7 @@ async function go(): Promise<void> {
  */
 const yes = ref<HTMLButtonElement | null>(null)
 const no = ref<HTMLButtonElement | null>(null)
+const typeInput = ref<HTMLInputElement | null>(null)
 
 function onKey(e: KeyboardEvent): void {
   if (!c.value || e.key !== 'Escape') return
@@ -74,7 +80,8 @@ watch(
   c,
   (v) => {
     open.value = false
-    if (v) void nextTick(() => (v.danger ? no.value : yes.value)?.focus())
+    typed.value = ''
+    if (v) void nextTick(() => (v.typeToConfirm ? typeInput.value : v.danger ? no.value : yes.value)?.focus())
   },
   { immediate: true },
 )
@@ -99,6 +106,20 @@ watch(
           {{ line }}
         </p>
       </div>
+
+      <label v-if="c.typeToConfirm" class="type">
+        <span>Type <strong>{{ c.typeToConfirm }}</strong> to confirm</span>
+        <input
+          ref="typeInput"
+          v-model="typed"
+          class="input"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          :placeholder="c.typeToConfirm"
+          @keydown.enter.prevent="go"
+        />
+      </label>
 
       <!-- §4 — only on a Catch up, and only under the sentence it qualifies:
            the branch is the one word in the question that is a choice. -->
@@ -148,7 +169,7 @@ watch(
           ref="yes"
           class="btn"
           :class="danger ? 'danger solid' : 'primary'"
-          :disabled="state.planBusy"
+          :disabled="state.planBusy || !armed"
           @click="go"
         >
           {{ state.planBusy ? 'Working…' : c.verb }}
@@ -282,6 +303,18 @@ watch(
    grey over a red wash is not readable at the size it is set. */
 .opt.on .hint { color: var(--text-muted); }
 .say .lead { color: var(--text); }
+
+.type {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0 20px 16px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.type strong { color: var(--text); font-weight: 600; }
+.say:has(+ .type) { padding-bottom: 12px; }
 .say .danger { color: var(--danger); }
 
 /* Its own room, above the footer rather than against it: the disclosure is

@@ -2337,7 +2337,7 @@ export async function renameProject(projectId: string, name: string | null): Pro
 
 /** Untrack: Cockpit forgets it, the folder stays exactly where it is. */
 export async function forgetProject(projectId: string): Promise<boolean> {
-  const ok = await guard(() => client.call('project.forget', { projectId }), 'project untracked')
+  const ok = await guard(() => client.call('project.forget', { projectId }))
   if (!ok) return false
   dropSelection(projectId)
   await refreshProjects()
@@ -2364,11 +2364,51 @@ export async function setProjectSettings(
 
 /** The only action in the app that touches the source tree — and it goes to Trash. */
 export async function trashProject(projectId: string): Promise<boolean> {
-  const res = await guard(() => client.call('project.trash', { projectId }), 'moved to Trash')
+  const res = await guard(() => client.call('project.trash', { projectId }))
   if (!res) return false
   dropSelection(projectId)
   await refreshProjects()
   return true
+}
+
+/**
+ * Both asked in the one confirmation dialog, not inline in the project's own
+ * sheet: a question drawn inside a form reads as another field of it.
+ */
+export function askUntrackProject(projectId: string): void {
+  const proj = state.projects.find((p) => p.id === projectId)
+  if (!proj) return
+  state.pendingConfirm = {
+    title: 'Untrack ' + proj.name + '?',
+    body: ['Cockpit forgets this project. Every file stays where it is, and you can add it back any time.'],
+    verb: 'Untrack',
+    done: proj.name + ' untracked',
+    danger: false,
+    run: () => forgetProject(projectId),
+  }
+}
+
+/** The one act in the app that touches a source tree, so the name is typed back. */
+export function askTrashProject(projectId: string): void {
+  const proj = state.projects.find((p) => p.id === projectId)
+  if (!proj) return
+  const mine = state.workspaces.filter((w) => w.projectId === projectId && w.kind !== 'group')
+  const unpushed = [...new Set(mine.filter((w) => w.git?.hasUnpushedWork).map((w) => w.name))]
+  const running = mine.filter((w) => w.runtime?.status === 'up').length
+  // What will get it refused leads, so the red lands on that rather than the path.
+  const body: string[] = []
+  if (unpushed.length) body.push('Unpushed commits in ' + unpushed.join(', ') + ' — push or drop them first, or this is refused.')
+  if (running) body.push((running === 1 ? 'A server is' : running + ' servers are') + ' still up — stop them first, or this is refused.')
+  body.push(proj.root + ' goes to the system Trash, recoverable from there.')
+  state.pendingConfirm = {
+    title: 'Move ' + proj.name + ' to the Trash?',
+    body,
+    verb: 'Move to Trash',
+    done: proj.name + ' moved to the Trash',
+    danger: true,
+    typeToConfirm: proj.name,
+    run: () => trashProject(projectId),
+  }
 }
 
 function dropSelection(projectId: string): void {
@@ -2974,6 +3014,8 @@ interface ConfirmBase {
   }
   /** Red button, for the one that cannot be taken back. */
   danger: boolean
+  /** Asked to be typed back before the button will do anything. */
+  typeToConfirm?: string
 }
 
 /**

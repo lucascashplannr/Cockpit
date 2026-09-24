@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { FolderOpen, Lock, Plus, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
+import DialogShell from './DialogShell.vue'
 import {
-  editingProject, forgetProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
-  renameProject, setProjectSettings, state, trashProject,
+  askTrashProject, askUntrackProject, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
+  renameProject, setProjectSettings, state,
 } from '../core/store.js'
 
 /**
  * Everything you can do to a project as a project, rather than to the code in
- * it. Three of the four actions are cheap and reversible; the fourth is the
- * only place in the app that touches somebody's source tree, so it sits behind
- * its own confirmation and goes to the Trash rather than being deleted.
+ * it. Untrack and Move to Trash are asked in the app's one confirmation
+ * dialog; Trash is the only place that touches somebody's source tree, so it
+ * asks for the name typed back and goes to the Trash rather than being deleted.
  */
 
 const p = computed(() => editingProject.value)
@@ -23,9 +24,6 @@ const name = ref('')
 const root = ref('')
 const moveFiles = ref(true)
 const busy = ref(false)
-/** 'trash' asks for the project's name to be typed back before it will run. */
-const confirming = ref<null | 'forget' | 'trash'>(null)
-const typed = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 /** §15 — see the block below `nameChanged`. Declared up here because the watch
  *  that fills them runs immediately, and a ref read before its `const` is a
@@ -47,8 +45,6 @@ watch(
     locked.value = [...(proj?.settings.lockedBranches ?? [])]
     lockDraft.value = ''
     moveFiles.value = true
-    confirming.value = null
-    typed.value = ''
     if (proj) void nextTick(() => nameInput.value?.focus())
   },
   { immediate: true },
@@ -103,7 +99,6 @@ const workspaces = computed(() =>
 )
 const repoCount = computed(() => workspaces.value.filter((w) => w.kind !== 'worktree').length)
 const branchCount = computed(() => workspaces.value.filter((w) => w.kind === 'worktree').length)
-const unpushed = computed(() => workspaces.value.filter((w) => w.git?.hasUnpushedWork))
 const running = computed(() => workspaces.value.filter((w) => w.runtime?.status === 'up'))
 
 function close() {
@@ -189,326 +184,161 @@ async function browse() {
   if (picked) root.value = picked
 }
 
-async function doForget() {
-  const proj = p.value
-  if (!proj) return
-  busy.value = true
-  await forgetProject(proj.id)
-  busy.value = false
-}
-
-async function doTrash() {
-  const proj = p.value
-  if (!proj || typed.value.trim() !== proj.name) return
-  busy.value = true
-  await trashProject(proj.id)
-  busy.value = false
-}
-
-function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    e.stopPropagation()
-    if (confirming.value) confirming.value = null
-    else close()
-  }
-}
 </script>
 
 <template>
-  <div v-if="p && !(state.declareOpen && state.declareFromProject)" class="scrim" @mousedown.self="close" @keydown="onKey">
-    <div class="dlg" role="dialog" aria-label="Project settings">
-      <header class="head">
-        <h2>{{ p.name }}</h2>
-        <span class="grow" />
-        <span class="count num">
-          {{ repoCount }} {{ repoCount === 1 ? 'repository' : 'repositories' }}
-          <template v-if="branchCount">
-            · {{ branchCount }} {{ branchCount === 1 ? 'branch' : 'branches' }}
-          </template>
-        </span>
-        <button class="icon-btn" title="Close (esc)" @click="close"><X class="sm" /></button>
-      </header>
+  <DialogShell
+    v-if="p && !(state.declareOpen && state.declareFromProject)"
+    :title="p.name"
+    :dismissible="!busy"
+    @close="close"
+  >
+    <template #head>
+      <span class="count num">
+        {{ repoCount }} {{ repoCount === 1 ? 'repository' : 'repositories' }}
+        <template v-if="branchCount">
+          · {{ branchCount }} {{ branchCount === 1 ? 'branch' : 'branches' }}
+        </template>
+      </span>
+    </template>
 
-      <div class="body">
-        <label class="field">
-          <span class="lbl">Name</span>
-          <input
-            ref="nameInput"
-            v-model="name"
-            class="input"
-            type="text"
-            spellcheck="false"
-            :placeholder="p.manifestPath ? 'from the manifest' : 'the folder name'"
-            @keydown.enter="save"
-          />
-          <span class="help">
-            Kept on this machine only — renaming never writes into the repository.
-            Empty falls back to
-            {{ p.manifestPath ? 'the name in the manifest' : 'the folder name' }}.
-          </span>
+    <div class="form">
+      <label class="field">
+        <span class="lbl">Name</span>
+        <input
+          ref="nameInput"
+          v-model="name"
+          class="input"
+          type="text"
+          spellcheck="false"
+          :placeholder="p.manifestPath ? 'from the manifest' : 'the folder name'"
+          @keydown.enter="save"
+        />
+        <span class="help">Only on this machine. Empty uses the {{ p.manifestPath ? 'manifest' : 'folder' }} name.</span>
+      </label>
+
+      <div class="field">
+        <span class="lbl">Location</span>
+        <div class="row">
+          <input v-model="root" class="input mono" type="text" spellcheck="false" />
+          <button class="btn" title="Choose a folder" @click="browse">
+            <FolderOpen />Browse
+          </button>
+        </div>
+        <label v-if="rootChanged" class="check">
+          <input v-model="moveFiles" type="checkbox" />
+          <span>Move the folder there too</span>
         </label>
-
-        <label class="field">
-          <span class="lbl">Location</span>
-          <div class="row">
-            <input v-model="root" class="input mono" type="text" spellcheck="false" />
-            <button class="btn" title="Choose a folder" @click="browse">
-              <FolderOpen />Browse
-            </button>
-          </div>
-
-          <label v-if="rootChanged" class="check">
-            <input v-model="moveFiles" type="checkbox" />
-            <span>
-              Move the folder there too.
-              <em v-if="!moveFiles">Off: Cockpit just looks at the new path instead.</em>
-            </span>
-          </label>
-          <span v-else class="help">Where the project lives on disk.</span>
-        </label>
-
         <!-- §16 — a move pulls the ground out from under anything still running. -->
         <p v-if="rootChanged && running.length" class="note warn">
           <TriangleAlert class="sm" />
-          Servers still up in {{ running.length }} of them — moving will be refused until
-          {{ running.length === 1 ? 'it is' : 'they are' }} stopped.
+          Stop the {{ running.length === 1 ? 'server' : running.length + ' servers' }} still up first.
         </p>
+      </div>
 
-        <!-- §8 — what this project runs. The bar is where you press them;
-             this is where they are written, beside the other things that are
-             true of the project rather than of the checkout you are standing
-             in. It is also the only place a project with nothing declared yet
-             can be given its first server. -->
-        <span class="section-label sep">Commands &amp; servers</span>
-
-        <div class="field">
-          <div class="row">
-            <span class="help grow">{{ declaredSummary }}</span>
-            <button class="btn" @click="editDeclarations">
-              <SlidersHorizontal />Manage
-            </button>
-          </div>
-          <span class="help">
-            Written into <code class="mono">cockpit.yaml</code>, per repository or for the
-            project itself. A repository's runs in its own checkout — inside a topic, in that
-            topic's worktree; the project's runs in the folder holding the repositories.
-          </span>
-        </div>
-
-        <span class="section-label sep">Git</span>
-
-        <label class="field">
-          <span class="lbl">Base branch</span>
-          <input
-            v-model="baseBranch"
-            class="input mono"
-            type="text"
-            spellcheck="false"
-            :placeholder="probedBase ? probedBase + ' — what git says' : 'ask git'"
-          />
-          <span class="help">
-            What topics fork from and Send to lands on. Empty asks git:
-            <code class="mono">origin/HEAD</code>, then main, master, develop. Set it when the
-            probe is wrong — a repository whose work happens on
-            <code class="mono">develop</code> while <code class="mono">main</code> is a stale
-            release branch.
-          </span>
-        </label>
-
-        <!-- §16 — the rule that used to be hardcoded, handed back. -->
-        <div class="field">
-          <span class="lbl">Locked branches</span>
-          <div v-if="locked.length" class="chips">
-            <button
-              v-for="b in locked"
-              :key="b"
-              class="chip lockchip mono"
-              title="Unlock this branch"
-              @click="removeLock(b)"
-            >
-              <Lock class="sm" />{{ b }}<X class="sm x" />
-            </button>
-          </div>
-          <div class="row">
-            <input
-              v-model="lockDraft"
-              class="input mono"
-              type="text"
-              spellcheck="false"
-              placeholder="main, or release/*"
-              @keydown.enter.prevent="addLock()"
-            />
-            <button class="btn" :disabled="!lockDraft.trim()" @click="addLock()">
-              <Plus />Lock
-            </button>
-          </div>
-          <span class="help">
-            Cockpit refuses to commit on these. Nothing is locked by default —
-            committing straight to
-            <code class="mono">{{ probedBase ?? 'main' }}</code> is a normal way to work and
-            the app used to refuse it outright. Agents are not governed by this: they never
-            commit at all.
-            <button
-              v-if="probedBase && !locked.includes(probedBase)"
-              class="linkish"
-              @click="addLock(probedBase)"
-            >
-              Lock {{ probedBase }}
-            </button>
-          </span>
+      <!-- §8 — what this project runs, written into cockpit.yaml. The only
+           place a project with nothing declared yet gets its first server. -->
+      <div class="field">
+        <span class="lbl">Commands &amp; servers</span>
+        <div class="row">
+          <span class="summary grow">{{ declaredSummary }}</span>
+          <button class="btn" @click="editDeclarations">
+            <SlidersHorizontal />Manage
+          </button>
         </div>
       </div>
 
-      <div class="danger">
+      <label class="field">
+        <span class="lbl">Base branch</span>
+        <input
+          v-model="baseBranch"
+          class="input mono"
+          type="text"
+          spellcheck="false"
+          :placeholder="probedBase ? probedBase + ' (from git)' : 'from git'"
+        />
+        <span class="help">What topics fork from and Send lands on. Empty asks git.</span>
+      </label>
+
+      <!-- §16 — the rule that used to be hardcoded, handed back. -->
+      <div class="field">
+        <span class="lbl">Locked branches</span>
+        <div v-if="locked.length" class="chips">
+          <button
+            v-for="b in locked"
+            :key="b"
+            class="chip lockchip mono"
+            title="Unlock this branch"
+            @click="removeLock(b)"
+          >
+            <Lock class="sm" />{{ b }}<X class="sm x" />
+          </button>
+        </div>
+        <div class="row">
+          <input
+            v-model="lockDraft"
+            class="input mono"
+            type="text"
+            spellcheck="false"
+            placeholder="main, or release/*"
+            @keydown.enter.prevent="addLock()"
+          />
+          <button class="btn" :disabled="!lockDraft.trim()" @click="addLock()">
+            <Plus />Lock
+          </button>
+        </div>
+        <span class="help">
+          Cockpit won't commit on these.
+          <button
+            v-if="probedBase && !locked.includes(probedBase)"
+            class="linkish"
+            @click="addLock(probedBase)"
+          >
+            Lock {{ probedBase }}
+          </button>
+        </span>
+      </div>
+
+      <!-- tokens.css: colour is for meaning. The ground stays neutral; the red
+           is spent on the label and the one button that earns it. -->
+      <section class="zone">
         <span class="section-label">Danger zone</span>
 
         <div class="drow">
           <div class="dtext">
             <strong>Untrack</strong>
-            <span>Cockpit forgets this project. Every file stays exactly where it is.</span>
+            <span>Cockpit forgets it. Files stay put.</span>
           </div>
-          <button
-            v-if="confirming !== 'forget'"
-            class="btn"
-            :disabled="busy"
-            @click="confirming = 'forget'"
-          >
-            Untrack
-          </button>
-          <span v-else class="confirm">
-            <button class="btn ghost" @click="confirming = null">Cancel</button>
-            <button class="btn danger" :disabled="busy" @click="doForget">Untrack it</button>
-          </span>
+          <button class="btn" :disabled="busy" @click="askUntrackProject(p.id)">Untrack</button>
         </div>
 
         <div class="drow">
           <div class="dtext">
             <strong>Move to Trash</strong>
-            <span>
-              The folder goes to the system Trash, recoverable from there. Refused while
-              anything is running or holds unpushed commits.
-            </span>
+            <span>Recoverable from the system Trash.</span>
           </div>
-          <button
-            v-if="confirming !== 'trash'"
-            class="btn danger"
-            :disabled="busy"
-            @click="confirming = 'trash'"
-          >
+          <button class="btn danger" :disabled="busy" @click="askTrashProject(p.id)">
             <Trash2 />Move to Trash
           </button>
         </div>
-
-        <div v-if="confirming === 'trash'" class="confirm-box">
-          <p v-if="unpushed.length" class="note bad">
-            <TriangleAlert class="sm" />
-            Unpushed commits in {{ unpushed.map((w) => w.name).join(', ') }}. Push or drop them
-            first; the move will be refused.
-          </p>
-          <p v-if="running.length" class="note bad">
-            <TriangleAlert class="sm" />
-            Servers still up in {{ running.length }} of them. Stop
-            {{ running.length === 1 ? 'it' : 'them' }} first; the move will be refused.
-          </p>
-          <p class="prose">
-            Type <strong>{{ p.name }}</strong> to confirm. This moves
-            <code class="mono">{{ p.root }}</code> to the Trash.
-          </p>
-          <div class="row">
-            <input
-              v-model="typed"
-              class="input"
-              type="text"
-              spellcheck="false"
-              :placeholder="p.name"
-              @keydown.enter="doTrash"
-            />
-            <button class="btn ghost" @click="confirming = null">Cancel</button>
-            <button
-              class="btn danger"
-              :disabled="busy || typed.trim() !== p.name"
-              @click="doTrash"
-            >
-              Move to Trash
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <footer class="foot">
-        <span class="grow" />
-        <button class="btn ghost" :disabled="busy" @click="close">Close</button>
-        <button class="btn primary" :disabled="busy || !dirty" @click="save">
-          {{ busy ? 'Working…' : 'Save' }}
-        </button>
-      </footer>
+      </section>
     </div>
-  </div>
+
+    <template #foot>
+      <span class="grow" />
+      <button class="btn ghost" :disabled="busy" @click="close">Close</button>
+      <button class="btn primary" :disabled="busy || !dirty" @click="save">
+        {{ busy ? 'Working…' : 'Save' }}
+      </button>
+    </template>
+  </DialogShell>
 </template>
 
 <style scoped>
-.scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--scrim);
-  backdrop-filter: blur(6px) saturate(1.1);
-  animation: fade var(--dur-2) var(--ease-soft);
-}
-@keyframes fade {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-.dlg {
-  width: min(560px, 92vw);
-  max-height: 84vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--overlay);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-lg), var(--inset-top);
-  overflow: hidden;
-  animation: rise var(--dur-3) var(--ease);
-}
-@keyframes rise {
-  from { opacity: 0; transform: translateY(8px) scale(0.985); }
-  to { opacity: 1; transform: none; }
-}
-
-.head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 16px 14px 14px 20px;
-  border-bottom: 1px solid var(--line);
-}
-.head h2 {
-  margin: 0;
-  min-width: 0;
-  font-size: var(--fs-lg);
-  font-weight: 640;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.count { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
 .grow { flex: 1; }
-.count { font-size: var(--fs-xs); color: var(--text-dim); }
 
-.body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 18px 20px 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
+.form { display: flex; flex-direction: column; gap: 20px; padding-bottom: 14px; }
 .field { display: flex; flex-direction: column; gap: 7px; }
 .lbl {
   font-size: var(--fs-xs);
@@ -517,9 +347,8 @@ function onKey(e: KeyboardEvent) {
   text-transform: uppercase;
   color: var(--text-dim);
 }
-.help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.55; }
-.help code { color: var(--text-muted); }
-.sep { display: block; margin-top: 4px; }
+.help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.5; }
+.summary { font-size: var(--fs-sm); color: var(--text-muted); }
 
 /* A locked branch is one short token and a way to take it back off. */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -539,6 +368,7 @@ function onKey(e: KeyboardEvent) {
 
 /* A sentence that ends in an action, rather than a button sitting under one. */
 .linkish {
+  margin-left: 4px;
   color: var(--accent);
   font-size: var(--fs-xs);
   text-decoration: underline;
@@ -550,15 +380,11 @@ function onKey(e: KeyboardEvent) {
 
 .check {
   display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  margin-top: 2px;
+  align-items: center;
+  gap: 8px;
   font-size: var(--fs-sm);
   color: var(--text-muted);
-  line-height: 1.5;
 }
-.check input { margin-top: 2px; }
-.check em { color: var(--text-dim); font-style: normal; }
 
 .note {
   display: flex;
@@ -566,66 +392,26 @@ function onKey(e: KeyboardEvent) {
   gap: 8px;
   margin: 0;
   font-size: var(--fs-xs);
-  color: var(--text-muted);
-  line-height: 1.6;
+  line-height: 1.5;
 }
-.note .lucide { margin-top: 2px; }
+.note .lucide { flex: none; margin-top: 2px; }
 .note.warn { color: var(--warn); }
 
-/* Prose, not a flex row: `.note` lays its children out as flex items, which
-   turns a sentence containing <strong> and <code> into columns. */
-.prose {
-  margin: 0;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  line-height: 1.7;
-}
-.prose strong { color: var(--text); font-weight: 600; }
-.prose code {
-  color: var(--text);
-  word-break: break-all;
-}
-.note.bad { color: var(--danger); }
-.note code { color: var(--text); }
-
-/* tokens.css: colour is for meaning, not decoration. A permanently red panel
-   shouts before anything dangerous is happening — the ground stays neutral and
-   the red is spent on the label and the one button that earns it. */
-.danger {
-  flex: none;
+/* Named `zone`, not `danger`: scoped styles reach every element in this
+   component, and `.danger` also matched the red buttons inside it. */
+.zone {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  margin: 12px 20px 0;
-  padding: 14px 16px 16px;
+  margin-top: 4px;
+  padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--bg-sunken);
 }
-.danger > .section-label { color: var(--danger); }
+.zone > .section-label { color: var(--danger); }
 .drow { display: flex; align-items: center; gap: 16px; }
-/* Without this the button shrinks under the description and wraps its own
-   icon onto a second line. */
-.drow > .btn,
-.drow > .confirm { flex: none; }
-.dtext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.drow > .btn { flex: none; }
+.dtext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .dtext strong { font-size: var(--fs-sm); font-weight: 600; }
-.dtext span { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.5; }
-.confirm { display: flex; gap: 6px; flex: none; }
-.confirm-box {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
-}
-.confirm-box .row .btn { flex: none; }
-
-.foot {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 20px 16px;
-}
+.dtext span { font-size: var(--fs-xs); color: var(--text-dim); }
 </style>
