@@ -19,7 +19,7 @@ import { X } from '@lucide/vue'
  *   sitting straight on the card. What Confirm uses.
  */
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     title: string
     variant?: 'sheet' | 'question'
@@ -27,17 +27,33 @@ withDefaults(
     width?: number
     /** Escape and a click outside close it; off while something is in flight. */
     dismissible?: boolean
+    /**
+     * What Escape does, when it is not simply close: a sheet stepped into
+     * from another peels back to it. A prop rather than an emit so its
+     * absence can be seen.
+     */
+    onEscape?: () => void
   }>(),
   { variant: 'sheet', width: 0, dismissible: true },
 )
 
 const emit = defineEmits<{ close: [] }>()
+
+/**
+ * Stopped here: the window's own Escape ladder runs after this one, and a key
+ * that already closed this sheet would otherwise close whatever is under it.
+ */
+function onEsc(): void {
+  if (!props.dismissible) return
+  if (props.onEscape) props.onEscape()
+  else emit('close')
+}
 </script>
 
 <template>
   <div
     class="scrim"
-    @keydown.esc="dismissible && emit('close')"
+    @keydown.esc.stop="onEsc"
     @mousedown.self="dismissible && emit('close')"
   >
     <div

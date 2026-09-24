@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { FolderOpen, Lock, Plus, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
 import {
-  editingProject, forgetProject, loadDeclarations, moveProject, openDeclarations, pickFolder,
+  editingProject, forgetProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
   renameProject, setProjectSettings, state, trashProject,
 } from '../core/store.js'
 
@@ -16,7 +16,7 @@ import {
 const p = computed(() => editingProject.value)
 
 watch(p, (proj) => {
-  if (proj) void loadDeclarations()
+  if (proj) void loadDeclarations(proj.id)
 })
 
 const name = ref('')
@@ -36,7 +36,11 @@ const lockDraft = ref('')
 
 watch(
   p,
-  (proj) => {
+  (proj, prev) => {
+    // The same project re-sent while the sheet stepped into from here is on
+    // top — writing `cockpit.yaml` does that — is not a reason to throw away
+    // what was typed before stepping in.
+    if (state.declareOpen && proj && proj.id === prev?.id) return
     name.value = proj?.name ?? ''
     root.value = proj?.root ?? ''
     baseBranch.value = proj?.settings.defaultBranch ?? ''
@@ -114,7 +118,9 @@ function close() {
  * something true before it is opened, including when the answer is nothing.
  */
 const declaredSummary = computed(() => {
-  const all = state.declarations?.declarations ?? []
+  // This project's answer only: the one in the store may be the active
+  // project's, and a double-click on the rail opens any project's settings.
+  const all = state.declarationsFor === p.value?.id ? (state.declarations?.declarations ?? []) : []
   if (!all.length) return 'Nothing declared yet.'
   const servers = all.filter((d) => d.kind === 'server').length
   const commands = all.length - servers
@@ -124,11 +130,23 @@ const declaredSummary = computed(() => {
     .join(', ')
 })
 
-/** One sheet at a time: this one closes as the editor opens over it. */
+/**
+ * One sheet at a time, but this one is stepped *into*: it stays mounted
+ * beneath, hidden, so the way back finds it as it was left — typed name and
+ * all — and the sheet leads with that way back.
+ */
 function editDeclarations(): void {
-  close()
-  openDeclarations('')
+  if (p.value) openProjectDeclarations(p.value.id)
 }
+
+// Back from the sheet: the dialog is drawn again, and focus goes with it so
+// Escape still has somewhere to land.
+watch(
+  () => state.declareOpen,
+  (open) => {
+    if (!open && p.value) void nextTick(() => nameInput.value?.focus())
+  },
+)
 
 async function save() {
   const proj = p.value
@@ -197,7 +215,7 @@ function onKey(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div v-if="p" class="scrim" @mousedown.self="close" @keydown="onKey">
+  <div v-if="p && !(state.declareOpen && state.declareFromProject)" class="scrim" @mousedown.self="close" @keydown="onKey">
     <div class="dlg" role="dialog" aria-label="Project settings">
       <header class="head">
         <h2>{{ p.name }}</h2>

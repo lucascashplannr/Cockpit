@@ -3,7 +3,9 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { ArrowLeft, FolderOpen, Pencil, Plus, Server, SlidersHorizontal, Terminal, Trash2, X } from '@lucide/vue'
 import DialogShell from './DialogShell.vue'
 import type { Declaration } from '@cockpit/shared'
-import { askDeleteDeclaration, loadDeclarations, saveDeclaration, state } from '../core/store.js'
+import {
+  askDeleteDeclaration, closeDeclarations, loadDeclarations, saveDeclaration, state,
+} from '../core/store.js'
 
 /**
  * §8 — where servers and commands are written, without opening the file.
@@ -30,7 +32,13 @@ import { askDeleteDeclaration, loadDeclarations, saveDeclaration, state } from '
  */
 const T = { port: '{' + '{port}' + '}', api: '{' + '{api.url}' + '}', name: '{' + '{name}' + '}' }
 
-const d = computed(() => state.declarations)
+/** Only the answer for this sheet's project — never the one you are standing in. */
+const d = computed(() =>
+  state.declarationsFor === state.declareProjectId ? state.declarations : null,
+)
+const project = computed(() => state.projects.find((p) => p.id === state.declareProjectId) ?? null)
+/** Reached from project settings: a step into them, so there is a step back. */
+const fromProject = computed(() => state.declareFromProject)
 /**
  * The scope this sheet opens on.
  *
@@ -61,7 +69,9 @@ const scopes = computed(() => d.value?.scopes ?? [])
  */
 const locked = computed(() => state.declareLock !== null)
 const scopeLabel = computed(
-  () => scopes.value.find((x) => x.repo === scope.value)?.label ?? scope.value,
+  () =>
+    scopes.value.find((x) => x.repo === scope.value)?.label ??
+    (scope.value || project.value?.name || ''),
 )
 /** What the sheet is of: one half names itself, both keep the old title. */
 const heading = computed(() =>
@@ -147,9 +157,27 @@ function back(): void {
 }
 
 function close(): void {
-  state.declareOpen = false
-  state.declareSection = null
   back()
+  closeDeclarations()
+}
+
+/** Out of the sheet to the settings it was opened from. */
+function toProject(): void {
+  back()
+  closeDeclarations(true)
+}
+
+/** The arrow in the head: form → list → project settings, one step each. */
+function stepBack(): void {
+  if (editing.value) back()
+  else toProject()
+}
+
+/** Escape peels one layer, as it does everywhere else in the window. */
+function dismiss(): void {
+  if (editing.value) back()
+  else if (fromProject.value) toProject()
+  else close()
 }
 
 const valid = computed(() => {
@@ -205,9 +233,15 @@ onMounted(() => {
     v-if="state.declareOpen"
     :title="title"
     @close="close"
+    :on-escape="dismiss"
   >
     <template #lead>
-      <button v-if="editing" class="icon-btn" title="Back to the list" @click="back">
+      <button
+        v-if="editing || fromProject"
+        class="icon-btn"
+        :title="editing ? 'Back to the list' : 'Back to ' + (project?.name ?? 'the project') + ' settings'"
+        @click="stepBack"
+      >
         <ArrowLeft class="sm" />
       </button>
     </template>
@@ -223,8 +257,11 @@ onMounted(() => {
     <template v-if="!editing" #title>
       <!-- The kind, when the sheet is of one kind. Showing both, it is neither
            — so it takes the icon the menus use for the sheet itself. -->
+      <!-- Unless the back arrow already leads: you stepped in from the
+           project's settings, and the way out is worth more than the icon. -->
       <component
         :is="section === 'server' ? Server : section === 'command' ? Terminal : SlidersHorizontal"
+        v-if="!fromProject"
         class="sm ti"
       />
       <span class="tn">{{ heading }}</span>
@@ -449,7 +486,7 @@ onMounted(() => {
           {{ busy ? 'Saving…' : 'Save' }}
         </button>
       </template>
-      <button v-else class="btn ghost" @click="close">Done</button>
+      <button v-else class="btn ghost" @click="fromProject ? toProject() : close()">Done</button>
     </template>
   </DialogShell>
 </template>

@@ -386,7 +386,20 @@ export const state = reactive({
    * there the question really is open.
    */
   declareSection: null as 'server' | 'command' | null,
+  /**
+   * The project the sheet is about, which is not always the one you are in:
+   * a project's settings open from the rail for any project, and the sheet
+   * reached from them has to be that project's — not the active one's.
+   */
+  declareProjectId: null as string | null,
+  /**
+   * Reached from that project's settings, which stay open beneath it: the
+   * sheet is a step into them, so it leads with a way back instead of an icon.
+   */
+  declareFromProject: false,
   declarations: null as Declarations | null,
+  /** The project `declarations` were read for — two sheets can ask for two. */
+  declarationsFor: null as string | null,
   planBusy: false,
   toasts: [] as ToastItem[],
   theme: (localStorage.getItem('cockpit.theme') ?? 'system') as 'system' | 'dark' | 'light',
@@ -2446,18 +2459,51 @@ function release(toastId: number): void {
 
 /* ── editing what a project declares (§8) ───────────────────────────── */
 
-export function openDeclarations(scope?: string, section?: 'server' | 'command'): void {
+export function openDeclarations(
+  scope?: string,
+  section?: 'server' | 'command',
+  projectId: string | null = state.activeProjectId,
+): void {
   state.declareLock = scope ?? null
   state.declareSection = section ?? null
+  state.declareProjectId = projectId
+  state.declareFromProject = false
   state.declareOpen = true
   void loadDeclarations()
 }
 
-export async function loadDeclarations(): Promise<void> {
-  const projectId = state.activeProjectId
+/** From a project's settings: that project, whole, with a way back to them. */
+export function openProjectDeclarations(projectId: string): void {
+  openDeclarations('', undefined, projectId)
+  state.declareFromProject = true
+}
+
+/**
+ * `back` returns to the settings the sheet was opened from; otherwise the
+ * whole stack goes, settings included — the close button closes, it does not
+ * step.
+ */
+export function closeDeclarations(back = false): void {
+  if (state.declareFromProject && !back) state.editingProjectId = null
+  state.declareOpen = false
+  state.declareSection = null
+  state.declareProjectId = null
+  state.declareFromProject = false
+}
+
+/** The project the sheet is about, or the one you are in when none is open. */
+const declaringFor = (): string | null => state.declareProjectId ?? state.activeProjectId
+
+let declareSeq = 0
+export async function loadDeclarations(projectId: string | null = declaringFor()): Promise<void> {
   if (!projectId) return
+  // Last asked wins: project settings and the sheet can ask for different
+  // projects, and an older answer landing late would put one under the other.
+  const seq = ++declareSeq
   const got = await client.call('declare.list', { projectId }).catch(() => null)
-  if (got && state.activeProjectId === projectId) state.declarations = got
+  if (!got || seq !== declareSeq) return
+  state.declarations = got
+  state.declarationsFor = projectId
 }
 
 /**
@@ -2471,7 +2517,7 @@ export async function saveDeclaration(
   declaration: Declaration,
   previousName?: string,
 ): Promise<boolean> {
-  const projectId = state.activeProjectId
+  const projectId = declaringFor()
   if (!projectId) return false
   const res = await guard(() =>
     client.call('declare.save', {
@@ -2485,7 +2531,7 @@ export async function saveDeclaration(
     toast('error', res.detail)
     return false
   }
-  await Promise.all([loadDeclarations(), refreshCommands()])
+  await Promise.all([loadDeclarations(projectId), refreshCommands()])
   toast('ok', res.detail, { detail: res.manifestPath ?? undefined })
   return true
 }
@@ -2504,6 +2550,9 @@ export async function saveDeclaration(
  * the question can say it before rather than the file showing it after.
  */
 export function askDeleteDeclaration(decl: Declaration): void {
+  // Taken now: the answer comes after a question, and the sheet it was asked
+  // from is the project it means.
+  const projectId = declaringFor()
   const all = state.declarations?.declarations ?? []
   const usedBy = all.filter((x) => x.kind === 'command' && x.runs.includes(decl.name))
   const file = state.declarations?.manifestPath?.split('/').pop() ?? 'the manifest'
@@ -2529,19 +2578,22 @@ export function askDeleteDeclaration(decl: Declaration): void {
     verb: 'Delete',
     done: 'removed ' + decl.name,
     danger: true,
-    run: () => removeDeclaration(decl.kind, decl.name),
+    run: () => removeDeclaration(decl.kind, decl.name, projectId),
   }
 }
 
-export async function removeDeclaration(kind: Declaration['kind'], name: string): Promise<boolean> {
-  const projectId = state.activeProjectId
+export async function removeDeclaration(
+  kind: Declaration['kind'],
+  name: string,
+  projectId: string | null = declaringFor(),
+): Promise<boolean> {
   if (!projectId) return false
   const res = await guard(() => client.call('declare.remove', { projectId, kind, name }))
   if (!res?.ok) {
     if (res) toast('error', res.detail)
     return false
   }
-  await Promise.all([loadDeclarations(), refreshCommands()])
+  await Promise.all([loadDeclarations(projectId), refreshCommands()])
   toast('info', res.detail, { icon: 'discard' })
   return true
 }

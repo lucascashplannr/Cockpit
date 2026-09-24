@@ -26,7 +26,7 @@ import ReviewTools from './components/ReviewTools.vue'
 import TrafficLights from './components/TrafficLights.vue'
 import Splitter from './components/Splitter.vue'
 import {
-  LAYOUT_LIMITS, activeWorkspace, client, state, goTo, guard, keyTargets, layout,
+  LAYOUT_LIMITS, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout,
   requestPlan, resetColumnWidth, saveLayout, setColumnWidth, showsAgent, showsReview, stepAttachment,
   stepView,
 } from './core/store.js'
@@ -61,6 +61,9 @@ function onKey(e: KeyboardEvent) {
     else if (state.addRepoProjectId) state.addRepoProjectId = null
     else if (state.settingsOpen) state.settingsOpen = false
     else if (state.serviceOpen) state.serviceOpen = false
+    // Before project settings: the sheet stepped into from them sits on top,
+    // and Escape takes it back to them rather than past them.
+    else if (state.declareOpen) closeDeclarations(state.declareFromProject)
     else if (state.editingProjectId) state.editingProjectId = null
     else if (state.detailsFor) state.detailsFor = null
     else if (state.pendingPlan) state.pendingPlan = null
