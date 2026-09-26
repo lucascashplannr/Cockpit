@@ -174,22 +174,41 @@ function serverBoard(): ServerBoardRow[] {
 const STATUS_RANK: Record<string, number> = { up: 0, starting: 1, unhealthy: 2, down: 3, unknown: 4 }
 const rank = (st: string) => STATUS_RANK[st] ?? 5
 
+/**
+ * Hands a folder or a URL to the OS: `open` on macOS, Explorer on Windows,
+ * `xdg-open` elsewhere. Explorer wants backslashes (a forward-slash path lands
+ * on Documents) and exits 1 even when it opened the window, so on Windows only
+ * a failure to spawn it at all counts as failure.
+ */
+async function openWithOs(target: string) {
+  if (process.platform === 'win32') {
+    const arg = /^[a-z][a-z0-9+.-]*:\/\//i.test(target) ? target : target.replace(/\//g, '\\')
+    const r = await run('explorer.exe', [arg], { timeoutMs: 10_000 })
+    return { ok: r.code !== 127, stderr: r.stderr }
+  }
+  const r = await run(process.platform === 'darwin' ? 'open' : 'xdg-open', [target], { timeoutMs: 10_000 })
+  return { ok: r.ok, stderr: r.stderr }
+}
+
 async function openIn(workspaceId: string, target: string, path?: string) {
   const ws = registry.requireWorkspace(workspaceId)
   const cfg = loadConfig()
   const full = path ? ws.path + '/' + path : ws.path
 
   if (target === 'finder') {
-    const r = await run('open', [full], { timeoutMs: 10_000 })
+    const r = await openWithOs(full)
     return { ok: r.ok, detail: r.stderr }
   }
   if (target === 'browser') {
     const p = await runtime.preview(ws)
     if (p.kind !== 'url' || !p.value) return { ok: false, detail: 'no preview URL for this workspace' }
-    const r = await run('open', [p.value], { timeoutMs: 10_000 })
+    const r = await openWithOs(p.value)
     return { ok: r.ok, detail: p.value }
   }
   const r = await run(cfg.ide, [full], { timeoutMs: 10_000 })
+  if (!r.ok && process.platform !== 'darwin') {
+    return { ok: false, detail: 'editor "' + cfg.ide + '" not found on PATH' }
+  }
   if (!r.ok) {
     const fallback = await run('open', ['-a', 'Visual Studio Code', full], { timeoutMs: 10_000 })
     return { ok: fallback.ok, detail: fallback.ok ? '' : 'editor "' + cfg.ide + '" not found on PATH' }

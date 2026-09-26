@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { Copy, FolderOpen, GitBranch, Layers, SquareDot, Stamp, X } from '@lucide/vue'
 import type { WorkspaceDetails } from '@cockpit/shared'
-import { adoptTopic, client, guard, renameTopic, state, toast } from '../core/store.js'
+import { adoptTopic, client, guard, renameTopic, revealLabel, state, toast } from '../core/store.js'
 
 /**
  * The details sheet of one row of the list: what it is, where it came from,
@@ -212,7 +212,7 @@ function reveal(workspaceId: string) {
           <dd class="with-acts">
             <code class="mono path">{{ ws.path }}</code>
             <button class="icon-btn small" title="Copy the path" @click="copy(ws.path)"><Copy class="sm" /></button>
-            <button class="icon-btn small" title="Reveal in Finder" @click="reveal(ws.id)"><FolderOpen class="sm" /></button>
+            <button class="icon-btn small" :title="revealLabel" @click="reveal(ws.id)"><FolderOpen class="sm" /></button>
           </dd>
 
           <dt>{{ ws.kind === 'worktree' ? 'Folder created' : 'On this machine since' }}</dt>

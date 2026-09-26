@@ -6,7 +6,7 @@ import {
 } from '@lucide/vue'
 import {
   adoptTopic, askDeleteTopic, client, closeTopic, guard, newConversationOn, openDeclarations,
-  startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
+  revealLabel, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -149,7 +149,7 @@ async function copyPath(path: string) {
       <button
         @click="act(() => guard(() => client.call('workspace.openIn', { workspaceId: ws!.id, target: 'finder' })))"
       >
-        <FolderOpen /> Reveal in Finder
+        <FolderOpen /> {{ revealLabel }}
       </button>
       <button @click="act(() => copyPath(ws!.path))">
         <Copy /> Copy the path

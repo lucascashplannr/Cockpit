@@ -75,6 +75,14 @@ const host = (window as unknown as { cockpitHost?: CockpitHost }).cockpitHost
  * the native frame is still there and still has its own buttons.
  */
 export const hostWindow = host?.platform === 'darwin' ? (host.window ?? null) : null
+
+/** What "show this folder" is called where the window is running. */
+export const revealLabel =
+  host?.platform === 'win32'
+    ? 'Show in Explorer'
+    : host?.platform === 'darwin' || !host?.platform
+      ? 'Reveal in Finder'
+      : 'Open containing folder'
 const PORT = host?.corePort ?? 7717
 const CORE_URL = 'ws://127.0.0.1:' + PORT
 

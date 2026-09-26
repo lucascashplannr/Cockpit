@@ -12,7 +12,7 @@ import {
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, restartCore, selectWorkspace, state, toast,
+  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectWorkspace, state, toast,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -255,7 +255,7 @@ const commands = computed<Item[]>(() => {
     })
     out.push({
       id: 'finder',
-      label: 'Reveal in Finder',
+      label: revealLabel,
       group: 'Open',
       icon: FolderOpen,
       run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'finder' }))),

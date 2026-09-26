@@ -4,6 +4,7 @@ import { newId } from '@cockpit/shared'
 import type { ProcessLog, SupervisedProcess } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { append } from './journal.js'
+import { spawnable } from './exec.js'
 
 /**
  * §13 rule 2 — dev servers and agents outlive the window. The supervisor owns
@@ -65,11 +66,15 @@ export interface StartOptions {
 
 export function start(opts: StartOptions): SupervisedProcess {
   const id = newId('proc_')
-  const child = spawn(opts.command, opts.args, {
+  const target = spawnable(opts.command, opts.args)
+  const child = spawn(target.command, target.args, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env, FORCE_COLOR: '1' },
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // `detached` on Windows means a console of its own; this keeps it unseen.
+    windowsHide: true,
+    windowsVerbatimArguments: target.windowsVerbatimArguments,
   })
 
   const managed: Managed = {
@@ -294,6 +299,16 @@ function stopAdopted(ids: string[]): number {
 
 function killTree(pid: number | undefined): void {
   if (!pid) return
+  if (process.platform === 'win32') {
+    // No process groups here, and the pid is `cmd.exe` wrapping `npm` wrapping
+    // the server: killing it alone leaves the server holding the port. `/T`
+    // takes the whole tree.
+    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on(
+      'error',
+      () => undefined,
+    )
+    return
+  }
   try {
     // Negative pid targets the detached process group, so a `npm run dev`
     // wrapper does not leave the real server behind.
