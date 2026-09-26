@@ -236,8 +236,14 @@ async function ensureCore() {
   }
   // Detached: the core outlives this window, and this app on quit.
   const log = coreLog()
-  const child = spawn('/bin/sh', ['-c', FD_FLOOR, 'sh', process.execPath, ...launcher.args], {
+  // Windows has no /bin/sh and no descriptor ulimit to raise: start it direct.
+  const [cmd, args] =
+    process.platform === 'win32'
+      ? [process.execPath, launcher.args]
+      : ['/bin/sh', ['-c', FD_FLOOR, 'sh', process.execPath, ...launcher.args]]
+  const child = spawn(cmd, args, {
     detached: true,
+    windowsHide: true,
     stdio: ['ignore', log, log],
     env: Object.assign({}, process.env, {
       COCKPIT_PORT: String(CORE_PORT),

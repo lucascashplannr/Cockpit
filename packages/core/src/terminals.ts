@@ -58,7 +58,9 @@ const SCROLLBACK_MAX = 400
 
 function defaultShell(): string {
   const cfg = loadConfig()
-  return cfg.shell ?? process.env.SHELL ?? '/bin/zsh'
+  if (cfg.shell) return cfg.shell
+  if (process.platform === 'win32') return process.env.COMSPEC ?? 'cmd.exe'
+  return process.env.SHELL ?? '/bin/zsh'
 }
 
 export function open(workspaceId: string, cols: number, rows: number, shell?: string): string {

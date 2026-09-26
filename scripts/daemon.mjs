@@ -17,7 +17,9 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 
-const electron = join(ROOT, 'apps', 'desktop', 'node_modules', '.bin', 'electron')
+// The binary itself, not .bin/electron: on Windows that shim is electron.cmd,
+// which spawn() can't launch without a shell.
+const electron = createRequire(join(ROOT, 'apps', 'desktop', 'package.json'))('electron')
 // `tsx/cli`, not the file behind it: tsx 4.23 stopped exporting `./dist/*`,
 // so resolving the path made this script die on its first line with an
 // ERR_PACKAGE_PATH_NOT_EXPORTED that says nothing about the daemon.
@@ -31,8 +33,9 @@ const entry = join(ROOT, 'packages', 'core', 'src', 'index.ts')
  * `exec` replaces the shell, so this is still one process.
  */
 const child = spawn(
-  '/bin/sh',
-  ['-c', 'ulimit -n 65536 2>/dev/null || ulimit -n 10240 2>/dev/null; exec "$@"', 'sh', electron, tsx, 'watch', entry],
+  ...(process.platform === 'win32'
+    ? [electron, [tsx, 'watch', entry]]
+    : ['/bin/sh', ['-c', 'ulimit -n 65536 2>/dev/null || ulimit -n 10240 2>/dev/null; exec "$@"', 'sh', electron, tsx, 'watch', entry]]),
   {
     cwd: ROOT,
     stdio: 'inherit',

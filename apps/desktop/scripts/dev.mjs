@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { createConnection } from 'node:net'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,7 +14,14 @@ const root = resolve(here, '..')
 const env = { ...process.env }
 delete env.ELECTRON_RUN_AS_NODE
 
-const vite = spawn('npx', ['vite'], { cwd: root, stdio: 'inherit', env })
+// Run the local binaries directly rather than through npx: on Windows npx is
+// npx.cmd, which spawn() can't launch without a shell, and killing a shell
+// wrapper would leave vite orphaned on 5273.
+const require = createRequire(resolve(root, 'package.json'))
+const viteBin = resolve(dirname(require.resolve('vite/package.json')), require('vite/package.json').bin.vite)
+const electronBin = require('electron')
+
+const vite = spawn(process.execPath, [viteBin], { cwd: root, stdio: 'inherit', env })
 
 /**
  * Waits for Vite on either address family.
@@ -66,7 +74,7 @@ try {
   vite.kill()
   throw e
 }
-const electron = spawn('npx', ['electron', '.'], { cwd: root, stdio: 'inherit', env })
+const electron = spawn(electronBin, ['.'], { cwd: root, stdio: 'inherit', env })
 
 const bye = () => {
   vite.kill()
