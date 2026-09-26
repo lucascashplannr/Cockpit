@@ -5,6 +5,7 @@ import * as topics from './topics/index.js'
 import * as leases from './leases.js'
 import * as agents from './agents.js'
 import { defaultBranch } from './git.js'
+import { isInside } from './config.js'
 
 /**
  * §7 — the scope table, resolved.
@@ -94,8 +95,7 @@ export function resolveScope(scope: AgentScope): ResolvedScope {
  */
 function normaliseSubpath(root: string, subpath: string): string {
   const abs = resolvePath(join(root, subpath))
-  const base = resolvePath(root)
-  if (abs !== base && !abs.startsWith(base + '/')) {
+  if (!isInside(root, abs)) {
     throw new Error('subpath escapes its workspace: ' + subpath)
   }
   return abs

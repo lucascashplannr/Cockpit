@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import type { ProjectSettings } from '@cockpit/shared'
 
@@ -99,11 +99,22 @@ export function updateConfig(fn: (c: LocalConfig) => void): LocalConfig {
   return c
 }
 
+/**
+ * Whether `p` is `root` or somewhere under it.
+ *
+ * Through `relative` rather than a `startsWith(root + '/')`: on Windows
+ * `resolve` hands back backslashes, so the prefix test refused every path
+ * including the root's own children.
+ */
+export function isInside(root: string, p: string): boolean {
+  const rel = relative(resolve(root), resolve(p))
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel))
+}
+
 /** Guards every path that arrives over the wire (§13 rule 1). */
 export function safeResolve(root: string, rel: string): string {
   const full = resolve(root, rel)
-  const normRoot = resolve(root)
-  if (full !== normRoot && !full.startsWith(normRoot + '/')) {
+  if (!isInside(root, full)) {
     throw new Error('path escapes workspace: ' + rel)
   }
   return full
