@@ -427,6 +427,11 @@ function createWindow() {
   // window, not to the buttons. Hiding them and drawing three of our own in the
   // renderer is the only way they stay lit, and it costs the IPC below.
   if (process.platform === 'darwin') win.setWindowButtonVisibility(false)
+  // Windows and Linux draw the application menu as a File/Edit/View bar inside
+  // the window. Every verb in it is already in the app, so it is only a band of
+  // chrome. macOS keeps its menu: it lives in the system bar, and ⌘C/⌘V/⌘Q
+  // hang off it.
+  else win.removeMenu()
 
   win.once('ready-to-show', () => win.show())
 

@@ -1,6 +1,6 @@
 import { createApp, watch } from 'vue'
 import App from './App.vue'
-import { applyTheme, client, state, toast } from './core/store.js'
+import { applyTheme, client, hostWindow, state, toast } from './core/store.js'
 import { releaseSplash } from './core/splash.js'
 
 /* The two faces the app is drawn in, bundled rather than requested: an
@@ -18,6 +18,10 @@ import '@fontsource-variable/geist-mono'
 import './styles/base.css'
 
 applyTheme()
+// The rail keeps --lights-h clear for the three buttons TrafficLights draws,
+// and those are drawn on macOS only. Elsewhere the native frame has its own,
+// so the projects start at the top.
+if (!hostWindow) document.documentElement.style.setProperty('--lights-h', '0px')
 client.connect()
 
 const app = createApp(App)
