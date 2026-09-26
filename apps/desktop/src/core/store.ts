@@ -2,7 +2,7 @@ import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import type {
   AddRepoSource, AgentScope, AgentScopePreview, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
-  CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, PermissionMode,
+  CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, ServerBoardRow, StashEntry, Workspace,
@@ -630,9 +630,11 @@ export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
   const ids: ReviewTool[] = []
   if (w.git) ids.push('diff')
   ids.push('code')
-  // §3.9 — a checkout with nothing to run has no Output, rather than one that
-  // opens on nothing. A declared command counts: its output lands here too.
-  if (w.runtime || (w.id === state.activeWorkspaceId && state.commands.length)) ids.push('output')
+  // Always, even with nothing declared: it is also where the rest of the
+  // project's running servers are listed, and where the first one is set up.
+  // A tool that comes and goes with the declarations is a tool nobody finds
+  // on the one repository that needs it.
+  ids.push('output')
   ids.push('journal', 'terminal')
   // §6 — the memory, last.
   //
@@ -1006,6 +1008,11 @@ export const LAYOUT_LIMITS = {
    * form.
    */
   commit: { min: 132, max: 560 },
+  /**
+   * The list of what is running in the project, under the Output. Content-sized
+   * until dragged, like the commit box; the floor is the heading and one row.
+   */
+  running: { min: 72, max: 600 },
 }
 
 /** What a fresh install starts from, and what a double-click goes back to. */
@@ -1019,8 +1026,8 @@ export const layout = reactive(readLayout())
  * full one for no reason. Null is therefore a real value and not a missing
  * one, and it is what a double-click on the handle goes back to.
  */
-function readLayout(): { list: number; review: number; commit: number | null } {
-  const fallback = { ...LAYOUT_DEFAULTS, commit: null as number | null }
+function readLayout(): { list: number; review: number; commit: number | null; running: number | null } {
+  const fallback = { ...LAYOUT_DEFAULTS, commit: null as number | null, running: null as number | null }
   try {
     const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<typeof fallback> | null
     if (!raw) return fallback
@@ -1029,6 +1036,8 @@ function readLayout(): { list: number; review: number; commit: number | null } {
       review: clampTo(raw.review ?? fallback.review, LAYOUT_LIMITS.review),
       commit:
         typeof raw.commit === 'number' ? clampTo(raw.commit, LAYOUT_LIMITS.commit) : null,
+      running:
+        typeof raw.running === 'number' ? clampTo(raw.running, LAYOUT_LIMITS.running) : null,
     }
   } catch {
     return fallback
@@ -1051,6 +1060,15 @@ export function setCommitHeight(px: number): void {
 /** Back to a box the size of its contents — see `readLayout`. */
 export function resetCommitHeight(): void {
   layout.commit = null
+  saveLayout()
+}
+
+export function setRunningHeight(px: number): void {
+  layout.running = clampTo(px, LAYOUT_LIMITS.running)
+}
+
+export function resetRunningHeight(): void {
+  layout.running = null
   saveLayout()
 }
 
@@ -2628,6 +2646,44 @@ export function askDeleteDeclaration(decl: Declaration): void {
     danger: true,
     run: () => removeDeclaration(decl.kind, decl.name, projectId),
   }
+}
+
+/**
+ * §5 — deleting a guessed server: `guess: { <repo>: false }` in the manifest.
+ *
+ * Asked, like deleting a declaration: it takes the Start away from that
+ * repository, and stops it first if it is running.
+ */
+export function askForgetGuess(g: GuessedServer): void {
+  const projectId = declaringFor()
+  const where = g.repo || 'the project folder'
+  const file = state.declarations?.manifestPath?.split('/').pop() ?? 'cockpit.yaml'
+  const running = state.workspaces.some(
+    (w) => w.projectId === projectId && w.kind === 'main' && w.repoName === g.repo &&
+      w.runtime?.impl === g.impl && (w.runtime.status === 'up' || w.runtime.status === 'starting'),
+  )
+  state.pendingConfirm = {
+    title: 'Delete the guessed server?',
+    body: [
+      where + ' loses its Start' + (running ? ', and what it started is stopped now.' : '.'),
+      'Cockpit stops guessing there: ' + file + ' gets a line saying so. Delete that line to bring the guess back.',
+    ],
+    verb: 'Delete',
+    done: 'no more guessing in ' + where,
+    danger: true,
+    run: () => forgetGuess(g.repo, projectId),
+  }
+}
+
+export async function forgetGuess(repo: string, projectId: string | null = declaringFor()): Promise<boolean> {
+  if (!projectId) return false
+  const res = await guard(() => client.call('declare.forgetGuess', { projectId, repo }))
+  if (!res?.ok) {
+    if (res) toast('error', res.detail)
+    return false
+  }
+  await Promise.all([loadDeclarations(projectId), refreshCommands()])
+  return true
 }
 
 export async function removeDeclaration(

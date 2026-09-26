@@ -595,6 +595,19 @@ const handlers: Record<string, Handler> = {
     }
     return res
   },
+  'declare.forgetGuess': async (p: { projectId: string; repo: string }) => {
+    // Stopped first: once the guess is gone the checkout has no runtime, and
+    // nothing would be left that knows how to stop what it started.
+    const at = declare.scopesOf(p.projectId).find((s) => s.repo === p.repo)?.path
+    const ws = registry.allWorkspaces(p.projectId).find((w) => w.path === at && w.runtime?.impl !== 'declared')
+    if (ws?.runtime && ws.runtime.status !== 'down') await runtime.down(ws).catch(() => null)
+    const res = declare.forgetGuess(p.projectId, p.repo)
+    if (res.ok) {
+      await registry.reconcile(p.projectId)
+      pushAll()
+    }
+    return res
+  },
   'declare.remove': async (p: { projectId: string; kind: 'server' | 'command'; name: string }) => {
     const res = declare.removeDeclaration(p.projectId, p.kind, p.name)
     if (res.ok) {

@@ -227,6 +227,54 @@ const nodeRuntime: Runtime = {
 }
 
 /**
+ * §5 — what a guessed server runs, the way a person would type it.
+ *
+ * Beside `nodeRuntime.up` on purpose: the sheet shows this line as "what Start
+ * does here", and a second copy of the argument building would be free to say
+ * one thing while the button did another.
+ */
+export function guessedLine(dir: string, impl: string, detail: Record<string, unknown>): string {
+  switch (impl) {
+    case 'node':
+      return packageManager(dir) + ' run ' + String(detail.script ?? 'dev')
+    case 'expo':
+      return 'npx expo start'
+    case 'herd':
+      return 'herd link'
+    case 'compose':
+    case 'devcontainer':
+      return 'docker compose up'
+    default:
+      return impl
+  }
+}
+
+/**
+ * The guessed server as a declaration: the same command, told its port the
+ * same way, so confirming a guess changes where it is written and nothing
+ * about what runs. Null where no single command line means the same thing —
+ * Herd links a folder, Compose detaches and is judged on its services.
+ */
+export function guessedAsDeclaration(
+  dir: string,
+  impl: string,
+  detail: Record<string, unknown>,
+): { cmd: string; url: string; env: { key: string; value: string }[] } | null {
+  if (impl === 'expo') {
+    return { cmd: 'npx expo start --port {{port}}', url: '', env: [] }
+  }
+  if (impl !== 'node') return null
+  const framework = (detail.framework as Framework) ?? null
+  const style = (framework ? PORT_STYLES[framework] : null) ?? PORT_BY_ENV
+  const flag = style.flag ? ' -- ' + [style.flag, '{{port}}', ...style.extra].join(' ') : ''
+  return {
+    cmd: guessedLine(dir, impl, detail) + flag,
+    url: 'http://localhost:{{port}}',
+    env: style.env.map((key) => ({ key, value: '{{port}}' })),
+  }
+}
+
+/**
  * §11 — Expo. The bundler defaults to 8081, which collides across projects;
  * the global allocator is what makes several bundlers coexist.
  */

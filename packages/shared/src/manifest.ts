@@ -121,6 +121,14 @@ export interface ManifestV1 {
   commands?: Record<string, CommandDecl>
   /** The escape hatch, for a stack whose command is not yours to write. */
   runtime?: string
+  /**
+   * §5 — which folders may have their server guessed, by repository folder
+   * name (`.` is the project's own). A folder with no server of its own gets
+   * one guessed from its `package.json`, `artisan` or compose file; `false`
+   * here is "I looked at that guess and it is wrong", written where the next
+   * person will find it rather than in one window's preferences.
+   */
+  guess?: Record<string, boolean>
   tickets?: { provider: string; repo?: string; project?: string; baseUrl?: string }
   review?: { provider: string; repo?: string }
   docs?: string | { path: string }
@@ -261,6 +269,20 @@ export function validateManifest(raw: unknown): ParsedManifest {
           severity: 'warning',
         })
         o.start = (o.start as unknown[]).filter((n) => String(n) in servers)
+      }
+    }
+  }
+
+  if (o.guess !== undefined) {
+    const g = o.guess as Record<string, unknown> | null
+    if (!g || typeof g !== 'object' || Array.isArray(g)) {
+      issues.push({ path: 'guess', message: 'must be a mapping of repo -> true | false', severity: 'warning' })
+      delete o.guess
+    } else {
+      for (const [k, v] of Object.entries(g)) {
+        if (typeof v === 'boolean') continue
+        issues.push({ path: 'guess.' + k, message: 'must be true or false', severity: 'warning' })
+        delete g[k]
       }
     }
   }

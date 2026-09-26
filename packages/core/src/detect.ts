@@ -52,6 +52,47 @@ function readJson(path: string): Record<string, unknown> | null {
   }
 }
 
+/** The key a folder goes by under `guess:` — `.` is the project's own. */
+export const guessKey = (repoName: string): string => repoName || '.'
+
+/**
+ * §5 — the server a folder would get without being told, or null.
+ *
+ * Guessing is for a folder that has not said. It is decided per folder: a
+ * repository that declares a server of its own is not guessed at, and neither
+ * is one whose guess was deleted (`guess: { api: false }`). It used to be
+ * decided per project — one declared server anywhere and every other
+ * repository lost its Start — which made confirming one guess quietly delete
+ * the others.
+ */
+export function guessRuntime(
+  dir: string,
+  manifest: ManifestV1 | null,
+  repoName: string,
+  declaresItsOwn: boolean,
+): { impl: string; detail: Record<string, unknown> } | null {
+  if (declaresItsOwn) return null
+  if (manifest?.guess?.[guessKey(repoName)] === false) return null
+  return detectRuntime(dir)
+}
+
+/** The file a guess was read from, for saying where it came from. */
+export function guessSource(impl: string, detail: Record<string, unknown>): string {
+  switch (impl) {
+    case 'node':
+    case 'expo':
+      return 'package.json'
+    case 'herd':
+      return 'artisan'
+    case 'compose':
+      return String(detail.file ?? 'compose.yaml')
+    case 'devcontainer':
+      return '.devcontainer/devcontainer.json'
+    default:
+      return impl
+  }
+}
+
 /** Detects the runtime from disk. Order matters: most specific first. */
 export function detectRuntime(dir: string): { impl: string; detail: Record<string, unknown> } | null {
   if (existsSync(join(dir, 'app.json')) || existsSync(join(dir, 'app.config.js'))) {
@@ -208,11 +249,7 @@ export function detectCapabilities(
 
   if (isRepo(dir)) push({ id: 'vcs', impl: 'git', source: 'detected' })
 
-  // Guessing is for a project that has not said. Once it declares servers, the
-  // declaration is the whole answer: a repository with none of its own has no
-  // Start, even with a `package.json` that could have been guessed at.
-  const saysWhatRuns = Object.keys(manifest?.servers ?? {}).length > 0
-  const rt = saysWhatRuns ? null : detectRuntime(dir)
+  const rt = guessRuntime(dir, manifest, repoName, declared.length > 0)
   if (rt) push({ id: 'runtime', impl: rt.impl, source: 'detected', detail: rt.detail })
 
   const docs = detectDocs(dir)

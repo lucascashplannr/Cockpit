@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { ArrowLeft, FolderOpen, Pencil, Plus, Server, SlidersHorizontal, Terminal, Trash2, X } from '@lucide/vue'
+import { ArrowLeft, Check, FolderOpen, Pencil, Plus, Server, SlidersHorizontal, Terminal, Trash2, X } from '@lucide/vue'
 import DialogShell from './DialogShell.vue'
 import type { Declaration } from '@cockpit/shared'
 import {
-  askDeleteDeclaration, closeDeclarations, loadDeclarations, saveDeclaration, state,
+  askDeleteDeclaration, askForgetGuess, closeDeclarations, loadDeclarations, saveDeclaration, state,
 } from '../core/store.js'
 
 /**
@@ -78,7 +78,10 @@ const heading = computed(() =>
   section.value === 'server' ? 'Servers' : section.value === 'command' ? 'Commands' : 'Commands & servers',
 )
 const title = computed(() => {
-  if (editing.value) return previousName.value ?? 'New ' + editing.value.kind
+  if (editing.value) {
+    if (confirming.value) return 'Confirm the guessed server'
+    return previousName.value ?? 'New ' + editing.value.kind
+  }
   return locked.value ? heading.value + ' · ' + scopeLabel.value : heading.value
 })
 const inScope = (kind: Declaration['kind']) =>
@@ -86,6 +89,25 @@ const inScope = (kind: Declaration['kind']) =>
 
 const servers = computed(() => inScope('server'))
 const commands = computed(() => inScope('command'))
+
+/**
+ * §5 — the server Start runs here without anyone having written it down.
+ *
+ * Listed with the declared ones because that is where "what does Start do
+ * here" is asked, and the answer "nothing declared" over a working Start was
+ * the whole complaint. Confirm opens the form on the equivalent declaration —
+ * the line is read before it is written; Delete stops the guessing.
+ */
+const guess = computed(() => (d.value?.guesses ?? []).find((g) => g.repo === scope.value) ?? null)
+/** Is the confirmed draft the form is holding: saving it is what confirms. */
+const confirming = ref(false)
+
+function confirmGuess(): void {
+  const g = guess.value
+  if (!g?.draft) return
+  void edit(null, 'server', g.draft)
+  confirming.value = true
+}
 
 /** Everything a `runs:` list may name — the project's whole vocabulary. */
 const runnable = computed(() =>
@@ -142,16 +164,24 @@ function blank(kind: Declaration['kind']): Declaration {
   }
 }
 
-async function edit(decl: Declaration | null, kind: Declaration['kind'] = 'command'): Promise<void> {
+async function edit(
+  decl: Declaration | null,
+  kind: Declaration['kind'] = 'command',
+  /** A new entry that starts filled in rather than blank — a confirmed guess. */
+  seed?: Declaration,
+): Promise<void> {
+  confirming.value = false
   // A copy, always: binding the list's own object would write every keystroke
   // into the row behind the form, including the ones that are cancelled.
-  editing.value = decl ? JSON.parse(JSON.stringify(decl)) as Declaration : blank(kind)
+  const from = decl ?? seed
+  editing.value = from ? JSON.parse(JSON.stringify(from)) as Declaration : blank(kind)
   previousName.value = decl?.name
   await nextTick()
   nameField.value?.focus()
 }
 
 function back(): void {
+  confirming.value = false
   editing.value = null
   previousName.value = undefined
 }
@@ -311,7 +341,27 @@ onMounted(() => {
           <!-- One card per declaration, and the row itself is not a target:
                editing and deleting are both buttons, so there is no part of
                this that does something without saying which thing. -->
-          <div v-if="servers.length" class="rows">
+          <div v-if="servers.length || guess" class="rows">
+            <!-- What Start runs here today, guessed: dashed, because nothing
+                 has been written down, and with the file it was read from. -->
+            <div v-if="guess" class="row guessed">
+              <span class="chip warn">guessed</span>
+              <code class="mono line" :title="'Read from ' + guess.from">{{ guess.line }}</code>
+              <span class="gfrom">from {{ guess.from }}</span>
+              <span class="acts">
+                <button
+                  v-if="guess.draft"
+                  class="btn ghost gok"
+                  title="Write it down as a server — you see the line before it is saved"
+                  @click="confirmGuess"
+                >
+                  <Check class="sm" /> Confirm
+                </button>
+                <button class="icon-btn del" title="Delete the guess — no more Start here until one is declared" @click="askForgetGuess(guess)">
+                  <Trash2 class="sm" />
+                </button>
+              </span>
+            </div>
             <div v-for="x in servers" :key="x.name" class="row">
               <span class="nm">{{ x.name }}</span>
               <code class="mono line">{{ lineOf(x) }}</code>
@@ -358,6 +408,9 @@ onMounted(() => {
 
       <!-- ── the form ────────────────────────────────────────────────── -->
       <div v-else class="form">
+        <p v-if="confirming" class="hint">
+          This is what Start already runs here. Saving writes it into the manifest, so it stops being a guess — change anything first if it is wrong.
+        </p>
         <label class="field">
           <span class="lbl">Name</span>
           <input ref="nameField" v-model="editing.name" class="input" placeholder="build" />
@@ -634,6 +687,14 @@ h3 .lucide { width: 13px; height: 13px; }
  * Inside here they are one cluster, and the 10px stays where it is useful —
  * between the cluster and everything to its left. */
 .acts { flex: none; display: flex; align-items: center; gap: 1px; }
+
+/* A guess is a row like the others with nothing written behind it: the same
+   card, dashed, the way an empty half is drawn. */
+.row.guessed { border-style: dashed; background: transparent; }
+.gfrom { flex: none; font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
+.gok { height: 28px; padding: 0 9px; font-size: var(--fs-xs); }
+.gok .lucide { width: 13px; height: 13px; }
+.hint { margin: 0; font-size: var(--fs-xs); line-height: 1.5; color: var(--text-muted); }
 
 /* An empty half says what the half is for, rather than showing a heading with
    nothing under it. Not the full `.empty` block: this is one line inside a

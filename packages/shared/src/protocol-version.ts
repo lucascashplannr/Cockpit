@@ -24,8 +24,12 @@
  * it keeps its data and what PATH it runs with. The window compares that
  * version with its own: a service left running across an update is the one
  * that has to be restarted.
+ *
+ * 2.9 — `declare.forgetGuess`, and `Declarations.guesses`. An older core sends
+ * no guesses, so the sheet would go back to saying "nothing declared" over a
+ * repository that has a Start.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 8 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 9 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

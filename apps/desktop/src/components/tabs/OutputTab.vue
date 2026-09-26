@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { ArrowDown, CirclePlay, CircleStop, Copy, Eraser, ExternalLink, Logs, Search, X } from '@lucide/vue'
-import type { ProcessLog, ServerBoardRow, Workspace } from '@cockpit/shared'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  clearRuntimeLogs, loadRuntimeLogs, onRuntimeLogData, refreshBoard, state, toast, toggleWorkspaceRuntime,
+  ArrowDown, CirclePlay, CircleStop, Copy, Eraser, ExternalLink, Logs, Search, Server, X,
+} from '@lucide/vue'
+import type { ProcessLog, ServerBoardRow, Workspace } from '@cockpit/shared'
+import Splitter from '../Splitter.vue'
+import {
+  LAYOUT_LIMITS, clearRuntimeLogs, layout, loadRuntimeLogs, onRuntimeLogData, openDeclarations, refreshBoard,
+  resetRunningHeight, saveLayout, setRunningHeight, state, toast, toggleWorkspaceRuntime,
 } from '../../core/store.js'
 
 /**
@@ -17,9 +21,11 @@ import {
  * the one thing only this pane has, which is the output. So the output is the
  * tool, and the tool is named for it.
  *
- * What is left of the board is the part the bar cannot say: *other* branches
- * of this project with something still up. Listed only while there is one,
- * because a list of everything that is down is a list of nothing happening.
+ * What is left of the board is the part the bar cannot say: what else in this
+ * project is up. Listed only while something is, because a list of everything
+ * that is down is a list of nothing happening. This checkout's own row is in
+ * it too, first and marked, so the list reads as the whole project rather than
+ * as everything except the one you are looking at.
  *
  * Each run keeps its own seams. The pane used to be one string per workspace,
  * so three failed starts read as one long error with no way to tell where one
@@ -237,19 +243,70 @@ async function copy() {
 
 /* ── the rest of the project ───────────────────────────────────────── */
 
-const elsewhere = computed(() =>
-  state.board.filter(
-    (r) =>
-      r.projectId === props.workspace.projectId &&
-      r.workspaceId !== props.workspace.id &&
-      (r.status === 'up' || r.status === 'starting'),
-  ),
+/** This checkout, or another repository of the same topic. */
+function isCurrent(r: ServerBoardRow): boolean {
+  if (r.workspaceId === props.workspace.id) return true
+  const topic = props.workspace.topicId
+  return !!topic && state.workspaces.find((w) => w.id === r.workspaceId)?.topicId === topic
+}
+
+const running = computed(() =>
+  state.board
+    .filter((r) => r.projectId === props.workspace.projectId && (r.status === 'up' || r.status === 'starting'))
+    .map((r) => ({ ...r, current: isCurrent(r) }))
+    // Stable: current first, the rest in the board's own order.
+    .sort((a, b) => Number(b.current) - Number(a.current)),
 )
 
-/** The topic, or the project when it adds something the name does not. */
+/** Which word the badge uses: a topic's repositories are all "this topic". */
+const currentWord = computed(() => (props.workspace.topicId ? 'this topic' : 'current'))
+
+/*
+ * The list's height, draggable like the commit box: left alone it is as tall
+ * as its rows up to a third of the pane, and a drag turns that into a number.
+ * Measured, so the first pixel of a drag starts from where the list is.
+ */
+const root = ref<HTMLElement | null>(null)
+const list = ref<HTMLElement | null>(null)
+const measured = ref(LAYOUT_LIMITS.running.min)
+const paneH = ref(0)
+/** The output keeps at least 120px: the list is beside it, not instead of it. */
+const runningMax = computed(() =>
+  Math.max(LAYOUT_LIMITS.running.min, Math.min(LAYOUT_LIMITS.running.max, paneH.value - 160)),
+)
+
+let ro: ResizeObserver | null = null
+let listRo: ResizeObserver | null = null
+onMounted(() => {
+  ro = new ResizeObserver(([e]) => {
+    if (!e) return
+    paneH.value = e.contentRect.height
+    if (layout.running && layout.running > runningMax.value) setRunningHeight(runningMax.value)
+  })
+  if (root.value) ro.observe(root.value)
+  listRo = new ResizeObserver(([e]) => {
+    if (e) measured.value = (e.target as HTMLElement).offsetHeight
+  })
+  watch(
+    list,
+    (el, old) => {
+      if (old) listRo?.unobserve(old)
+      if (el) listRo?.observe(el)
+    },
+    { immediate: true },
+  )
+})
+onBeforeUnmount(() => {
+  ro?.disconnect()
+  listRo?.disconnect()
+})
+
+/**
+ * The topic, when there is one: it is what tells two rows of the same
+ * repository apart. Never the project — the heading already names it.
+ */
 function contextOf(r: ServerBoardRow): string | null {
-  if (r.topic) return r.topic
-  return r.project === r.workspace ? null : r.project
+  return r.topic
 }
 
 async function stopRow(id: string) {
@@ -258,6 +315,13 @@ async function stopRow(id: string) {
 }
 
 /* ── an empty pane ─────────────────────────────────────────────────── */
+
+/** Nothing declared to run here: no server, no command — say so, and offer the way in. */
+const runnable = computed(() => !!props.workspace.runtime || state.commands.length > 0)
+
+function setUp() {
+  openDeclarations(props.workspace.repoName, 'server')
+}
 
 const canStart = computed(() => {
   const rt = props.workspace.runtime
@@ -270,7 +334,7 @@ async function start() {
 </script>
 
 <template>
-  <div class="output">
+  <div ref="root" class="output">
     <div class="bar">
       <div v-if="labels.length > 1" class="seg">
         <button :class="{ on: !only }" @click="only = null">All</button>
@@ -327,6 +391,12 @@ async function start() {
         <span>No line here answers to that.</span>
         <button class="btn" @click="q = ''; only = null">Clear the filter</button>
       </div>
+      <div v-else-if="!shown.length && !runnable" class="empty">
+        <Server />
+        <strong>Nothing to run here</strong>
+        <span>This repository declares no server and no command yet. Set one up and its output lands here.</span>
+        <button class="btn" @click="setUp"><Server /> Set up a server</button>
+      </div>
       <div v-else-if="!shown.length" class="empty">
         <Logs />
         <strong>Nothing written yet</strong>
@@ -341,11 +411,27 @@ async function start() {
     </div>
 
     <!-- The part of the old board the bar cannot say. -->
-    <div v-if="elsewhere.length" class="else">
-      <div class="ehead">Also running in this project</div>
-      <div v-for="r in elsewhere" :key="r.workspaceId" class="erow">
+    <template v-if="running.length">
+      <Splitter
+        :size="measured"
+        :min="LAYOUT_LIMITS.running.min"
+        :max="runningMax"
+        grows="up"
+        label="Height of the running list"
+        @resize="setRunningHeight"
+        @done="saveLayout"
+        @reset="resetRunningHeight"
+      />
+    <div
+      ref="list"
+      class="else"
+      :style="layout.running ? { height: layout.running + 'px', maxHeight: 'none' } : undefined"
+    >
+      <div class="ehead">Running in this project</div>
+      <div v-for="r in running" :key="r.workspaceId" class="erow" :class="{ current: r.current }">
         <i class="dot" :class="r.status === 'up' ? 'running' : 'starting'" />
         <span class="en">{{ r.workspace }}</span>
+        <span v-if="r.current" class="ebadge">{{ currentWord }}</span>
         <span v-if="contextOf(r)" class="ec">{{ contextOf(r) }}</span>
         <span class="grow" />
         <span v-for="p in r.ports" :key="p.name" class="ep num" :title="p.name">:{{ p.port }}</span>
@@ -353,6 +439,7 @@ async function start() {
         <button class="icon-btn" title="Stop it" @click="stopRow(r.workspaceId)"><CircleStop class="sm" /></button>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -557,4 +644,15 @@ async function start() {
   padding: 1px 6px;
 }
 .erow .icon-btn { width: 24px; height: 24px; }
+.erow.current .en { font-weight: 600; }
+.ebadge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  white-space: nowrap;
+}
 </style>

@@ -2,8 +2,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { isMap, isSeq, parseDocument } from 'yaml'
 import { MANIFEST_FILENAMES } from '@cockpit/shared'
-import type { Declaration, DeclarationScope, Declarations } from '@cockpit/shared'
-import { findManifest, readManifest } from './detect.js'
+import type { Declaration, DeclarationScope, Declarations, GuessedServer, ManifestV1 } from '@cockpit/shared'
+import { findManifest, guessKey, guessRuntime, guessSource, readManifest } from './detect.js'
+import { guessedAsDeclaration, guessedLine } from './runtime/index.js'
 import { getProject, allWorkspaces } from './registry.js'
 import { append } from './journal.js'
 
@@ -69,7 +70,63 @@ export function declarationsOf(projectId: string): Declarations {
       inStart: false,
     })
   }
-  return { projectId, manifestPath: path, scopes: scopesOf(projectId), declarations: out }
+  const scopes = scopesOf(projectId)
+  return {
+    projectId,
+    manifestPath: path,
+    scopes,
+    declarations: out,
+    guesses: guessesOf(manifest, scopes, out),
+  }
+}
+
+/**
+ * §5 — what Start would run in each folder that has not said.
+ *
+ * The same rule the registry applies (`guessRuntime`), asked of every scope,
+ * so the sheet lists exactly the Starts the bar is showing — no more, which
+ * would offer to confirm a server nothing runs, and no fewer, which is where
+ * this began: a Start in the bar over a sheet that said "nothing declared".
+ */
+function guessesOf(
+  manifest: ManifestV1 | null,
+  scopes: DeclarationScope[],
+  declared: Declaration[],
+): GuessedServer[] {
+  const taken = new Set(declared.map((x) => x.name))
+  const out: GuessedServer[] = []
+  for (const s of scopes) {
+    const own = declared.some((x) => x.kind === 'server' && x.repo === s.repo)
+    const rt = guessRuntime(s.path, manifest, s.repo, own)
+    if (!rt) continue
+    const same = guessedAsDeclaration(s.path, rt.impl, rt.detail)
+    // `web` is what the guessed server's port was already called; the
+    // repository's name only where `web` is taken, since names are the
+    // project's and not the folder's.
+    const name = !taken.has('web') ? 'web' : s.repo || 'web-project'
+    out.push({
+      repo: s.repo,
+      impl: rt.impl,
+      from: guessSource(rt.impl, rt.detail),
+      line: guessedLine(s.path, rt.impl, rt.detail),
+      draft: same
+        ? {
+            kind: 'server',
+            name,
+            repo: s.repo,
+            cmd: same.cmd,
+            url: same.url,
+            health: '',
+            env: same.env,
+            ask: [],
+            runs: [],
+            confirm: '',
+            inStart: true,
+          }
+        : null,
+    })
+  }
+  return out
 }
 
 /* ── writing ─────────────────────────────────────────────────────────── */
@@ -189,6 +246,37 @@ export function removeDeclaration(projectId: string, kind: Declaration['kind'], 
     payload: { section, name, removed: true },
   })
   return { ok: true, detail: name + ' removed', manifestPath: path }
+}
+
+/**
+ * §5 — "that guess is wrong": `guess: { <repo>: false }`, so the folder stops
+ * having a Start nobody wrote. The line is the undo — delete it and the guess
+ * comes back — which is why this is a key in the file and not a preference.
+ */
+export function forgetGuess(projectId: string, repo: string): SaveResult {
+  const project = getProject(projectId)
+  const path = manifestPathFor(projectId)
+  if (!project || !path) return { ok: false, detail: 'no project', manifestPath: null }
+  let doc
+  try {
+    doc = open(path, project.name)
+  } catch (e) {
+    return { ok: false, detail: 'could not read the manifest: ' + String(e), manifestPath: path }
+  }
+  if (!isMap(doc.get('guess'))) doc.set('guess', doc.createNode({}))
+  doc.setIn(['guess', guessKey(repo)], false)
+  try {
+    writeFileSync(path, String(doc), 'utf8')
+  } catch (e) {
+    return { ok: false, detail: 'could not write the manifest: ' + String(e), manifestPath: path }
+  }
+  append({
+    type: 'manifest.written',
+    projectId,
+    actor: { kind: 'human' },
+    payload: { section: 'guess', name: guessKey(repo), removed: true },
+  })
+  return { ok: true, detail: 'no more guessing in ' + (repo || project.name), manifestPath: path }
 }
 
 /**

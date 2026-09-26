@@ -352,6 +352,33 @@ export interface Declarations {
   manifestPath: string | null
   scopes: DeclarationScope[]
   declarations: Declaration[]
+  /** The servers Start would run without being told: one per folder at most. */
+  guesses: GuessedServer[]
+}
+
+/**
+ * §5 — a server nobody declared, guessed from the files in a folder.
+ *
+ * It is what Start runs in a repository that says nothing, and it used to be
+ * visible nowhere: the button was there, the sheet said "nothing declared",
+ * and both were true. Listed beside the declarations so it can be confirmed —
+ * written down as one — or deleted, which stops the guessing for that folder.
+ */
+export interface GuessedServer {
+  /** The repository folder; empty is the project's own. */
+  repo: string
+  /** Which adapter would run it: `node`, `herd`, `compose`… */
+  impl: string
+  /** The file the guess was read from. */
+  from: string
+  /** What Start runs, as a person would type it. */
+  line: string
+  /**
+   * The same server as a declaration, ready for the form. Null where there is
+   * no one line that means the same thing — Herd links a folder rather than
+   * running a process, so it can only be kept as a guess or deleted.
+   */
+  draft: Declaration | null
 }
 
 /**

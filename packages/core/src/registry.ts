@@ -607,12 +607,19 @@ function deriveTopics(project: Project): void {
  * §8 — the part of the manifest a topic's folder runs: the servers declared
  * for the project (no `repo:`), which run in the topic's own folder, and
  * nothing else. The rest of the file — `runtime:`, tickets, review — is about
- * the repositories, and a topic folder is not one.
+ * the repositories, and a topic folder is not one. `guess:` travels too: a
+ * guess deleted on the project's folder is deleted on a topic's.
  */
 function projectLevelOf(manifest: ManifestV1 | null): ManifestV1 | null {
-  if (!manifest?.servers) return null
-  const servers = Object.fromEntries(Object.entries(manifest.servers).filter(([, d]) => !d.repo))
-  return { version: 1, name: manifest.name, servers, ...(manifest.start ? { start: manifest.start } : {}) }
+  if (!manifest?.servers && !manifest?.guess) return null
+  const servers = Object.fromEntries(Object.entries(manifest.servers ?? {}).filter(([, d]) => !d.repo))
+  return {
+    version: 1,
+    name: manifest.name,
+    servers,
+    ...(manifest.start ? { start: manifest.start } : {}),
+    ...(manifest.guess ? { guess: manifest.guess } : {}),
+  }
 }
 
 /**

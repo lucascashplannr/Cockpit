@@ -716,6 +716,11 @@ export interface Rpc {
     params: { projectId: string; kind: 'server' | 'command'; name: string }
     result: { ok: boolean; detail: string; manifestPath: string | null }
   }
+  /** §5 — stop guessing a server for this folder: `guess: { <repo>: false }`. */
+  'declare.forgetGuess': {
+    params: { projectId: string; repo: string }
+    result: { ok: boolean; detail: string; manifestPath: string | null }
+  }
   'commands.run': {
     params: { workspaceId: string; name: string; answers?: Record<string, string> }
     result: CommandRunResult

@@ -53,6 +53,23 @@ const isBase = computed(() => w.value?.kind === 'main')
  */
 const known = computed(() => !!w.value && state.declaredFor === w.value.id)
 
+/**
+ * §5 — a Start nobody wrote: the core guessed this server from the files here.
+ *
+ * Said on the button, because a Start over a sheet that reads "nothing
+ * declared" looked like the window contradicting itself. The source is the
+ * file the guess came from, so the tooltip can say what it will run.
+ */
+const guess = computed(() => {
+  const c = w.value?.capabilities.find((x) => x.id === 'runtime')
+  if (c?.source !== 'detected') return null
+  const script = typeof c.detail?.script === 'string' ? c.detail.script : null
+  if (c.impl === 'node' && script) return 'its ' + script + ' script in package.json'
+  if (c.impl === 'herd') return 'Laravel Herd, for the artisan file'
+  if (c.impl === 'compose' || c.impl === 'devcontainer') return 'the compose file'
+  return c.impl
+})
+
 /** Nothing declared here yet, so no chevron carries the way in. */
 const needsFirst = computed(
   () => known.value && isBase.value && !(w.value?.runtime && pickable.value) && !chosen.value,
@@ -230,6 +247,9 @@ const switchLabel = computed(() => {
 
 const switchTitle = computed(() => {
   const verb = running.value ? 'Stop' : 'Start'
+  if (guess.value) {
+    return verb + ' the guessed server — ' + guess.value + '. Nothing is declared here: confirm or delete it under Manage servers.'
+  }
   if (!target.value) return running.value ? 'Stop the servers' : 'Start the servers'
   const s = servers.value.find((x) => x.name === target.value)
   const where = s?.port ? ' — port ' + s.port : s?.url ? ' — ' + s.url : ''
@@ -342,6 +362,9 @@ async function undo() {
            that declares nothing has no Start menu and no Run button, and that
            is exactly the repository someone is about to declare the first one
            in. Once one exists, the menu listing it is where it is managed. -->
+      <button v-if="needsFirst && guess" @click="openDeclarations(w.repoName, 'server')">
+        <SlidersHorizontal /> Confirm or delete the guessed server
+      </button>
       <button v-if="needsFirst" @click="openDeclarations(w.repoName)">
         <SlidersHorizontal /> Manage commands &amp; servers
       </button>
@@ -368,7 +391,7 @@ async function undo() {
       <button
         v-if="w.runtime && !pickable"
         class="btn ghost sw solo"
-        :class="{ on: running }"
+        :class="{ on: running, guessed: !!guess }"
         :disabled="busy"
         :title="switchTitle"
         @click="toggleRuntime"
@@ -540,6 +563,14 @@ async function undo() {
    same chip so the group reads as one kind of thing either way. */
 .verbs .btn.solo { background: var(--bg-sunken); }
 .verbs .btn.solo:hover:not(:disabled) { background: var(--hover); }
+/* A Start nobody wrote down: the chip without its ground, drawn dashed — the
+   way the Servers sheet draws the same guess. No word on it; the tooltip says
+   where the guess came from, and the label stays one word wide. */
+.verbs .btn.solo.guessed {
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+}
+.verbs .btn.solo.guessed:hover:not(:disabled) { background: var(--hover); border-color: var(--line-strong); }
 /* No border on a half, even hovered.
  *
  * `.btn:hover` in base.css raises `border-color` to `--line-strong`, and
