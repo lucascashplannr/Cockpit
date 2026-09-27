@@ -40,7 +40,7 @@ function unpushed(ws: { git: { ahead: number } | null }[]): number {
  * the verbs of the selected thing belong (TopicActions).
  */
 function selectTopic(topicId: string) {
-  openAgentOn({ kind: 'topic', topicId })
+  openAgentOn({ kind: 'topic', topicId }, { reveal: false })
 }
 
 /**

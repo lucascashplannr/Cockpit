@@ -415,6 +415,7 @@ export const state = reactive({
 
 export const termOutput = shallowRef(new Map<string, string[]>())
 const termListeners = new Map<string, ((d: string) => void)[]>()
+const termExitListeners = new Map<string, (() => void)[]>()
 
 export const client = new CoreClient(CORE_URL, {
   onState(s, detail) {
@@ -490,7 +491,7 @@ export const client = new CoreClient(CORE_URL, {
     for (const fn of termListeners.get(termId) ?? []) fn(data)
   },
   onTermExit(termId) {
-    for (const fn of termListeners.get(termId) ?? []) fn('\r\n\x1b[2m[process exited]\x1b[0m\r\n')
+    for (const fn of termExitListeners.get(termId) ?? []) fn()
   },
   onRuntimeLog(workspaceId, procId, _label, chunk) {
     for (const fn of procListeners.get(procId) ?? []) fn(chunk)
@@ -562,6 +563,18 @@ export function onTermData(termId: string, fn: (d: string) => void): () => void 
       termId,
       cur.filter((f) => f !== fn),
     )
+  }
+}
+
+/** The shell behind a terminal ended — `exit`, a crash, or the core letting it go. */
+export function onTermExit(termId: string, fn: () => void): () => void {
+  const arr = termExitListeners.get(termId) ?? []
+  arr.push(fn)
+  termExitListeners.set(termId, arr)
+  return () => {
+    const left = (termExitListeners.get(termId) ?? []).filter((f) => f !== fn)
+    if (left.length) termExitListeners.set(termId, left)
+    else termExitListeners.delete(termId)
   }
 }
 
@@ -748,7 +761,7 @@ export function sameScope(a: AgentScope | null, b: AgentScope | null): boolean {
  * picking it there meant navigating twice, once to the workspace and once
  * again to say which workspace you meant.
  */
-export function openAgentOn(scope: AgentScope): void {
+export function openAgentOn(scope: AgentScope, opts: { reveal?: boolean } = {}): void {
   // The panel still renders against a workspace, so the scope has to bring one
   // with it: the first it resolves to is the one you were pointing at.
   const w = anchorFor(scope)
@@ -761,7 +774,12 @@ export function openAgentOn(scope: AgentScope): void {
   // a row while the review had the whole window used to change the scope of a
   // conversation that was not on screen — the click did exactly what it said
   // and nothing visible happened.
-  if (state.view === 'review') state.view = 'split'
+  //
+  // Only for an ask, though. Selecting a topic header is navigation, the same
+  // as selecting a row, and a row leaves the view alone: reading diffs across
+  // the window while walking the list must not bring the conversation back
+  // the moment the walk reaches a topic.
+  if (opts.reveal !== false && state.view === 'review') state.view = 'split'
   state.historyOpen = false
   state.paletteOpen = false
 }
