@@ -50,10 +50,35 @@ export function fuzzyScore(haystack: string, needle: string): { score: number; p
   return { score, positions }
 }
 
+/**
+ * Several words are several things to find, in any order: "close topic" has to
+ * find "Close “test”" under the Topic heading, and so does "topic close".
+ *
+ * Each word must appear as written. Letting every word match as a scattered
+ * subsequence would find "topic" in half the hints in the list; a single word
+ * keeps the forgiving match, because one word is where people abbreviate.
+ */
+export function fuzzyMatch(haystack: string, needle: string): { score: number; positions: number[] } | null {
+  const words = needle.trim().split(/\s+/).filter(Boolean)
+  if (words.length < 2) return fuzzyScore(haystack, needle.trim())
+  const h = haystack.toLowerCase()
+  // Typed exactly as it reads is still the best answer there is.
+  if (h.includes(needle.trim().toLowerCase())) return fuzzyScore(haystack, needle.trim())
+  let score = 0
+  const positions = new Set<number>()
+  for (const w of words) {
+    if (!h.includes(w.toLowerCase())) return null
+    const r = fuzzyScore(haystack, w)!
+    score += r.score
+    for (const p of r.positions) positions.add(p)
+  }
+  return { score: score / words.length, positions: [...positions].sort((a, b) => a - b) }
+}
+
 export function fuzzyFilter<T>(items: T[], needle: string, key: (t: T) => string, limit = 40): Scored<T>[] {
   const out: Scored<T>[] = []
   for (const item of items) {
-    const r = fuzzyScore(key(item), needle)
+    const r = fuzzyMatch(key(item), needle)
     if (r) out.push({ item, score: r.score, positions: r.positions })
   }
   out.sort((a, b) => b.score - a.score)

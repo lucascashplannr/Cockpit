@@ -84,7 +84,7 @@ async function stop(): Promise<void> {
       <p class="tag">Everything in flight, in one window.</p>
       <div class="hints">
         <span class="hint">
-          <span class="kbd">⌘K</span> jump to a repository or branch, or run anything
+          <span class="kbd">⇧⇧</span> jump to a repository or branch, or run anything
         </span>
         <span class="hint"><MousePointerClick class="sm" /> or pick one on the left</span>
       </div>

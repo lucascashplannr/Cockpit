@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import ProjectRail from './components/ProjectRail.vue'
 import WorkspaceList from './components/WorkspaceList.vue'
 import ContextPanel from './components/ContextPanel.vue'
@@ -36,17 +36,72 @@ import {
  * The keyboard owns it; the mouse is a fallback.
  */
 
+/**
+ * ⇧⇧ — the palette, as JetBrains opens Search Everywhere: two taps of Shift
+ * on their own, from anywhere, typing included.
+ *
+ * A tap is a Shift that went down and came up with nothing pressed in
+ * between, and quickly: typing a capital, a ⇧-click or a ⌘⇧F is Shift *held*
+ * for something else, and must never count.
+ */
+const TAP_MAX_MS = 300
+const DOUBLE_TAP_MS = 350
+let shiftDownAt = 0
+let shiftClean = false
+let lastTapAt = 0
+
+function onShiftDown(e: KeyboardEvent) {
+  if (e.key !== 'Shift') {
+    // Anything pressed between the taps breaks the pair, not only the tap.
+    shiftClean = false
+    lastTapAt = 0
+    return
+  }
+  if (e.repeat) return
+  shiftDownAt = e.timeStamp
+  shiftClean = !(e.metaKey || e.ctrlKey || e.altKey)
+}
+
+function onShiftUp(e: KeyboardEvent) {
+  if (e.key !== 'Shift') return
+  const tap = shiftClean && e.timeStamp - shiftDownAt < TAP_MAX_MS
+  shiftClean = false
+  if (!tap) {
+    lastTapAt = 0
+    return
+  }
+  if (lastTapAt && e.timeStamp - lastTapAt < DOUBLE_TAP_MS) {
+    lastTapAt = 0
+    state.paletteOpen = !state.paletteOpen
+    return
+  }
+  lastTapAt = e.timeStamp
+}
+
+function breakTap() {
+  shiftClean = false
+  lastTapAt = 0
+}
+
 function onKey(e: KeyboardEvent) {
+  onShiftDown(e)
   const meta = e.metaKey || e.ctrlKey
   const target = e.target as HTMLElement | null
   const typing =
     target &&
     (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
 
-  // ⌘K is the real entry point and must work from anywhere, typing included.
-  if (meta && !e.shiftKey && e.key.toLowerCase() === 'k') {
+  // The same palette, opened on a mode: ⌘P on files, ⌘⇧F on the text of
+  // every repository — both scoped to where you are standing, like ⇧⇧.
+  const find = meta && !e.altKey && ((!e.shiftKey && e.key.toLowerCase() === 'p') || (e.shiftKey && e.key.toLowerCase() === 'f'))
+  if (find) {
     e.preventDefault()
-    state.paletteOpen = !state.paletteOpen
+    state.paletteSeed = e.key.toLowerCase() === 'p' ? '/' : '#'
+    // Re-opened rather than toggled, so ⌘P from inside ⇧⇧ switches to files.
+    state.paletteOpen = false
+    void nextTick(() => {
+      state.paletteOpen = true
+    })
     return
   }
   if (e.key === 'Escape') {
@@ -193,10 +248,16 @@ const splitReview = computed(() => {
 
 onMounted(() => {
   window.addEventListener('keydown', onKey)
+  window.addEventListener('keyup', onShiftUp)
+  window.addEventListener('mousedown', breakTap)
+  window.addEventListener('blur', breakTap)
   window.addEventListener('resize', onResize)
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', onKey)
+  window.removeEventListener('keyup', onShiftUp)
+  window.removeEventListener('mousedown', breakTap)
+  window.removeEventListener('blur', breakTap)
   window.removeEventListener('resize', onResize)
 })
 </script>

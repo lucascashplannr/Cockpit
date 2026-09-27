@@ -125,14 +125,14 @@ function tileTitle(name: string, root: string, projectId: string): string {
          different distances down a column of identical-looking glyphs. The
          theme is now in Settings, where a thing you choose once belongs. -->
     <div class="acts">
-      <!-- ⌘K reaches every project, so it belongs to the one column that does
+      <!-- ⇧⇧ reaches every project, so it belongs to the one column that does
            too. It spent a moment at the head of the workspace list, which was
            wrong for the same reason the title band was wrong for the
            workspace's name: that column is one project's, and this search is
            not. It spent another at the head of *this* column, alone above the
            projects, where it read as a group of one. It is an act and not a
            destination, and every other act in this rail is down here. -->
-      <button class="icon-btn find" title="Search or run a command  ⌘K" @click="state.paletteOpen = true">
+      <button class="icon-btn find" title="Search or run a command  ⇧⇧" @click="state.paletteOpen = true">
         <Search />
       </button>
 

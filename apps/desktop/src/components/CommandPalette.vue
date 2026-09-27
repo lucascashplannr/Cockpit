@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
+import type { Topic, Workspace } from '@cockpit/shared'
 import {
-  AppWindow, ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookMarked, Check, CloudDownload,
+  AppWindow, ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookMarked, Box, Check, CloudDownload,
   Columns2, CornerDownLeft, FileCode,
   FolderOpen,
-  FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Layers, Pause, Play, RefreshCw, ScrollText,
+  FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Globe, History, Layers, Pause, Play, RefreshCw,
+  ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, Stamp, TextSearch,
   Terminal, Trash2, Undo2,
   RotateCcw, Archive, Zap, Activity,
 } from '@lucide/vue'
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
+import type { Scored } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, archivedTopics, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, mergeTopic, markResolved, newProject, stopTopic, projectTopics, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectWorkspace, state, toast,
+  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, mergeTopic, markResolved, newProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -21,10 +24,15 @@ import type { ShellView, TabId } from '../core/store.js'
  * le clavier bat toujours la souris."
  *
  * Four modes, chosen by the first character:
- *   (nothing)  workspaces + actions
+ *   (nothing)  repositories, branches + actions
  *   >          commands only
- *   /          files in the current workspace (git-tracked, §12)
- *   #          full-text across every repo at once (§12)
+ *   /          files (git-tracked, §12)
+ *   #          full-text search (§12)
+ *
+ * And one question asked before any of them: *where*. The palette opens on
+ * the narrowest thing you are standing on — a repository, the topic it
+ * belongs to, the project — and every mode answers inside it: files are that
+ * topic's files, "Close" closes that topic. Everywhere is one ⇥ away.
  */
 
 /** §12's ladder, said in words — the switcher says it in three glyphs. */
@@ -40,17 +48,117 @@ interface Item {
   hint?: string
   group: string
   icon: Component
+  /** Words it is found by without showing them — above all the ones the
+   *  lexicon retired: fingers still type "rebase" and "archive". */
+  keywords?: string
+  /** The keystroke that does the same thing outside the palette. */
+  keys?: string
+  /** Acts on the place the palette is scoped to, so it outranks an equal
+   *  match that acts somewhere else. */
+  boost?: number
   run: () => void | Promise<void>
+  /** Asks for one word before running: the input becomes the question. */
+  ask?: { placeholder: string; run: (answer: string) => void | Promise<void> }
 }
 
-const query = ref('')
+/* ── where ─────────────────────────────────────────────────────────── */
+
+type Level = 'all' | 'project' | 'topic' | 'repo'
+
+interface Scope {
+  level: Level
+  /** What the chip says. */
+  name: string
+  /** What it is, for the tooltip and the placeholder. */
+  kind: string
+  icon: Component
+  workspaces: Workspace[]
+}
+
+const searchable = (w: Workspace) => w.kind !== 'group'
+
+/**
+ * The topic you are in: the one standing selected, or the one the selected
+ * row belongs to. A topic from another project is not "here".
+ */
+const hereTopic = computed<Topic | null>(() => {
+  const id = selectedTopicId.value ?? activeWorkspace.value?.topicId ?? null
+  const t = id ? state.topics.find((x) => x.id === id) : null
+  return t && t.projectId === state.activeProjectId && t.state !== 'closed' ? t : null
+})
+
+/** A topic standing selected is the narrowest thing selected: the row that
+ *  stays active under it is only what the review column shows. */
+const hereRepo = computed<Workspace | null>(() => (selectedTopicId.value ? null : activeWorkspace.value))
+
+function topicWorkspaces(t: Topic): Workspace[] {
+  return state.workspaces.filter((w) => searchable(w) && (w.topicId === t.id || t.workspaceIds.includes(w.id)))
+}
+
+const scopes = computed<Scope[]>(() => {
+  const out: Scope[] = [
+    { level: 'all', name: 'Everywhere', kind: 'every project', icon: Globe, workspaces: state.workspaces.filter(searchable) },
+  ]
+  const p = activeProject.value
+  if (p) {
+    out.push({
+      level: 'project',
+      name: p.name,
+      kind: 'Project',
+      icon: Box,
+      workspaces: state.workspaces.filter((w) => searchable(w) && w.projectId === p.id),
+    })
+  }
+  const t = hereTopic.value
+  if (t) out.push({ level: 'topic', name: t.name, kind: 'Topic', icon: Layers, workspaces: topicWorkspaces(t) })
+  const w = hereRepo.value
+  if (w && searchable(w)) {
+    out.push({
+      level: 'repo',
+      name: w.name,
+      kind: w.kind === 'worktree' ? 'Branch' : 'Repository',
+      icon: w.kind === 'worktree' ? GitBranch : SquareDot,
+      workspaces: [w],
+    })
+  }
+  return out
+})
+
+// Mounted fresh on every open, so this is read once per open: the palette
+// starts where you are standing, and widening is a decision you make.
+const level = ref<Level>(scopes.value[scopes.value.length - 1]!.level)
+const scope = computed<Scope>(() => scopes.value.find((s) => s.level === level.value) ?? scopes.value[0]!)
+
+/** "“test”" for a topic, the bare name for everything else — the palette's
+ *  sentences read "Close “test”", never "Close test". */
+function quoted(name: string): string {
+  return '“' + name + '”'
+}
+
+function stepScope(by: 1 | -1) {
+  const list = scopes.value
+  const i = list.findIndex((s) => s.level === scope.value.level)
+  level.value = list[(i + by + list.length) % list.length]!.level
+}
+
+/* ── state ─────────────────────────────────────────────────────────── */
+
+const query = ref(state.paletteSeed)
+state.paletteSeed = ''
 const cursor = ref(0)
 const input = ref<HTMLInputElement | null>(null)
-const trackedFiles = ref<string[]>([])
+/** Tracked files per workspace, fetched once per open and only when asked. */
+const trackedFiles = ref(new Map<string, string[]>())
+const loadingFiles = ref(false)
 const searchHits = ref<{ workspaceId: string; path: string; line: number; text: string }[]>([])
 const searching = ref(false)
+/** A command that asked for a word; while set, the input is its answer. */
+const asking = ref<Item | null>(null)
 
-const mode = computed<'default' | 'command' | 'file' | 'text'>(() => {
+type Mode = 'default' | 'command' | 'file' | 'text'
+
+const mode = computed<Mode>(() => {
+  if (asking.value) return 'default'
   const q = query.value
   if (q.startsWith('>')) return 'command'
   if (q.startsWith('/')) return 'file'
@@ -58,17 +166,56 @@ const mode = computed<'default' | 'command' | 'file' | 'text'>(() => {
   return 'default'
 })
 
+const MODES: { mode: Mode; prefix: string; label: string }[] = [
+  { mode: 'command', prefix: '>', label: 'Commands' },
+  { mode: 'file', prefix: '/', label: 'Files' },
+  { mode: 'text', prefix: '#', label: 'Text' },
+]
+
+/** The pills set the prefix rather than a hidden flag, so what is typed is
+ *  still the whole truth and a backspace undoes the click. */
+function toggleMode(m: Mode) {
+  const t = term.value
+  const prefix = MODES.find((x) => x.mode === m)?.prefix ?? ''
+  query.value = mode.value === m ? t : prefix + t
+  void nextTick(() => input.value?.focus())
+}
+
 const leadIcon = computed<Component>(() =>
-  mode.value === 'file'
-    ? FolderOpen
-    : mode.value === 'text'
-      ? TextSearch
-      : mode.value === 'command'
-        ? ArrowRight
-        : Search,
+  asking.value
+    ? asking.value.icon
+    : mode.value === 'file'
+      ? FolderOpen
+      : mode.value === 'text'
+        ? TextSearch
+        : mode.value === 'command'
+          ? ArrowRight
+          : Search,
 )
 
 const term = computed(() => (mode.value === 'default' ? query.value : query.value.slice(1).trim()))
+
+const where = computed(() => {
+  const s = scope.value
+  if (s.level === 'all') return 'everywhere'
+  return s.level === 'topic' ? quoted(s.name) : s.name
+})
+
+const placeholder = computed(() => {
+  if (asking.value) return asking.value.ask!.placeholder
+  switch (mode.value) {
+    case 'command':
+      return 'Commands for ' + where.value
+    case 'file':
+      return 'Files in ' + where.value
+    case 'text':
+      return 'Search the text of ' + where.value
+    default:
+      return scope.value.level === 'all'
+        ? 'Jump to any project, repository or branch, or run a command'
+        : 'Search ' + where.value + ' — repositories, commands, or type > / #'
+  }
+})
 
 function close() {
   state.paletteOpen = false
@@ -83,144 +230,201 @@ function act(fn: () => unknown) {
   }
 }
 
-/** Commands are built from the live capability set, so an absent capability
- *  contributes no command at all (§3.9). */
-const commands = computed<Item[]>(() => {
+/* ── the last few commands run from here ───────────────────────────── */
+
+const RECENT_KEY = 'cockpit.palette.recent'
+const RECENT_MAX = 5
+
+function readRecent(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')
+    return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function rememberCommand(id: string) {
+  const next = [id, ...readRecent().filter((x) => x !== id)].slice(0, 20)
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(next))
+  } catch {
+    // A palette that cannot remember is still a palette.
+  }
+}
+
+/* ── commands ──────────────────────────────────────────────────────── */
+
+/** Boosts: large enough to break a tie between two equal matches, small
+ *  enough that a word typed exactly still beats a scattered one. */
+const HERE = 160
+const NEAR = 80
+
+/**
+ * Commands are built from the live capability set, so an absent capability
+ * contributes no command at all (§3.9) — and from the scope, so a topic you
+ * are not in contributes none either.
+ */
+function buildCommands(lvl: Level): Item[] {
   const w = activeWorkspace.value
+  const project = activeProject.value
   const out: Item[] = []
 
-  // §13 — the core is started detached by this app, so without this there is
-  // no way to pick up new core code short of hunting the pid.
-  out.push({
-    id: 'core:restart',
-    label: 'Restart the service',
-    hint: 'servers keep running; conversations end but stay resumable',
-    group: 'Cockpit',
-    icon: RefreshCw,
-    run: act(() => restartCore()),
-  })
+  // The topics this scope can act on. Narrow scopes name one topic, so the
+  // verbs say its name; wide ones list every topic of the project.
+  const topicHere = lvl === 'topic' || lvl === 'repo' ? hereTopic.value : null
+  const topics =
+    lvl === 'all' || lvl === 'project'
+      ? state.topics.filter((f) => f.projectId === state.activeProjectId && f.state !== 'closed')
+      : topicHere && (lvl === 'topic' || w?.topicId === topicHere.id)
+        ? [topicHere]
+        : []
+  const closed =
+    lvl === 'all' || lvl === 'project'
+      ? state.topics.filter((f) => f.projectId === state.activeProjectId && f.state === 'closed')
+      : []
+  const topicBoost = lvl === 'topic' ? HERE : lvl === 'repo' ? NEAR : 0
+
+  // The repository verbs act on the selected row. Scoped to a topic that row
+  // does not belong to, they would act on something outside of where you
+  // said you were — so they are not offered there at all.
+  const repo = lvl === 'topic' && w && !hereTopic.value?.workspaceIds.includes(w.id) && w.topicId !== hereTopic.value?.id
+    ? null
+    : w
+  const repoBoost = lvl === 'repo' ? HERE : 0
 
   // §4 — the durable unit of work, and the switch between two of them. Listed
   // before anything workspace-scoped: it is the level the day is organised at.
-  if (activeProject.value) {
+  if (project && lvl !== 'repo') {
     out.push({
       id: 'topic:open',
       label: 'Open a topic',
       hint: 'one named branch across every repository it touches',
       group: 'Topic',
       icon: Layers,
+      keywords: 'new topic feature create',
       run: act(() => {
         state.topicDialogOpen = true
       }),
     })
   }
 
-  // §7 — the layout does not stop at creation: a backend joining a project a
-  // month later lands beside the repositories already in it, not elsewhere.
-  if (activeProject.value) {
-    out.push({
-      id: 'project:addRepo',
-      label: 'Add a repository',
-      hint: 'a new one, a clone, or a folder moved into ' + activeProject.value.name,
-      group: 'Project',
-      icon: FolderGit2,
-      run: act(() => addRepoTo(activeProject.value!.id)),
-    })
-  }
-  for (const f of projectTopics.value) {
+  for (const f of topics) {
+    const name = quoted(f.name)
+    const push = (item: Omit<Item, 'group' | 'boost'>) =>
+      out.push({ ...item, group: 'Topic', boost: topicBoost, keywords: 'topic ' + f.name + ' ' + (item.keywords ?? '') })
     // An inferred topic has one verb and it is the one that gives it the
     // others. Listing the rest would offer acts with nothing to act on.
     if (f.derived) {
-      out.push({
+      push({
         id: 'topic:adopt:' + f.id,
-        label: 'Take over ' + f.name,
+        label: 'Take over ' + name,
         hint: 'inferred from the branch name — records it as a topic of its own; nothing on disk moves',
-        group: 'Topic',
         icon: Stamp,
+        keywords: 'adopt',
         run: act(() => adoptTopic(f.id)),
       })
       continue
     }
     const isLive = f.state === 'running'
-    out.push({
-      id: 'topic:land:' + f.id,
-      label: 'Send ' + f.name + ' to its base',
-      hint: 'onto the base branch in every repository — the plan is shown first',
-      group: 'Topic',
-      icon: GitMerge,
-      run: act(() => mergeTopic(f.id, false)),
-    })
-    out.push({
-      id: 'topic:landpush:' + f.id,
-      label: 'Send ' + f.name + ' to its base and push',
-      hint: 'the same, then pushes the base branch',
-      group: 'Topic',
-      icon: GitMerge,
-      run: act(() => mergeTopic(f.id, true)),
-    })
-    out.push({
-      id: 'topic:rebase:' + f.id,
-      label: 'Catch ' + f.name + ' up with its base',
-      hint: 'every repository it spans, one plan — stops at the first conflict',
-      group: 'Topic',
-      icon: GitCompareArrows,
-      run: act(() => rebaseTopic(f.id)),
-    })
-    out.push({
+    push({
       id: 'topic:toggle:' + f.id,
-      label: (isLive ? 'Stop ' : 'Start ') + f.name,
+      label: (isLive ? 'Stop ' : 'Start ') + name,
       hint: isLive ? 'its servers go down; the branches stay' : 'bring its servers up',
-      group: 'Topic',
       icon: isLive ? Pause : Play,
+      keywords: 'servers run park activate',
       run: act(() => (isLive ? stopTopic(f.id) : startTopic(f.id))),
     })
-    out.push({
+    push({
+      id: 'topic:rebase:' + f.id,
+      label: 'Catch ' + name + ' up with its base',
+      hint: 'every repository it spans, one plan — stops at the first conflict',
+      icon: GitCompareArrows,
+      keywords: 'rebase update sync',
+      run: act(() => rebaseTopic(f.id)),
+    })
+    push({
+      id: 'topic:land:' + f.id,
+      label: 'Send ' + name + ' to its base',
+      hint: 'onto the base branch in every repository — the plan is shown first',
+      icon: GitMerge,
+      keywords: 'merge land ship',
+      run: act(() => mergeTopic(f.id, false)),
+    })
+    push({
+      id: 'topic:landpush:' + f.id,
+      label: 'Send ' + name + ' to its base and push',
+      hint: 'the same, then pushes the base branch',
+      icon: GitMerge,
+      keywords: 'merge land ship',
+      run: act(() => mergeTopic(f.id, true)),
+    })
+    push({
       id: 'topic:close:' + f.id,
-      label: 'Close ' + f.name,
+      label: 'Close ' + name,
       hint: 'reversible — the branches are removed by their own plan',
-      group: 'Topic',
       icon: Archive,
+      keywords: 'archive',
       run: act(() => closeTopic(f.id, true)),
     })
-    out.push({
+    push({
       id: 'topic:delete:' + f.id,
-      label: 'Delete ' + f.name + '…',
+      label: 'Delete ' + name + '…',
       hint: 'drops the record for good; the branch is a checkbox in the question',
-      group: 'Topic',
       icon: Trash2,
+      keywords: 'remove',
       run: act(() => askDeleteTopic(f.id)),
     })
   }
   // §3.9 — a closed topic is listed only where it can be acted on.
-  for (const f of archivedTopics.value) {
+  for (const f of closed) {
     out.push({
       id: 'topic:reopen:' + f.id,
-      label: 'Reopen ' + f.name,
+      label: 'Reopen ' + quoted(f.name),
       hint: 'closed ' + new Date(f.updatedAt).toLocaleDateString(),
       group: 'Topic',
       icon: RotateCcw,
+      keywords: 'topic unarchive restore',
       run: act(() => reopenTopic(f.id)),
     })
     out.push({
       id: 'topic:delete:' + f.id,
-      label: 'Delete ' + f.name + '…',
+      label: 'Delete ' + quoted(f.name) + '…',
       hint: 'closed — remove it from the record for good',
       group: 'Topic',
       icon: Trash2,
+      keywords: 'topic remove',
       run: act(() => askDeleteTopic(f.id)),
     })
   }
 
-  const tab = (id: TabId, label: string, icon: Component) =>
+  // §7 — the layout does not stop at creation: a backend joining a project a
+  // month later lands beside the repositories already in it, not elsewhere.
+  if (project && lvl !== 'repo' && lvl !== 'topic') {
+    out.push({
+      id: 'project:addRepo',
+      label: 'Add a repository',
+      hint: 'a new one, a clone, or a folder moved into ' + project.name,
+      group: 'Project',
+      icon: FolderGit2,
+      keywords: 'clone import',
+      run: act(() => addRepoTo(project.id)),
+    })
+  }
+
+  const tab = (id: TabId, label: string, icon: Component) => {
+    const n = keyTargets.value.indexOf(id)
     out.push({
       id: 'tab:' + id,
       label: 'Go to ' + label,
       group: 'View',
       icon,
+      keys: n >= 0 && n < 9 ? '⌘' + (n + 1) : undefined,
       run: act(() => {
         goTo(id)
       }),
     })
+  }
 
   if (w) {
     tab('code', 'Code', FileCode)
@@ -241,47 +445,57 @@ const commands = computed<Item[]>(() => {
         hint: VIEW_LABELS[v].hint,
         group: 'View',
         icon: Columns2,
+        keywords: 'layout',
         run: act(() => setView(v)),
       })
     }
+  }
 
+  if (repo) {
+    const r = repo
     out.push({
       id: 'ide',
-      label: 'Open in IDE',
-      hint: w.name,
+      label: 'Open ' + r.name + ' in the IDE',
       group: 'Open',
       icon: FileCode,
-      run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'ide' }))),
+      keywords: 'editor code vscode',
+      keys: 'O',
+      boost: repoBoost,
+      run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: r.id, target: 'ide' }))),
     })
     out.push({
       id: 'finder',
       label: revealLabel,
+      hint: r.name,
       group: 'Open',
       icon: FolderOpen,
-      run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'finder' }))),
+      keywords: 'finder explorer folder',
+      boost: repoBoost,
+      run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: r.id, target: 'finder' }))),
     })
 
-    if (w.runtime) {
+    if (r.runtime) {
+      const rt = r.runtime
       out.push({
         id: 'rt',
-        label: w.runtime.status === 'up' ? 'Stop the servers' : 'Start the servers',
-        hint: w.runtime.impl,
+        label: rt.status === 'up' ? 'Stop the servers' : 'Start the servers',
+        hint: rt.impl,
         group: 'Servers',
         icon: Zap,
-        run: act(() =>
-          guard(() =>
-            client.call(w.runtime!.status === 'up' ? 'runtime.down' : 'runtime.up', { workspaceId: w.id }),
-          ),
-        ),
+        keywords: 'runtime run dev',
+        boost: repoBoost,
+        run: act(() => guard(() => client.call(rt.status === 'up' ? 'runtime.down' : 'runtime.up', { workspaceId: r.id }))),
       })
-      if (w.runtime.preview?.kind === 'url') {
+      if (rt.preview?.kind === 'url') {
         out.push({
           id: 'prev',
           label: 'Open the preview',
-          hint: w.runtime.preview.value,
+          hint: rt.preview.value,
           group: 'Servers',
           icon: AppWindow,
-          run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'browser' }))),
+          keywords: 'browser url',
+          boost: repoBoost,
+          run: act(() => guard(() => client.call('workspace.openIn', { workspaceId: r.id, target: 'browser' }))),
         })
       }
     }
@@ -292,6 +506,7 @@ const commands = computed<Item[]>(() => {
       hint: 'what this project runs, per repository or for the project itself',
       group: 'Run',
       icon: SlidersHorizontal,
+      keywords: 'declare manifest scripts',
       run: act(() => openDeclarations()),
     })
 
@@ -305,6 +520,7 @@ const commands = computed<Item[]>(() => {
         hint: c.cmd,
         group: 'Run',
         icon: Terminal,
+        boost: repoBoost,
         // The same act as the bar's, so running `build` from here also leaves
         // `build` on the bar's button: which command is "the one" is a habit,
         // and a habit does not care which surface you pressed it from.
@@ -315,8 +531,8 @@ const commands = computed<Item[]>(() => {
     // §3.7 — a stopped rebase replaces the git verbs rather than sitting beside
     // them: git refuses every one of them until this ends, and offering a
     // rebase mid-rebase is offering a guaranteed error.
-    if (w.git?.operation) {
-      const o = w.git.operation
+    if (r.git?.operation) {
+      const o = r.git.operation
       out.push({
         id: 'git:continue',
         label: 'Continue the ' + o.kind,
@@ -325,6 +541,7 @@ const commands = computed<Item[]>(() => {
           : 'stages the resolved files and carries on',
         group: 'Conflict',
         icon: Check,
+        boost: HERE,
         run: act(() => resolveConflict('continue')),
       })
       if (o.kind !== 'merge') {
@@ -334,6 +551,7 @@ const commands = computed<Item[]>(() => {
           hint: 'drop it and move to the next',
           group: 'Conflict',
           icon: GitCompareArrows,
+          boost: HERE,
           run: act(() => resolveConflict('skip')),
         })
       }
@@ -343,6 +561,7 @@ const commands = computed<Item[]>(() => {
         hint: 'the branch goes back exactly where it started; the autostash comes with it',
         group: 'Conflict',
         icon: Undo2,
+        boost: HERE,
         run: act(() => resolveConflict('abort')),
       })
       if (o.unresolvedPaths.length) {
@@ -352,38 +571,43 @@ const commands = computed<Item[]>(() => {
           hint: 'only when the markers belong in those files',
           group: 'Conflict',
           icon: Check,
+          boost: HERE,
           run: act(() => markResolved(o.conflictedPaths)),
         })
       }
-    } else if (w.git) {
+    } else if (r.git) {
       /**
-       * §4 — the verbs by the names on the bar, not by the RPC ids. These read
-       * "Rebase onto the base branch" and "Merge onto the base branch", which
-       * are the two words the lexicon renamed, in the one list built for
-       * finding a thing by typing its name.
+       * §4 — the verbs by the names on the bar, not by the RPC ids, and with
+       * the base branch named: "Send to dev" says which way the code moves,
+       * which is the whole reason the lexicon renamed them. The retired words
+       * stay findable as keywords.
        *
        * Catch up is absent on the base branch for the same reason it is absent
        * from the bar there: a branch cannot be replayed onto itself, and what
        * you are behind is your own remote, which is Pull.
        */
-      const ops: { op: 'rebase' | 'pull' | 'merge' | 'push' | 'sync'; label: string; icon: Component }[] = []
-      if (w.git.behindBase != null) {
-        ops.push({ op: 'rebase', label: 'Catch up from the base branch', icon: GitCompareArrows })
+      const base = r.git.base ?? 'the base branch'
+      const ops: { op: 'rebase' | 'pull' | 'merge' | 'push' | 'sync'; label: string; icon: Component; keywords: string; keys?: string }[] = []
+      if (r.git.behindBase != null) {
+        ops.push({ op: 'rebase', label: 'Catch up from ' + base, icon: GitCompareArrows, keywords: 'rebase update', keys: 'R' })
       }
       ops.push(
-        { op: 'pull', label: 'Pull this branch from origin', icon: ArrowDownToLine },
-        { op: 'merge', label: 'Send this branch to the base branch', icon: GitMerge },
-        { op: 'push', label: 'Push this branch to origin', icon: ArrowUpFromLine },
-        { op: 'sync', label: 'Fetch every remote', icon: RefreshCw },
+        { op: 'pull', label: 'Pull this branch from origin', icon: ArrowDownToLine, keywords: 'fetch download' },
+        { op: 'merge', label: 'Send this branch to ' + base, icon: GitMerge, keywords: 'merge land ship' },
+        { op: 'push', label: 'Push this branch to origin', icon: ArrowUpFromLine, keywords: 'upload', keys: 'P' },
+        { op: 'sync', label: 'Fetch every remote', icon: RefreshCw, keywords: 'sync remote' },
       )
       for (const o of ops) {
         out.push({
           id: 'git:' + o.op,
           label: o.label,
-          hint: 'shows a plan first',
+          hint: r.name + ' · shows a plan first',
           group: 'Git',
           icon: o.icon,
-          run: act(() => requestPlan(w.id, o.op)),
+          keywords: 'git ' + o.keywords,
+          keys: o.keys,
+          boost: repoBoost,
+          run: act(() => requestPlan(r.id, o.op)),
         })
       }
       out.push({
@@ -392,10 +616,13 @@ const commands = computed<Item[]>(() => {
         hint: 'in this checkout — nothing new on disk',
         group: 'Git',
         icon: GitBranch,
-        run: act(() => {
-          const name = window.prompt('Name for the new branch')
-          if (name) void requestPlan(w.id, 'branch', { name })
-        }),
+        keywords: 'git new checkout',
+        boost: repoBoost,
+        run: () => {},
+        ask: {
+          placeholder: 'Name for the new branch, then ⏎',
+          run: (name) => requestPlan(r.id, 'branch', { name }),
+        },
       })
       out.push({
         id: 'git:worktree',
@@ -403,10 +630,13 @@ const commands = computed<Item[]>(() => {
         hint: 'a separate checkout, so this one keeps what is in it',
         group: 'Git',
         icon: GitBranch,
-        run: act(() => {
-          const name = window.prompt('Name for the new branch')
-          if (name) void requestPlan(w.id, 'worktree', { name })
-        }),
+        keywords: 'git new worktree',
+        boost: repoBoost,
+        run: () => {},
+        ask: {
+          placeholder: 'Name for the new branch, then ⏎',
+          run: (name) => requestPlan(r.id, 'worktree', { name }),
+        },
       })
       out.push({
         id: 'git:undo',
@@ -414,17 +644,22 @@ const commands = computed<Item[]>(() => {
         hint: 'back to the last restore point',
         group: 'Git',
         icon: Undo2,
-        run: act(() => guard(() => client.call('git.undo', { workspaceId: w.id }))),
+        keywords: 'git revert roll back restore',
+        boost: repoBoost,
+        run: act(() => guard(() => client.call('git.undo', { workspaceId: r.id }))),
       })
     }
+  }
 
-    // §12 — "Agent ici ← C0, deux touches". The cheapest possible path.
+  // §12 — "Agent ici ← C0, deux touches". The cheapest possible path.
+  if (w) {
     out.push({
       id: 'agent:here',
       label: 'Ask the agent here',
       hint: 'logged, locked, restore point captured first',
       group: 'Agent',
       icon: Sparkles,
+      keywords: 'chat conversation claude',
       run: act(() => {
         goTo('agent')
       }),
@@ -433,24 +668,37 @@ const commands = computed<Item[]>(() => {
 
   // Project-level, not workspace-level: it is the folder that gets renamed,
   // moved, untracked or thrown away.
-  if (activeProject.value) {
+  if (project) {
     out.push({
       id: 'proj:settings',
       label: 'Project settings…',
-      hint: activeProject.value.name + ' — rename, move, untrack',
+      hint: project.name + ' — rename, move, untrack',
       group: 'Project',
       icon: Settings,
+      keywords: 'rename move untrack',
       run: act(() => {
-        state.editingProjectId = activeProject.value!.id
+        state.editingProjectId = project.id
       }),
     })
   }
 
+  // Cockpit's own — nothing to do with where you are, so every scope keeps
+  // them: a scope narrows what you act *on*, and Settings acts on nothing.
+  out.push({
+    id: 'core:restart',
+    label: 'Restart the service',
+    hint: 'servers keep running; conversations end but stay resumable',
+    group: 'Cockpit',
+    icon: RefreshCw,
+    keywords: 'core daemon reload',
+    run: act(() => restartCore()),
+  })
   out.push({
     id: 'rescan',
     label: 'Refresh everything',
     group: 'Cockpit',
     icon: RefreshCw,
+    keywords: 'reconcile rescan probe',
     run: act(() => guard(() => client.call('core.reconcile', {}), 'refreshed')),
   })
   // Three rows rather than one: "which of the three" is the only question the
@@ -462,6 +710,7 @@ const commands = computed<Item[]>(() => {
     hint: 'an empty project, ready for its first repository',
     group: 'Cockpit',
     icon: FolderPlus,
+    keywords: 'create',
     run: act(() => newProject('scratch')),
   })
   out.push({
@@ -470,6 +719,7 @@ const commands = computed<Item[]>(() => {
     hint: 'something already on this machine',
     group: 'Cockpit',
     icon: FolderOpen,
+    keywords: 'create import',
     run: act(() => newProject('folder')),
   })
   out.push({
@@ -478,6 +728,7 @@ const commands = computed<Item[]>(() => {
     hint: 'clone from GitHub or any git remote',
     group: 'Cockpit',
     icon: CloudDownload,
+    keywords: 'create clone github',
     run: act(() => newProject('clone')),
   })
   out.push({
@@ -486,6 +737,7 @@ const commands = computed<Item[]>(() => {
     hint: 'version, agents, PATH, logs, restart',
     group: 'Cockpit',
     icon: Activity,
+    keywords: 'logs version status',
     run: act(() => {
       state.serviceOpen = true
     }),
@@ -496,72 +748,214 @@ const commands = computed<Item[]>(() => {
     hint: 'the Dev folder, the editor',
     group: 'Cockpit',
     icon: SlidersHorizontal,
+    keywords: 'preferences',
     run: act(() => {
       state.settingsOpen = true
     }),
   })
 
   return out
-})
+}
 
-const workspaceItems = computed<Item[]>(() =>
-  state.workspaces
-    .filter((w) => w.kind !== 'group')
-    .map((w) => ({
-      id: 'ws:' + w.id,
-      label: w.name,
-      hint:
-        (state.projects.find((p) => p.id === w.projectId)?.name ?? '') +
-        (w.git ? ' · ↑' + w.git.ahead + ' ↓' + w.git.behind : '') +
-        (w.runtime?.status === 'up' ? ' · running' : ''),
-      // Two groups, because they are two things: a repository sitting on its
-      // default branch, and a branch checked out in its own folder.
-      group: w.kind === 'worktree' ? 'Branches' : 'Repositories',
-      icon: w.kind === 'worktree' ? GitBranch : SquareDot,
-      run: act(() => selectWorkspace(w.id)),
-    })),
-)
+/* ── places to go ──────────────────────────────────────────────────── */
+
+function workspaceItem(w: Workspace, lvl: Level): Item {
+  const project = state.projects.find((p) => p.id === w.projectId)?.name ?? ''
+  const topic = w.topicId ? state.topics.find((t) => t.id === w.topicId)?.name : null
+  return {
+    id: 'ws:' + w.id,
+    label: w.name,
+    hint: [
+      lvl === 'all' ? project : null,
+      topic && lvl !== 'topic' ? quoted(topic) : null,
+      w.git ? '↑' + w.git.ahead + ' ↓' + w.git.behind : null,
+      w.runtime?.status === 'up' ? 'running' : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+    // Two groups, because they are two things: a repository sitting on its
+    // default branch, and a branch checked out in its own folder.
+    group: w.kind === 'worktree' ? 'Branches' : 'Repositories',
+    icon: w.kind === 'worktree' ? GitBranch : SquareDot,
+    keywords: w.repoName + ' ' + (w.git?.branch ?? '') + (lvl === 'all' ? '' : ' ' + project),
+    run: act(() => selectWorkspace(w.id)),
+  }
+}
+
+/**
+ * Where the scope lets you jump. A repository's own scope offers its other
+ * checkouts — the same code on another branch is the one jump that stays
+ * inside it.
+ */
+function placesFor(lvl: Level): Item[] {
+  const s = scopes.value.find((x) => x.level === lvl)
+  if (!s) return []
+  let ws: Workspace[]
+  if (lvl === 'repo') {
+    const w = s.workspaces[0]!
+    ws = state.workspaces.filter(
+      (x) => searchable(x) && x.id !== w.id && x.projectId === w.projectId && x.repoName === w.repoName,
+    )
+  } else {
+    // The row you are standing on is not somewhere to go — but a topic
+    // standing selected has no row under it, so all of its repositories are.
+    ws = s.workspaces.filter((x) => lvl === 'all' || x.id !== hereRepo.value?.id)
+  }
+  const out = ws.map((w) => workspaceItem(w, lvl))
+  if (lvl === 'all') {
+    for (const p of state.projects) {
+      const n = state.workspaces.filter((w) => w.projectId === p.id && searchable(w)).length
+      out.push({
+        id: 'proj:' + p.id,
+        label: p.name,
+        hint: (p.id === state.activeProjectId ? 'this project · ' : '') + n + (n === 1 ? ' repository' : ' repositories'),
+        group: 'Projects',
+        icon: Box,
+        keywords: 'project',
+        run: act(() => selectProject(p.id)),
+      })
+    }
+  }
+  return out
+}
+
+const commands = computed(() => buildCommands(level.value))
+const places = computed(() => placesFor(level.value))
+
+/* ── files and text ────────────────────────────────────────────────── */
+
+/** Several checkouts in one list need their repository in front of each
+ *  path; one checkout does not, and "api/" on every row would be noise. */
+const manyPlaces = computed(() => scope.value.workspaces.length > 1)
+
+function prefixOf(w: Workspace): string {
+  return (w.repoName || w.name) + '/'
+}
+
+function branchHint(w: Workspace): string {
+  const bits: string[] = []
+  if (scope.value.level === 'all') bits.push(state.projects.find((p) => p.id === w.projectId)?.name ?? '')
+  if (w.kind === 'worktree') bits.push(w.git?.branch ?? w.name)
+  return bits.filter(Boolean).join(' · ')
+}
 
 const fileItems = computed<Item[]>(() => {
-  const w = activeWorkspace.value
-  if (!w) return []
-  return trackedFiles.value.map((f) => ({
-    id: 'file:' + f,
-    label: f,
-    group: 'Files',
-    icon: FileCode,
-    run: act(() => {
-      goTo('code')
-      toast('info', f)
-    }),
-  }))
+  const out: Item[] = []
+  for (const w of scope.value.workspaces) {
+    const files = trackedFiles.value.get(w.id)
+    if (!files) continue
+    const prefix = manyPlaces.value ? prefixOf(w) : ''
+    const hint = manyPlaces.value ? branchHint(w) : ''
+    for (const f of files) {
+      out.push({
+        id: 'file:' + w.id + ':' + f,
+        label: prefix + f,
+        hint: hint || undefined,
+        group: 'Files',
+        icon: FileCode,
+        run: act(() => openFileAt(w.id, f)),
+      })
+    }
+  }
+  return out
 })
 
 const textItems = computed<Item[]>(() =>
-  searchHits.value.map((h) => ({
-    id: 'hit:' + h.workspaceId + h.path + h.line,
-    label: h.path + ':' + h.line,
-    hint: h.text.trim().slice(0, 90),
-    group: 'Matches',
-    icon: TextSearch,
-    run: act(() => {
-      selectWorkspace(h.workspaceId)
-      goTo('code')
-    }),
-  })),
+  searchHits.value.map((h) => {
+    const w = state.workspaces.find((x) => x.id === h.workspaceId)
+    const prefix = w && manyPlaces.value ? prefixOf(w) : ''
+    return {
+      id: 'hit:' + h.workspaceId + h.path + h.line,
+      label: prefix + h.path + ':' + h.line,
+      hint: h.text.trim().slice(0, 90),
+      group: 'Matches',
+      icon: TextSearch,
+      run: act(() => openFileAt(h.workspaceId, h.path, h.line)),
+    }
+  }),
 )
 
-const results = computed(() => {
+/* ── ranking ───────────────────────────────────────────────────────── */
+
+const haystack = (i: Item) => i.label + ' ' + i.group + ' ' + (i.keywords ?? '') + ' ' + (i.hint ?? '')
+
+/** A word found as typed scores in the thousands; letters picked out of a
+ *  hint one by one score in the tens. Once there is a real hit, those are
+ *  noise — "rebase" should not list "Restart the service" under the answer. */
+const WORD_HIT = 500
+const SCATTERED = 150
+
+/** A match, with what it scored before the scope's boost was added. */
+interface Ranked extends Scored<Item> {
+  raw: number
+}
+
+function rank(pool: Item[], t: string, limit = 40): Ranked[] {
+  let hits: Ranked[] = fuzzyFilter(pool, t, haystack, Infinity).map((h) => ({ ...h, raw: h.score }))
+  if (strong(hits)) hits = hits.filter((h) => h.raw >= SCATTERED)
+  for (const h of hits) h.score += h.item.boost ?? 0
+  hits.sort((a, b) => b.score - a.score)
+  return hits.slice(0, limit)
+}
+
+const strong = (hits: Ranked[]) => hits.some((h) => h.raw >= WORD_HIT)
+
+const plain = (items: Item[]): Ranked[] => items.map((item) => ({ item, score: 0, raw: 0, positions: [] }))
+
+/** Nothing typed: what you most likely came for, in that order. */
+function opening(): Item[] {
+  const cmds = commands.value
+  const byId = new Map(cmds.map((c) => [c.id, c]))
+  const recent = readRecent()
+    .map((id) => byId.get(id))
+    .filter((c): c is Item => !!c)
+    .slice(0, RECENT_MAX)
+  const taken = new Set(recent.map((c) => c.id))
+  const rest = cmds.filter((c) => !taken.has(c.id))
+  const here = rest.filter((c) => (c.boost ?? 0) >= HERE)
+  const others = rest.filter((c) => (c.boost ?? 0) < HERE)
+  return [
+    ...recent.map((c) => ({ ...c, id: 'recent:' + c.id, group: 'Recent', icon: c.icon })),
+    ...here,
+    ...places.value,
+    ...others,
+  ].slice(0, 26)
+}
+
+const scoped = computed<Ranked[]>(() => {
   const t = term.value
-  if (mode.value === 'command') return fuzzyFilter(commands.value, t, (i) => i.label + ' ' + i.group)
-  if (mode.value === 'file') return fuzzyFilter(fileItems.value, t, (i) => i.label, 60)
-  if (mode.value === 'text') return textItems.value.map((item) => ({ item, score: 0, positions: [] }))
-  const pool = [...workspaceItems.value, ...commands.value]
-  if (!t) {
-    return pool.slice(0, 22).map((item) => ({ item, score: 0, positions: [] }))
+  if (asking.value) return []
+  if (mode.value === 'command') return t ? rank(commands.value, t) : plain(commands.value)
+  if (mode.value === 'file') {
+    const hits: Ranked[] = fuzzyFilter(fileItems.value, t, (i) => i.label + ' ' + (i.hint ?? ''), Infinity).map((h) => ({ ...h, raw: h.score }))
+    return (strong(hits) ? hits.filter((h) => h.raw >= SCATTERED) : hits).slice(0, 60)
   }
-  return fuzzyFilter(pool, t, (i) => i.label + ' ' + (i.hint ?? '') + ' ' + i.group)
+  if (mode.value === 'text') return plain(textItems.value)
+  if (!t) return plain(opening())
+  return rank([...places.value, ...commands.value], t)
 })
+
+/**
+ * Nothing here, something elsewhere: say so and show it, rather than a bare
+ * "No match" that makes you guess whether the thing exists at all — or a few
+ * letters scraped out of hints, which is what a scope with no real hit has
+ * left. Only for what is already in memory: files and text would mean a
+ * fetch per keystroke.
+ */
+const outside = computed<Ranked[]>(() => {
+  const t = term.value
+  if (!t || scope.value.level === 'all' || strong(scoped.value)) return []
+  if (mode.value === 'command') return rank(buildCommands('all'), t, 12)
+  if (mode.value === 'default') return rank([...placesFor('all'), ...buildCommands('all')], t, 12)
+  return []
+})
+
+/** Showing what is outside the scope, because the scope had nothing real. */
+const elsewhere = computed(
+  () => outside.value.length > 0 && (!scoped.value.length || (!strong(scoped.value) && strong(outside.value))),
+)
+
+const results = computed(() => (elsewhere.value ? outside.value : scoped.value))
 
 const grouped = computed(() => {
   const map = new Map<string, { item: Item; positions: number[] }[]>()
@@ -573,40 +967,65 @@ const grouped = computed(() => {
   return [...map.entries()].map(([group, items]) => ({ group, items }))
 })
 
-const flat = computed(() => results.value.map((r) => r.item))
+const flat = computed(() => grouped.value.flatMap((g) => g.items.map((e) => e.item)))
 
 watch(results, () => {
   cursor.value = 0
 })
 
-/** File list and full-text search are fetched lazily, only in their mode. */
-watch([mode, () => activeWorkspace.value?.id], async () => {
-  if (mode.value === 'file' && activeWorkspace.value) {
-    const r = await client
-      .call('fs.tracked', { workspaceId: activeWorkspace.value.id })
-      .catch(() => [] as string[])
-    trackedFiles.value = r
-  }
-})
+/* ── fetching ──────────────────────────────────────────────────────── */
+
+/** File lists are fetched lazily, only in their mode, once per checkout. */
+watch(
+  [mode, () => scope.value.workspaces.map((w) => w.id).join(',')],
+  async () => {
+    if (mode.value !== 'file') return
+    const missing = scope.value.workspaces.filter((w) => !trackedFiles.value.has(w.id))
+    if (!missing.length) return
+    loadingFiles.value = true
+    const got = await Promise.all(
+      missing.map((w) =>
+        client
+          .call('fs.tracked', { workspaceId: w.id })
+          .catch(() => [] as string[])
+          .then((files) => [w.id, files] as const),
+      ),
+    )
+    const next = new Map(trackedFiles.value)
+    for (const [id, files] of got) next.set(id, files)
+    trackedFiles.value = next
+    loadingFiles.value = false
+  },
+  { immediate: true },
+)
 
 let searchTimer: number | null = null
-watch([mode, term], () => {
-  if (mode.value !== 'text' || term.value.length < 2) {
-    searchHits.value = []
-    return
-  }
-  if (searchTimer) window.clearTimeout(searchTimer)
-  searchTimer = window.setTimeout(async () => {
-    searching.value = true
-    // §12 — every repo of the project at once, which is the point.
-    const ids = state.workspaces
-      .filter((w) => w.projectId === state.activeProjectId && w.kind !== 'group')
-      .map((w) => w.id)
-    const r = await client.call('search.text', { workspaceIds: ids, query: term.value, max: 80 }).catch(() => null)
-    searchHits.value = r?.hits ?? []
-    searching.value = false
-  }, 180)
-})
+let searchSeq = 0
+watch(
+  [mode, term, level],
+  () => {
+    if (searchTimer) window.clearTimeout(searchTimer)
+    if (mode.value !== 'text' || term.value.length < 2) {
+      searchHits.value = []
+      searching.value = false
+      return
+    }
+    searchTimer = window.setTimeout(async () => {
+      const seq = ++searchSeq
+      searching.value = true
+      // §12 — every repository of the scope at once, which is the point.
+      const ids = scope.value.workspaces.map((w) => w.id)
+      const r = await client.call('search.text', { workspaceIds: ids, query: term.value, max: 80 }).catch(() => null)
+      // A slower answer to an older question must not replace a newer one.
+      if (seq !== searchSeq) return
+      searchHits.value = r?.hits ?? []
+      searching.value = false
+    }, 180)
+  },
+  { immediate: true },
+)
+
+/* ── keys ──────────────────────────────────────────────────────────── */
 
 function move(delta: number) {
   const n = flat.value.length
@@ -617,14 +1036,65 @@ function move(delta: number) {
   })
 }
 
+function run(item: Item) {
+  const id = item.id.replace(/^recent:/, '')
+  if (commands.value.some((c) => c.id === id) || item.id.startsWith('recent:')) rememberCommand(id)
+  if (item.ask) {
+    asking.value = item
+    query.value = ''
+    void nextTick(() => input.value?.focus())
+    return
+  }
+  void item.run()
+}
+
 function choose() {
+  if (asking.value) {
+    const answer = query.value.trim()
+    if (!answer) return
+    const a = asking.value.ask!
+    close()
+    void a.run(answer)
+    return
+  }
   const item = flat.value[cursor.value]
-  if (item) void item.run()
+  if (item) run(item)
+}
+
+/** Backspace on an empty answer backs out of the question. It never touches
+ *  the scope: clearing what you typed is not asking to look somewhere else,
+ *  and only ⇥ says that. */
+function onBackspace(e: KeyboardEvent) {
+  if (!asking.value || query.value !== '') return
+  e.preventDefault()
+  asking.value = null
+}
+
+/** Escape answers the innermost question: the one being asked, then the
+ *  palette. Stopped here so the window's own Escape does not close past it. */
+function onEscape(e: KeyboardEvent) {
+  if (!asking.value) return
+  e.stopPropagation()
+  e.preventDefault()
+  asking.value = null
+  query.value = ''
+}
+
+function pickScope(l: Level) {
+  level.value = l
+  void nextTick(() => input.value?.focus())
 }
 
 function indexOfItem(item: Item): number {
   return flat.value.indexOf(item)
 }
+
+const emptyText = computed(() => {
+  if (mode.value === 'text' && term.value.length < 2) return 'Type at least two characters.'
+  if (mode.value === 'file' && loadingFiles.value) return 'Reading the file list…'
+  if (mode.value === 'text' && searching.value) return 'Searching…'
+  return scope.value.level === 'all' ? 'No match.' : 'Nothing in ' + where.value + '.'
+})
 
 onMounted(() => {
   void nextTick(() => input.value?.focus())
@@ -636,20 +1106,63 @@ onMounted(() => {
     <div class="pal" role="dialog" aria-label="Command palette">
       <div class="inputrow">
         <component :is="leadIcon" class="lead lg" />
+        <span v-if="asking" class="asking">{{ asking.label }}</span>
         <input
           ref="input"
           v-model="query"
           class="q"
           spellcheck="false"
-          placeholder="Jump to a repository or branch, or type &gt; for commands, / for files, # to search"
+          :placeholder="placeholder"
           @keydown.down.prevent="move(1)"
           @keydown.up.prevent="move(-1)"
           @keydown.enter.prevent="choose"
+          @keydown.tab.exact.prevent="stepScope(1)"
+          @keydown.shift.tab.prevent="stepScope(-1)"
+          @keydown.backspace="onBackspace"
+          @keydown.esc="onEscape"
         />
-        <span v-if="searching" class="chip"><RefreshCw class="spin" />searching</span>
+        <span v-if="searching || loadingFiles" class="chip"><RefreshCw class="spin" />{{ searching ? 'searching' : 'reading' }}</span>
       </div>
 
-      <div class="list">
+      <div v-if="!asking" class="scopebar">
+        <div class="scopes" role="tablist" aria-label="Where to search">
+          <button
+            v-for="s in scopes"
+            :key="s.level"
+            class="scope"
+            role="tab"
+            :aria-selected="s.level === scope.level"
+            :class="{ on: s.level === scope.level }"
+            :title="s.level === 'all' ? 'Every project' : s.kind + ' — ' + s.name"
+            @mousedown.prevent
+            @click="pickScope(s.level)"
+          >
+            <component :is="s.icon" class="sm" />
+            <span class="sname">{{ s.name }}</span>
+          </button>
+        </div>
+        <span class="grow" />
+        <div class="modes">
+          <button
+            v-for="m in MODES"
+            :key="m.mode"
+            class="mode"
+            :class="{ on: mode === m.mode }"
+            :title="'Type ' + m.prefix + ' first'"
+            @mousedown.prevent
+            @click="toggleMode(m.mode)"
+          >
+            <span class="pfx">{{ m.prefix }}</span>{{ m.label }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="!asking" class="list">
+        <div v-if="elsewhere" class="elsewhere">
+          Nothing in {{ where }} — showing matches everywhere.
+          <button class="linkish" @mousedown.prevent @click="pickScope('all')">Search everywhere</button>
+        </div>
+
         <template v-for="g in grouped" :key="g.group">
           <div class="glabel section-label">{{ g.group }}</div>
           <button
@@ -658,7 +1171,7 @@ onMounted(() => {
             class="row"
             :class="{ on: indexOfItem(entry.item) === cursor }"
             @mousemove="cursor = indexOfItem(entry.item)"
-            @click="entry.item.run()"
+            @click="run(entry.item)"
           >
             <span class="icon"><component :is="entry.item.icon" class="sm" /></span>
             <span class="lbl">
@@ -670,21 +1183,37 @@ onMounted(() => {
               >
             </span>
             <span v-if="entry.item.hint" class="hint">{{ entry.item.hint }}</span>
+            <span v-if="entry.item.keys" class="kbd">{{ entry.item.keys }}</span>
             <CornerDownLeft v-if="indexOfItem(entry.item) === cursor" class="ret sm" />
           </button>
         </template>
 
         <div v-if="!flat.length" class="none">
-          {{ mode === 'text' && term.length < 2 ? 'Type at least two characters.' : 'No match.' }}
+          <span>{{ emptyText }}</span>
+          <button
+            v-if="scope.level !== 'all' && term && !searching && !loadingFiles"
+            class="linkish"
+            @mousedown.prevent
+            @click="pickScope('all')"
+          >
+            Search everywhere <span class="kbd">⇥</span>
+          </button>
         </div>
       </div>
 
       <footer class="pfoot">
-        <span><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span>
-        <span><span class="kbd">⏎</span> run</span>
-        <span><span class="kbd">esc</span> close</span>
-        <span class="grow" />
-        <span class="dimhint">&gt; commands · / files · # search every repository</span>
+        <template v-if="asking">
+          <span><span class="kbd">⏎</span> confirm</span>
+          <span><span class="kbd">esc</span> back</span>
+        </template>
+        <template v-else>
+          <span><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span>
+          <span><span class="kbd">⏎</span> run</span>
+          <span><span class="kbd">⇥</span> where</span>
+          <span><span class="kbd">esc</span> close</span>
+          <span class="grow" />
+          <span class="dimhint">⇧⇧ toggles · ⌘P files · ⌘⇧F text</span>
+        </template>
       </footer>
     </div>
   </div>
@@ -734,7 +1263,20 @@ onMounted(() => {
   height: 56px;
   border-bottom: 1px solid var(--line);
 }
-.lead { color: var(--text-dim); }
+.lead { flex: none; color: var(--text-dim); }
+.asking {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 560;
+}
 .q {
   flex: 1;
   min-width: 0;
@@ -749,8 +1291,72 @@ onMounted(() => {
 /* The palette input is the whole row; a ring around it would box in nothing. */
 .q:focus-visible { outline: none; }
 
+/* Where, on the left; what kind of thing, on the right. Both one line. */
+.scopebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.scopebar .grow { flex: 1; }
+.scopes, .modes { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.scopes { overflow: hidden; }
+.scope, .mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft),
+    border-color var(--dur-1) var(--ease-soft);
+}
+.scope { min-width: 0; }
+.scope .sname { overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.scope:hover, .mode:hover { background: var(--hover); color: var(--text-muted); }
+.scope.on {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent);
+  font-weight: 560;
+}
+.mode.on { background: var(--selected); color: var(--text); }
+.pfx {
+  font-family: var(--mono);
+  font-size: 11px;
+  opacity: 0.7;
+}
+
 .list { flex: 1; overflow-y: auto; padding: 8px; }
 .glabel { padding: 10px 12px 5px; }
+
+.elsewhere {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 4px 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.linkish {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 560;
+}
+.linkish:hover { text-decoration: underline; }
 
 .row {
   display: flex;
@@ -796,9 +1402,19 @@ onMounted(() => {
   font-size: var(--fs-xs);
   color: var(--text-dim);
 }
-.ret { color: var(--text-dim); opacity: 0.7; }
+.row .kbd { flex: none; }
+.ret { flex: none; color: var(--text-dim); opacity: 0.7; }
 
-.none { padding: 28px; text-align: center; color: var(--text-dim); font-size: var(--fs-sm); }
+.none {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
 
 .pfoot {
   flex: none;

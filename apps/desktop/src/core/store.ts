@@ -312,6 +312,14 @@ export const state = reactive({
   pendingView: null as AttachmentView | null,
 
   paletteOpen: false,
+  /** What the palette opens with: `/` lands on files, `#` on text search. */
+  paletteSeed: '',
+  /**
+   * A file something asked the Code tool to open, and the line to put the
+   * cursor on. Consumed by the tool once it is showing that workspace — the
+   * palette closes before the tool has even mounted, so it cannot call it.
+   */
+  codeRequest: null as { workspaceId: string; path: string; line: number | null } | null,
   /** §7 — the sheet that creates a project rather than finding one. */
   newProjectOpen: false,
   /** Which of the three sources the sheet opens on. */
@@ -2484,6 +2492,34 @@ export function selectWorkspace(id: string): void {
   const w = state.workspaces.find((x) => x.id === id)
   if (w && w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
   remember(id)
+}
+
+/**
+ * §12 — open a file in the Code tool, at a line if one is known.
+ *
+ * Not `selectWorkspace`: that drops a topic standing selected, and opening a
+ * file in one of the topic's own repositories is still working on the topic.
+ * A scope the file falls outside of is dropped, as a click on the row would.
+ */
+export function openFileAt(workspaceId: string, path: string, line: number | null = null): void {
+  const w = state.workspaces.find((x) => x.id === workspaceId)
+  if (!w) return
+  const scope = state.agentScope
+  const within =
+    !scope ||
+    (scope.kind === 'topic'
+      ? w.topicId === scope.topicId
+      : scope.kind === 'project'
+        ? w.projectId === scope.projectId
+        : scope.workspaceId === w.id)
+  if (!within) state.agentScope = null
+  if (w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
+  if (state.activeWorkspaceId !== w.id) {
+    state.activeWorkspaceId = w.id
+    remember(w.id)
+  }
+  state.codeRequest = { workspaceId, path, line }
+  goTo('code')
 }
 
 /**

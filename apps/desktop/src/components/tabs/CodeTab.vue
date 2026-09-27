@@ -18,7 +18,7 @@ import { client, guard, state, toast } from '../../core/store.js'
  * §12 — "Périmètre assumé : voir, naviguer, éditer manuellement. Pas de
  * complétion, pas de navigation sémantique."
  * §12 — "l'arbre de fichiers n'est pas la navigation principale" — it is here
- * for occasional exploration; ⌘K and search do the real work.
+ * for occasional exploration; ⇧⇧ and search do the real work.
  */
 
 const props = defineProps<{ workspace: Workspace }>()
@@ -90,6 +90,15 @@ async function loadRoot() {
   view.value = null
   const entries = await loadDir('.')
   roots.value = entries.map((e) => ({ entry: e, depth: 0, expanded: false, children: null }))
+  takeRequest()
+}
+
+/** A file the palette asked for, once this is the workspace it is in. */
+function takeRequest() {
+  const r = state.codeRequest
+  if (!r || r.workspaceId !== props.workspace.id) return
+  state.codeRequest = null
+  void openFile(r.path, r.line)
 }
 
 async function toggle(node: Node) {
@@ -113,7 +122,7 @@ function flatten(nodes: Node[]): Node[] {
   return out
 }
 
-async function openFile(path: string) {
+async function openFile(path: string, line: number | null = null) {
   const r = await guard(() => client.call('fs.read', { workspaceId: props.workspace.id, rel: path }))
   if (!r) return
   openPath.value = path
@@ -146,6 +155,14 @@ async function openFile(path: string) {
       ],
     }),
   })
+  // A search hit is a line, not a file: land on it, in the middle of the
+  // screen, where the eye is already going.
+  if (line) {
+    const v = view.value
+    const at = v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines))
+    v.dispatch({ selection: { anchor: at.from }, effects: EditorView.scrollIntoView(at.from, { y: 'center' }) })
+    v.focus()
+  }
 }
 
 /** §16 — the mtime check is what stops a manual edit and an agent edit from
@@ -172,6 +189,13 @@ async function save() {
 }
 
 watch(() => props.workspace.id, loadRoot, { immediate: true })
+watch(() => state.codeRequest, takeRequest)
+
+/** The palette, opened on files — the button says what ⌘P does. */
+function openFinder() {
+  state.paletteSeed = '/'
+  state.paletteOpen = true
+}
 onBeforeUnmount(() => view.value?.destroy())
 </script>
 
@@ -180,7 +204,7 @@ onBeforeUnmount(() => view.value?.destroy())
     <aside class="tree">
       <div class="ttop">
         <span class="section-label">files</span>
-        <button class="icon-btn small" title="Fuzzy open (⌘K)" @click="state.paletteOpen = true">
+        <button class="icon-btn small" title="Open a file (⌘P)" @click="openFinder">
           <Search class="sm" />
         </button>
       </div>
@@ -223,7 +247,7 @@ onBeforeUnmount(() => view.value?.destroy())
       <div v-if="!openPath" class="empty">
         <FileCode />
         <strong>No file open</strong>
-        <span>Pick one on the left, or press <span class="kbd">⌘K</span> to jump straight to it.</span>
+        <span>Pick one on the left, or press <span class="kbd">⌘P</span> to jump straight to it.</span>
       </div>
     </div>
   </div>
