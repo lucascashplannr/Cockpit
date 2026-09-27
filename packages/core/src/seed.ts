@@ -3,7 +3,7 @@ import { basename, dirname, join } from 'node:path'
 import { isMap, isSeq, parseDocument } from 'yaml'
 import { scopedName, slugify, stableId } from '@cockpit/shared'
 import type { SeedContext, SeedKeyChange, SeedProposal, WorktreeSeed } from '@cockpit/shared'
-import { findManifest, readManifest } from './detect.js'
+import { detectRuntime, findManifest, readManifest } from './detect.js'
 import { git } from './git.js'
 import { append } from './journal.js'
 import { allocate, portKey } from './ports.js'
@@ -172,6 +172,12 @@ function escapeRe(s: string): string {
  * The database rule survives `wired`, and has to: nothing spawns a database.
  * It is a name the checkout must carry on disk, so the seed is still the only
  * thing that can put it there.
+ *
+ * `local` says the checkout is served on a loopback port rather than a
+ * hostname — a Laravel app run by `php artisan serve` — so its own address
+ * becomes that port. Rewriting `cp.test` to `cp-2fa.test` there would name a
+ * host nothing serves: it only ever worked because Start used to link it in
+ * Herd, and Start no longer does.
  */
 function changesFor(
   rel: string,
@@ -179,6 +185,7 @@ function changesFor(
   repoFolder: string,
   tld: string,
   wired: boolean,
+  local: boolean,
 ): SeedRule[] {
   if (!isEnvShaped(rel)) return []
   const lines = parseEnv(text)
@@ -199,8 +206,17 @@ function changesFor(
       out.push({
         key,
         from: value,
-        template: value.replace(new RegExp('(?<![\\w.-])' + escapeRe(host), 'g'), '{{host}}'),
-        reason: 'points at ' + host + ', which is the repository itself — every branch needs its own',
+        template: local
+          ? // The scheme and any port go with the host: a branch on
+            // `127.0.0.1:8123` speaks plain HTTP on that port and no other.
+            value.replace(
+              new RegExp('(?:https?://)?(?<![\\w.-])' + escapeRe(host) + '(?::\\d+)?', 'g'),
+              (m) => (/^https?:\/\//.test(m) ? 'http://127.0.0.1:{{port}}' : '127.0.0.1'),
+            )
+          : value.replace(new RegExp('(?<![\\w.-])' + escapeRe(host), 'g'), '{{host}}'),
+        reason: local
+          ? 'points at ' + host + ', which is the repository itself — a branch is served on its own port'
+          : 'points at ' + host + ', which is the repository itself — every branch needs its own',
       })
       continue
     }
@@ -351,6 +367,10 @@ export async function propose(input: ProposeInput): Promise<SeedProposal> {
     (d) => !d.repo || basename(d.repo) === repo,
   )
 
+  /** Served on a port of its own rather than a hostname (see `changesFor`). */
+  const local =
+    !wired && manifest?.runtime !== 'herd' && detectRuntime(input.repoPath)?.impl === 'laravel'
+
   const files: SeedProposal['files'] = []
   const skipped: SeedProposal['skipped'] = []
 
@@ -389,7 +409,7 @@ export async function propose(input: ProposeInput): Promise<SeedProposal> {
     try {
       rulesFor.set(
         rel,
-        changesFor(rel, readFileSync(join(input.repoPath, rel), 'utf8'), repo, tld, wired),
+        changesFor(rel, readFileSync(join(input.repoPath, rel), 'utf8'), repo, tld, wired, local),
       )
     } catch {
       // Reported per file below, where the path is already being walked.

@@ -82,7 +82,7 @@ export function guessSource(impl: string, detail: Record<string, unknown>): stri
     case 'node':
     case 'expo':
       return 'package.json'
-    case 'herd':
+    case 'laravel':
       return 'artisan'
     case 'compose':
       return String(detail.file ?? 'compose.yaml')
@@ -107,9 +107,10 @@ export function detectRuntime(dir: string): { impl: string; detail: Record<strin
   for (const f of ['compose.yaml', 'compose.yml', 'docker-compose.yml', 'docker-compose.yaml']) {
     if (existsSync(join(dir, f))) return { impl: 'compose', detail: { file: f } }
   }
-  // Laravel Herd serves any folder linked into it; the marker is the artisan file.
+  // A Laravel app, run the way a Vite app is: a process on a port of its own.
+  // Not Herd, although Herd is usually what is installed — see `laravelRuntime`.
   if (existsSync(join(dir, 'artisan')) && existsSync(join(dir, 'composer.json'))) {
-    return { impl: 'herd', detail: {} }
+    return { impl: 'laravel', detail: {} }
   }
   const pkg = readJson(join(dir, 'package.json'))
   if (pkg) {

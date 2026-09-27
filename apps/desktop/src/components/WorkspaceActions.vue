@@ -65,7 +65,7 @@ const guess = computed(() => {
   if (c?.source !== 'detected') return null
   const script = typeof c.detail?.script === 'string' ? c.detail.script : null
   if (c.impl === 'node' && script) return 'its ' + script + ' script in package.json'
-  if (c.impl === 'herd') return 'Laravel Herd, for the artisan file'
+  if (c.impl === 'laravel') return 'php artisan serve, for the artisan file'
   if (c.impl === 'compose' || c.impl === 'devcontainer') return 'the compose file'
   return c.impl
 })

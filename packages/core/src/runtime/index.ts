@@ -1,9 +1,10 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { scopedName as scopedNameFor } from '@cockpit/shared'
 import type { DeclaredServer, RuntimeState, RuntimeUpResult, Workspace } from '@cockpit/shared'
 import type { Framework } from '../detect.js'
-import { hostedServersOf, needsInstall, resolveEnvironment, serversOf, startsOnPress } from './declared.js'
+import { hostedServersOf, needsComposerInstall, needsInstall, resolveEnvironment, serversOf, startsOnPress } from './declared.js'
 import { run } from '../exec.js'
 import { allocate, portKey } from '../ports.js'
 import { append } from '../journal.js'
@@ -67,13 +68,19 @@ function scopedName(ws: Workspace): string {
   return scopedNameFor(base, slug)
 }
 
-async function httpOk(url: string): Promise<boolean> {
+/**
+ * `any` counts a 5xx as an answer. A dev server that answers 500 is up and
+ * broken, which is a different thing from not up yet — a Laravel app whose
+ * database is down answers every request with one, and waiting 45 seconds
+ * to call that "still starting" would hide the only useful fact.
+ */
+async function httpOk(url: string, any = false): Promise<boolean> {
   try {
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), 2500)
     const res = await fetch(url, { signal: ctrl.signal, redirect: 'manual' })
     clearTimeout(t)
-    return res.status < 500
+    return any || res.status < 500
   } catch {
     return false
   }
@@ -93,8 +100,8 @@ async function httpOk(url: string): Promise<boolean> {
 const LOOPBACKS = ['127.0.0.1', '[::1]'] as const
 
 /** True as soon as either family answers. */
-async function listening(port: number, path = ''): Promise<boolean> {
-  const tries = await Promise.all(LOOPBACKS.map((h) => httpOk('http://' + h + ':' + port + path)))
+async function listening(port: number, path = '', any = false): Promise<boolean> {
+  const tries = await Promise.all(LOOPBACKS.map((h) => httpOk('http://' + h + ':' + port + path, any)))
   return tries.some(Boolean)
 }
 
@@ -239,8 +246,8 @@ export function guessedLine(dir: string, impl: string, detail: Record<string, un
       return packageManager(dir) + ' run ' + String(detail.script ?? 'dev')
     case 'expo':
       return 'npx expo start'
-    case 'herd':
-      return 'herd link'
+    case 'laravel':
+      return 'php artisan serve'
     case 'compose':
     case 'devcontainer':
       return 'docker compose up'
@@ -253,7 +260,7 @@ export function guessedLine(dir: string, impl: string, detail: Record<string, un
  * The guessed server as a declaration: the same command, told its port the
  * same way, so confirming a guess changes where it is written and nothing
  * about what runs. Null where no single command line means the same thing —
- * Herd links a folder, Compose detaches and is judged on its services.
+ * Compose detaches and is judged on its services.
  */
 export function guessedAsDeclaration(
   dir: string,
@@ -262,6 +269,9 @@ export function guessedAsDeclaration(
 ): { cmd: string; url: string; env: { key: string; value: string }[] } | null {
   if (impl === 'expo') {
     return { cmd: 'npx expo start --port {{port}}', url: '', env: [] }
+  }
+  if (impl === 'laravel') {
+    return { cmd: ['php', ...laravelArgs('{{port}}')].join(' '), url: laravelUrl('{{port}}'), env: [] }
   }
   if (impl !== 'node') return null
   const framework = (detail.framework as Framework) ?? null
@@ -320,15 +330,37 @@ const expoRuntime: Runtime = {
  * whatever the user wrote after `cmd:`, and `--port={{port}}` is legible in
  * the repository instead of decided here.
  */
+/** Commands that need `node_modules` before they can run anything. */
+const NODE_LAUNCHERS = new Set(['npm', 'pnpm', 'yarn', 'npx', 'pnpx', 'bun', 'bunx', 'node'])
+
+/** Commands that need `vendor/` — `php`, a versioned `php8.3`, or composer itself. */
+const isPhpLauncher = (cmd: string) => cmd === 'composer' || /^php[\d.]*$/.test(cmd)
+
 const declaredRuntime: Runtime = {
   id: 'declared',
   portable: true,
   exclusive: false,
   async provision(ws) {
-    if (!needsInstall(ws.path)) return { ok: true, detail: 'nothing to provision' }
-    const pm = packageManager(ws.path)
-    const r = await run(pm, ['install'], { cwd: ws.path, timeoutMs: 600_000 })
-    return { ok: r.ok, detail: r.ok ? pm + ' install done' : r.stderr.slice(-800) }
+    // The installer follows the command, not the files. A `package.json`
+    // alone proves nothing: a Laravel app carries one for its assets, and
+    // Start on `php artisan serve` used to begin with a full `npm install`
+    // that it did not need and that held Start for minutes — while the
+    // `vendor/` it did need was never installed, so a fresh worktree died
+    // on `vendor/autoload.php` the moment artisan loaded.
+    const launchers = (await hostedServersOf(ws)).map((s) => basename(s.command))
+    const done: string[] = []
+    if (launchers.some(isPhpLauncher) && needsComposerInstall(ws.path)) {
+      const r = await run('composer', ['install'], { cwd: ws.path, timeoutMs: 600_000 })
+      if (!r.ok) return { ok: false, detail: r.stderr.slice(-800) || 'composer install failed' }
+      done.push('composer install done')
+    }
+    if (launchers.some((l) => NODE_LAUNCHERS.has(l)) && needsInstall(ws.path)) {
+      const pm = packageManager(ws.path)
+      const r = await run(pm, ['install'], { cwd: ws.path, timeoutMs: 600_000 })
+      if (!r.ok) return { ok: false, detail: r.stderr.slice(-800) || pm + ' install failed' }
+      done.push(pm + ' install done')
+    }
+    return { ok: true, detail: done.length ? done.join('; ') : 'nothing to provision' }
   },
   async up(ws, names) {
     // Named, `start:` is not consulted: asking for `worker` by name *is* the
@@ -472,8 +504,100 @@ const composeRuntime: Runtime = {
 }
 
 /**
- * Laravel Herd. Not portable: it is a machine-local service, and §8 says such
- * a runtime must say so explicitly rather than silently failing elsewhere.
+ * `--host` is written rather than left to the default because the URL is
+ * built from it: `SERVER_HOST` in someone's `.env` would otherwise move the
+ * server and leave the link pointing where it used to be. `--port` is the
+ * same argument for the port, and Laravel only hunts for a free one when it
+ * is *not* given — so a port the allocator chose is the port that is bound.
+ */
+const LARAVEL_HOST = '127.0.0.1'
+const laravelArgs = (port: string) => ['artisan', 'serve', '--host=' + LARAVEL_HOST, '--port=' + port]
+const laravelUrl = (port: string) => 'http://' + LARAVEL_HOST + ':' + port
+
+/**
+ * A Laravel app, run the way a Vite app is: `php artisan serve` on a port §11
+ * allocated, supervised, stopped by Stop.
+ *
+ * This replaced Herd as what the artisan file means, and the reason is that
+ * Herd has no off. It serves every linked folder for as long as it runs, and
+ * its nginx answers *every* `.test` name — an unknown one with a 404 — so a
+ * health check against `repo.test` said "up" for a checkout nobody started,
+ * and the only Stop that made it say otherwise was quitting Herd. A server
+ * the window reports should be one the window started.
+ *
+ * Herd is still what provides `php` on most of these machines, and a site
+ * linked in Herd keeps being served by Herd; Cockpit simply does not claim
+ * it. Someone who wants Herd to be the runtime says `runtime: herd`.
+ */
+const laravelRuntime: Runtime = {
+  id: 'laravel',
+  portable: true,
+  exclusive: false,
+  async provision(ws) {
+    if (existsSync(join(ws.path, 'vendor'))) return { ok: true, detail: 'vendor present' }
+    const r = await run('composer', ['install'], { cwd: ws.path, timeoutMs: 600_000 })
+    return { ok: r.ok, detail: r.ok ? 'composer install done' : r.stderr.slice(-800) }
+  },
+  async up(ws) {
+    const port = await allocate(portKey(ws.projectId, ws.id, 'web'))
+    const proc = sup.start({
+      workspaceId: ws.id,
+      label: 'php artisan serve',
+      cwd: ws.path,
+      command: 'php',
+      args: laravelArgs(String(port)),
+    })
+    return { ok: true, procIds: [proc.id], detail: 'port ' + port + ' via --port' }
+  },
+  async down(ws) {
+    const n = sup.stopWorkspace(ws.id)
+    return { ok: true, detail: 'stopped ' + n + ' process(es)' }
+  },
+  async health(ws) {
+    const procs = sup.listForWorkspace(ws.id)
+    if (!procs.length) return { status: 'down', detail: 'no process' }
+    const port = await allocate(portKey(ws.projectId, ws.id, 'web'))
+    const ok = await listening(port, '', true)
+    return { status: ok ? 'up' : 'starting', detail: 'port ' + port }
+  },
+  async preview(ws) {
+    const port = await allocate(portKey(ws.projectId, ws.id, 'web'))
+    return { kind: 'url', value: laravelUrl(String(port)) }
+  },
+  async ports(ws) {
+    return [{ name: 'web', port: await allocate(portKey(ws.projectId, ws.id, 'web')) }]
+  },
+}
+
+/**
+ * Where Herd keeps its links: one symlink per site, named for the host.
+ * Reading it costs a `realpath`; asking `herd links` costs a PHP boot per
+ * workspace per refresh.
+ */
+function herdSites(): string {
+  return process.platform === 'win32'
+    ? join(homedir(), '.config', 'herd', 'config', 'valet', 'Sites')
+    : join(homedir(), 'Library', 'Application Support', 'Herd', 'config', 'valet', 'Sites')
+}
+
+/** Whether Herd serves *this* checkout under the name Cockpit gave it. */
+function herdLinked(ws: Workspace): boolean {
+  try {
+    return realpathSync(join(herdSites(), scopedName(ws))) === realpathSync(ws.path)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Laravel Herd, when a manifest asks for it with `runtime: herd`. Not
+ * portable: it is a machine-local service, and §8 says such a runtime must
+ * say so explicitly rather than silently failing elsewhere.
+ *
+ * Up is "linked", because a link is the only thing Cockpit does to Herd and
+ * so the only thing it can honestly report. Herd's nginx answers every
+ * `.test` name, unknown ones with a 404, so the URL answering proves nothing
+ * on its own — which is how an unlinked checkout used to read as running.
  */
 const herdRuntime: Runtime = {
   id: 'herd',
@@ -495,9 +619,10 @@ const herdRuntime: Runtime = {
     return { ok: r.ok, detail: r.ok ? 'unlinked' : 'herd CLI unavailable' }
   },
   async health(ws) {
+    if (!herdLinked(ws)) return { status: 'down', detail: 'not linked in Herd' }
     const url = herdUrl(ws)
     const ok = await httpOk(url)
-    return { status: ok ? 'up' : 'down', detail: url }
+    return { status: ok ? 'up' : 'unhealthy', detail: url }
   },
   async preview(ws) {
     return { kind: 'url', value: herdUrl(ws) }
@@ -529,6 +654,7 @@ const REGISTRY: Record<string, Runtime> = {
   expo: expoRuntime,
   declared: declaredRuntime,
   compose: composeRuntime,
+  laravel: laravelRuntime,
   herd: herdRuntime,
   devcontainer: devcontainerRuntime,
 }
@@ -734,8 +860,8 @@ export async function down(ws: Workspace, names?: string[]) {
  * each one now.
  *
  * Empty for every runtime but the declared one, and that is the honest answer
- * rather than a missing feature: a detected `node` project, Herd and Compose
- * have one opaque "the servers" and no handle on any part of it. The window
+ * rather than a missing feature: a detected `node` or Laravel project, Herd
+ * and Compose have one opaque "the servers" and no handle on any part of it. The window
  * reads an empty list as "nothing to pick" and keeps the plain switch.
  */
 export async function servers(ws: Workspace): Promise<DeclaredServer[]> {

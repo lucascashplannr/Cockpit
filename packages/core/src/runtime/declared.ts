@@ -309,3 +309,8 @@ function probeUrl(url: string | null, health: string | undefined): string | null
 export function needsInstall(dir: string): boolean {
   return existsSync(join(dir, 'package.json')) && !existsSync(join(dir, 'node_modules'))
 }
+
+/** The PHP twin of `needsInstall`: `vendor/` is gitignored, so a fresh worktree has none. */
+export function needsComposerInstall(dir: string): boolean {
+  return existsSync(join(dir, 'composer.json')) && !existsSync(join(dir, 'vendor'))
+}

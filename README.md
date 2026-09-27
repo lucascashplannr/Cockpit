@@ -449,7 +449,7 @@ window to a bar.
 | 16 | Path leases, per-repo git queue, mtime check before writes | done |
 | 21.4 | Worktree layout decided: grouped per topic (`worktrees/<topic>/<repo>`) | done |
 
-Runtimes shipped: `node`, `expo`, `compose`, `herd`, `devcontainer`.
+Runtimes shipped: `node`, `expo`, `laravel` (`php artisan serve`), `compose`, `herd` (only with `runtime: herd`), `devcontainer`.
 Agent engines shipped: `claude`, `codex` — normalised into one event stream (§7).
 
 ## Not implemented
