@@ -3729,8 +3729,18 @@ export function askDeleteTopic(topicId: string): void {
  * no plan because there is nothing to run.
  */
 async function askDeletePlan(f: Topic, deleteBranches: boolean, force: boolean): Promise<boolean> {
+  // The database copy goes with the checkout it was made for. Always asked
+  // for, never assumed: it arrives as a red step in the plan below, and the
+  // core leaves out the main checkout's own database and any on another
+  // machine. Never sending this is how every topic's copy was left behind.
   const res = await guard(() =>
-    client.call('topic.delete', { topicId: f.id, removeWorktrees: true, deleteBranches, force }),
+    client.call('topic.delete', {
+      topicId: f.id,
+      removeWorktrees: true,
+      deleteBranches,
+      dropDatabases: true,
+      force,
+    }),
   )
   if (!res) return false
 

@@ -165,6 +165,13 @@ export async function openPlan(
     for (const repo of repos) {
       const conn = database.connectionOf(repo.path)
       if (!conn || conn.engine === 'sqlite') continue
+      if (!conn.local) {
+        warnings.push(
+          repo.name + ': ' + conn.database + ' is on ' + conn.host +
+            ', not this machine — it is not copied, and the branch shares it.',
+        )
+        continue
+      }
       const target = (await seed.contextFor({
         projectId: project.id,
         repoPath: repo.path,
@@ -172,15 +179,15 @@ export async function openPlan(
         tld: 'test',
         baseDb: conn.database,
       })).db
-      const cloneSteps = database.clonePlan(conn, target, repo.path)
+      const tools = await database.resolveTools(conn)
+      const cloneSteps = database.clonePlan(conn, target, repo.path, tools)
       if (!cloneSteps.length) continue
       steps.push(...cloneSteps)
       Object.assign(dbEnv, database.envFor(conn))
-      const missing = (await database.tooling(conn.engine)).filter((t) => !t.found)
-      if (missing.length) {
+      if (tools.missing.length) {
         warnings.push(
-          repo.name + ': ' + missing.map((t) => t.bin).join(', ') +
-            ' not on PATH — the clone will fail and the plan will stop there.',
+          repo.name + ': ' + tools.missing.join(', ') +
+            ' not found — the clone will fail and the plan will stop there.',
         )
       } else {
         warnings.push(
@@ -1348,11 +1355,25 @@ export async function deletePlan(
     for (const w of wss.filter((x) => x.kind === 'worktree')) {
       const conn = database.connectionOf(w.path)
       if (!conn || conn.engine === 'sqlite' || !conn.database) continue
+      if (!conn.local) {
+        warnings.push(
+          w.name + ': ' + conn.database + ' is on ' + conn.host +
+            ', not this machine. Cockpit never drops a database there.',
+        )
+        continue
+      }
       // The worktree's own `.env` names the database it actually uses, which
       // is the only trustworthy answer: recomputing the name from the slug
       // would drop the wrong one if anybody edited it.
       const owner = repos.find((m) => basename(m.path) === basename(w.path))
-      const main = owner ? database.connectionOf(owner.path) : null
+      if (!owner) {
+        warnings.push(
+          w.name + ': no main checkout to compare its database with, so ' + conn.database +
+            ' is left alone.',
+        )
+        continue
+      }
+      const main = database.connectionOf(owner.path)
       if (main && main.database === conn.database) {
         warnings.push(
           w.name + ': its .env still points at ' + conn.database +
@@ -1360,7 +1381,9 @@ export async function deletePlan(
         )
         continue
       }
-      steps.push(...database.dropPlan(conn, conn.database, w.path))
+      // From the main checkout: these steps come after the folder removals,
+      // so the worktree is gone by the time they run and spawning in it fails.
+      steps.push(...database.dropPlan(conn, conn.database, owner.path, await database.resolveTools(conn)))
       Object.assign(dbEnv, database.envFor(conn))
       warnings.push(
         w.name + ': the database ' + conn.database + ' is dropped for good. There is no Trash for it.',

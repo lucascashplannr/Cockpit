@@ -250,7 +250,7 @@ export interface DatabasePlan {
   /** The one this worktree will get. Null for sqlite, which needs no server. */
   to: string | null
   detail: string
-  /** Client binaries this needs and could not find on PATH. */
+  /** Client binaries this needs and could not find — on PATH, beside the server, or where installers put them. */
   missingTools: string[]
 }
 

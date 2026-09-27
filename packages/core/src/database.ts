@@ -1,8 +1,10 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { DatabasePlan, PlanStep } from '@cockpit/shared'
-import { which } from './exec.js'
+import { run, which } from './exec.js'
+
+const IS_WIN = process.platform === 'win32'
 
 /**
  * §10 — "une base par workspace", the third thing that is global and will
@@ -30,6 +32,20 @@ export interface Connection {
   database: string
   /** For sqlite, the file — which the worktree seed already carries (§7). */
   file: string | null
+  /**
+   * Whether the server is on this machine. Only a local one is cloned or
+   * dropped: a `DB_HOST` naming a shared or hosted server is somebody else's
+   * data, and a topic that quietly created — or at close, dropped — databases
+   * there would be the worst thing Cockpit could do with a `.env`.
+   */
+  local: boolean
+}
+
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0'])
+
+/** Whether a `DB_HOST` is this machine. An absent one is: every framework defaults to loopback. */
+export function isLocalHost(host: string | undefined): boolean {
+  return !host || LOCAL_HOSTS.has(host.toLowerCase())
 }
 
 const ENV_FILES = ['.env', '.env.local']
@@ -95,14 +111,16 @@ export function connectionOf(repoPath: string): Connection | null {
           : null
   if (!engine) return null
 
+  const host = env.get('DB_HOST') ?? '127.0.0.1'
   return {
     engine,
-    host: env.get('DB_HOST') ?? '127.0.0.1',
+    host,
     port: env.get('DB_PORT') ?? (engine === 'mysql' ? '3306' : '5432'),
     user: env.get('DB_USERNAME') ?? env.get('DB_USER') ?? 'root',
     password: env.get('DB_PASSWORD') ?? env.get('DB_PASS') ?? '',
     database,
     file: engine === 'sqlite' ? (database || join(repoPath, 'database', 'database.sqlite')) : null,
+    local: engine === 'sqlite' || isLocalHost(host),
   }
 }
 
@@ -116,23 +134,145 @@ export function envFor(conn: Connection): Record<string, string> {
   return conn.engine === 'mysql' ? { MYSQL_PWD: conn.password } : { PGPASSWORD: conn.password }
 }
 
+/**
+ * `--protocol=TCP` because the connection is a host and a port: `localhost`
+ * otherwise makes the client look for its compiled-in socket, and DBngin's
+ * server listens on `/tmp/mysql_3306.sock`, not the one the client expects.
+ */
 function mysqlAuth(conn: Connection): string {
-  return '--host=' + conn.host + ' --port=' + conn.port + ' --user=' + conn.user
+  return '--host=' + conn.host + ' --port=' + conn.port + ' --user=' + conn.user + ' --protocol=TCP'
 }
 
 function pgAuth(conn: Connection): string {
   return '--host=' + conn.host + ' --port=' + conn.port + ' --username=' + conn.user
 }
 
-/** Which client binaries this engine needs, and whether they are installed. */
-export async function tooling(engine: Engine): Promise<{ bin: string; found: boolean }[]> {
-  const needed =
-    engine === 'mysql'
-      ? ['mysql', 'mysqldump']
-      : engine === 'pgsql'
-        ? ['createdb', 'dropdb', 'psql']
-        : []
-  return Promise.all(needed.map(async (bin) => ({ bin, found: !!(await which(bin)) })))
+const NEEDED: Record<Exclude<Engine, 'sqlite'>, string[]> = {
+  mysql: ['mysql', 'mysqldump'],
+  pgsql: ['createdb', 'dropdb', 'psql'],
+}
+
+/** Every `<root>/<version>/bin`, newest version first. */
+function versioned(root: string): string[] {
+  try {
+    return readdirSync(root)
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+      .map((v) => join(root, v, 'bin'))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Where the usual installers put the clients when they leave PATH alone —
+ * which the GUI ones all do, so "not on PATH" was the normal case rather
+ * than the exception.
+ */
+function knownDirs(engine: Exclude<Engine, 'sqlite'>): string[] {
+  if (IS_WIN) {
+    const pf = process.env.ProgramFiles ?? 'C:\\Program Files'
+    return engine === 'mysql'
+      ? readdirSafe(join(pf, 'MySQL')).map((d) => join(pf, 'MySQL', d, 'bin'))
+      : versioned(join(pf, 'PostgreSQL'))
+  }
+  return engine === 'mysql'
+    ? [
+        ...versioned('/Users/Shared/DBngin/mysql'),
+        '/opt/homebrew/opt/mysql-client/bin',
+        '/opt/homebrew/opt/mysql/bin',
+        '/usr/local/opt/mysql-client/bin',
+        '/usr/local/mysql/bin',
+      ]
+    : [
+        ...versioned('/Users/Shared/DBngin/postgresql'),
+        '/Applications/Postgres.app/Contents/Versions/latest/bin',
+        '/opt/homebrew/opt/libpq/bin',
+        '/usr/local/opt/libpq/bin',
+      ]
+}
+
+function readdirSafe(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The folder of the server actually listening on the port. Its clients sit
+ * beside it (DBngin, Postgres.app, Homebrew all ship them together), and they
+ * are the right version for that server by construction — which a `mysql`
+ * found first on PATH is not.
+ */
+async function listenerDir(port: string): Promise<string | null> {
+  if (IS_WIN) return null
+  const l = await run('lsof', ['-nP', '-iTCP:' + port, '-sTCP:LISTEN', '-t'], { timeoutMs: 4000 })
+  const pid = l.stdout.trim().split('\n')[0]
+  if (!l.ok || !pid) return null
+  if (process.platform === 'linux') {
+    try {
+      return dirname(realpathSync('/proc/' + pid + '/exe'))
+    } catch {
+      return null
+    }
+  }
+  const p = await run('ps', ['-o', 'comm=', '-p', pid], { timeoutMs: 4000 })
+  const bin = p.stdout.trim()
+  return p.ok && bin.startsWith('/') ? dirname(bin) : null
+}
+
+export interface Tools {
+  /** Each client binary, as the path that will run. Absent when not found. */
+  bins: Record<string, string>
+  missing: string[]
+  /** MySQL 9 refuses client commands such as `SOURCE` under `--execute` without it. */
+  mysqlCommands: boolean
+  /** A GTID server otherwise dumps a `GTID_PURGED` its own restore refuses. */
+  mysqldumpGtid: boolean
+}
+
+/** Which client binaries this connection needs, and where each one is. */
+export async function resolveTools(conn: Connection): Promise<Tools> {
+  const empty: Tools = { bins: {}, missing: [], mysqlCommands: false, mysqldumpGtid: false }
+  if (conn.engine === 'sqlite') return empty
+  const exe = IS_WIN ? '.exe' : ''
+  const beside = conn.local ? await listenerDir(conn.port) : null
+  const dirs = [...(beside ? [beside] : []), ...knownDirs(conn.engine)]
+
+  const bins: Record<string, string> = {}
+  for (const bin of NEEDED[conn.engine]) {
+    const first = beside && existsSync(join(beside, bin + exe)) ? join(beside, bin + exe) : null
+    const found =
+      first ??
+      (await which(bin)) ??
+      dirs.map((d) => join(d, bin + exe)).find((p) => existsSync(p)) ??
+      null
+    if (found) bins[bin] = found
+  }
+  const missing = NEEDED[conn.engine].filter((b) => !bins[b])
+
+  // Older clients and MariaDB's do not know these flags and refuse the whole
+  // command over one, so each is asked for only where `--help` lists it.
+  const helps = async (bin: string, flag: string) =>
+    !!bins[bin] && (await run(bins[bin]!, ['--help'], { timeoutMs: 4000 })).stdout.includes(flag)
+  return {
+    bins,
+    missing,
+    mysqlCommands: conn.engine === 'mysql' && (await helps('mysql', '--commands')),
+    mysqldumpGtid: conn.engine === 'mysql' && (await helps('mysqldump', '--set-gtid-purged')),
+  }
+}
+
+/**
+ * A step's binary and the start of its command. The path is what `run`
+ * names, so the plan runner's check that a step executes exactly the binary
+ * it declared still holds; quoted, because Herd and Program Files both put
+ * a space in it.
+ */
+function bin(tools: Tools, name: string): { run: string; cmd: string } {
+  const path = tools.bins[name] ?? name
+  return { run: path, cmd: /\s/.test(path) ? '"' + path + '"' : path }
 }
 
 /**
@@ -142,92 +282,108 @@ export async function tooling(engine: Engine): Promise<{ bin: string; found: boo
  * path dumps to a file and loads it with the client's own `source` rather than
  * `mysqldump | mysql`. That is also what keeps the command in the preview the
  * literal command that runs.
+ *
+ * Empty for a server that is not on this machine — see `Connection.local`.
  */
-export function clonePlan(conn: Connection, target: string, cwd: string): PlanStep[] {
-  if (conn.engine === 'sqlite') return []
+export function clonePlan(conn: Connection, target: string, cwd: string, tools: Tools): PlanStep[] {
+  if (conn.engine === 'sqlite' || !conn.local) return []
   if (!conn.database) return []
 
   if (conn.engine === 'pgsql') {
+    const createdb = bin(tools, 'createdb')
+    const dropdb = bin(tools, 'dropdb')
     return [
       {
         title: 'Clone ' + conn.database + ' → ' + target,
         // Postgres clones a database natively. It refuses while anyone is
         // connected to the source, and that refusal is worth surfacing as-is:
         // silently falling back to a dump would hide an open psql session.
-        command:
-          'createdb ' + pgAuth(conn) + ' --template=' + conn.database + ' ' + target,
+        command: createdb.cmd + ' ' + pgAuth(conn) + ' --template=' + conn.database + ' ' + target,
         cwd,
         destructive: false,
-        run: 'createdb',
+        run: createdb.run,
         undo: [
           {
             title: 'Drop ' + target,
-            command: 'dropdb ' + pgAuth(conn) + ' --if-exists ' + target,
+            command: dropdb.cmd + ' ' + pgAuth(conn) + ' --if-exists ' + target,
             cwd,
-            run: 'dropdb',
+            run: dropdb.run,
           },
         ],
       },
     ]
   }
 
+  const mysql = bin(tools, 'mysql')
+  const mysqldump = bin(tools, 'mysqldump')
   const dump = join(tmpdir(), 'cockpit-' + target + '.sql')
   return [
     {
       title: 'Create database ' + target,
-      command: 'mysql ' + mysqlAuth(conn) + ' "--execute=CREATE DATABASE IF NOT EXISTS `' + target + '`"',
+      command: mysql.cmd + ' ' + mysqlAuth(conn) + ' "--execute=CREATE DATABASE IF NOT EXISTS `' + target + '`"',
       cwd,
       destructive: false,
-      run: 'mysql',
+      run: mysql.run,
       undo: [
         {
           title: 'Drop ' + target,
-          command: 'mysql ' + mysqlAuth(conn) + ' "--execute=DROP DATABASE IF EXISTS `' + target + '`"',
+          command: mysql.cmd + ' ' + mysqlAuth(conn) + ' "--execute=DROP DATABASE IF EXISTS `' + target + '`"',
           cwd,
-          run: 'mysql',
+          run: mysql.run,
         },
       ],
     },
     {
       title: 'Dump ' + conn.database,
       command:
-        'mysqldump ' + mysqlAuth(conn) +
-        ' --single-transaction --routines --events --result-file=' + dump + ' ' + conn.database,
+        mysqldump.cmd + ' ' + mysqlAuth(conn) +
+        ' --single-transaction --routines --events' +
+        (tools.mysqldumpGtid ? ' --set-gtid-purged=OFF' : '') +
+        ' "--result-file=' + dump + '" ' + conn.database,
       cwd,
       destructive: false,
-      run: 'mysqldump',
+      run: mysqldump.run,
     },
     {
       title: 'Load it into ' + target,
-      command: 'mysql ' + mysqlAuth(conn) + ' --database=' + target + ' "--execute=SOURCE ' + dump + '"',
+      command:
+        mysql.cmd + ' ' + mysqlAuth(conn) + ' --database=' + target +
+        (tools.mysqlCommands ? ' --commands' : '') +
+        ' "--execute=SOURCE ' + dump + '"',
       cwd,
       destructive: false,
-      run: 'mysql',
+      run: mysql.run,
     },
   ]
 }
 
-/** §16 — dropping data is the one thing nothing brings back, so it is red. */
-export function dropPlan(conn: Connection, target: string, cwd: string): PlanStep[] {
-  if (conn.engine === 'sqlite' || !target) return []
+/**
+ * §16 — dropping data is the one thing nothing brings back, so it is red.
+ * Never on a server that is not on this machine: what a remote `.env` names
+ * was not created by Cockpit, whatever the name looks like.
+ */
+export function dropPlan(conn: Connection, target: string, cwd: string, tools: Tools): PlanStep[] {
+  if (conn.engine === 'sqlite' || !conn.local || !target) return []
   if (conn.engine === 'pgsql') {
+    const dropdb = bin(tools, 'dropdb')
     return [
       {
         title: 'Drop database ' + target,
-        command: 'dropdb ' + pgAuth(conn) + ' --if-exists ' + target,
+        command: dropdb.cmd + ' ' + pgAuth(conn) + ' --if-exists ' + target,
         cwd,
         destructive: true,
-        run: 'dropdb',
+        run: dropdb.run,
       },
     ]
   }
+  const mysql = bin(tools, 'mysql')
   return [
     {
       title: 'Drop database ' + target,
-      command: 'mysql ' + mysqlAuth(conn) + ' "--execute=DROP DATABASE IF EXISTS `' + target + '`"',
+      command: mysql.cmd + ' ' + mysqlAuth(conn) + ' "--execute=DROP DATABASE IF EXISTS `' + target + '`"',
       cwd,
       destructive: true,
-      run: 'mysql',
+      run: mysql.run,
     },
   ]
 }
@@ -252,7 +408,19 @@ export async function preview(
       missingTools: [],
     }
   }
-  const missing = (await tooling(conn.engine)).filter((t) => !t.found).map((t) => t.bin)
+  if (!conn.local) {
+    return {
+      repo: basename(repoPath),
+      engine: conn.engine,
+      from: conn.database,
+      to: null,
+      detail:
+        conn.database + ' is on ' + conn.host + ', not this machine, so Cockpit will not copy it ' +
+        '(or drop the copy later). The branch keeps pointing at it.',
+      missingTools: [],
+    }
+  }
+  const { missing } = await resolveTools(conn)
   return {
     repo: basename(repoPath),
     engine: conn.engine,

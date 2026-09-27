@@ -3,6 +3,7 @@ import { basename, dirname, join } from 'node:path'
 import { isMap, isSeq, parseDocument } from 'yaml'
 import { scopedName, slugify, stableId } from '@cockpit/shared'
 import type { SeedContext, SeedKeyChange, SeedProposal, WorktreeSeed } from '@cockpit/shared'
+import { isLocalHost } from './database.js'
 import { detectRuntime, findManifest, readManifest } from './detect.js'
 import { git } from './git.js'
 import { append } from './journal.js'
@@ -190,6 +191,10 @@ function changesFor(
   if (!isEnvShaped(rel)) return []
   const lines = parseEnv(text)
   const host = wired ? null : currentHost(lines, repoFolder, tld)
+  // A database on another machine is not renamed: nothing will create the
+  // new name there (Cockpit only clones locally), so the branch would point
+  // at a database that does not exist. It shares the one it has instead.
+  const sharedDb = !isLocalHost(lines.find((l) => l.key === 'DB_HOST')?.value)
   const out: SeedRule[] = []
 
   for (const { key, value } of lines) {
@@ -222,7 +227,7 @@ function changesFor(
     }
     // 2. The database. Without this, agent A's migration breaks agent B, which
     //    no amount of folder isolation prevents.
-    if (/^(DB_DATABASE|DB_NAME|DATABASE_NAME)$/.test(key) && value) {
+    if (/^(DB_DATABASE|DB_NAME|DATABASE_NAME)$/.test(key) && value && !sharedDb) {
       out.push({
         key,
         from: value,

@@ -333,7 +333,7 @@ async function submit() {
           <p v-if="dbMissingTools.length" class="warnline">
             <TriangleAlert class="sm" />
             <span>
-              {{ dbMissingTools.join(', ') }} not on PATH — Cockpit cannot copy a database
+              {{ dbMissingTools.join(', ') }} not found — Cockpit cannot copy a database
               without the client. The branch still gets its own name in
               <code class="mono">.env</code>; create the database yourself.
             </span>
