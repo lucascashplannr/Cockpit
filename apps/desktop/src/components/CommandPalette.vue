@@ -4,7 +4,7 @@ import type { Component } from 'vue'
 import type { Topic, Workspace } from '@cockpit/shared'
 import {
   AppWindow, ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookMarked, Box, Check, CloudDownload,
-  Columns2, CornerDownLeft, FileCode,
+  Columns2, FileCode,
   FolderOpen,
   FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Globe, History, Layers, Pause, Play, RefreshCw,
   ScrollText,
@@ -57,6 +57,12 @@ interface Item {
    *  match that acts somewhere else. */
   boost?: number
   run: () => void | Promise<void>
+  /** The hint *is* the result — a search hit's line — so it shows on every
+   *  row rather than only on the one under the cursor. */
+  always?: boolean
+  /** The label is a path: drawn as the file name, with its folder dimmed
+   *  after it — still matched as one string. */
+  path?: boolean
   /** Asks for one word before running: the input becomes the question. */
   ask?: { placeholder: string; run: (answer: string) => void | Promise<void> }
 }
@@ -209,11 +215,10 @@ const placeholder = computed(() => {
     case 'file':
       return 'Files in ' + where.value
     case 'text':
-      return 'Search the text of ' + where.value
+      return 'Text in ' + where.value
     default:
-      return scope.value.level === 'all'
-        ? 'Jump to any project, repository or branch, or run a command'
-        : 'Search ' + where.value + ' — repositories, commands, or type > / #'
+      // The mode pills say > / # already; the prompt only has to say where.
+      return 'Search ' + where.value
   }
 })
 
@@ -234,6 +239,10 @@ function act(fn: () => unknown) {
 
 const RECENT_KEY = 'cockpit.palette.recent'
 const RECENT_MAX = 5
+/** What the palette shows before anything is typed. */
+const OPENING_RECENT = 3
+const OPENING_MIN = 8
+const OPENING_MAX = 14
 
 function readRecent(): string[] {
   try {
@@ -851,6 +860,7 @@ const fileItems = computed<Item[]>(() => {
         id: 'file:' + w.id + ':' + f,
         label: prefix + f,
         hint: hint || undefined,
+        path: true,
         group: 'Files',
         icon: FileCode,
         run: act(() => openFileAt(w.id, f)),
@@ -868,6 +878,8 @@ const textItems = computed<Item[]>(() =>
       id: 'hit:' + h.workspaceId + h.path + h.line,
       label: prefix + h.path + ':' + h.line,
       hint: h.text.trim().slice(0, 90),
+      always: true,
+      path: true,
       group: 'Matches',
       icon: TextSearch,
       run: act(() => openFileAt(h.workspaceId, h.path, h.line)),
@@ -914,12 +926,15 @@ function opening(): Item[] {
   const rest = cmds.filter((c) => !taken.has(c.id))
   const here = rest.filter((c) => (c.boost ?? 0) >= HERE)
   const others = rest.filter((c) => (c.boost ?? 0) < HERE)
-  return [
-    ...recent.map((c) => ({ ...c, id: 'recent:' + c.id, group: 'Recent', icon: c.icon })),
+  // A short list, not a menu of everything: what acts on here, where you
+  // might go next, and the rest only if that leaves the list thin. Typing
+  // still reaches every command.
+  const first = [
+    ...recent.slice(0, OPENING_RECENT).map((c) => ({ ...c, id: 'recent:' + c.id, group: 'Recent', icon: c.icon })),
     ...here,
-    ...places.value,
-    ...others,
-  ].slice(0, 26)
+    ...places.value.slice(0, 6),
+  ]
+  return [...first, ...others.slice(0, Math.max(0, OPENING_MIN - first.length))].slice(0, OPENING_MAX)
 }
 
 const scoped = computed<Ranked[]>(() => {
@@ -1085,6 +1100,19 @@ function pickScope(l: Level) {
   void nextTick(() => input.value?.focus())
 }
 
+/**
+ * A path's two halves, each with its own share of the match highlighted. The
+ * name is what you were looking for; the folder only tells two of them apart.
+ */
+function pathParts(label: string, positions: number[]) {
+  const cut = label.lastIndexOf('/')
+  if (cut < 0) return { name: highlight(label, positions), dir: [] }
+  return {
+    name: highlight(label.slice(cut + 1), positions.filter((p) => p > cut).map((p) => p - cut - 1)),
+    dir: highlight(label.slice(0, cut), positions.filter((p) => p < cut)),
+  }
+}
+
 function indexOfItem(item: Item): number {
   return flat.value.indexOf(item)
 }
@@ -1105,7 +1133,7 @@ onMounted(() => {
   <div class="scrim" @mousedown.self="close">
     <div class="pal" role="dialog" aria-label="Command palette">
       <div class="inputrow">
-        <component :is="leadIcon" class="lead lg" />
+        <component :is="leadIcon" class="lead" />
         <span v-if="asking" class="asking">{{ asking.label }}</span>
         <input
           ref="input"
@@ -1121,7 +1149,7 @@ onMounted(() => {
           @keydown.backspace="onBackspace"
           @keydown.esc="onEscape"
         />
-        <span v-if="searching || loadingFiles" class="chip"><RefreshCw class="spin" />{{ searching ? 'searching' : 'reading' }}</span>
+        <RefreshCw v-if="searching || loadingFiles" class="busy spin sm" />
       </div>
 
       <div v-if="!asking" class="scopebar">
@@ -1133,7 +1161,7 @@ onMounted(() => {
             role="tab"
             :aria-selected="s.level === scope.level"
             :class="{ on: s.level === scope.level }"
-            :title="s.level === 'all' ? 'Every project' : s.kind + ' — ' + s.name"
+            :title="(s.level === 'all' ? 'Every project' : s.kind + ' — ' + s.name) + '  ⇥'"
             @mousedown.prevent
             @click="pickScope(s.level)"
           >
@@ -1159,12 +1187,12 @@ onMounted(() => {
 
       <div v-if="!asking" class="list">
         <div v-if="elsewhere" class="elsewhere">
-          Nothing in {{ where }} — showing matches everywhere.
+          Nothing in {{ where }} — from everywhere instead.
           <button class="linkish" @mousedown.prevent @click="pickScope('all')">Search everywhere</button>
         </div>
 
         <template v-for="g in grouped" :key="g.group">
-          <div class="glabel section-label">{{ g.group }}</div>
+          <div class="glabel">{{ g.group }}</div>
           <button
             v-for="entry in g.items"
             :key="entry.item.id"
@@ -1173,8 +1201,16 @@ onMounted(() => {
             @mousemove="cursor = indexOfItem(entry.item)"
             @click="run(entry.item)"
           >
-            <span class="icon"><component :is="entry.item.icon" class="sm" /></span>
-            <span class="lbl">
+            <component :is="entry.item.icon" class="icon sm" />
+            <span v-if="entry.item.path" class="lbl">
+              <template v-for="parts in [pathParts(entry.item.label, entry.positions)]" :key="0">
+                <span v-for="(part, i) in parts.name" :key="'n' + i" :class="{ hit: part.hit }">{{ part.text }}</span>
+                <span v-if="parts.dir.length" class="dir">
+                  <span v-for="(part, i) in parts.dir" :key="'d' + i" :class="{ hit: part.hit }">{{ part.text }}</span>
+                </span>
+              </template>
+            </span>
+            <span v-else class="lbl">
               <span
                 v-for="(part, i) in highlight(entry.item.label, entry.positions)"
                 :key="i"
@@ -1182,9 +1218,12 @@ onMounted(() => {
                 >{{ part.text }}</span
               >
             </span>
-            <span v-if="entry.item.hint" class="hint">{{ entry.item.hint }}</span>
-            <span v-if="entry.item.keys" class="kbd">{{ entry.item.keys }}</span>
-            <CornerDownLeft v-if="indexOfItem(entry.item) === cursor" class="ret sm" />
+            <!-- The detail of a row is for the row you are on; ten of them at
+                 once is the noise, not the information. -->
+            <template v-if="indexOfItem(entry.item) === cursor || entry.item.always">
+              <span v-if="entry.item.hint" class="hint">{{ entry.item.hint }}</span>
+              <span v-if="entry.item.keys && indexOfItem(entry.item) === cursor" class="kbd">{{ entry.item.keys }}</span>
+            </template>
           </button>
         </template>
 
@@ -1200,21 +1239,6 @@ onMounted(() => {
           </button>
         </div>
       </div>
-
-      <footer class="pfoot">
-        <template v-if="asking">
-          <span><span class="kbd">⏎</span> confirm</span>
-          <span><span class="kbd">esc</span> back</span>
-        </template>
-        <template v-else>
-          <span><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span>
-          <span><span class="kbd">⏎</span> run</span>
-          <span><span class="kbd">⇥</span> where</span>
-          <span><span class="kbd">esc</span> close</span>
-          <span class="grow" />
-          <span class="dimhint">⇧⇧ toggles · ⌘P files · ⌘⇧F text</span>
-        </template>
-      </footer>
     </div>
   </div>
 </template>
@@ -1238,8 +1262,8 @@ onMounted(() => {
 }
 
 .pal {
-  width: min(720px, 92vw);
-  max-height: 68vh;
+  width: min(680px, 92vw);
+  max-height: 64vh;
   display: flex;
   flex-direction: column;
   background: var(--overlay);
@@ -1260,10 +1284,12 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   padding: 0 18px;
-  height: 56px;
-  border-bottom: 1px solid var(--line);
+  height: 54px;
 }
-.lead { flex: none; color: var(--text-dim); }
+/* A question being asked has no scope bar under it, so it draws its own edge. */
+.inputrow:has(+ .list), .inputrow:last-child { border-bottom: 1px solid var(--line); }
+.lead { flex: none; width: 18px; height: 18px; color: var(--text-dim); }
+.busy { flex: none; color: var(--text-dim); }
 .asking {
   flex: none;
   max-width: 45%;
@@ -1291,60 +1317,57 @@ onMounted(() => {
 /* The palette input is the whole row; a ring around it would box in nothing. */
 .q:focus-visible { outline: none; }
 
-/* Where, on the left; what kind of thing, on the right. Both one line. */
+/* Where, on the left; what kind of thing, on the right. Part of the input's
+   band rather than a band of its own — one rule under both, not two. */
 .scopebar {
   flex: none;
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
-  padding: 7px 12px;
+  /* Room under the question before the answers' filters, so the two read as
+     a prompt and its options rather than one crowded block. */
+  margin-top: 6px;
+  padding: 0 12px 10px;
   border-bottom: 1px solid var(--line);
 }
 .scopebar .grow { flex: 1; }
-.scopes, .modes { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.scopes, .modes { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .scopes { overflow: hidden; }
 .scope, .mode {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 9px;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
   border-radius: 999px;
-  border: 1px solid transparent;
   font-size: var(--fs-xs);
   color: var(--text-dim);
   white-space: nowrap;
-  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft),
-    border-color var(--dur-1) var(--ease-soft);
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
 .scope { min-width: 0; }
+.scope svg { opacity: 0.8; }
 .scope .sname { overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
-.scope:hover, .mode:hover { background: var(--hover); color: var(--text-muted); }
-.scope.on {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
-  color: var(--accent);
-  font-weight: 560;
-}
-.mode.on { background: var(--selected); color: var(--text); }
-.pfx {
-  font-family: var(--mono);
-  font-size: 11px;
-  opacity: 0.7;
-}
+.scope:hover, .mode:hover { color: var(--text-muted); }
+.scope.on { background: var(--accent-soft); color: var(--accent); }
+.scope.on svg { opacity: 1; }
+.mode.on { background: var(--hover); color: var(--text); }
+.pfx { font-family: var(--mono); font-size: 11px; margin-right: 1px; opacity: 0.6; }
 
-.list { flex: 1; overflow-y: auto; padding: 8px; }
-.glabel { padding: 10px 12px 5px; }
+.list { flex: 1; overflow-y: auto; padding: 4px 8px 8px; }
+.glabel {
+  padding: 12px 10px 4px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--text-dim);
+}
 
 .elsewhere {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 2px 4px 4px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-sunken);
+  padding: 10px 10px 2px;
   font-size: var(--fs-xs);
   color: var(--text-dim);
 }
@@ -1354,36 +1377,24 @@ onMounted(() => {
   gap: 6px;
   color: var(--accent);
   font-size: var(--fs-xs);
-  font-weight: 560;
+  font-weight: 540;
 }
 .linkish:hover { text-decoration: underline; }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 10px;
   width: 100%;
-  height: 38px;
-  padding: 0 12px;
+  height: 34px;
+  padding: 0 10px;
   border-radius: var(--radius-sm);
   text-align: left;
   color: var(--text-muted);
-  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
 .row.on { background: var(--selected); color: var(--text); }
-.icon {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: var(--hover);
-  color: var(--text-dim);
-  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
-}
-.row.on .icon { background: var(--accent-soft); color: var(--accent); }
+.icon { flex: none; color: var(--text-dim); opacity: 0.8; }
+.row.on .icon { color: var(--accent); opacity: 1; }
 .lbl {
   flex: 1;
   min-width: 0;
@@ -1392,10 +1403,13 @@ onMounted(() => {
   white-space: nowrap;
   font-size: var(--fs-md);
 }
-.lbl .hit { color: var(--accent); font-weight: 620; }
+.lbl .hit { color: var(--text); font-weight: 600; }
+.lbl .dir { margin-left: 8px; font-size: var(--fs-xs); color: var(--text-dim); }
+.lbl .dir .hit { color: var(--text-muted); }
+.row.on .lbl .hit { color: var(--accent); }
 .hint {
   flex: none;
-  max-width: 42%;
+  max-width: 46%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1403,7 +1417,6 @@ onMounted(() => {
   color: var(--text-dim);
 }
 .row .kbd { flex: none; }
-.ret { flex: none; color: var(--text-dim); opacity: 0.7; }
 
 .none {
   display: flex;
@@ -1415,21 +1428,4 @@ onMounted(() => {
   color: var(--text-dim);
   font-size: var(--fs-sm);
 }
-
-.pfoot {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  height: 38px;
-  padding: 0 16px;
-  border-top: 1px solid var(--line);
-  background: var(--bg-sunken);
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
-}
-.pfoot > span { display: inline-flex; align-items: center; gap: 5px; }
-.pfoot .grow { flex: 1; }
-.dimhint { opacity: 0.85; }
-.chip .spin { width: 12px; height: 12px; }
 </style>
