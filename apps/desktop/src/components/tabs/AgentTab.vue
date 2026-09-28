@@ -917,12 +917,8 @@ function dotClass(s: Conversation): string {
           @send="send"
         />
 
-        <p class="guard">
-          {{
-            state.engineOptions.permissionMode === 'plan'
-              ? 'Plan mode — it reads and proposes, and writes nothing'
-              : 'Never pushes · diff reviewed before any commit · restore point first'
-          }}
+        <p v-if="state.engineOptions.permissionMode === 'plan'" class="guard">
+          Plan mode — it reads and proposes, and writes nothing
         </p>
       </div>
     </div>

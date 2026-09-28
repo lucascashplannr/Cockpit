@@ -12,7 +12,7 @@ import type { EngineModel } from '@cockpit/shared'
  * the previous one handled, and out of the way on every other day.
  */
 const props = defineProps<{
-  /** Only the models the installed engine accepts, newest first per family. */
+  /** Only the models the installed engine accepts, in `CLAUDE_MODELS` order. */
   models: EngineModel[]
   modelValue?: string
 }>()
@@ -22,7 +22,7 @@ const open = ref(false)
 const more = ref(false)
 const root = ref<HTMLElement | null>(null)
 
-/** The first of each family — the list is already newest first. */
+/** The first of each family — `CLAUDE_MODELS` leads with the newest of each. */
 const latest = computed(() => {
   const seen = new Set<string>()
   return props.models.filter((m) => !seen.has(m.family) && seen.add(m.family))
