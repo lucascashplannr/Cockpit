@@ -7,7 +7,7 @@ import type {
   AgentScopePreview, Conversation, AgentTurn, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, Check, Clock, Copy, Gauge, Hand, Lock,
+  ArrowDown, Asterisk, Check, Clock, Copy, Gauge, Hand, Lock, Paperclip,
   Redo2, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -359,6 +359,35 @@ const rotated = computed(() => {
 })
 
 /* ── the composer ──────────────────────────────────────────────────────── */
+
+const composer = ref<InstanceType<typeof Composer> | null>(null)
+
+/**
+ * A file dropped anywhere on the conversation is attached to it.
+ *
+ * The box alone used to be the target, so a screenshot let go over the thread
+ * — the larger thing, and the one you are looking at — did nothing. While a
+ * file is over the column nothing inside it takes pointer events, so
+ * `dragenter`/`dragleave` come from the column alone; the counter covers the
+ * one child the pointer was already on when that switched.
+ */
+const over = ref(false)
+let depth = 0
+function onDragEnter(ev: DragEvent): void {
+  if (!ev.dataTransfer?.types.includes('Files')) return
+  depth++
+  over.value = true
+}
+function onDragLeave(): void {
+  depth = Math.max(0, depth - 1)
+  if (!depth) over.value = false
+}
+function onDrop(ev: DragEvent): void {
+  const files = [...(ev.dataTransfer?.files ?? [])]
+  depth = 0
+  over.value = false
+  if (files.length) void composer.value?.take(files)
+}
 
 /** With a thread open it adds a turn; with none it opens one. The label says. */
 const continuing = computed(() => {
@@ -843,7 +872,26 @@ function dotClass(s: Conversation): string {
 </script>
 
 <template>
-  <div class="agent">
+  <div
+    class="agent"
+    :class="{ over }"
+    @dragenter="onDragEnter"
+    @dragover.prevent
+    @dragleave="onDragLeave"
+    @drop.prevent="onDrop"
+  >
+    <!-- Where a file will go, said over the whole column: everything in it,
+         the box included, goes under one veil, so the only thing that reads
+         is the sentence on it. Nothing moves but the fade. -->
+    <Transition name="veil">
+      <div v-if="over" class="dropzone" aria-hidden="true">
+        <div class="droplabel">
+          <Paperclip class="dropic" />
+          <span class="dropword">Drop to attach</span>
+          <span class="drophint">{{ selected ? 'to the next turn' : 'to the new conversation' }}</span>
+        </div>
+      </div>
+    </Transition>
     <!-- The scope and the two instruments moved up into the column's own bar
          (ContextPanel): they said "this is what you are on", which is what
          that line already said, one row higher. What is left here is what only
@@ -906,6 +954,7 @@ function dotClass(s: Conversation): string {
         </p>
 
         <Composer
+          ref="composer"
           big
           mode="start"
           :disabled="!canSend"
@@ -1239,6 +1288,7 @@ function dotClass(s: Conversation): string {
         <PermissionAsk v-if="selected && pending.length" :session-id="selected.id" :requests="pending" />
 
         <Composer
+          ref="composer"
           :mode="queueing ? 'queue' : continuing ? 'continue' : 'start'"
           :disabled="!canSend"
           :busy="queueing"
@@ -1261,6 +1311,29 @@ function dotClass(s: Conversation): string {
 
 <style scoped>
 .agent { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* A file is over the conversation: the whole column is the target, so the
+   whole column says so — a still outline, nothing that moves. The composer
+   lights inside it, where the file will land. */
+.agent.over * { pointer-events: none; }
+.dropzone {
+  position: absolute;
+  inset: 10px;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  /* The dialogs' own veil, so a drop reads as the same kind of moment. */
+  backdrop-filter: blur(6px) saturate(1.1);
+}
+/* Straight on the veil, no card: the blur is what makes it legible. */
+.droplabel { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.dropic { width: 22px; height: 22px; color: var(--accent); }
+.dropword { font-size: 15px; font-weight: 600; color: var(--text); }
+.drophint { font-size: 12px; color: var(--text-muted); }
+.veil-enter-active, .veil-leave-active { transition: opacity var(--dur-1) var(--ease-soft); }
+.veil-enter-from, .veil-leave-to { opacity: 0; }
 .grow { flex: 1; }
 
 .note {

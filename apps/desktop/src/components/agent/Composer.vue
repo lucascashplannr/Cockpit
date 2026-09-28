@@ -448,7 +448,6 @@ function pickPermission(id: string): void {
  */
 
 const picker = ref<HTMLInputElement | null>(null)
-const over = ref(false)
 
 function pick(): void {
   picker.value?.click()
@@ -556,30 +555,6 @@ function lineCount(text = ''): number {
 }
 
 /**
- * `dragenter`/`dragleave` fire for every child the pointer crosses, so a
- * counter is kept rather than a flag: hovering the textarea inside the box
- * would otherwise clear the highlight while the file is still over it.
- */
-let depth = 0
-function onDragEnter(ev: DragEvent): void {
-  if (!ev.dataTransfer?.types.includes('Files')) return
-  depth++
-  over.value = true
-}
-function onDragLeave(): void {
-  depth = Math.max(0, depth - 1)
-  if (!depth) over.value = false
-}
-function onDrop(ev: DragEvent): void {
-  const files = [...(ev.dataTransfer?.files ?? [])]
-  depth = 0
-  over.value = false
-  if (!files.length) return
-  ev.preventDefault()
-  void take(files)
-}
-
-/**
  * A thumbnail clicked, before it has been sent anywhere.
  *
  * The same viewer the thread uses: a screenshot is worth checking *before* the
@@ -682,17 +657,13 @@ function size(n: number): string {
   return (n / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
-defineExpose({ focus: () => box.value?.focus() })
+defineExpose({ focus: () => box.value?.focus(), take })
 </script>
 
 <template>
   <div
     class="composer"
-    :class="{ big, planning: plan, over }"
-    @dragenter="onDragEnter"
-    @dragover.prevent
-    @dragleave="onDragLeave"
-    @drop.prevent="onDrop"
+    :class="{ big, planning: plan }"
   >
     <div class="well">
       <!-- The files, over the box: the list is what the word being typed could
@@ -887,10 +858,6 @@ defineExpose({ focus: () => box.value?.focus() })
 /* Plan mode changes what pressing Start *does*, so it is worth a whole-box
    signal rather than one lit chip among eleven. */
 .composer.planning .well { border-color: var(--accent); }
-/* A file is over the box and will land in it. The same whole-box signal, for
-   the same reason: it is the box that is about to change, not one control. */
-.composer.over .well { border-color: var(--accent); background: var(--accent-soft); }
-.composer.over * { pointer-events: none; }
 
 /* ── the box, and the two layers that share its geometry ────────────────
  *
