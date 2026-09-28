@@ -622,7 +622,8 @@ export interface ProjectSettings {
    */
   defaultBranch: string | null
   /**
-   * §16 — branches Cockpit refuses to commit to, and nothing else.
+   * §16 — per repository, the branches Cockpit refuses to commit on, and only
+   * pushes to what arrived through Send to. Keyed by `Workspace.repoName`.
    *
    * This used to be one hardcoded rule: never commit on the default branch,
    * applied to agents and people alike. For an agent that is §16 and it stays
@@ -630,10 +631,19 @@ export interface ProjectSettings {
    * wrong often enough to be worth removing — plenty of repositories are
    * committed to directly, on purpose, by the one person who owns them.
    *
-   * So it is opt-in and it is per project. Empty by default: nothing is locked
-   * until you lock it. `*` is allowed, so `release/*` covers a family.
+   * Then it was one list for the whole project, which was the wrong level: a
+   * project of an API on `main` and a front on `dev` has two different
+   * branches worth guarding, and a list that applies `dev` to both guards a
+   * branch the API does not have. The key is the repository, so every
+   * checkout of it — its main one and a topic's branch of it alike — answers
+   * to the same list.
+   *
+   * Opt-in: Cockpit offers to protect each repository's default branch when a
+   * project is created or a repository joins one, and otherwise nothing is
+   * protected until you protect it. `*` is allowed, so `release/*` covers a
+   * family.
    */
-  lockedBranches: string[]
+  protectedBranches: Record<string, string[]>
 }
 
 export interface Project {

@@ -7,7 +7,7 @@ import type {
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
-import { anchorsIn, handleFor, splitPrompt } from '@cockpit/shared'
+import { anchorsIn, handleFor, matchesBranch, protectedPatterns, splitPrompt } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 import type { ConnectionState } from './client.js'
 
@@ -899,6 +899,7 @@ export async function startAgentIn(
   prompt: string,
   files: DraftFile[] = [],
 ): Promise<boolean> {
+  if (stopAgentOnProtected(scopeCheckouts(scope))) return false
   const res = await guard(() =>
     client.call('agent.start', {
       engine,
@@ -2296,6 +2297,7 @@ export async function createProject(input: {
   if (input.source.kind !== 'folder' && !state.settings?.devRoot) {
     await saveSettings({ devRoot: input.parent })
   }
+  void askProtectDefaults(created.id)
   return true
 }
 
@@ -2328,6 +2330,10 @@ export async function addRepo(input: {
   await refreshProjects()
   const added = state.workspaces.find((w) => w.path === r.repoPath)
   if (added) selectWorkspace(added.id)
+  // Wrapping moved the first repository into a folder of its own name, which
+  // is a new name for it — so every repository is asked about, not just the
+  // one that joined. Already-protected ones drop out of the question.
+  void askProtectDefaults(input.projectId, r.wrapped || !added ? undefined : [added.repoName])
   return true
 }
 
@@ -2400,7 +2406,7 @@ export async function forgetProject(projectId: string): Promise<boolean> {
  * §15 — this machine's settings for one project.
  *
  * Merged in the core, so the window sends the field it changed and nothing
- * else. Nothing here is written into the repository: locking a branch is a
+ * else. Nothing here is written into the repository: protecting a branch is a
  * handrail one person put up on one machine, not a team convention — those
  * belong in `cockpit.yaml`, which is versioned and reviewed.
  */
@@ -2412,6 +2418,173 @@ export async function setProjectSettings(
   if (!res) return false
   await refreshProjects()
   return true
+}
+
+/* ── §16 — protected branches ─────────────────────────────────────────
+ *
+ * Per repository, keyed by `repoName`, so a topic's branch of `api` and `api`
+ * itself answer to one list. The core refuses on the same matcher
+ * (`protect.ts`); what is here only draws it and edits it.
+ */
+
+/** The patterns the repository of `w` protects. */
+export function protectedFor(w: Workspace | null | undefined): string[] {
+  if (!w) return []
+  return protectedPatterns(state.projects.find((p) => p.id === w.projectId)?.settings, w.repoName)
+}
+
+export function isBranchProtected(w: Workspace | null | undefined, branch: string | null): boolean {
+  return matchesBranch(branch, protectedFor(w))
+}
+
+async function writeProtected(projectId: string, next: Record<string, string[]>): Promise<boolean> {
+  const res = await guard(() =>
+    client.call('project.settings', { projectId, patch: { protectedBranches: next } }),
+  )
+  if (!res) return false
+  await refreshProjects()
+  return true
+}
+
+/**
+ * Protect or unprotect exactly `branch` in the repository of this checkout.
+ * A branch covered by a pattern (`release/*`) is not unprotected by this —
+ * the pattern is edited in project settings, where it is written out.
+ */
+export async function setBranchProtected(
+  workspaceId: string,
+  branch: string,
+  on: boolean,
+  say = true,
+): Promise<boolean> {
+  const w = state.workspaces.find((x) => x.id === workspaceId)
+  const proj = w && state.projects.find((p) => p.id === w.projectId)
+  if (!w || !proj) return false
+  const map = proj.settings.protectedBranches ?? {}
+  const list = map[w.repoName] ?? []
+  const nextList = on ? [...new Set([...list, branch])] : list.filter((b) => b !== branch)
+  if (!(await writeProtected(proj.id, { ...map, [w.repoName]: nextList }))) return false
+  if (say) toast('ok', branch + (on ? ' protected in ' : ' unprotected in ') + w.repoName)
+  return true
+}
+
+/**
+ * §16 — the checkouts among these that stand on a protected branch.
+ *
+ * The core refuses on the same answer (`protect.ts`, `writeRefusal`); asking
+ * here first is what lets the refusal be a question with a way on, arriving
+ * before the prompt is spent or the edit is lost, rather than a red toast after.
+ */
+function onProtected(ws: Workspace[]): Workspace[] {
+  return ws.filter((w) => w.repo && isBranchProtected(w, w.git?.branch ?? null))
+}
+
+/** What a scope writes into, as far as the window can tell — the core resolves the rest. */
+function scopeCheckouts(scope: AgentScope): Workspace[] {
+  if (scope.kind === 'topic') return state.workspaces.filter((w) => w.topicId === scope.topicId && w.kind !== 'group')
+  if (scope.kind === 'project') return state.workspaces.filter((w) => w.projectId === scope.projectId && w.kind === 'main')
+  const w = state.workspaces.find((x) => x.id === scope.workspaceId)
+  return w ? [w] : []
+}
+
+/** "main in api", or a list of them. The branch always leads: it is the fact. */
+const whereOf = (hits: Workspace[]) => hits.map((w) => w.git!.branch + ' in ' + w.repoName).join(', ')
+const titleOf = (hits: Workspace[]) =>
+  hits.length === 1 ? hits[0]!.git!.branch + ' is protected' : 'These branches are protected'
+
+/**
+ * An agent about to run on a protected branch: stopped, with the one way on
+ * that protection allows — Plan mode, which only reads. True when it stopped.
+ */
+function stopAgentOnProtected(ws: Workspace[]): boolean {
+  if (state.engineOptions.permissionMode === 'plan') return false
+  const hits = onProtected(ws)
+  if (!hits.length) return false
+  state.pendingConfirm = {
+    title: titleOf(hits),
+    body: [
+      'An agent can’t make changes on ' + whereOf(hits) + '.',
+      'Do the work on another branch or in a topic, then Send it. Plan mode only reads, so it still works here — your prompt is kept.',
+    ],
+    verb: 'Switch to Plan mode',
+    cancel: 'Close',
+    done: 'Plan mode — the agent only reads',
+    danger: false,
+    run: async () => {
+      state.engineOptions.permissionMode = 'plan'
+      return true
+    },
+  }
+  return true
+}
+
+/**
+ * A file about to be saved on a protected branch: stopped, and the edit left
+ * in the editor. True when it stopped.
+ */
+export function stopSaveOnProtected(w: Workspace): boolean {
+  const hits = onProtected([w])
+  if (!hits.length) return false
+  const branch = w.git!.branch!
+  state.pendingConfirm = {
+    title: titleOf(hits),
+    body: [
+      'Cockpit doesn’t save files on ' + whereOf(hits) + '.',
+      'Your edit stays in the editor. Make it on another branch or in a topic, or unprotect ' + branch + ' to save here.',
+    ],
+    verb: 'Unprotect ' + branch,
+    cancel: 'Close',
+    done: branch + ' unprotected — save again to write the file',
+    danger: false,
+    run: () => setBranchProtected(w.id, branch, false, false),
+  }
+  return true
+}
+
+/**
+ * §16 — asked once, when a project is made or a repository joins one: protect
+ * the default branch? Asked rather than done, because a repository with one
+ * owner committing to main on purpose is not a mistake; asked at all, because
+ * that is the moment nobody has yet committed to main by accident.
+ *
+ * Silent when every repository in question already protects its default.
+ */
+export async function askProtectDefaults(projectId: string, onlyRepos?: string[]): Promise<void> {
+  const found = await guard(() => client.call('project.defaultBranches', { projectId }))
+  const proj = state.projects.find((p) => p.id === projectId)
+  if (!found || !proj) return
+  const todo = found.filter(
+    (r) =>
+      (!onlyRepos || onlyRepos.includes(r.repo)) &&
+      !matchesBranch(r.branch, protectedPatterns(proj.settings, r.repo)),
+  )
+  if (!todo.length) return
+  const branches = [...new Set(todo.map((r) => r.branch))]
+  const one = branches.length === 1 ? branches[0]! : null
+  const body = [
+    one
+      ? 'Cockpit won’t commit on ' + one + ', and only pushes to it what arrives through Send to ' + one + '.'
+      : 'Cockpit won’t commit on them, and only pushes to them what arrives through Send to.',
+  ]
+  // Which repository, when the answer is not already in the title.
+  if (todo.length > 1 || !one) body.push(todo.map((r) => r.repo + ' — ' + r.branch).join(' · '))
+  else body.push('In ' + todo[0]!.repo + '. Change it any time from the branch menu.')
+  state.pendingConfirm = {
+    title: one ? 'Protect ' + one + '?' : 'Protect the default branches?',
+    body,
+    verb: one ? 'Protect ' + one : 'Protect them',
+    cancel: 'Not now',
+    done: one ? one + ' protected' : 'default branches protected',
+    danger: false,
+    run: async () => {
+      // Re-read: the project may have been saved since the question was put.
+      const now = state.projects.find((p) => p.id === projectId)
+      if (!now) return false
+      const map = { ...(now.settings.protectedBranches ?? {}) }
+      for (const r of todo) map[r.repo] = [...new Set([...(map[r.repo] ?? []), r.branch])]
+      return writeProtected(projectId, map)
+    },
+  }
 }
 
 /** The only action in the app that touches the source tree — and it goes to Trash. */
@@ -3132,6 +3305,8 @@ interface ConfirmBase {
   }
   /** Red button, for the one that cannot be taken back. */
   danger: boolean
+  /** The button that says no, when "Cancel" is the wrong word for it. */
+  cancel?: string
   /** Asked to be typed back before the button will do anything. */
   typeToConfirm?: string
 }
@@ -4206,8 +4381,9 @@ export async function sendTurn(
   prompt: string,
   files: DraftFile[] = [],
 ): Promise<boolean> {
-  rememberPrompt(prompt)
   const c = state.agents.find((x) => x.id === sessionId)
+  if (c && stopAgentOnProtected(state.workspaces.filter((w) => c.workspaceIds.includes(w.id)))) return false
+  rememberPrompt(prompt)
   if (c && isLive(c)) {
     const res = await guard(() =>
       client.call('agent.send', {

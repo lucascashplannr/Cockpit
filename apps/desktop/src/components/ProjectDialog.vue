@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { FolderOpen, Lock, Plus, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { FolderOpen, Plus, ShieldCheck, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
 import DialogShell from './DialogShell.vue'
 import {
   askTrashProject, askUntrackProject, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
@@ -29,8 +29,9 @@ const nameInput = ref<HTMLInputElement | null>(null)
  *  that fills them runs immediately, and a ref read before its `const` is a
  *  blank dialog and a console nobody was looking at. */
 const baseBranch = ref('')
-const locked = ref<string[]>([])
-const lockDraft = ref('')
+/** §16 — per repository, keyed by its name. */
+const guarded = ref<Record<string, string[]>>({})
+const drafts = reactive<Record<string, string>>({})
 
 watch(
   p,
@@ -42,8 +43,10 @@ watch(
     name.value = proj?.name ?? ''
     root.value = proj?.root ?? ''
     baseBranch.value = proj?.settings.defaultBranch ?? ''
-    locked.value = [...(proj?.settings.lockedBranches ?? [])]
-    lockDraft.value = ''
+    guarded.value = Object.fromEntries(
+      Object.entries(proj?.settings.protectedBranches ?? {}).map(([k, v]) => [k, [...v]]),
+    )
+    for (const k of Object.keys(drafts)) delete drafts[k]
     moveFiles.value = true
     if (proj) void nextTick(() => nameInput.value?.focus())
   },
@@ -58,33 +61,39 @@ watch(
  * and now has an escape hatch; the second was a guess about how people work,
  * and plenty of repositories are committed to directly by whoever owns them.
  *
- * So locking is opt-in, per project, and empty until someone sets it.
+ * So protection is opt-in and per repository: a project of an API on `main`
+ * and a front on `dev` has a different branch to guard in each.
  */
 /** What git says, so the field can show it rather than describe it. */
 const probedBase = computed(
   () => workspaces.value.find((w) => w.git?.base)?.git?.base ?? null,
 )
 
-function addLock(branch?: string) {
-  const v = (branch ?? lockDraft.value).trim()
-  if (!v || locked.value.includes(v)) {
-    lockDraft.value = ''
-    return
-  }
-  locked.value = [...locked.value, v]
-  lockDraft.value = ''
+/** The repositories themselves — a topic's branch of one answers to its list. */
+const repos = computed(() => workspaces.value.filter((w) => w.kind === 'main' && w.repo))
+
+function protect(repo: string, branch?: string) {
+  const v = (branch ?? drafts[repo] ?? '').trim()
+  drafts[repo] = ''
+  const list = guarded.value[repo] ?? []
+  if (!v || list.includes(v)) return
+  guarded.value = { ...guarded.value, [repo]: [...list, v] }
 }
 
-function removeLock(branch: string) {
-  locked.value = locked.value.filter((b) => b !== branch)
+function unprotect(repo: string, branch: string) {
+  guarded.value = { ...guarded.value, [repo]: (guarded.value[repo] ?? []).filter((b) => b !== branch) }
 }
+
+/** Order- and empty-insensitive, so adding and removing the same one is not a change. */
+const normal = (m: Record<string, string[]>) =>
+  JSON.stringify(Object.entries(m).filter(([, v]) => v.length).sort(([a], [b]) => a.localeCompare(b)))
 
 const settingsChanged = computed(() => {
   const s = p.value?.settings
   if (!s) return false
   return (
     (baseBranch.value.trim() || null) !== s.defaultBranch ||
-    locked.value.join('\u0000') !== s.lockedBranches.join('\u0000')
+    normal(guarded.value) !== normal(s.protectedBranches ?? {})
   )
 })
 
@@ -160,7 +169,7 @@ async function save() {
       if (
         !(await setProjectSettings(proj.id, {
           defaultBranch: baseBranch.value.trim() || null,
-          lockedBranches: [...locked.value],
+          protectedBranches: guarded.value,
         }))
       ) {
         return
@@ -260,42 +269,46 @@ async function browse() {
         <span class="help">What topics fork from and Send lands on. Empty asks git.</span>
       </label>
 
-      <!-- §16 — the rule that used to be hardcoded, handed back. -->
-      <div class="field">
-        <span class="lbl">Locked branches</span>
-        <div v-if="locked.length" class="chips">
+      <!-- §16 — the rule that used to be hardcoded, handed back, one
+           repository at a time. -->
+      <div v-if="repos.length" class="field">
+        <span class="lbl">Protected branches</span>
+        <div v-for="r in repos" :key="r.id" class="repo">
+          <span v-if="repos.length > 1" class="rname">{{ r.repoName }}</span>
+          <div v-if="guarded[r.repoName]?.length" class="chips">
+            <button
+              v-for="b in guarded[r.repoName]"
+              :key="b"
+              class="chip guardchip mono"
+              title="Unprotect this branch"
+              @click="unprotect(r.repoName, b)"
+            >
+              <ShieldCheck class="sm" />{{ b }}<X class="sm x" />
+            </button>
+          </div>
+          <div class="row">
+            <input
+              v-model="drafts[r.repoName]"
+              class="input mono"
+              type="text"
+              spellcheck="false"
+              :placeholder="(r.git?.base ?? 'main') + ', or release/*'"
+              @keydown.enter.prevent="protect(r.repoName)"
+            />
+            <button class="btn" :disabled="!drafts[r.repoName]?.trim()" @click="protect(r.repoName)">
+              <Plus />Protect
+            </button>
+          </div>
           <button
-            v-for="b in locked"
-            :key="b"
-            class="chip lockchip mono"
-            title="Unlock this branch"
-            @click="removeLock(b)"
+            v-if="r.git?.base && !(guarded[r.repoName] ?? []).includes(r.git.base)"
+            class="linkish"
+            @click="protect(r.repoName, r.git.base)"
           >
-            <Lock class="sm" />{{ b }}<X class="sm x" />
-          </button>
-        </div>
-        <div class="row">
-          <input
-            v-model="lockDraft"
-            class="input mono"
-            type="text"
-            spellcheck="false"
-            placeholder="main, or release/*"
-            @keydown.enter.prevent="addLock()"
-          />
-          <button class="btn" :disabled="!lockDraft.trim()" @click="addLock()">
-            <Plus />Lock
+            Protect {{ r.git.base }}
           </button>
         </div>
         <span class="help">
-          Cockpit won't commit on these.
-          <button
-            v-if="probedBase && !locked.includes(probedBase)"
-            class="linkish"
-            @click="addLock(probedBase)"
-          >
-            Lock {{ probedBase }}
-          </button>
+          Cockpit won't commit on these, and only pushes to them what arrives through Send to.
         </span>
       </div>
 
@@ -350,25 +363,32 @@ async function browse() {
 .help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.5; }
 .summary { font-size: var(--fs-sm); color: var(--text-muted); }
 
-/* A locked branch is one short token and a way to take it back off. */
+/* One repository's list: its name, when there is more than one to tell
+   apart, then the branches, then the way to add one. */
+.repo { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+.repo + .repo { margin-top: 6px; }
+.repo > .row { align-self: stretch; }
+.rname { font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); }
+
+/* A protected branch is one short token and a way to take it back off.
+   Neutral rather than amber: it is a rule you chose, not a warning. */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.lockchip {
+.guardchip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 3px 8px;
   border-radius: 999px;
-  background: var(--warn-soft);
-  color: var(--warn);
+  background: var(--hover);
+  color: var(--text-muted);
   font-size: var(--fs-xs);
 }
-.lockchip .lucide { width: 11px; height: 11px; }
-.lockchip .x { opacity: 0.55; }
-.lockchip:hover .x { opacity: 1; }
+.guardchip .lucide { width: 11px; height: 11px; }
+.guardchip .x { opacity: 0.55; }
+.guardchip:hover .x { opacity: 1; }
 
 /* A sentence that ends in an action, rather than a button sitting under one. */
 .linkish {
-  margin-left: 4px;
   color: var(--accent);
   font-size: var(--fs-xs);
   text-decoration: underline;

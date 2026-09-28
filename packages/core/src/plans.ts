@@ -9,6 +9,7 @@ import { run } from './exec.js'
 import { append } from './journal.js'
 import { getWorkspace, requireWorkspace, baseOverride as getBaseOverride } from './registry.js'
 import { readManifest, findManifest } from './detect.js'
+import { pushRefusal } from './protect.js'
 
 /**
  * §3.7 — "Toute opération affiche son plan avant de s'exécuter et laisse une
@@ -328,6 +329,10 @@ export async function plan(
         warnings.push('Detached HEAD: nothing to push.')
         break
       }
+      // §16 — refused outright rather than planned with a warning on it: a
+      // plan that can be applied is an offer, and this one is not on offer.
+      const refusal = await pushRefusal(ws, branch)
+      if (refusal) throw new Error(refusal)
       // Diverged from *its own* remote, which is the only divergence a push
       // can rewrite. `behind` answers against whatever `upstream` happens to
       // be, and for a topic branch that is `origin/<base>` until the first

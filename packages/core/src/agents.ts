@@ -1350,8 +1350,18 @@ export interface EngineOptions {
   plan?: boolean
 }
 
-function modeOf(opts: EngineOptions | undefined): PermissionMode {
+export function modeOf(opts: EngineOptions | undefined): PermissionMode {
   return opts?.permissionMode ?? (opts?.plan ? 'plan' : 'acceptEdits')
+}
+
+/**
+ * The mode the next turn of a conversation runs in: what the composer says
+ * now, or — when it says nothing — what the live process is already in.
+ * Null for a conversation with no process, which only a resume can reach.
+ */
+export function turnMode(sessionId: string, opts: EngineOptions | undefined): PermissionMode | null {
+  if (opts) return modeOf(opts)
+  return live.get(sessionId)?.mode ?? null
 }
 
 /**

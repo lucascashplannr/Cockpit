@@ -1,11 +1,11 @@
 import { basename } from 'node:path'
 import { newId } from '@cockpit/shared'
 import type { CommitPreview, PlanPreview, PlanStep } from '@cockpit/shared'
-import { isLocked } from './config.js'
 import { run, which } from './exec.js'
 import { git } from './git.js'
 import { append } from './journal.js'
 import * as plans from './plans.js'
+import { isProtected } from './protect.js'
 import * as registry from './registry.js'
 
 /**
@@ -157,13 +157,12 @@ export async function plan(input: CommitInput): Promise<{
     // plenty of repositories are committed to directly, on purpose, by whoever
     // owns them, and an app that refuses is not protecting them from anything.
     //
-    // What replaces it is a handrail you put up yourself, per project. Agents
-    // are unaffected — they never commit at all (§16, `DEFAULT_DENY`).
-    const locked = registry.lockedBranches(w.projectId)
-    if (isLocked(row.branch, locked)) {
+    // What replaces it is a handrail you put up yourself, per repository.
+    // Agents are unaffected — they never commit at all (§16, `DEFAULT_DENY`).
+    if (isProtected(w, row.branch)) {
       warnings.push(
-        w.name + ' is on ' + row.branch + ', which this project locks. ' +
-          'Switch branch, or unlock it in the project settings.',
+        row.branch + ' is protected in ' + w.repoName + '. ' +
+          'Commit on another branch and Send it, or unprotect ' + row.branch + ' from the branch menu.',
       )
       continue
     }

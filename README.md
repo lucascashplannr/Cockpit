@@ -178,14 +178,22 @@ topic's other repositories are listed under the box as somewhere to go instead.
 It commits to `main` if that is where you are. It used to refuse — §16's rule for agents
 ("jamais sur la branche principale") applied to the person using the app — and that was a
 guess about how people work: plenty of repositories are committed to directly, on purpose,
-by whoever owns them. The handrail is now one you put up yourself, per project, under
-**Locked branches** in the project dialog: nothing is locked by default, `*` is allowed so
-`release/*` covers a family, and Cockpit refuses to commit on a match. Agents are untouched
-by the setting — they never commit at all, whatever it says.
+by whoever owns them. The handrail is now one you put up yourself, **per repository**: a
+**protected** branch is one Cockpit refuses to commit on, and pushes to only what arrived
+through Send to — a push carrying a commit made on the branch directly (read off its
+first-parent line) is refused. Nothing is written there from the window either: saving a
+file in the Code tool, or starting or continuing an agent outside Plan mode, stops on a
+question that says so and keeps the edit or the prompt (Plan mode only reads, so it still
+works). When a project is created or a repository joins one, Cockpit
+asks whether to protect each repository's default branch; otherwise nothing is protected.
+Toggle it from the branch menu, or edit the lists (`*` allowed, so `release/*` covers a
+family) under **Protected branches** in the project dialog. The branch chip shows a shield
+in place of the branch glyph on a protected branch. Agents are untouched by the setting —
+they never commit at all, whatever it says.
 
 The same dialog holds a **Base branch** override for when the probe is wrong: `origin/HEAD`
 pointing at a `main` nobody has merged into for a year while the work happens on `develop`.
-It is what topics fork from, what Send to lands on, and what counts as the protected branch
+It is what topics fork from, what Send to lands on, and what counts as the default branch
 for an agent. Both settings live in `~/.cockpit`, never in the repository — a team
 convention belongs in `cockpit.yaml`, which is versioned and reviewed; "do not let me commit
 to main on this laptop" is not a team convention.

@@ -4,7 +4,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@cockpit/shared'
 import type {
   AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
-  ProjectSettings, ServerBoardRow, ServerPush,
+  ProjectSettings, ServerBoardRow, ServerPush, Workspace,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, forSession, tail } from './journal.js'
@@ -31,6 +31,7 @@ import * as terminals from './terminals.js'
 import * as runtime from './runtime/index.js'
 import * as supervisor from './supervisor.js'
 import { portMap } from './ports.js'
+import { agentRefusal, writeRefusal } from './protect.js'
 import { defaultBranch } from './git.js'
 import * as restore from './restore.js'
 import * as checkpoints from './checkpoints.js'
@@ -234,6 +235,11 @@ function allowFor(projectId?: string): string[] | undefined {
 
 type Handler = (params: never) => unknown | Promise<unknown>
 
+/** The checkouts a conversation was started on, those that still exist. */
+function sessionWorkspaces(ids: string[]): Workspace[] {
+  return ids.map((id) => registry.getWorkspace(id)).filter((w): w is Workspace => !!w)
+}
+
 const handlers: Record<string, Handler> = {
   'core.status': () => status(),
   /**
@@ -300,6 +306,15 @@ const handlers: Record<string, Handler> = {
     await registry.reconcile(project.id)
     pushAll()
     return registry.allProjects().find((x) => x.id === project.id) ?? project
+  },
+  'project.defaultBranches': async (p: { projectId: string }) => {
+    const mains = registry.allWorkspaces(p.projectId).filter((w) => w.kind === 'main' && w.repo)
+    return Promise.all(
+      mains.map(async (w) => ({
+        repo: w.repoName,
+        branch: registry.baseOverride(w.path) ?? (await defaultBranch(w.path)),
+      })),
+    )
   },
   'project.rename': async (p: { projectId: string; name: string | null }) => {
     const project = registry.renameProject(p.projectId, p.name)
@@ -480,8 +495,12 @@ const handlers: Record<string, Handler> = {
 
   'fs.list': (p: { workspaceId: string; rel: string }) => files.list(p.workspaceId, p.rel),
   'fs.read': (p: { workspaceId: string; rel: string }) => files.read(p.workspaceId, p.rel),
-  'fs.write': (p: { workspaceId: string; rel: string; content: string; expectMtimeMs: number | null }) =>
-    files.write(p.workspaceId, p.rel, p.content, p.expectMtimeMs),
+  'fs.write': (p: { workspaceId: string; rel: string; content: string; expectMtimeMs: number | null }) => {
+    // §16 — the window asks first; this is the wall behind the question.
+    const refusal = writeRefusal([registry.requireWorkspace(p.workspaceId)], 'save')
+    if (refusal) throw new Error(refusal)
+    return files.write(p.workspaceId, p.rel, p.content, p.expectMtimeMs)
+  },
   'fs.tracked': (p: { workspaceId: string }) => files.tracked(p.workspaceId),
 
   'search.text': (p: Parameters<typeof search.text>[0]) => search.text(p),
@@ -656,6 +675,10 @@ const handlers: Record<string, Handler> = {
     if (!r.paths.length) {
       return { denied: true as const, reason: 'this scope resolves to no path to run in' }
     }
+    // §16 — before the restore point: a run that is not going to happen has
+    // nothing to anchor.
+    const refusal = agentRefusal(r.workspaces, agents.modeOf(p.options))
+    if (refusal) return { denied: true as const, reason: refusal }
 
     // §4 — "un point de restauration est capturé avant toute écriture d'agent",
     // and C0 on the main checkout is where there is most to lose. One anchor
@@ -692,6 +715,8 @@ const handlers: Record<string, Handler> = {
   }) => {
     const prev = agents.get(p.sessionId)
     if (!prev) throw new Error('unknown session: ' + p.sessionId)
+    const refusal = agentRefusal(sessionWorkspaces(prev.workspaceIds), agents.modeOf(p.options))
+    if (refusal) return { denied: true as const, reason: refusal }
     const res = await agents.resumeAgent(
       p.sessionId,
       p.prompt,
@@ -723,6 +748,9 @@ const handlers: Record<string, Handler> = {
     attachments?: AttachmentInput[]
     options?: agents.EngineOptions
   }) => {
+    const c = agents.get(p.sessionId)
+    const refusal = c && agentRefusal(sessionWorkspaces(c.workspaceIds), agents.turnMode(p.sessionId, p.options))
+    if (refusal) return { ok: false as const, reason: refusal }
     const r = await agents.send(p.sessionId, p.prompt, p.attachments, p.options)
     if (r.ok) pushAgentActivity()
     return r

@@ -126,10 +126,10 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
     const branch = w.git?.branch ?? null
     // §4 — allowed, and the reason the caller captures a restore point first.
     // §15 — the project's own answer first: a repository whose base is
-    // `develop` has an agent standing on the protected branch when it is on
+    // `develop` has an agent standing on the default branch when it is on
     // develop, whatever `origin/HEAD` still points at.
     const base = registry.baseOverride(w.path) ?? (await defaultBranch(w.path))
-    const onProtectedBranch = !!w.repo && !!branch && branch === base
+    const onDefaultBranch = !!w.repo && !!branch && branch === base
     const held = leases.leaseCovering(path)
     // Its own session's lease is not a reason to say a new one cannot start —
     // but any other holder is, and start would refuse on exactly this.
@@ -153,7 +153,7 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
       path,
       branch,
       kind: w.kind,
-      onProtectedBranch,
+      onDefaultBranch,
       leasedBy,
     })
   }

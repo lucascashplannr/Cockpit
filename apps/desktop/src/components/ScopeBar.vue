@@ -6,7 +6,7 @@ import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
 import {
-  activeAgentScope, activeWorkspace, goTo, scopeLabel, selectedTopicGroup,
+  activeAgentScope, activeWorkspace, goTo, isBranchProtected, scopeLabel, selectedTopicGroup,
 } from '../core/store.js'
 
 /**
@@ -68,25 +68,16 @@ const branchName = computed(() =>
 )
 
 /**
- * §4 — which repositories under this scope sit on their own default branch.
+ * §16 — the branch named here is protected in its repository.
  *
- * This was a full-width banner over the conversation — an unchanging sentence,
- * on screen for the whole of every thread, costing a row of the work to say
- * something reassuring. It is a fact about where you are standing, so it lives
- * on the line that says where you are standing, at the weight of the other
- * facts there: a glyph, and the sentence on hover.
+ * Drawn as the branch chip's own glyph rather than as a mark of its own. There
+ * used to be a shield in the run of counters, and it meant something else —
+ * "this is the default branch, so an agent's first write captures a restore
+ * point" — which is true of every repository on its default branch and was
+ * read by nobody as that. A shield now means one thing, the handrail you put
+ * up, and it sits on the word it is about.
  */
-const onDefault = computed(() =>
-  covered.value.filter((x) => x.git && x.git.branch && x.git.branch === x.git.base),
-)
-const onDefaultTitle = computed(() => {
-  const names = onDefault.value.map((x) => x.name)
-  return (
-    names.join(', ') +
-    (names.length > 1 ? ' are on their default branch' : ' is on its default branch') +
-    ' — a restore point is captured before the agent’s first write.'
-  )
-})
+const guarded = computed(() => !!branchName.value && isBranchProtected(w.value, branchName.value))
 
 const changed = computed(() =>
   covered.value.reduce((n, x) => {
@@ -173,8 +164,13 @@ const servers = computed(() => {
         :workspace-id="w.id"
         :branch="branchName"
       />
-      <span v-else-if="branchName" class="br brf" :title="'On ' + branchName + ' — this topic’s branch'">
-        <GitBranch class="sm" /><span class="bn">{{ branchName }}</span>
+      <span
+        v-else-if="branchName"
+        class="br brf"
+        :class="{ guarded }"
+        :title="'On ' + branchName + ' — this topic’s branch' + (guarded ? ', protected' : '')"
+      >
+        <component :is="guarded ? ShieldCheck : GitBranch" class="sm" /><span class="bn">{{ branchName }}</span>
       </span>
     </span>
 
@@ -185,13 +181,6 @@ const servers = computed(() => {
          what falls off the end is by construction the least of it. Each
          one that can be acted on opens the tool that says more. -->
     <span class="stats">
-      <!-- §4 — allowed, and the reason a restore point is captured before
-           anything is written. Wordless: it is reassurance, not a thing to
-           act on, and the composer says it in words where it matters. -->
-      <span v-if="onDefault.length" class="stat" :title="onDefaultTitle">
-        <ShieldCheck class="sm si" />
-      </span>
-
       <!-- How many repositories the word to the left stands for. -->
       <span
         v-if="covered.length > 1"
@@ -213,7 +202,7 @@ const servers = computed(() => {
           @click="goTo('diff')"
         >
           <FileDiff class="sm si" />
-          <span class="v" :class="{ warn: changed }">{{ changed }}</span>
+          <span class="v" :class="changed ? 'warn' : 'zero'">{{ changed }}</span>
         </button>
       </template>
 
@@ -329,6 +318,12 @@ const servers = computed(() => {
   overflow: hidden;
 }
 .stats > * { flex: none; }
+/* The hairline sits in the middle, by eye. The branch chip's box ends 8px
+   before it; a pressable counter first carries 6px of its own padding, which
+   put its glyph 15px after it and made the rule read as belonging to the
+   chip. Pulled back by that padding — on the box, not the counter, because
+   the box clips and would cut the counter's hover off. */
+.stats:has(> .act:first-child) { margin-left: -6px; }
 
 /* The only thing on the row that wants to be wide. */
 .grow { flex: 1 1 0; min-width: 0; }
@@ -368,6 +363,7 @@ const servers = computed(() => {
 }
 .brf .lucide { flex: none; width: 12px; height: 12px; opacity: 0.85; }
 .brf .bn { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brf.guarded .lucide { color: var(--text-muted); opacity: 1; }
 
 /* Baseline, not centre. Centred, the 10px kicker floats a couple of pixels
    above the line the name sits on and the pair reads as two things that missed
@@ -429,6 +425,9 @@ const servers = computed(() => {
   white-space: nowrap;
 }
 .stat .v.warn { color: var(--warn); }
+/* Nothing changed is the resting state: the number is still there to press,
+   but it does not ask to be read. */
+.stat .v.zero { color: var(--text-dim); font-weight: 400; }
 /* The changed count is a button, because it is the reason you would open the
    review layer at all: what moved is what there is to read. */
 .stat.act { padding: 0 6px; }

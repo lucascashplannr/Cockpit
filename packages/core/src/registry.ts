@@ -1,11 +1,11 @@
 import { basename, dirname, join, resolve } from 'node:path'
 import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
-import { stableId } from '@cockpit/shared'
+import { protectedPatterns, stableId } from '@cockpit/shared'
 import type {
   Capability, ManifestV1, ProjectSettings, Setup, Topic, Project, Workspace, WorkspaceDetails,
 } from '@cockpit/shared'
 import * as topicStore from './topics/store.js'
-import { loadConfig, updateConfig, projectSettings, setProjectSettings } from './config.js'
+import { loadConfig, migrateLegacyLocks, updateConfig, projectSettings, setProjectSettings } from './config.js'
 import { childRepos, detectCapabilities, findManifest, projectNameFor, readManifest } from './detect.js'
 import { fetchRemote, git, isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
 import { run } from './exec.js'
@@ -232,7 +232,7 @@ export function liveWorkUnder(path: string): string[] {
 
 /**
  * §15 — the machine's settings for one project, merged and written to
- * `~/.cockpit`. Journaled because a locked branch is a rule, and a rule that
+ * `~/.cockpit`. Journaled because a protected branch is a rule, and a rule that
  * appears from nowhere is one nobody can account for later (§3.3).
  */
 export function setSettings(projectId: string, patch: Partial<ProjectSettings>): Project {
@@ -372,6 +372,10 @@ function buildProject(root: string): Project {
   } else {
     repoPaths = childRepos(root)
   }
+
+  // Before the settings are read: an older build kept one protected list for
+  // the whole project, and it lands on each repository the project holds.
+  migrateLegacyLocks(root, repoPaths.filter((rp) => existsSync(rp)).map((rp) => basename(rp)))
 
   const project: Project = {
     id: projectId,
@@ -838,7 +842,11 @@ export function baseOverride(path: string): string | null {
   return null
 }
 
-/** §16 — the branches this project refuses commits on. Empty unless set. */
-export function lockedBranches(projectId: string): string[] {
-  return projects.get(projectId)?.settings.lockedBranches ?? []
+/**
+ * §16 — the branches this checkout's repository protects. Empty unless set.
+ * A topic's branch of `api` answers to `api`'s list, the same as its main
+ * checkout does: the setting is about the repository, not the folder.
+ */
+export function protectedBranches(w: Workspace): string[] {
+  return protectedPatterns(projects.get(w.projectId)?.settings, w.repoName)
 }

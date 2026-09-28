@@ -98,7 +98,7 @@ export interface AgentScopePath {
   branch: string | null
   kind: string
   /** On its repository's default branch: allowed, but a restore point first. */
-  onProtectedBranch: boolean
+  onDefaultBranch: boolean
   /** Held by another session; this scope cannot start until it is released. */
   leasedBy: string | null
 }
@@ -297,6 +297,15 @@ export interface Rpc {
   'project.settings': {
     params: { projectId: string; patch: Partial<ProjectSettings> }
     result: Project
+  }
+  /**
+   * §16 — each repository's default branch, probed now, for the question a
+   * new project asks: "protect main?". Probed rather than read off `GitState`,
+   * which a repository created a second ago has not been given yet.
+   */
+  'project.defaultBranches': {
+    params: { projectId: string }
+    result: { repo: string; branch: string }[]
   }
   /**
    * Re-points the project at another folder. With `moveFiles`, the folder is

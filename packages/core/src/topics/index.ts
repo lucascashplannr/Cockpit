@@ -7,6 +7,7 @@ import type {
 import { append } from '../journal.js'
 import { defaultBranch, git } from '../git.js'
 import * as plans from '../plans.js'
+import { pushRefusal } from '../protect.js'
 import * as registry from '../registry.js'
 import { moveToTrash } from '../files.js'
 import * as runtime from '../runtime/index.js'
@@ -701,6 +702,13 @@ export async function pushPlan(
     }
     if (g.ahead === 0 && g.upstream) continue
 
+    // §16 — this repository sits the push out and says why; the others go.
+    const refusal = await pushRefusal(fresh, g.branch)
+    if (refusal) {
+      warnings.push(refusal)
+      continue
+    }
+
     // Diverged: the remote has commits this branch does not. Force-with-lease
     // is what `git.plan` does for one repository and the reasoning is the same
     // — but across a topic it is worth naming the repository it applies to.
@@ -844,6 +852,10 @@ export async function mergePlan(
       destructive: true,
     })
     if (opts.push) {
+      // §16 — a Send only adds a merge, which a protected base takes; what
+      // would stop the push is a commit already sitting on it from elsewhere.
+      const refusal = await pushRefusal(main, base)
+      if (refusal) blockers.push(refusal)
       steps.push({
         title: main.name + ': push ' + base,
         command: 'git push origin ' + base,

@@ -138,6 +138,7 @@ vocabulaire à réapprendre à chaque écran.
 | ce que l'agent a le droit de toucher | **Scope** | — |
 | les serveurs de dev | **Servers** | runtime |
 | la revendication exclusive sur des chemins | **Locked** | lease, leased |
+| une branche où Cockpit refuse le commit, et le push de ce qui n'est pas arrivé par Send to | **Protected** | locked, locked branch |
 | le démon permanent | **the service** | core, daemon |
 | un enregistrement du fil d'un moteur | **Transcript** | session file |
 

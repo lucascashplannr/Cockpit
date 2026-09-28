@@ -164,7 +164,7 @@ watch(
 
       <footer class="foot">
         <span class="grow" />
-        <button ref="no" class="btn ghost" @click="cancel">Cancel</button>
+        <button ref="no" class="btn ghost" @click="cancel">{{ c.cancel ?? 'Cancel' }}</button>
         <button
           ref="yes"
           class="btn"

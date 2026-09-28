@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { BranchRef } from '@cockpit/shared'
-import { ChevronDown, Cloud, GitBranch, LoaderCircle, Lock, Plus } from '@lucide/vue'
-import { client, gitBusy, guard, requestPlan } from '../core/store.js'
+import { ChevronDown, Cloud, GitBranch, LoaderCircle, Lock, Plus, ShieldCheck, ShieldOff } from '@lucide/vue'
+import { matchesBranch } from '@cockpit/shared'
+import {
+  client, gitBusy, guard, protectedFor, requestPlan, setBranchProtected, state,
+} from '../core/store.js'
 
 /**
  * §2 — where this checkout is, and the one control that moves it.
@@ -35,6 +38,32 @@ const field = ref<HTMLInputElement | null>(null)
  * switch — the working tree is mid-change and the branch list is already stale.
  */
 const busy = computed(() => !!gitBusy[props.workspaceId])
+
+/**
+ * §16 — whether this repository protects the branch, and by what. The shield
+ * replaces the branch glyph on the chip itself: it is a fact about the branch,
+ * so it goes on the branch's name rather than beside it.
+ */
+const patterns = computed(() => protectedFor(state.workspaces.find((w) => w.id === props.workspaceId)))
+const guarded = computed(() => matchesBranch(props.branch, patterns.value))
+/** Protected by a pattern rather than by name: `release/*` is not undone from here. */
+const byPattern = computed(() =>
+  guarded.value && !patterns.value.includes(props.branch)
+    ? (patterns.value.find((p) => matchesBranch(props.branch, [p])) ?? null)
+    : null,
+)
+const protects = (name: string) => matchesBranch(name, patterns.value)
+
+function toggleGuard() {
+  open.value = false
+  void setBranchProtected(props.workspaceId, props.branch, !guarded.value)
+}
+
+function editPatterns() {
+  open.value = false
+  const w = state.workspaces.find((x) => x.id === props.workspaceId)
+  if (w) state.editingProjectId = w.projectId
+}
 watch(busy, (b) => { if (b) open.value = false })
 
 async function toggle() {
@@ -134,6 +163,10 @@ onBeforeUnmount(() => {
 function shortOf(b: BranchRef): string {
   return b.remoteOnly ? b.name.replace(/^[^/]+\//, '') : b.name
 }
+/** The whole name, which the row may have cut, then what its last commit says. */
+function titleOf(b: BranchRef): string {
+  return b.name + (b.subject ? ' — ' + b.subject : '')
+}
 function noteOf(b: BranchRef): string {
   if (b.checkedOutAt) return 'in use'
   if (b.ahead || b.behind) return (b.ahead ? '↑' + b.ahead : '') + (b.behind ? ' ↓' + b.behind : '')
@@ -147,10 +180,13 @@ function noteOf(b: BranchRef): string {
       class="chip"
       :class="{ on: open, busy }"
       :disabled="busy"
-      :title="busy ? 'Switching branch…' : 'On ' + branch + ' — switch branch'"
+      :title="busy
+        ? 'Switching branch…'
+        : 'On ' + branch + (guarded ? ', protected — no commits here' : '') + ' — switch branch'"
       @click="toggle"
     >
       <LoaderCircle v-if="busy" class="sm spin" />
+      <ShieldCheck v-else-if="guarded" class="sm guard" />
       <GitBranch v-else class="sm" />
       <span class="bn">{{ branch }}</span>
       <ChevronDown v-if="!busy" class="ch" />
@@ -177,10 +213,10 @@ function noteOf(b: BranchRef): string {
             :disabled="!!b.checkedOutAt"
             :title="b.checkedOutAt
               ? 'Already checked out at ' + b.checkedOutAt + ' — git allows a branch in one worktree at a time'
-              : b.subject"
+              : titleOf(b)"
             @click="pick(b)"
           >
-            <component :is="b.checkedOutAt ? Lock : GitBranch" />
+            <component :is="b.checkedOutAt ? Lock : protects(b.name) ? ShieldCheck : GitBranch" />
             <span class="nm">{{ b.name }}</span>
             <span v-if="noteOf(b)" class="note">{{ noteOf(b) }}</span>
           </button>
@@ -188,11 +224,14 @@ function noteOf(b: BranchRef): string {
           <!-- On the remote and not here yet. One extra step, said as one extra
                line rather than hidden behind a different control. -->
           <template v-if="remote.length">
+            <!-- No "tracks origin/…" beside each: under this heading every
+                 row tracks origin, and the note was the longer of the two
+                 texts, so it squeezed the name — the one word that says which
+                 branch it is — down to nothing. -->
             <span class="sec">on origin</span>
-            <button v-for="b in remote" :key="b.name" :title="b.subject" @click="pick(b)">
-              <Cloud />
+            <button v-for="b in remote" :key="b.name" :title="titleOf(b)" @click="pick(b)">
+              <component :is="protects(shortOf(b)) ? ShieldCheck : Cloud" />
               <span class="nm">{{ shortOf(b) }}</span>
-              <span class="note">tracks {{ b.name }}</span>
             </button>
           </template>
 
@@ -205,6 +244,31 @@ function noteOf(b: BranchRef): string {
           <p v-if="!local.length && !remote.length && !canCreate" class="hint">
             {{ emptyNote }}
           </p>
+
+          <!-- §16 — about the branch you are on, not one you might go to, so it
+               closes the list rather than joining it. -->
+          <span class="rule" />
+          <button
+            v-if="byPattern"
+            class="guardrow"
+            title="Patterns are edited in the project settings"
+            @click="editPatterns"
+          >
+            <ShieldCheck />
+            <span class="nm">Protected by {{ byPattern }}</span>
+            <span class="note">settings</span>
+          </button>
+          <button
+            v-else
+            class="guardrow"
+            :title="guarded
+              ? 'Allow commits on ' + branch + ' again'
+              : 'Refuse commits on ' + branch + ', and push only what arrives through Send to'"
+            @click="toggleGuard"
+          >
+            <component :is="guarded ? ShieldOff : ShieldCheck" />
+            <span class="nm">{{ guarded ? 'Unprotect' : 'Protect' }} {{ branch }}</span>
+          </button>
         </template>
       </div>
     </div>
@@ -241,6 +305,9 @@ function noteOf(b: BranchRef): string {
 .chip.busy .bn { color: var(--text-dim); }
 .chip.busy .lucide { color: var(--accent); opacity: 1; }
 .chip .lucide { flex: none; width: 12px; height: 12px; opacity: 0.85; }
+/* The shield carries the name's ink rather than the glyph's: it is the one
+   thing on the chip worth reading before the name. */
+.chip .guard { color: var(--text-muted); opacity: 1; }
 .chip .bn {
   color: var(--text-muted);
   overflow: hidden;
@@ -255,7 +322,7 @@ function noteOf(b: BranchRef): string {
   top: calc(100% + 4px);
   left: 0;
   width: 320px;
-  max-height: 380px;
+  max-height: 400px;
   padding: 6px;
 }
 .find {
@@ -273,12 +340,23 @@ function noteOf(b: BranchRef): string {
 .find:focus { outline: none; border-color: var(--focus-ring); }
 .find::placeholder { color: var(--text-dim); }
 
-.rows { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
-.rows > button { width: 100%; }
+/* Vertical only. A row's automatic minimum is its whole text, so a long branch
+   name pushed its row past the menu and the list grew a sideways scrollbar;
+   `min-width: 0` lets the name ellipsis inside the row instead. */
+.rows { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.rows > button { width: 100%; min-width: 0; }
+/* `flex: none`, or the rows are not a height at all. In a scrolling column a
+   flex item may shrink, so with forty branches each row was squeezed to about
+   twenty pixels and with three it kept its full height: the same list at two
+   densities depending on how many names were in it. 26px, a notch under the
+   other menus' 30: this is a list to scan, not a handful of verbs. */
+.rows > button { flex: none; height: 26px; }
 .rows > button:disabled { opacity: 0.45; cursor: default; }
 .rows > button:disabled:hover { background: none; color: var(--text-muted); }
-.nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.note { margin-left: auto; padding-left: 12px; font-size: 11px; color: var(--text-dim); }
+/* The name takes the row and gives way last; the note is a few characters
+   (`↑2 ↓1`, `in use`) and never needs to. */
+.nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note { flex: none; margin-left: auto; padding-left: 12px; font-size: 11px; color: var(--text-dim); }
 .mk .nm { color: var(--accent); }
 .sec {
   padding: 8px 9px 4px;

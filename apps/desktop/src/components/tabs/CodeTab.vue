@@ -12,7 +12,7 @@ import { html } from '@codemirror/lang-html'
 import { php } from '@codemirror/lang-php'
 import type { FileEntry, Workspace } from '@cockpit/shared'
 import { ChevronDown, ChevronRight, File, FileCode, Folder, Save, Search } from '@lucide/vue'
-import { client, guard, state, toast } from '../../core/store.js'
+import { client, guard, state, stopSaveOnProtected, toast } from '../../core/store.js'
 
 /**
  * §12 — "Périmètre assumé : voir, naviguer, éditer manuellement. Pas de
@@ -170,6 +170,8 @@ async function openFile(path: string, line: number | null = null) {
 async function save() {
   const v = view.value
   if (!v || !openPath.value) return
+  // §16 — asked before the write, so the edit is still in the editor after.
+  if (stopSaveOnProtected(props.workspace)) return
   const res = await guard(() =>
     client.call('fs.write', {
       workspaceId: props.workspace.id,

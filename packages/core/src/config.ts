@@ -11,12 +11,20 @@ export const COCKPIT_HOME = process.env.COCKPIT_HOME ?? join(homedir(), '.cockpi
 export const DEFAULT_PORT = Number(process.env.COCKPIT_PORT ?? 7717)
 
 export const PROJECT_DEFAULTS: ProjectSettings = {
-  // Nothing is locked until someone locks it. The rule that used to refuse a
-  // commit on the default branch was a guess about how people work, and a
-  // repository with one owner who commits to main directly is not a mistake.
+  // Nothing is protected until someone protects it. The rule that used to
+  // refuse a commit on the default branch was a guess about how people work,
+  // and a repository with one owner who commits to main directly is not a
+  // mistake. A new project asks instead (see `project.defaultBranches`).
   defaultBranch: null,
-  lockedBranches: [],
+  protectedBranches: {},
 }
+
+/**
+ * What a config written by an older build may still hold: one list for the
+ * whole project, from before protection moved to the repository. Read once by
+ * `migrateLegacyLocks` and never written again.
+ */
+type StoredSettings = Partial<ProjectSettings> & { lockedBranches?: string[] }
 
 export interface LocalConfig {
   /**
@@ -30,7 +38,7 @@ export interface LocalConfig {
     addedAt: number
     name?: string
     /** §15 — this machine's settings for the project. See `ProjectSettings`. */
-    settings?: Partial<ProjectSettings>
+    settings?: StoredSettings
   }[]
   /**
    * §7 — the folder holding one folder per project. New projects are created
@@ -125,17 +133,15 @@ export function safeResolve(root: string, rel: string): string {
  * §15 — one project's settings, filled in with the defaults.
  *
  * Keyed by root rather than by id: ids are derived from the path and a project
- * that is forgotten and added back should not lose the branch someone locked.
+ * that is forgotten and added back should not lose the branch someone protected.
  */
 export function projectSettings(root: string): ProjectSettings {
   const row = loadConfig().projects.find((x) => x.root === root)
+  // Field by field rather than spread wholesale: a config written by an older
+  // build has neither field, and `undefined` would defeat the defaults.
   return {
-    ...PROJECT_DEFAULTS,
-    ...(row?.settings ?? {}),
-    // Merged rather than spread wholesale: a config written by an older build
-    // has neither field, and `undefined` here would defeat the default above.
-    lockedBranches: row?.settings?.lockedBranches ?? PROJECT_DEFAULTS.lockedBranches,
     defaultBranch: row?.settings?.defaultBranch ?? PROJECT_DEFAULTS.defaultBranch,
+    protectedBranches: row?.settings?.protectedBranches ?? PROJECT_DEFAULTS.protectedBranches,
   }
 }
 
@@ -147,30 +153,39 @@ export function setProjectSettings(root: string, patch: Partial<ProjectSettings>
     const next: ProjectSettings = { ...projectSettings(root), ...patch }
     // An empty list and an unset default are the defaults; storing them would
     // write noise into the config file for every project ever opened.
+    const guarded: Record<string, string[]> = {}
+    for (const [repo, list] of Object.entries(next.protectedBranches)) {
+      const clean = [...new Set(list.map((b) => b.trim()).filter(Boolean))]
+      if (clean.length) guarded[repo] = clean
+    }
+    next.protectedBranches = guarded
     row.settings = {
       ...(next.defaultBranch ? { defaultBranch: next.defaultBranch } : {}),
-      ...(next.lockedBranches.length ? { lockedBranches: next.lockedBranches } : {}),
+      ...(Object.keys(guarded).length ? { protectedBranches: guarded } : {}),
     }
-    if (!Object.keys(row.settings).length) delete row.settings
+    if (!Object.keys(row.settings!).length) delete row.settings
     out = next
   })
   return out
 }
 
 /**
- * Does `branch` match one of the locked patterns? `*` is the only wildcard,
- * which covers `release/*` and stops short of asking anyone to write a regex
- * into a settings field.
+ * The project-wide list an older build kept, handed to every repository the
+ * project holds — the one reading of it that locks nothing it did not lock
+ * before. Written once and the old field dropped, so it never runs twice.
  */
-export function isLocked(branch: string | null, patterns: string[]): boolean {
-  if (!branch) return false
-  return patterns.some((raw) => {
-    const pattern = raw.trim()
-    if (!pattern) return false
-    if (!pattern.includes('*')) return pattern === branch
-    const rx = new RegExp(
-      '^' + pattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$',
-    )
-    return rx.test(branch)
+export function migrateLegacyLocks(root: string, repoNames: string[]): void {
+  const row = loadConfig().projects.find((x) => x.root === root)
+  const legacy = row?.settings?.lockedBranches
+  if (!row?.settings || legacy === undefined) return
+  updateConfig(() => {
+    const settings = row.settings!
+    delete settings.lockedBranches
+    if (legacy.length && repoNames.length) {
+      const map = { ...(settings.protectedBranches ?? {}) }
+      for (const repo of repoNames) map[repo] = [...new Set([...(map[repo] ?? []), ...legacy])]
+      settings.protectedBranches = map
+    }
+    if (!Object.keys(settings).length) delete row.settings
   })
 }
