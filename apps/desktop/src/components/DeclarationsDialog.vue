@@ -210,9 +210,29 @@ function dismiss(): void {
   else close()
 }
 
+/**
+ * The entry already answering to the name being typed, in any scope.
+ *
+ * Asked of the whole project rather than of `servers` above: the list shows
+ * one folder, names are shared by all of them, and saving over a name that
+ * lives in another repository replaced that entry without either one ever
+ * being on screen together. The core refuses it too; this says so first.
+ */
+const clash = computed(() => {
+  const e = editing.value
+  const name = e?.name.trim()
+  if (!name || name === previousName.value) return null
+  return (d.value?.declarations ?? []).find((x) => x.name === name) ?? null
+})
+const clashWhere = computed(() => {
+  const c = clash.value
+  if (!c) return ''
+  return scopes.value.find((s) => s.repo === c.repo)?.label ?? (c.repo || project.value?.name || 'the project')
+})
+
 const valid = computed(() => {
   const e = editing.value
-  if (!e) return false
+  if (!e || clash.value) return false
   return !!e.name.trim() && (!!e.cmd.trim() || e.runs.length > 0)
 })
 
@@ -414,6 +434,9 @@ onMounted(() => {
         <label class="field">
           <span class="lbl">Name</span>
           <input ref="nameField" v-model="editing.name" class="input" placeholder="build" />
+          <span v-if="clash" class="clash">
+            Already a {{ clash.kind }} in {{ clashWhere }} — names are shared by the whole project.
+          </span>
         </label>
 
         <div class="field">
@@ -746,6 +769,8 @@ h3 .lucide { width: 13px; height: 13px; }
   text-transform: none;
 }
 .lbl code { font-size: var(--fs-xs); color: var(--text-muted); }
+/* Why Save is off, under the field that turned it off. */
+.clash { font-size: var(--fs-xs); line-height: 1.5; color: var(--danger); }
 .ta { resize: vertical; line-height: 1.45; }
 .pair { display: flex; align-items: center; gap: 6px; }
 .pair .input { flex: 1; min-width: 0; }

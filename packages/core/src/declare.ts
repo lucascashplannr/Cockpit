@@ -104,6 +104,9 @@ function guessesOf(
     // repository's name only where `web` is taken, since names are the
     // project's and not the folder's.
     const name = !taken.has('web') ? 'web' : s.repo || 'web-project'
+    // Two guessed folders are two drafts, and both called `web` would be one
+    // key the moment the second is confirmed.
+    if (same) taken.add(name)
     out.push({
       repo: s.repo,
       impl: rt.impl,
@@ -194,8 +197,13 @@ export function saveDeclaration(
     return { ok: false, detail: 'could not read the manifest: ' + String(e), manifestPath: path }
   }
 
-  if (!isMap(doc.get(section))) doc.set(section, doc.createNode({}))
   const old = previousName?.trim()
+  if (name !== old) {
+    const clash = holderOf(doc, name, project.name)
+    if (clash) return { ok: false, detail: clash, manifestPath: path }
+  }
+
+  if (!isMap(doc.get(section))) doc.set(section, doc.createNode({}))
   if (old && old !== name) doc.deleteIn([section, old])
   doc.setIn([section, name], doc.createNode(bodyOf(decl)))
 
@@ -214,6 +222,27 @@ export function saveDeclaration(
     payload: { section, name, previousName: old ?? null },
   })
   return { ok: true, detail: name + ' saved', manifestPath: path }
+}
+
+/**
+ * Who already answers to `name`, said as the refusal, or null.
+ *
+ * Names are the project's, not the folder's: `start:`, `runs:` and
+ * `{{api.url}}` all name a server bare, so `servers` is one map for every
+ * repository. The sheet only lists the scope it is open on, which is how a
+ * backend's `dev` got silently replaced by a frontend's `dev` — same key, the
+ * first one never on screen to warn about. Across both sections too, because
+ * `runs:` looks a name up in `commands` before `servers`.
+ */
+function holderOf(doc: ReturnType<typeof parseDocument>, name: string, projectName: string): string | null {
+  for (const section of ['servers', 'commands'] as const) {
+    if (!doc.hasIn([section, name])) continue
+    const repo = doc.getIn([section, name, 'repo'])
+    const where = typeof repo === 'string' && repo ? basename(repo) : projectName
+    const kind = section === 'servers' ? 'server' : 'command'
+    return name + ' is already a ' + kind + ' in ' + where + ' — names are shared by the whole project'
+  }
+  return null
 }
 
 export function removeDeclaration(projectId: string, kind: Declaration['kind'], name: string): SaveResult {
