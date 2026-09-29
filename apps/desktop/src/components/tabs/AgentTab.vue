@@ -1496,7 +1496,7 @@ function ago(ts: number): string {
   /* The gap tracks the mark: at 48 the wordmark is its own block rather than a
      heading, and 10px under it read as the line being a subtitle glued to the
      logo instead of the question it is. */
-  margin: 0 auto 16px;
+  margin: 0 auto 24px;
   color: var(--brand-ink);
   --wm-lead: var(--accent);
 }
@@ -1515,7 +1515,7 @@ function ago(ts: number): string {
   justify-content: center;
   gap: 5px;
   flex-wrap: wrap;
-  margin: 0 0 20px;
+  margin: 0 0 28px;
   font-size: var(--fs-md);
   font-weight: 450;
   color: var(--text-muted);

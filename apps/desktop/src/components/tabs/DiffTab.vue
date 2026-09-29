@@ -1747,11 +1747,7 @@ const mark: Record<string, Component> = {
 
 .attr { flex: none; display: flex; align-items: center; color: var(--text-dim); }
 .attr .lucide { width: 13px; height: 13px; }
-.attr.human { color: var(--human); }
-.attr.agent { color: var(--agent); }
-.attr.mixed { color: var(--warn); }
-.attr.unknown { color: var(--text-dim); }
-.attr.mixed { color: var(--warn); }
+/* Monochrome: the glyph already says who — person, sparkles, both, unknown. */
 
 .st {
   flex: none;
@@ -1905,9 +1901,6 @@ const mark: Record<string, Component> = {
 .dfacts dt { color: var(--text-dim); }
 .dfacts dd { margin: 0; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
 .dwho .lucide { width: 12px; height: 12px; }
-.dwho.human { color: var(--human); }
-.dwho.agent { color: var(--agent); }
-.dwho.mixed { color: var(--warn); }
 .vhead .seg > button { height: 20px; padding: 0 8px; }
 .vhead .seg .lucide { width: 12px; height: 12px; flex: none; }
 .vhead .btn .lucide { flex: none; }
