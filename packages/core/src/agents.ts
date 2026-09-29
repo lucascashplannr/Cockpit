@@ -584,6 +584,12 @@ const claudeEngine: EngineSpec = {
     // blocks, with the raw stdout and stderr beside them.
     if (type === 'user') {
       const content = (o.message as { content?: unknown })?.content
+      // A `/command` that failed before the model ever saw it says so here,
+      // and nowhere else: the result that follows is an empty success.
+      if (typeof content === 'string') {
+        const failed = /<local-command-stderr>([\s\S]*?)<\/local-command-stderr>/.exec(content)
+        return failed ? [{ kind: 'error', text: commandFailure(failed[1]!) }] : []
+      }
       if (!Array.isArray(content)) return []
       const r = o.tool_use_result as
         | { stdout?: string; stderr?: string; interrupted?: boolean }
@@ -644,6 +650,18 @@ const claudeEngine: EngineSpec = {
         response: { subtype: 'error', request_id: requestId, error: 'not supported by this host' },
       }),
   },
+}
+
+/** A command's own failure, arriving HTML-escaped inside the engine's tags. */
+function commandFailure(raw: string): string {
+  const text = raw
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .trim()
+  return 'The command stopped before Claude saw it.\n\n```\n' + text + '\n```'
 }
 
 /**
@@ -1861,6 +1879,12 @@ async function launch(
           changed = true
           break
         }
+
+        case 'error':
+          if (!ev.text) break
+          append({ type: 'agent.output', level: 'warn', actor, workspaceId, payload: { text: ev.text } })
+          changed = true
+          break
 
         case 'control':
           if (ev.requestId && spec.control) child.stdin?.write(spec.control.unsupported(ev.requestId) + '\n')
