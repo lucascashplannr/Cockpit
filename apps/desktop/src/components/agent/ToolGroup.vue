@@ -238,5 +238,12 @@ const stat = computed(() => {
 .dots i:nth-child(3) { animation-delay: 0.3s; }
 
 /* Indented under the line that stands for them: they are its detail. */
-.calls { margin-left: 14px; padding-left: 8px; border-left: 1px solid var(--line-soft); }
+.calls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 14px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line-soft);
+}
 </style>

@@ -2,6 +2,7 @@ import { createApp, watch } from 'vue'
 import App from './App.vue'
 import { applyTheme, client, hostWindow, state, toast } from './core/store.js'
 import { releaseSplash } from './core/splash.js'
+import { startNotifications } from './core/notify.js'
 
 /* The two faces the app is drawn in, bundled rather than requested: an
    offline desktop tool cannot depend on a font CDN, and `-apple-system` alone
@@ -23,6 +24,7 @@ applyTheme()
 // so the projects start at the top.
 if (!hostWindow) document.documentElement.style.setProperty('--lights-h', '0px')
 client.connect()
+startNotifications()
 
 const app = createApp(App)
 

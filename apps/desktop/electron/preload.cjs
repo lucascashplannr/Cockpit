@@ -29,6 +29,16 @@ contextBridge.exposeInMainWorld('cockpitHost', {
   /** Opens the logs folder in Finder / Explorer. */
   revealLogs: () => ipcRenderer.invoke('host:revealLogs'),
   /**
+   * A native notification, one per `id` — a newer one replaces the older.
+   * Clicking it brings the window forward and hands the id back.
+   */
+  notify: (opts) => ipcRenderer.send('notify:show', opts),
+  onNotifyClick: (fn) => {
+    const listener = (_e, id) => fn(id)
+    ipcRenderer.on('notify:open', listener)
+    return () => ipcRenderer.removeListener('notify:open', listener)
+  },
+  /**
    * The window's own three verbs. They exist because AppKit greys the standard
    * buttons on any window that is not the key window, so the app draws its own
    * and needs somewhere to send the clicks.

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell, nativeTheme } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Notification, shell, nativeTheme } = require('electron')
 const { execFileSync, spawn } = require('node:child_process')
 const { dirname, join, resolve } = require('node:path')
 const { appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync } = require('node:fs')
@@ -286,6 +286,55 @@ ipcMain.on('window:zoom', (e, alt) => {
 })
 
 /**
+ * A conversation that finished or is waiting on an approval, said outside the
+ * window. The renderer decides *when* — it is the side that knows what a
+ * conversation is — and this side only draws it and routes the click back.
+ *
+ * One per conversation: a newer one replaces the older, so the Notification
+ * Center holds where each conversation stands now, not its history. Held in a
+ * map as well because a Notification that nothing references is collected, and
+ * its click handler with it.
+ */
+const shown = new Map()
+
+ipcMain.on('notify:show', (e, opts) => {
+  if (!Notification.isSupported()) return
+  const o = opts && typeof opts === 'object' ? opts : {}
+  const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '')
+  const id = str(o.id, 200)
+  if (!id) return
+  shown.get(id)?.close()
+  const n = new Notification({
+    title: str(o.title, 200) || 'Cockpit',
+    body: str(o.body, 400),
+    // macOS only; elsewhere it is ignored rather than refused.
+    ...(o.subtitle ? { subtitle: str(o.subtitle, 200) } : {}),
+  })
+  const win = senderWindow(e)
+  n.on('click', () => {
+    // One already cleared or replaced is not a request to go anywhere: macOS
+    // can still hand over a click on a banner that is on its way out, and by
+    // then the person is back in the window, working on something else.
+    if (shown.get(id) !== n) return
+    shown.delete(id)
+    if (!win || win.isDestroyed()) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+    win.webContents.send('notify:open', id)
+  })
+  n.on('close', () => shown.get(id) === n && shown.delete(id))
+  shown.set(id, n)
+  n.show()
+})
+
+/** Coming back to the window is having seen them: the badges say the rest. */
+function clearNotifications() {
+  for (const n of shown.values()) n.close()
+  shown.clear()
+}
+
+/**
  * The one thing the renderer genuinely cannot do for itself. §13 rule 1 keeps
  * the bridge tiny, but `window.prompt` does not exist in Electron at all, so
  * "add a project" needs a real dialog or it is a button that throws.
@@ -434,6 +483,7 @@ function createWindow() {
   else win.removeMenu()
 
   win.once('ready-to-show', () => win.show())
+  win.on('focus', clearNotifications)
 
   // §13 rule 1 — external links leave the app rather than navigating it.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -454,6 +504,10 @@ function createWindow() {
 seedDevHome()
 captureAppLog()
 process.on('uncaughtException', (e) => console.error('[cockpit] uncaught: ' + (e?.stack ?? e)))
+
+// Windows attributes a toast to an AppUserModelID and shows nothing without
+// one. The installer registers this one; unpackaged, Electron's own stands in.
+if (process.platform === 'win32') app.setAppUserModelId(DEV ? process.execPath : 'com.cashplannr.cockpit')
 
 app.whenReady().then(async () => {
   console.log('[cockpit] ' + app.getVersion() + ' (' + (DEV ? 'source' : 'packaged') + ') starting, service port ' + CORE_PORT)

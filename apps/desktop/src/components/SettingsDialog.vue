@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { FolderOpen, MonitorCog, Moon, SlidersHorizontal, Sun, X } from '@lucide/vue'
-import { pickFolder, saveSettings, setTheme, state } from '../core/store.js'
+import { Bell, BellOff, FolderOpen, Hand, MonitorCog, Moon, SlidersHorizontal, Sun, X } from '@lucide/vue'
+import { hostNotify, pickFolder, saveSettings, setNotifyPref, setTheme, state } from '../core/store.js'
 
 /**
  * §15 — "ce qui vit sur la machine" : settings that belong to this computer and
  * this person rather than to any repository. Small on purpose. Anything a
  * colleague would need too belongs in the manifest instead.
  *
- * The theme lives here too, and is the one thing in the dialog that is not
- * saved: it is a choice about this window, it takes effect as you click it,
- * and there is nothing to confirm. Everything else is a path the service has
+ * The theme and the notifications live here too, and are the things in the
+ * dialog that are not saved: each is a choice about this window, takes effect
+ * as you click it, and has nothing to confirm. Everything else is a path the service has
  * to accept, which is what Save is for.
  */
 
@@ -18,6 +18,12 @@ const THEMES = [
   { id: 'system', label: 'System', icon: MonitorCog },
   { id: 'light', label: 'Light', icon: Sun },
   { id: 'dark', label: 'Dark', icon: Moon },
+] as const
+
+const NOTIFY = [
+  { id: 'all', label: 'Finished + approvals', icon: Bell },
+  { id: 'approval', label: 'Approvals only', icon: Hand },
+  { id: 'off', label: 'Off', icon: BellOff },
 ] as const
 
 const devRootInput = ref('')
@@ -99,6 +105,23 @@ function onKey(e: KeyboardEvent) {
               <component :is="t.icon" class="sm" />{{ t.label }}
             </button>
           </div>
+        </div>
+
+        <div v-if="hostNotify" class="field">
+          <span class="lbl">Notifications</span>
+          <div class="seg">
+            <button
+              v-for="n in NOTIFY"
+              :key="n.id"
+              :class="{ on: state.notifications === n.id }"
+              @click="setNotifyPref(n.id)"
+            >
+              <component :is="n.icon" class="sm" />{{ n.label }}
+            </button>
+          </div>
+          <span class="help">
+            A toast in the window, a system notification when Cockpit is in the background. Neither one takes you anywhere until you click it.
+          </span>
         </div>
 
         <label class="field">

@@ -65,9 +65,17 @@ interface CockpitHost {
   revealLogs?: () => Promise<string>
   /** The window's own three verbs, drawn by TrafficLights. Absent in a browser. */
   window?: { close: () => void; minimize: () => void; zoom: (alt: boolean) => void }
+  /** A native notification; a newer one with the same id replaces the older. */
+  notify?: (opts: { id: string; title: string; subtitle?: string; body: string }) => void
+  /** The id of a notification that was clicked. Returns the unsubscribe. */
+  onNotifyClick?: (fn: (id: string) => void) => () => void
 }
 
 const host = (window as unknown as { cockpitHost?: CockpitHost }).cockpitHost
+
+/** Native notifications, where there is a host to show them. */
+export const hostNotify =
+  host?.notify && host.onNotifyClick ? { show: host.notify, onClick: host.onNotifyClick } : null
 
 /**
  * The window chrome the app draws itself, and only where there is a window to
@@ -399,6 +407,8 @@ export const state = reactive({
   planBusy: false,
   toasts: [] as ToastItem[],
   theme: (localStorage.getItem('cockpit.theme') ?? 'system') as 'system' | 'dark' | 'light',
+  /** What earns a system notification while the window is in the background. */
+  notifications: readNotifyPref(),
 })
 
 export const termOutput = shallowRef(new Map<string, string[]>())
@@ -2167,6 +2177,7 @@ export type ToastKind = 'ok' | 'info' | 'warn' | 'error'
  */
 export type ToastIcon =
   | 'copy' | 'stop' | 'play' | 'clock' | 'restart' | 'server' | 'undo' | 'save' | 'discard'
+  | 'reply' | 'approval'
 
 export type ToastItem = {
   id: number
@@ -2398,6 +2409,7 @@ async function selectCreatedProject(id: string): Promise<void> {
   await refreshProjects()
   state.activeProjectId = id
   state.activeWorkspaceId = null
+  state.agentScope = null
   ensureSelection()
 }
 
@@ -2420,6 +2432,17 @@ export function selectProject(id: string): void {
   const inProject = state.workspaces.filter((w) => w.projectId === id)
   const last = recentIds.value.find((rid) => inProject.some((w) => w.id === rid))
   state.activeWorkspaceId = last ?? inProject[0]?.id ?? null
+  // A conversation opened on another project — from a toast, say — must not
+  // follow you here: the chat is about where you are standing.
+  const w = state.workspaces.find((x) => x.id === state.activeWorkspaceId)
+  if (state.agentScope && (!w || !scopeCovers(state.agentScope, w))) state.agentScope = null
+}
+
+/** The scope reaches this checkout: it is the checkout, or holds it. */
+function scopeCovers(scope: AgentScope, w: Workspace): boolean {
+  if (scope.kind === 'topic') return w.topicId === scope.topicId
+  if (scope.kind === 'project') return w.projectId === scope.projectId
+  return scope.workspaceId === w.id
 }
 
 export async function createProject(input: {
@@ -2796,11 +2819,14 @@ async function refreshProjects(): Promise<void> {
 export function selectWorkspace(id: string): void {
   state.activeWorkspaceId = id
   // Clicking a row is saying "this one", so a scope wider than the row — the
-  // topic it sits under, the project — stops being the answer. Dropping it
-  // lets activeAgentScope fall back to this workspace; a folder scope inside
-  // it is narrower than the click, and survives.
+  // topic it sits under, the project — stops being the answer, and so does
+  // one on another row altogether. Dropping it lets activeAgentScope fall
+  // back to this workspace; a folder scope inside it is narrower than the
+  // click, and survives.
   const scope = state.agentScope
-  if (scope && (scope.kind === 'topic' || scope.kind === 'project')) state.agentScope = null
+  if (scope && (scope.kind === 'topic' || scope.kind === 'project' || scope.workspaceId !== id)) {
+    state.agentScope = null
+  }
   const w = state.workspaces.find((x) => x.id === id)
   if (w && w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
   remember(id)
@@ -2816,15 +2842,7 @@ export function selectWorkspace(id: string): void {
 export function openFileAt(workspaceId: string, path: string, line: number | null = null): void {
   const w = state.workspaces.find((x) => x.id === workspaceId)
   if (!w) return
-  const scope = state.agentScope
-  const within =
-    !scope ||
-    (scope.kind === 'topic'
-      ? w.topicId === scope.topicId
-      : scope.kind === 'project'
-        ? w.projectId === scope.projectId
-        : scope.workspaceId === w.id)
-  if (!within) state.agentScope = null
+  if (state.agentScope && !scopeCovers(state.agentScope, w)) state.agentScope = null
   if (w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
   if (state.activeWorkspaceId !== w.id) {
     state.activeWorkspaceId = w.id
@@ -3251,6 +3269,19 @@ export function applyTheme(): void {
   if (state.theme === 'system') el.removeAttribute('data-theme')
   else el.setAttribute('data-theme', state.theme)
   localStorage.setItem('cockpit.theme', state.theme)
+}
+
+export type NotifyPref = 'all' | 'approval' | 'off'
+
+function readNotifyPref(): NotifyPref {
+  const v = localStorage.getItem('cockpit.notifications')
+  return v === 'approval' || v === 'off' ? v : 'all'
+}
+
+/** Like the theme: a choice about this machine, taken as it is clicked. */
+export function setNotifyPref(pref: NotifyPref): void {
+  state.notifications = pref
+  localStorage.setItem('cockpit.notifications', pref)
 }
 
 /**
