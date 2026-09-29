@@ -138,6 +138,7 @@ const TITLES: Partial<Record<EventType, string>> = {
   'agent.denied': 'Tool refused',
   'agent.checkpoint': 'Checkpoint',
   'agent.reverted': 'Reverted',
+  'agent.compacted': 'Compacted',
   'agent.session_ended': 'Conversation ended',
   'lease.acquired': 'Lock taken',
   'lease.released': 'Lock released',

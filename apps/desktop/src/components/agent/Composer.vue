@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { CornerDownLeft, FileCode, FileText, Paperclip, Square, UnfoldVertical, X } from '@lucide/vue'
+import { CornerDownLeft, FileCode, FileText, Paperclip, Square, SquareSlash, UnfoldVertical, X } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachFiles, attachText, client, dataUrl, detachFile, engineName, guard,
   isLongPaste, openDraftFiles, placedHandles, saveComposer, state,
 } from '../../core/store.js'
-import { ANCHOR_PAD, CLAUDE_MODELS, anchorOf, anchorWritten, splitPrompt } from '@cockpit/shared'
-import type { Conversation } from '@cockpit/shared'
+import {
+  AGENT_COMMANDS, ANCHOR_PAD, CLAUDE_MODELS, COMMAND_ENGINES, anchorOf, anchorWritten, splitPrompt,
+} from '@cockpit/shared'
+import type { AgentCommand, Conversation } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
@@ -208,6 +210,8 @@ interface Row {
   insert: string
   /** An attached picture shows itself; everything else shows an icon. */
   pic?: string
+  /** A `/` row: accepting it can run it rather than only write it. */
+  command?: AgentCommand
 }
 
 const fileRows = computed<Row[]>(() =>
@@ -231,7 +235,33 @@ const attachRows = computed<Row[]>(() =>
   })),
 )
 
+/* ── / commands ──────────────────────────────────────────────────────────
+ *
+ * Offered while the box holds nothing but a `/` and the start of a name, with
+ * the caret still in it: a command is the whole turn, so a `/` anywhere later
+ * is a path or a fraction and is left alone.
+ */
+const slash = computed(() => {
+  const m = /^\/([a-z-]*)$/.exec(agentDraft.value.slice(0, caret.value))
+  return m && !agentDraft.value.slice(caret.value).trim() ? m[1]! : null
+})
+
+/**
+ * Only what can actually run here. An engine command goes to the engine as
+ * typed, so an engine that does not know the word is not offered it; one that
+ * needs a conversation behind it is not offered on the invitation.
+ */
+const commandRows = computed<Row[]>(() => {
+  const engine = props.session?.engine ?? props.engine ?? 'claude'
+  return AGENT_COMMANDS.filter(
+    (c) =>
+      (c.run === 'window' || COMMAND_ENGINES.includes(engine)) && (!c.thread || props.mode !== 'start'),
+  ).map((c) => ({ key: '/' + c.name, label: '/' + c.name, hint: c.hint, insert: c.name, command: c }))
+})
+
 const matches = computed<Row[]>(() => {
+  const q = slash.value
+  if (q !== null) return commandRows.value.filter((r) => r.insert.startsWith(q))
   const m = mention.value
   if (m === null) return []
   const rows = m.sigil === '#' ? attachRows.value : fileRows.value
@@ -243,13 +273,34 @@ const cursor = ref(0)
 watch(matches, () => {
   cursor.value = 0
 })
-const picking = computed(() => matches.value.length > 0 && mention.value !== null)
+const picking = computed(() => matches.value.length > 0 && (mention.value !== null || slash.value !== null))
 
 function track(): void {
   caret.value = box.value?.selectionStart ?? 0
 }
 
-function accept(r: Row | undefined): void {
+/**
+ * A command written out in full. ⏎ runs it there and then — the name is the
+ * whole of most of them — and Tab only completes it, for the one that takes
+ * words after it.
+ */
+function acceptCommand(r: Row, run: boolean): void {
+  const c = r.command!
+  const text = '/' + c.name + (run ? '' : ' ')
+  agentDraft.value = text
+  if (run) {
+    submit()
+    return
+  }
+  nextTick(() => {
+    box.value?.focus()
+    box.value?.setSelectionRange(text.length, text.length)
+    caret.value = text.length
+  })
+}
+
+function accept(r: Row | undefined, run = false): void {
+  if (r?.command) return acceptCommand(r, run)
   const m = mention.value
   if (!m || !r) return
   const after = agentDraft.value.slice(caret.value)
@@ -373,7 +424,7 @@ function onKey(ev: KeyboardEvent): void {
     }
     if (ev.key === 'Enter' || ev.key === 'Tab') {
       ev.preventDefault()
-      accept(matches.value[cursor.value])
+      accept(matches.value[cursor.value], ev.key === 'Enter')
       return
     }
     if (ev.key === 'Escape') {
@@ -673,12 +724,14 @@ defineExpose({ focus: () => box.value?.focus(), take })
           v-for="(m, i) in matches"
           :key="m.key"
           :class="{ on: i === cursor }"
-          @mousedown.prevent="accept(m)"
+          @mousedown.prevent="accept(m, true)"
         >
           <!-- An attached picture shows itself: `#` is answered by looking. -->
           <img v-if="m.pic" class="tiny" :src="m.pic" alt="" />
+          <SquareSlash v-else-if="m.command" class="xs" />
           <FileCode v-else class="xs" />
-          <span class="path">{{ m.label }}</span>
+          <span class="path" :class="{ cmd: m.command }">{{ m.label }}</span>
+          <span v-if="m.command?.args" class="args">{{ m.command.args }}</span>
           <!-- Which repository the file is in, or what the attachment answers
                to. Only when there is something to say: two files of the same
                name in two repos are the whole reason the list is worth reading
@@ -1164,6 +1217,10 @@ defineExpose({ focus: () => box.value?.focus(), take })
 }
 .mentions .lucide { flex: none; color: var(--text-dim); }
 .mentions .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mentions .path.cmd { flex: none; font-family: var(--mono); color: var(--text); }
+.mentions .args { flex: none; font-family: var(--mono); color: var(--text-dim); }
+.mentions .args::before { content: '['; }
+.mentions .args::after { content: ']'; }
 .mentions .tiny {
   flex: none;
   width: 16px;

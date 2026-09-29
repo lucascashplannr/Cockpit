@@ -7,7 +7,7 @@ import type {
   AgentScopePreview, Conversation, AgentTurn, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, Check, Clock, Copy, Gauge, Hand, Lock, Paperclip,
+  ArrowDown, Asterisk, Check, Clock, Copy, FoldVertical, Gauge, Hand, Lock, Paperclip,
   Redo2, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -23,7 +23,7 @@ import {
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
   transcriptOf,
 } from '../../core/store.js'
-import { anchorOf, anchorsIn, readPrompt } from '@cockpit/shared'
+import { COMMAND_ENGINES, anchorOf, anchorsIn, commandIn, readPrompt } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
 
 /**
@@ -148,6 +148,8 @@ type Item =
   /** §16 — a turn's work put back. It happened to the code, so it is in the
    *  thread rather than only in a toast that has since gone. */
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
+  /** `/compact` — the window before and after the engine summarised it. */
+  | { kind: 'compact'; id: string; before: number; after: number }
 
 /**
  * What a turn is actually drawn as.
@@ -161,6 +163,7 @@ type Row =
   | { kind: 'call'; id: string; call: Extract<Item, { kind: 'tool' }> }
   | { kind: 'group'; id: string; calls: Extract<Item, { kind: 'tool' }>[] }
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
+  | { kind: 'compact'; id: string; before: number; after: number }
 
 /**
  * Every run of calls folds, down to a run of one.
@@ -194,7 +197,7 @@ function rowsOf(items: Item[]): Row[] {
     // what follows is different from what came before. So does an undo, which
     // is the loudest possible break in what a turn did.
     flush()
-    if (it.kind === 'revert') rows.push({ ...it })
+    if (it.kind === 'revert' || it.kind === 'compact') rows.push({ ...it })
     else rows.push({ kind: 'text', id: it.id, text: it.text })
   }
   flush()
@@ -258,6 +261,11 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
         workspaces: Number(p?.workspaces ?? 0),
         redo: !!p?.redo,
       })
+      continue
+    }
+    if (e.type === 'agent.compacted') {
+      const p = e.payload as { before?: number; after?: number }
+      into.push({ kind: 'compact', id: e.id, before: Number(p?.before ?? 0), after: Number(p?.after ?? 0) })
       continue
     }
     if (e.type === 'agent.tool_use') {
@@ -472,10 +480,54 @@ const canSend = computed(() => {
  */
 const queueing = computed(() => !!selected.value && isBusy(selected.value))
 
+/**
+ * `/clear` — the same scope, an empty thread.
+ *
+ * A new conversation rather than this one wiped: a conversation is a record,
+ * and its journal never goes. This one stays in the list, resumable, exactly
+ * as `claude`'s own `/clear` leaves the last session behind for `--resume`.
+ *
+ * Its engine is let go first, if it is sitting open: an open conversation
+ * holds the lock on the scope, and the new one would be refused by the old.
+ */
+async function clearThread(): Promise<void> {
+  const s = selected.value
+  if (s && isBusy(s)) {
+    toast('info', 'it is still on a turn — stop it first, or let it finish')
+    return
+  }
+  agentDraft.value = ''
+  agentFiles.value = []
+  if (s && isLive(s)) await guard(() => client.call('agent.stop', { sessionId: s.id }))
+  if (scope.value) startFresh(scope.value)
+}
+
+/**
+ * What a command needs before it can go. Answers the reason it cannot, or
+ * nothing when it can — a command is sent like any other turn from there.
+ */
+function refuseCommand(name: string, run: 'window' | 'engine', thread: boolean): string | null {
+  if (run === 'window') return null
+  const on = selected.value && continuing.value ? selected.value.engine : engine.value
+  if (!COMMAND_ENGINES.includes(on)) return '/' + name + ' is a Claude command'
+  if (thread && !continuing.value) return 'there is no conversation to ' + name + ' yet'
+  if (agentFiles.value.length) return '/' + name + ' takes no attachments'
+  return null
+}
+
 async function send(): Promise<void> {
   if (!canSend.value) return
   const text = agentDraft.value.trim()
   const files = agentFiles.value
+  const cmd = commandIn(text)
+  if (cmd) {
+    if (cmd.command.name === 'clear') return clearThread()
+    const no = refuseCommand(cmd.command.name, cmd.command.run, !!cmd.command.thread)
+    if (no) {
+      toast('info', no)
+      return
+    }
+  }
   busy.value = true
   if (continuing.value && selected.value) {
     const ok = await sendTurn(selected.value.id, text, files)
@@ -738,6 +790,8 @@ function verbFor(tool: string, input: Record<string, unknown>): string {
 
 const doing = computed(() => {
   const last = exchanges.value[exchanges.value.length - 1]
+  // No calls and no words: without this a two-minute summary reads "Thinking".
+  if (last && commandIn(last.turn.prompt)?.command.name === 'compact') return 'Compacting the conversation'
   for (let i = (last?.items.length ?? 0) - 1; i >= 0; i--) {
     const it = last!.items[i]!
     if (it.kind === 'tool' && !it.result) return verbFor(it.tool, it.input)
@@ -1236,6 +1290,12 @@ function ago(ts: number): string {
                 :calls="r.calls"
                 :live="x.turn.status === 'running'"
               />
+              <!-- Where the window stands now, beside where it stood: the
+                   whole of what a compaction did, and why it was worth it. -->
+              <p v-else-if="r.kind === 'compact'" class="undone compacted">
+                <FoldVertical class="sm" />
+                Compacted — {{ k(r.before) }} → {{ k(r.after) }} tokens in context
+              </p>
               <!-- It happened to the code, so it is a line in the thread rather
                    than a toast that has since gone. -->
               <p v-else class="undone">
@@ -1918,6 +1978,9 @@ function ago(ts: number): string {
   background: var(--warn-soft);
 }
 .undone .lucide { flex: none; color: var(--warn); }
+/* Nothing to watch out for: amber is for "something needs you". */
+.undone.compacted { border-left-color: var(--line-strong); }
+.undone.compacted .lucide { color: var(--text-dim); }
 
 /* Queued: the same bubble, at the weight of something that has not happened.
    Its ✕ only appears on hover — it is an escape hatch, not a decoration. */

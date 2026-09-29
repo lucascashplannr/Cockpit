@@ -122,6 +122,8 @@ export type EventType =
    */
   | 'agent.checkpoint'
   | 'agent.reverted'
+  /** The engine summarised its own conversation to make room — `/compact`. */
+  | 'agent.compacted'
   | 'agent.session_ended'
   // leases
   | 'lease.acquired'

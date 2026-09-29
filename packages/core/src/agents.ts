@@ -4,7 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { CLAUDE_MODELS, newId } from '@cockpit/shared'
+import { CLAUDE_MODELS, commandIn, newId } from '@cockpit/shared'
 import type {
   AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, PermissionMode,
   PermissionRequest, TurnUsage,
@@ -142,6 +142,12 @@ export interface NormalizedEvent {
     | 'permission'
     /** A control request this driver does not handle, to be refused so the engine is not left waiting. */
     | 'control'
+    /**
+     * The engine summarised its conversation — `/compact`, or on its own when
+     * the window filled. `contextTokens` is where the window stands after,
+     * `preTokens` where it stood before.
+     */
+    | 'compacted'
     | 'end'
     | 'error'
   /** `delta` / `text`: what was written. `end`: the closing message. */
@@ -185,6 +191,8 @@ export interface NormalizedEvent {
   contextTokens?: number
   /** `context` only — how much of `contextTokens` came back out of the cache. */
   contextCached?: number
+  /** `compacted` only — how full the window was before the summary. */
+  preTokens?: number
   /**
    * `usage` only. `costUsd` is the engine's *running total for its process*,
    * not this turn's — the driver takes the delta, which is also what keeps a
@@ -479,6 +487,15 @@ const claudeEngine: EngineSpec = {
     const type = String(o.type ?? '')
 
     if (type === 'system' && o.subtype === 'init') return [{ kind: 'ready' }]
+
+    // No assistant message follows a compaction, so without this the meter
+    // would go on reading the last call before it — a window at 80% that is
+    // in fact at 5%.
+    if (type === 'system' && o.subtype === 'compact_boundary') {
+      const m = (o.compact_metadata ?? {}) as { pre_tokens?: unknown; post_tokens?: unknown }
+      const n = (v: unknown): number => (typeof v === 'number' && isFinite(v) ? v : 0)
+      return [{ kind: 'compacted', preTokens: n(m.pre_tokens), contextTokens: n(m.post_tokens) }]
+    }
 
     if (type === 'control_request') {
       const requestId = String(o.request_id ?? '')
@@ -1144,6 +1161,15 @@ function writeTurnUsage(
   // is ever ahead of the report the honest answer is "nothing extra", not a
   // credit.
   const cost = Math.max(0, u.cumulativeCostUsd - costSoFar)
+  // A turn that made no call of the main model — a `/compact` — names no
+  // window, and the meter reads the window off the same row as the level.
+  const prev = u.window
+    ? null
+    : (getDb()
+        .prepare(
+          'SELECT context_window AS win, model FROM agent_turns WHERE session_id = ? AND context_window > 0 ORDER BY seq DESC LIMIT 1',
+        )
+        .get(sessionId) as { win: number; model: string } | undefined)
   getDb()
     .prepare(
       `UPDATE agent_turns SET input_tokens = ?, output_tokens = ?, cache_read = ?, cache_creation = ?,
@@ -1160,8 +1186,8 @@ function writeTurnUsage(
       // is money, not level. See `contextTokens`.
       contextTokens || u.input + u.cacheRead + u.cacheCreation,
       contextCached,
-      u.window,
-      u.model,
+      u.window || prev?.win || 0,
+      u.model || prev?.model || '',
       cost,
       row.id,
     )
@@ -1649,8 +1675,16 @@ async function launch(
   // The turn in the order it was written: the words, each attachment at the
   // point its `#handle` put it, and whatever nobody pointed at at the end.
   // Said in the prompt the engine reads and never in the one the window shows.
+  // A command is read by the engine only as the first thing in the turn and
+  // only as typed: memory in front of it or the Ultracode word after it and it
+  // is a sentence about compacting, answered in prose.
+  const command = commandIn(session.prompt)?.command.run === 'engine'
   const ultracode = opts?.effort === ULTRACODE
-  const segs = withUltracode(spec, attachments.turnSegments(preamble, session.prompt, files), ultracode)
+  const segs = withUltracode(
+    spec,
+    attachments.turnSegments(command ? '' : preamble, session.prompt, files),
+    ultracode && !command,
+  )
   const withFiles = attachments.flatten(segs)
   const args = resuming
     ? spec.buildResumeArgs(withFiles, session.engineSessionId!, ctx, at)
@@ -1845,6 +1879,20 @@ async function launch(
           if (typeof ev.contextCached === 'number') l.contextCached = ev.contextCached
           break
 
+        // The level drops here and not on the next call: the next call may be
+        // a day away, and the meter is read in the meantime.
+        case 'compacted':
+          l.context = ev.contextTokens ?? 0
+          l.contextCached = 0
+          append({
+            type: 'agent.compacted',
+            actor,
+            workspaceId,
+            payload: { before: ev.preTokens ?? 0, after: ev.contextTokens ?? 0 },
+          })
+          changed = true
+          break
+
         case 'end': {
           // Here and not on `text`: a turn is a question answered, and the
           // engine writes many messages inside one. Counted on the text blocks,
@@ -1986,7 +2034,8 @@ async function flushQueue(l: Live): Promise<void> {
   // window sitting on the previous answer for the length of a snapshot.
   agentBus.emit('changed')
   await checkpointTurn(l.session, turnId, prompt || attachments.summarise(files))
-  const segs = withUltracode(l.spec, attachments.turnSegments('', prompt, files), ultracode)
+  const command = commandIn(prompt)?.command.run === 'engine'
+  const segs = withUltracode(l.spec, attachments.turnSegments('', prompt, files), ultracode && !command)
   l.child.stdin?.write(encode(attachments.flatten(segs), segs) + '\n')
   agentBus.emit('changed')
 }
