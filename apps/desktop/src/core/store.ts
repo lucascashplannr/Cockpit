@@ -855,6 +855,54 @@ export const activeAgentScope = computed<AgentScope | null>(() => {
 })
 
 /**
+ * §12 — the view belongs to the place, not to the window. Put a repository in
+ * Review, go and talk to the agent about another topic, come back, and the
+ * repository is in Review again: the width you gave something is part of how
+ * you were working on it, and a switch elsewhere is not a decision about it.
+ *
+ * A place is the scope you are standing on — a project, a topic, a repository.
+ * One you have not been to yet keeps whatever the window already shows, so
+ * nothing changes until you have made a choice there.
+ *
+ * Restoring is `sync`, and that is the point of it. Every way of moving — a
+ * row, a topic header, `openFileAt`, an ask from the list — assigns the
+ * selection first and then says what it wants shown (`goTo('code')`, the
+ * reveal in `openAgentOn`). Restoring on the next tick would undo that second
+ * half; restoring as the selection lands puts it underneath instead.
+ *
+ * Recording is the opposite, on the tick, so it only ever sees where you came
+ * to rest. A move lands in two assignments — the workspace, then the scope —
+ * and the place passed through between them is not somewhere you stood; it
+ * must not come away with a memory. Held for the session only: a remembered
+ * Review is a surprise to open the app on.
+ */
+const viewByPlace = new Map<string, { view: ShellView; tool: ReviewTool }>()
+const placeKey = computed(() => (activeAgentScope.value ? scopeKey(activeAgentScope.value) : null))
+let settledPlace: string | null = null
+
+watch(
+  placeKey,
+  (key) => {
+    // Somewhere new, or passed through, gets the view of the place you left —
+    // which is what the window was showing before this move began.
+    const kept = (key && viewByPlace.get(key)) || (settledPlace && viewByPlace.get(settledPlace))
+    if (!kept) return
+    if (reviewTools.value.includes(kept.tool)) state.reviewTool = kept.tool
+    setView(kept.view)
+  },
+  { flush: 'sync' },
+)
+
+watch(
+  () => [placeKey.value, state.view, state.reviewTool] as const,
+  ([key, view, tool]) => {
+    settledPlace = key
+    if (key) viewByPlace.set(key, { view, tool })
+  },
+  { immediate: true },
+)
+
+/**
  * §4 — the topic is a thing you can stand on, not only a header above its
  * rows. Selecting it *is* selecting its scope: the chat aims at the whole
  * topic, and the verbs that act on every worktree it spans move up into the
@@ -1015,8 +1063,12 @@ export const LAYOUT_LIMITS = {
    * under 620 the review stacks its list above its viewer (a container query
    * in ReviewTools), and stacked, a narrow column is a deliberate choice
    * rather than a broken one.
+   *
+   * No ceiling of its own: the window sets it (App.vue keeps the conversation
+   * its 360), and a fixed 900 is what stopped the divider short of half-way on
+   * any screen wide enough to want it. The number here only guards a bad save.
    */
-  review: { min: 320, max: 900 },
+  review: { min: 320, max: 4000 },
   /**
    * The file list against the diff, inside the Diff tab. Long paths want the
    * list; a long hunk wants the viewer. The floor keeps a file name and its
@@ -1114,6 +1166,63 @@ export function saveLayout(): void {
 export function resetColumnWidth(which: 'list' | 'review' | 'files'): void {
   layout[which] = LAYOUT_DEFAULTS[which]
   saveLayout()
+}
+
+/**
+ * §12 — the review's width belongs to the place, like the view does (see
+ * `viewByPlace`). How much of the window a repository's diff deserves against
+ * its conversation is a fact about that repository, so dragging it wider here
+ * must not move it anywhere else, and a place you have never sized opens at
+ * the width the app ships with — not at whatever the last place was left at.
+ *
+ * Unlike the view it is kept across launches: a width you dragged is
+ * configuration, the same as the rest of `layout`.
+ */
+const REVIEW_WIDTHS_KEY = 'cockpit.reviewWidths'
+const reviewWidths: Record<string, number> = (() => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(REVIEW_WIDTHS_KEY) ?? '{}') as Record<string, unknown>
+    const out: Record<string, number> = {}
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v === 'number') out[k] = clampTo(v, LAYOUT_LIMITS.review)
+    }
+    return out
+  } catch {
+    return {}
+  }
+})()
+
+// `sync` for the same reason the view's restore is: the width has to be in
+// place before anything the move goes on to draw. Every landing sets it, the
+// ones passed through included — the last assignment is where you arrive.
+watch(
+  placeKey,
+  (key) => {
+    layout.review = (key && reviewWidths[key]) || LAYOUT_DEFAULTS.review
+  },
+  { flush: 'sync', immediate: true },
+)
+
+function writeReviewWidths(): void {
+  localStorage.setItem(REVIEW_WIDTHS_KEY, JSON.stringify(reviewWidths))
+}
+
+/** The drag let go: this place keeps the width it was left at. */
+export function saveReviewWidth(): void {
+  const key = placeKey.value
+  if (!key) return
+  reviewWidths[key] = layout.review
+  writeReviewWidths()
+}
+
+/** Double-click: this place forgets its width and takes the default again. */
+export function resetReviewWidth(): void {
+  const key = placeKey.value
+  layout.review = LAYOUT_DEFAULTS.review
+  if (key && key in reviewWidths) {
+    delete reviewWidths[key]
+    writeReviewWidths()
+  }
 }
 
 /* ── which topics are folded away ─────────────────────────────────────── */

@@ -26,7 +26,7 @@ import TrafficLights from './components/TrafficLights.vue'
 import Splitter from './components/Splitter.vue'
 import {
   LAYOUT_LIMITS, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout,
-  requestPlan, resetColumnWidth, saveLayout, setColumnWidth, showsAgent, showsReview, stepAttachment,
+  requestPlan, resetColumnWidth, resetReviewWidth, saveLayout, saveReviewWidth, setColumnWidth, showsAgent, showsReview, stepAttachment,
   stepView,
 } from './core/store.js'
 
@@ -232,6 +232,12 @@ const reviewMax = computed(() =>
 )
 
 /**
+ * Half the panes, exactly: the one width worth landing on by hand and the one
+ * a drag almost never lands on, so the divider holds there (see `snap`).
+ */
+const reviewHalf = computed(() => Math.round((winW.value - RAIL_W - layout.list) / 2))
+
+/**
  * The review column's width in the one view that has to share it — 0 when it
  * has the window to itself, or is not on screen at all.
  *
@@ -313,9 +319,10 @@ onUnmounted(() => {
           :max="reviewMax"
           grows="left"
           label="Width of the review column"
+          :snap="reviewHalf"
           @resize="setColumnWidth('review', $event)"
-          @done="saveLayout"
-          @reset="resetColumnWidth('review')"
+          @done="saveReviewWidth"
+          @reset="resetReviewWidth"
         />
       </div>
     </div>

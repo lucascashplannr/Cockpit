@@ -33,6 +33,12 @@ const props = defineProps<{
    */
   grows: 'right' | 'left' | 'down' | 'up'
   label: string
+  /**
+   * A size the drag holds at when it passes within a few pixels of it — the
+   * review's exact half. Only for the pointer: the arrow keys step by 8, and
+   * a snap wider than the step would never let them off it.
+   */
+  snap?: number
 }>()
 const emit = defineEmits<{ resize: [number]; done: []; reset: [] }>()
 
@@ -57,10 +63,14 @@ function down(e: PointerEvent): void {
   e.preventDefault()
 }
 
+const SNAP_PX = 12
+
 function move(e: PointerEvent): void {
   if (!dragging.value) return
   const delta = (vertical.value ? e.clientY : e.clientX) - start
-  emit('resize', clamp(positive.value ? startSize + delta : startSize - delta))
+  const size = positive.value ? startSize + delta : startSize - delta
+  const held = props.snap !== undefined && Math.abs(size - props.snap) <= SNAP_PX
+  emit('resize', clamp(held ? props.snap! : size))
 }
 
 function up(e: PointerEvent): void {
