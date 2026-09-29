@@ -1058,24 +1058,30 @@ export const LAYOUT_LIMITS = {
   /** Below 200 the branch names ellipsis away and the list stops being one. */
   list: { min: 200, max: 620 },
   /**
-   * 440 — the shipped default — is the least a side-by-side diff hunk fits in
-   * without wrapping every line. The floor is lower than that on purpose:
-   * under 620 the review stacks its list above its viewer (a container query
-   * in ReviewTools), and stacked, a narrow column is a deliberate choice
-   * rather than a broken one.
+   * 360 is the shipped default, and it was 440 — the least a side-by-side
+   * diff hunk fits in without wrapping. That bought the hunk its width at the
+   * conversation's expense on every screen, for a column that under 620 is
+   * stacked anyway (list above viewer, a container query in ReviewTools): the
+   * default is a glance beside the conversation, and a hunk that wants the
+   * room is one drag, or ⌘⌥→, away.
+   *
+   * The floor is 240, the width App.vue already squeezes the column to when a
+   * narrow window cannot pay the conversation its 360 — the Diff is a one-
+   * column list there and reads fine. It was 320, set against the old 440,
+   * and left a default of 360 with nowhere to go below it.
    *
    * No ceiling of its own: the window sets it (App.vue keeps the conversation
    * its 360), and a fixed 900 is what stopped the divider short of half-way on
    * any screen wide enough to want it. The number here only guards a bad save.
    */
-  review: { min: 320, max: 4000 },
+  review: { min: 240, max: 4000 },
   /**
    * The file list against the diff, inside the Diff tab. Long paths want the
    * list; a long hunk wants the viewer. The floor keeps a file name and its
-   * counts on one row; the ceiling is also held under what the tab leaves the
-   * viewer (see DiffTab).
+   * counts on one row. No ceiling of its own, for the reason the review has
+   * none: the tab sets it, keeping the viewer its 320 (see DiffTab).
    */
-  files: { min: 220, max: 620 },
+  files: { min: 220, max: 4000 },
   /**
    * The commit box under the file list in the Diff tab.
    *
@@ -1095,7 +1101,7 @@ export const LAYOUT_LIMITS = {
 }
 
 /** What a fresh install starts from, and what a double-click goes back to. */
-export const LAYOUT_DEFAULTS = { list: 340, review: 440, files: 320 }
+export const LAYOUT_DEFAULTS = { list: 340, review: 360, files: 300 }
 
 export const layout = reactive(readLayout())
 
@@ -1169,59 +1175,76 @@ export function resetColumnWidth(which: 'list' | 'review' | 'files'): void {
 }
 
 /**
- * §12 — the review's width belongs to the place, like the view does (see
- * `viewByPlace`). How much of the window a repository's diff deserves against
- * its conversation is a fact about that repository, so dragging it wider here
- * must not move it anywhere else, and a place you have never sized opens at
- * the width the app ships with — not at whatever the last place was left at.
+ * §12 — the widths you drag belong to the place, like the view does (see
+ * `viewByPlace`): the review against the conversation, and inside the Diff the
+ * file list against the diff. How much room a repository's changes deserve is
+ * a fact about that repository, so dragging a line here must not move it
+ * anywhere else, and a place you have never sized opens at the width the app
+ * ships with — not at whatever the last place was left at.
  *
- * Unlike the view it is kept across launches: a width you dragged is
+ * Unlike the view they are kept across launches: a width you dragged is
  * configuration, the same as the rest of `layout`.
  */
-const REVIEW_WIDTHS_KEY = 'cockpit.reviewWidths'
-const reviewWidths: Record<string, number> = (() => {
+export type PlaceWidth = 'review' | 'files'
+const PLACE_WIDTHS: PlaceWidth[] = ['review', 'files']
+const PLACE_WIDTHS_KEY = 'cockpit.placeWidths'
+const placeWidths: Record<PlaceWidth, Record<string, number>> = (() => {
+  const out: Record<PlaceWidth, Record<string, number>> = { review: {}, files: {} }
   try {
-    const raw = JSON.parse(localStorage.getItem(REVIEW_WIDTHS_KEY) ?? '{}') as Record<string, unknown>
-    const out: Record<string, number> = {}
-    for (const [k, v] of Object.entries(raw)) {
-      if (typeof v === 'number') out[k] = clampTo(v, LAYOUT_LIMITS.review)
+    const raw = JSON.parse(localStorage.getItem(PLACE_WIDTHS_KEY) ?? '{}') as Record<string, unknown>
+    // The review's widths were kept on their own before the file list joined
+    // them; read once, then they live here.
+    const earlier = localStorage.getItem('cockpit.reviewWidths')
+    if (earlier) raw.review = { ...(JSON.parse(earlier) as object), ...(raw.review as object | undefined) }
+    for (const which of PLACE_WIDTHS) {
+      const saved = raw[which]
+      if (!saved || typeof saved !== 'object') continue
+      for (const [k, v] of Object.entries(saved)) {
+        if (typeof v === 'number') out[which][k] = clampTo(v, LAYOUT_LIMITS[which])
+      }
     }
-    return out
+    if (earlier) {
+      localStorage.setItem(PLACE_WIDTHS_KEY, JSON.stringify(out))
+      localStorage.removeItem('cockpit.reviewWidths')
+    }
   } catch {
-    return {}
+    // A bad save costs the widths, not the window: every place opens at the default.
   }
+  return out
 })()
 
-// `sync` for the same reason the view's restore is: the width has to be in
-// place before anything the move goes on to draw. Every landing sets it, the
+// `sync` for the same reason the view's restore is: the widths have to be in
+// place before anything the move goes on to draw. Every landing sets them, the
 // ones passed through included — the last assignment is where you arrive.
 watch(
   placeKey,
   (key) => {
-    layout.review = (key && reviewWidths[key]) || LAYOUT_DEFAULTS.review
+    for (const which of PLACE_WIDTHS) {
+      layout[which] = (key && placeWidths[which][key]) || LAYOUT_DEFAULTS[which]
+    }
   },
   { flush: 'sync', immediate: true },
 )
 
-function writeReviewWidths(): void {
-  localStorage.setItem(REVIEW_WIDTHS_KEY, JSON.stringify(reviewWidths))
+function writePlaceWidths(): void {
+  localStorage.setItem(PLACE_WIDTHS_KEY, JSON.stringify(placeWidths))
 }
 
 /** The drag let go: this place keeps the width it was left at. */
-export function saveReviewWidth(): void {
+export function savePlaceWidth(which: PlaceWidth): void {
   const key = placeKey.value
   if (!key) return
-  reviewWidths[key] = layout.review
-  writeReviewWidths()
+  placeWidths[which][key] = layout[which]
+  writePlaceWidths()
 }
 
-/** Double-click: this place forgets its width and takes the default again. */
-export function resetReviewWidth(): void {
+/** Double-click: this place forgets the width and takes the default again. */
+export function resetPlaceWidth(which: PlaceWidth): void {
   const key = placeKey.value
-  layout.review = LAYOUT_DEFAULTS.review
-  if (key && key in reviewWidths) {
-    delete reviewWidths[key]
-    writeReviewWidths()
+  layout[which] = LAYOUT_DEFAULTS[which]
+  if (key && key in placeWidths[which]) {
+    delete placeWidths[which][key]
+    writePlaceWidths()
   }
 }
 

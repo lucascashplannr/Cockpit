@@ -26,7 +26,7 @@ import TrafficLights from './components/TrafficLights.vue'
 import Splitter from './components/Splitter.vue'
 import {
   LAYOUT_LIMITS, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout,
-  requestPlan, resetColumnWidth, resetReviewWidth, saveLayout, saveReviewWidth, setColumnWidth, showsAgent, showsReview, stepAttachment,
+  requestPlan, resetColumnWidth, resetPlaceWidth, saveLayout, savePlaceWidth, setColumnWidth, showsAgent, showsReview, stepAttachment,
   stepView,
 } from './core/store.js'
 
@@ -232,10 +232,12 @@ const reviewMax = computed(() =>
 )
 
 /**
- * Half the panes, exactly: the one width worth landing on by hand and the one
- * a drag almost never lands on, so the divider holds there (see `snap`).
+ * Where the review's divider holds on the way past: half, and only half. The
+ * default is not a stop here, unlike the file list's — a 360 column is where
+ * you go on your way to narrower, and a catch there was felt as the divider
+ * sticking rather than as a place to land. Double-click still goes back to it.
  */
-const reviewHalf = computed(() => Math.round((winW.value - RAIL_W - layout.list) / 2))
+const reviewSnaps = computed(() => [Math.round((winW.value - RAIL_W - layout.list) / 2)])
 
 /**
  * The review column's width in the one view that has to share it — 0 when it
@@ -319,10 +321,10 @@ onUnmounted(() => {
           :max="reviewMax"
           grows="left"
           label="Width of the review column"
-          :snap="reviewHalf"
+          :snap="reviewSnaps"
           @resize="setColumnWidth('review', $event)"
-          @done="saveReviewWidth"
-          @reset="resetReviewWidth"
+          @done="savePlaceWidth('review')"
+          @reset="resetPlaceWidth('review')"
         />
       </div>
     </div>

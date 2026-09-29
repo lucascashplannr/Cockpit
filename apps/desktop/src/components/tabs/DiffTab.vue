@@ -10,8 +10,8 @@ import {
 import Splitter from '../Splitter.vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
 import {
-  LAYOUT_LIMITS, commit, commitPreview, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetColumnWidth,
-  resetCommitHeight, saveLayout, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
+  resetCommitHeight, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
 /**
@@ -82,6 +82,8 @@ const panelW = ref(0)
 const filesMax = computed(() =>
   Math.max(LAYOUT_LIMITS.files.min, Math.min(LAYOUT_LIMITS.files.max, panelW.value - 320)),
 )
+/** Where the line holds on the way past (see Splitter's `snap`): half, and the default. */
+const filesSnaps = computed(() => [Math.round(panelW.value / 2), LAYOUT_DEFAULTS.files])
 const filesW = computed(() => Math.min(layout.files, filesMax.value))
 
 let ro: ResizeObserver | null = null
@@ -912,10 +914,11 @@ const mark: Record<string, Component> = {
       :min="LAYOUT_LIMITS.files.min"
       :max="filesMax"
       grows="right"
+      :snap="filesSnaps"
       label="Width of the file list"
       @resize="setColumnWidth('files', $event)"
-      @done="saveLayout"
-      @reset="resetColumnWidth('files')"
+      @done="savePlaceWidth('files')"
+      @reset="resetPlaceWidth('files')"
     />
     <aside class="files">
       <!-- One bar, not two: the header counts the files until some are ticked,
@@ -1677,7 +1680,7 @@ const mark: Record<string, Component> = {
 .diff {
   position: relative;
   display: grid;
-  grid-template-columns: var(--files-w, 320px) minmax(0, 1fr);
+  grid-template-columns: var(--files-w, 300px) minmax(0, 1fr);
   height: 100%;
 }
 /* One column at a time: the list, or the file opened over it. Both are laid
