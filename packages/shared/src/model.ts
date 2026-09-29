@@ -918,6 +918,11 @@ export interface Conversation {
    */
   pending: PermissionRequest[]
   /**
+   * A name for it is being written from turn 1. Live only: the window shows a
+   * placeholder rather than the typed prompt, which is about to be replaced.
+   */
+  naming: boolean
+  /**
    * §6 — where the conversation stands against its own limit, and what it has
    * cost so far.
    *

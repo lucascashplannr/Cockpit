@@ -139,7 +139,10 @@ function dotClass(c: Conversation): string {
         <button class="pick" @click="open(c)">
           <span class="crow">
             <span class="dot" :class="dotClass(c)" />
-            <span class="ctitle">{{ c.title || 'untitled' }}</span>
+            <Transition name="name-in" mode="out-in">
+              <span v-if="c.naming" key="naming" class="naming" title="Naming this conversation" />
+              <span v-else key="title" class="ctitle">{{ c.title || 'untitled' }}</span>
+            </Transition>
           </span>
           <span class="crow meta">
             <span class="ceng">{{ engineName(c.engine) }}</span>

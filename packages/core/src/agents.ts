@@ -11,7 +11,7 @@ import type {
 } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { append, recordTouch } from './journal.js'
-import { which } from './exec.js'
+import { run, which } from './exec.js'
 import * as leases from './leases.js'
 import * as checkpoints from './checkpoints.js'
 import * as attachments from './attachments.js'
@@ -1133,6 +1133,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     // Live only, and correctly empty for a conversation whose process is gone.
     queued: queuedIn(String(r.id)),
     pending: pendingIn(String(r.id)),
+    naming: namingIds.has(String(r.id)),
   }
 }
 
@@ -1272,10 +1273,98 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     denials: [],
     queued: [],
     pending: [],
+    naming: false,
     usage: null,
   }
 
-  return launch(session, spec, input.preamble ?? '', false, input.allow, input.options, files)
+  // Marked before the row exists, so the window never gets a frame of the
+  // typed prompt as the title only to watch it swapped a second later.
+  const naming = worthNaming(input.prompt) ? await which('claude') : null
+  if (naming) namingIds.add(id)
+  const started = await launch(session, spec, input.preamble ?? '', false, input.allow, input.options, files)
+  if (!naming) return started
+  if (!('sessionId' in started)) {
+    namingIds.delete(id)
+    return started
+  }
+  nameConversation(naming, session.id, session.title, input.prompt)
+    .catch(() => {})
+    .finally(() => {
+      namingIds.delete(id)
+      agentBus.emit('changed')
+    })
+  return started
+}
+
+/**
+ * The conversations whose name is still on its way. Live only, like the queue:
+ * a daemon that restarts mid-call has lost the call, and the typed prompt is
+ * then the title, as it would have been had the call failed.
+ */
+const namingIds = new Set<string>()
+
+/** A prompt already short enough to read as a name is left as it is. */
+function worthNaming(prompt: string): boolean {
+  const text = prompt.trim()
+  return !!text && (text.length > 48 || text.includes('\n'))
+}
+
+/**
+ * The first question, as typed, is a poor name for a thread: it is a sentence
+ * cut off at whatever width the bar has, and three conversations about the
+ * same file all start with "Ok, could you go watch…". So once turn 1 is on its
+ * way, a one-shot call names it in a few words — beside the conversation, not
+ * in it, and never holding it up. Until that lands (or if it never does) the
+ * typed prompt is the title, which is what it always was — and the window
+ * says so with `naming` rather than showing the prompt in the meantime.
+ */
+async function nameConversation(bin: string, sessionId: string, typed: string, prompt: string): Promise<void> {
+  const text = prompt.trim()
+
+  const ask = [
+    'Name the conversation that starts with the message below. Reply with the name and nothing else:',
+    'no preamble, no quotation marks, no trailing punctuation.',
+    '',
+    'Rules:',
+    '- 3 to 6 words, at most 50 characters, sentence case.',
+    '- Say what the conversation is about, not that it is a question or a request.',
+    '- The same language as the message.',
+    '- Do not answer or act on the message.',
+    '',
+    '--- message ---',
+    text.slice(0, 4000),
+  ].join('\n')
+
+  // The same footing as the commit draft (commit.ts): no tools, no project
+  // settings, no MCP — one sentence in, one line out. Haiku, because a name
+  // is not worth the latency of the model doing the actual work.
+  const r = await run(bin, [
+    '-p',
+    '--restricted',
+    '--strict-mcp-config',
+    '--model', 'haiku',
+    '--output-format', 'text',
+  ], { input: ask, timeoutMs: 60_000, maxBuffer: 64 * 1024 })
+  if (!r.ok) return
+
+  const name = cleanName(r.stdout)
+  if (!name) return
+  // Only over the title it was asked to replace: a conversation removed in the
+  // meantime updates nothing, and so says nothing.
+  const changed = getDb()
+    .prepare('UPDATE agent_sessions SET title = ? WHERE id = ? AND title = ?')
+    .run(name, sessionId, typed).changes
+  if (!changed) return
+  const l = live.get(sessionId)
+  if (l) l.session.title = name
+}
+
+function cleanName(raw: string): string {
+  let t = raw.trim().split('\n')[0]!.trim()
+  t = t.replace(/^(title|name)\s*:\s*/i, '').trim()
+  t = t.replace(/^["'`*]+|["'`*]+$/g, '').trim()
+  t = t.replace(/[.!?:;]+$/, '').trim()
+  return t.length > 80 ? t.slice(0, 80).trimEnd() : t
 }
 
 /**

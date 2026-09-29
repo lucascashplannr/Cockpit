@@ -861,14 +861,6 @@ function ago(ts: number): string {
   const h = Math.floor(m / 60)
   return h < 24 ? h + 'h ago' : Math.floor(h / 24) + 'd ago'
 }
-
-function dotClass(s: Conversation): string {
-  if (s.pending.length) return 'asking'
-  if (isBusy(s)) return 'working'
-  if (isLive(s)) return 'idle'
-  if (s.status === 'failed') return 'unhealthy'
-  return 'down'
-}
 </script>
 
 <template>
@@ -979,8 +971,13 @@ function dotClass(s: Conversation): string {
            lives in that column would either be as narrow as the text or have
            to fight its way back out with negative margins. -->
       <div class="tbar">
-        <span class="dot" :class="dotClass(selected)" />
-        <span class="ttitle">{{ selected.title || 'untitled' }}</span>
+        <!-- No dot here: the word beside the title says the state, and the
+             dot said it again. The dot stays where there are many rows and no
+             room for words — the history list. -->
+        <Transition name="name-in" mode="out-in">
+          <span v-if="selected.naming" key="naming" class="naming" title="Naming this conversation" />
+          <span v-else key="title" class="ttitle">{{ selected.title || 'untitled' }}</span>
+        </Transition>
         <!-- Three states, and the difference between the first two is the
              whole of §6's promise about what a session is. Working: a turn
              is in flight. Open: the engine is still here between turns, so
@@ -1534,9 +1531,9 @@ function dotClass(s: Conversation): string {
   font-weight: 600;
   color: var(--agent);
 }
-/* Alive between turns: the same fact as the dot beside it, in a word, at the
-   weight of a fact. No pulse — nothing is happening, and an animation is a
-   claim that something is.
+/* Alive between turns: a fact, in a word, at the weight of a fact. No
+   pulse — nothing is happening, and an animation is a claim that something
+   is.
 
    Named `alive` and not `open`, which is what it says: a scoped style also
    lands on a child component's *root* element, and `ToolGroup`'s root carries
@@ -1570,19 +1567,6 @@ function dotClass(s: Conversation): string {
   .star { animation: none; }
 }
 .tbar .needs.chip { flex: none; height: 20px; padding: 0 8px; font-size: 10px; }
-
-/* The conversation's own heartbeat. `--agent` rather than the runtime green:
-   this is a thing an agent is doing, and colour maps to one idea (tokens.css). */
-.dot.working {
-  background: var(--agent);
-  box-shadow: 0 0 0 3px var(--agent-soft);
-  animation: pulse 1.6s var(--ease-soft) infinite;
-}
-/* Here, and not working. Still the agent's colour — it is still its process —
-   and steady, because that is the difference being drawn. */
-.dot.idle { background: var(--agent); opacity: 0.5; }
-/* Stopped on a question for you: steady, and in the colour of a request. */
-.dot.asking { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 
 /* One clear gap between exchanges, and none of the smaller ones inside a turn
    pretending to be it. */

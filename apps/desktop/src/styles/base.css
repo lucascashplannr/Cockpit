@@ -361,6 +361,40 @@ button:disabled,
   to { transform: rotate(360deg); }
 }
 
+.naming {
+  flex: none;
+  width: 132px;
+  max-width: 60%;
+  height: 9px;
+  border-radius: 5px;
+  background: var(--line);
+  position: relative;
+  overflow: hidden;
+}
+.naming::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    light-dark(rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.16)),
+    transparent
+  );
+  transform: translateX(-100%);
+  animation: naming-sweep 1.6s var(--ease-soft) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .naming::after { animation: none; opacity: 0; }
+}
+@keyframes naming-sweep {
+  to { transform: translateX(100%); }
+}
+.name-in-enter-active { transition: opacity 280ms var(--ease-soft), filter 280ms var(--ease-soft); }
+.name-in-enter-from { opacity: 0; filter: blur(2px); }
+.name-in-leave-active { transition: opacity 120ms var(--ease-soft); }
+.name-in-leave-to { opacity: 0; }
+
 /* Text inputs and text areas share one look. */
 .input {
   width: 100%;
