@@ -783,14 +783,14 @@ const handlers: Record<string, Handler> = {
       (id) => registry.getWorkspace(id)?.name ?? id,
     ),
   /**
-   * §16 — the working tree as it stood before that turn, put back.
+   * §16 — a turn undone, files and conversation, or brought back.
    *
    * Pushes both the workspaces and the conversation afterwards: the git counts
    * in the list are now wrong by exactly the size of what was undone, and the
-   * thread has gained the snapshot that makes this reversible in turn.
+   * thread has lost (or regained) the turns it took.
    */
-  'agent.revert': async (p: { sessionId: string; turnId: string }) => {
-    const r = await checkpoints.revert(p.sessionId, p.turnId, 'undo of a turn')
+  'agent.undo': async (p: { sessionId: string; turnId: string; redo: boolean }) => {
+    const r = await agents.undo(p.sessionId, p.turnId, !!p.redo)
     if (r.ok) {
       pushWorkspaces()
       pushAgentActivity()

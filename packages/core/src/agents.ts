@@ -225,7 +225,13 @@ export interface EngineSpec {
    * outlive the daemon, and "work on it over several days" is a fiction: every
    * morning would start from an empty context against a stale memory.
    */
-  buildResumeArgs(prompt: string, engineSessionId: string, ctx: LaunchContext): string[]
+  buildResumeArgs(prompt: string, engineSessionId: string, ctx: LaunchContext, at?: string): string[]
+  /**
+   * §16 — the engine's id for a message it has just written, when the line is
+   * one. Only an engine that can be resumed *at* such an id has this: it is
+   * what lets an undo take back the conversation and not only the files.
+   */
+  anchorIn?(line: string): string | null
   /**
    * Streaming engines: one turn, as the line to write on stdin.
    *
@@ -407,9 +413,18 @@ const claudeEngine: EngineSpec = {
   bin: 'claude',
   streaming: true,
   buildArgs: (_prompt, ctx) => ['-p', '--input-format', 'stream-json', ...claudeCommon(ctx)],
-  buildResumeArgs: (_prompt, id, ctx) => [
+  buildResumeArgs: (_prompt, id, ctx, at) => [
     '-p', '--input-format', 'stream-json', ...claudeCommon(ctx), '--resume', id,
+    // The conversation as it stood after that message, and nothing later: an
+    // undo's turns are dropped from what the engine reads, not merely hidden.
+    // What it answers next is a branch from there, and a plain `--resume`
+    // afterwards follows that branch.
+    ...(at ? ['--resume-session-at', at] : []),
   ],
+  anchorIn(line) {
+    const o = safeJson(line)
+    return o?.type === 'assistant' && typeof o.uuid === 'string' ? o.uuid : null
+  },
   /**
    * A plain string while nothing is attached, and a block array the moment
    * something is: both are valid user content, and the string form is what
@@ -811,6 +826,8 @@ interface Live {
    * that boundary would make the first resumed turn cost a negative amount.
    */
   costSoFar: number
+  /** §16 — the engine's id for the last message this turn wrote. See `anchorIn`. */
+  anchor: string | null
 }
 
 /**
@@ -941,26 +958,91 @@ function readScope(r: Record<string, unknown>): AgentScope {
  */
 
 export function turnsOf(sessionId: string): AgentTurn[] {
-  const rows = getDb()
+  const d = getDb()
+  const rows = d
     .prepare('SELECT * FROM agent_turns WHERE session_id = ? ORDER BY seq ASC')
     .all(sessionId) as Record<string, unknown>[]
   // One query for the conversation rather than one per turn: a thread of forty
   // turns is hydrated on every push.
   const withCheckpoint = new Set(checkpoints.turnsWithCheckpoints(sessionId))
-  return rows.map((r) => ({
-    id: String(r.id),
-    seq: Number(r.seq),
-    prompt: String(r.prompt),
-    startedAt: Number(r.started_at),
-    endedAt: r.ended_at === null ? null : Number(r.ended_at),
-    status: String(r.status) as AgentTurn['status'],
-    usage: usageOf(r),
-    attachments: attachmentsOf(r),
-    restorable: withCheckpoint.has(String(r.id)),
-    // The undo's own snapshot is filed under a turn id derived from this one,
-    // which is what lets a turn offer the way back without a second table.
-    redoable: withCheckpoint.has('redo_' + String(r.id)),
-  }))
+  const sess = d.prepare('SELECT engine, engine_session_id FROM agent_sessions WHERE id = ?').get(sessionId) as
+    | { engine: string; engine_session_id: string | null }
+    | undefined
+  const anchored = !!ENGINES[sess?.engine ?? '']?.anchorIn
+  const current = sess?.engine_session_id ?? null
+
+  const undoneBy = rows.map((r) => (r.undone_by == null ? null : String(r.undone_by)))
+  // Whether the engine can be resumed at a point before each turn: the first
+  // turn still in the conversation can always be (by starting afresh), any
+  // other one only once something kept before it carries an anchor. A thread
+  // from before anchors existed answers no, and undoing there moves the files
+  // alone — as it always did.
+  let keptBefore = false
+  let anchorBefore = false
+  const forgettable = rows.map((r, i) => {
+    const ok = anchored && (!keptBefore || anchorBefore)
+    if (!undoneBy[i]) {
+      keptBefore = true
+      if (usableAnchor(r, current)) anchorBefore = true
+    }
+    return ok
+  })
+
+  // The way back from an undo is the latest one's alone, and only until
+  // something new is asked. Both are times: a turn asked after the undo and
+  // then undone in its turn is hidden, but it still happened — and the engine
+  // may have started a new session for it, which the old turns are not part
+  // of. Judging this by what is showing is how a Redo once brought back turns
+  // the engine could no longer resume at.
+  const undoneAt = rows.map((r) => (r.undone_at == null ? null : Number(r.undone_at)))
+  const lastAsked = Math.max(0, ...rows.map((r) => Number(r.started_at)))
+  const lastUndo = Math.max(0, ...rows.map((r, i) => (undoneBy[i] ? (undoneAt[i] ?? 0) : 0)))
+
+  return rows.map((r, i) => {
+    const id = String(r.id)
+    const at = undoneAt[i] ?? null
+    const top = undoneBy[i] === id && at !== null && at >= lastUndo && at > lastAsked
+    return {
+      id,
+      seq: Number(r.seq),
+      prompt: String(r.prompt),
+      startedAt: Number(r.started_at),
+      endedAt: r.ended_at === null ? null : Number(r.ended_at),
+      status: String(r.status) as AgentTurn['status'],
+      usage: usageOf(r),
+      attachments: attachmentsOf(r),
+      restorable: withCheckpoint.has(id),
+      forgettable: forgettable[i]!,
+      undoneBy: undoneBy[i]!,
+      // An undo that could only move the files keeps the old rule: its own
+      // snapshot is filed under a turn id derived from this one, and while it
+      // is there the files can go forward again.
+      redoable: forgettable[i] ? top : !undoneBy[i] && withCheckpoint.has('redo_' + id),
+    }
+  })
+}
+
+/**
+ * §16 — where the next launch picks the engine up, once an undo has happened.
+ *
+ * `undefined` when nothing is pending: the last turn is still in the thread,
+ * so a plain resume reads exactly what is on screen. Otherwise the last message
+ * of the last turn still showing — or `null` when none is, which is a fresh
+ * start: there is nothing left for the engine to remember.
+ */
+function resumePoint(sessionId: string, engineSessionId: string | null): string | null | undefined {
+  const rows = getDb()
+    .prepare('SELECT undone_by, engine_anchor, anchor_session FROM agent_turns WHERE session_id = ? ORDER BY seq ASC')
+    .all(sessionId) as Record<string, unknown>[]
+  if (!rows.length || !rows[rows.length - 1]!.undone_by) return undefined
+  const kept = rows.filter((r) => !r.undone_by)
+  if (!kept.length) return null
+  const at = kept.filter((r) => usableAnchor(r, engineSessionId)).pop()
+  // Turns still showing and none of them resumable at: a thread from before
+  // anchors were kept. `forgettable` never offers this, so it is only reached
+  // by old data — and a plain resume is wrong by what it remembers, where a
+  // bad anchor fails the turn outright.
+  return at ? String(at.engine_anchor) : undefined
 }
 
 /** The files that went in with the turn. A row from before this is empty. */
@@ -1085,6 +1167,28 @@ function writeTurnUsage(
     )
 }
 
+/**
+ * §16 — where a later undo resumes the engine: the last message this turn
+ * wrote. A turn that wrote none keeps none, and an undo past it resumes at the
+ * turn before.
+ */
+function writeTurnAnchor(sessionId: string, anchor: string, engineSessionId: string | null): void {
+  getDb()
+    .prepare(
+      "UPDATE agent_turns SET engine_anchor = ?, anchor_session = ? WHERE id = (SELECT id FROM agent_turns WHERE session_id = ? AND status = 'running' ORDER BY seq DESC LIMIT 1)",
+    )
+    .run(anchor, engineSessionId, sessionId)
+}
+
+/**
+ * An anchor the engine can still be resumed at: one written by the session
+ * the conversation is on now. Anything else names a message from before a
+ * fresh start, and resuming at it fails the turn outright.
+ */
+function usableAnchor(r: Record<string, unknown>, engineSessionId: string | null): boolean {
+  return !!r.engine_anchor && !!engineSessionId && r.anchor_session === engineSessionId
+}
+
 function closeTurn(sessionId: string, status: AgentTurn['status']): void {
   const row = getDb()
     .prepare("SELECT id FROM agent_turns WHERE session_id = ? AND status = 'running' ORDER BY seq DESC LIMIT 1")
@@ -1149,9 +1253,9 @@ function rollUp(sessionId: string): Conversation['usage'] {
   const row = getDb()
     .prepare(
       `SELECT
-         (SELECT context_tokens FROM agent_turns WHERE session_id = ? AND context_tokens > 0 ORDER BY seq DESC LIMIT 1) AS ctx,
-         (SELECT context_window FROM agent_turns WHERE session_id = ? AND context_tokens > 0 ORDER BY seq DESC LIMIT 1) AS win,
-         (SELECT model         FROM agent_turns WHERE session_id = ? AND context_tokens > 0 ORDER BY seq DESC LIMIT 1) AS model,
+         (SELECT context_tokens FROM agent_turns WHERE session_id = ? AND context_tokens > 0 AND undone_by IS NULL ORDER BY seq DESC LIMIT 1) AS ctx,
+         (SELECT context_window FROM agent_turns WHERE session_id = ? AND context_tokens > 0 AND undone_by IS NULL ORDER BY seq DESC LIMIT 1) AS win,
+         (SELECT model         FROM agent_turns WHERE session_id = ? AND context_tokens > 0 AND undone_by IS NULL ORDER BY seq DESC LIMIT 1) AS model,
          (SELECT COALESCE(SUM(cost_usd), 0) FROM agent_turns WHERE session_id = ?) AS cost`,
     )
     .get(sessionId, sessionId, sessionId, sessionId) as
@@ -1382,7 +1486,10 @@ export async function resumeAgent(
 ): Promise<StartAgentResult> {
   const prev = get(sessionId)
   if (!prev) return { denied: true, reason: 'unknown session: ' + sessionId }
-  if (!prev.engineSessionId) {
+  // §16 — after an undo, what the engine reads next is the conversation as it
+  // now stands on screen, not as it stood before the undo.
+  const at = resumePoint(sessionId, prev.engineSessionId)
+  if (!prev.engineSessionId && at !== null) {
     return {
       denied: true,
       reason:
@@ -1427,7 +1534,13 @@ export async function resumeAgent(
     // already been given.
     denials: [],
   }
-  return launch(session, spec, preamble, true, allow, opts, files)
+  // Every turn undone: nothing is left to resume, so the engine starts afresh
+  // and the id it announces becomes the conversation's.
+  if (at === null) {
+    session.engineSessionId = null
+    return launch(session, spec, preamble, false, allow, opts, files)
+  }
+  return launch(session, spec, preamble, true, allow, opts, files, at)
 }
 
 /** How the engine is asked to run, chosen per conversation by the window. */
@@ -1492,6 +1605,8 @@ async function launch(
   allow?: string[],
   opts?: EngineOptions,
   files: Attachment[] = [],
+  /** §16 — resume at this message rather than at the end. See `resumePoint`. */
+  at?: string,
 ): Promise<StartAgentResult> {
   // §7 — the lease is what makes two overlapping agents impossible. It is taken
   // on paths, so a topic-wide session and a repo session inside it collide
@@ -1538,7 +1653,7 @@ async function launch(
   const segs = withUltracode(spec, attachments.turnSegments(preamble, session.prompt, files), ultracode)
   const withFiles = attachments.flatten(segs)
   const args = resuming
-    ? spec.buildResumeArgs(withFiles, session.engineSessionId!, ctx)
+    ? spec.buildResumeArgs(withFiles, session.engineSessionId!, ctx, at)
     : spec.buildArgs(withFiles, ctx)
   const child = spawn(spec.bin, args, {
     cwd,
@@ -1560,6 +1675,7 @@ async function launch(
     doneTokens: 0,
     msgTokens: 0,
     costSoFar: 0,
+    anchor: null,
     busy: true,
     calls: new Map(),
     pending: new Map(),
@@ -1608,6 +1724,9 @@ async function launch(
         persist(session)
       }
     }
+
+    const anchor = spec.anchorIn?.(line)
+    if (anchor) l.anchor = anchor
 
     let changed = false
     for (const ev of spec.parse(line)) {
@@ -1748,6 +1867,9 @@ async function launch(
               payload: { tools: session.denials },
             })
           }
+          // Before the turn closes: the running row is how it is found.
+          if (l.anchor) writeTurnAnchor(session.id, l.anchor, session.engineSessionId)
+          l.anchor = null
           // A streaming engine ends a *turn* here, not the process. Closing the
           // turn and letting the next one in is what the queue is waiting for.
           closeTurn(session.id, 'done')
@@ -1857,6 +1979,7 @@ async function flushQueue(l: Live): Promise<void> {
   l.session.status = 'thinking'
   l.doneTokens = 0
   l.msgTokens = 0
+  l.anchor = null
   const turnId = openTurn(l.session.id, prompt, files)
   persist(l.session)
   // The turn is on screen while its checkpoint is taken, rather than the
@@ -1923,6 +2046,107 @@ export function stop(sessionId: string): void {
   // Not live: still release the lease so a crashed core does not wedge a path.
   const s = list().find((x) => x.id === sessionId)
   if (s?.leaseId) leases.release(s.leaseId)
+}
+
+/**
+ * §6 — the process let go, and the wait until it has gone.
+ *
+ * Closing stdin is how a streaming engine is asked to finish; the lease and
+ * the row are settled by its own `close`. Signalled only if it has not gone
+ * in a few seconds, and never waited on for longer than that.
+ */
+function release(l: Live): Promise<void> {
+  return new Promise((done) => {
+    const kill = setTimeout(() => l.child.kill('SIGTERM'), 4000)
+    const give = setTimeout(done, 8000)
+    l.child.once('close', () => {
+      clearTimeout(kill)
+      clearTimeout(give)
+      done()
+    })
+    clearIdleTimer(l)
+    l.child.stdin?.end()
+  })
+}
+
+/**
+ * §16 — back to before a turn was asked, or forward again to where the last
+ * undo left off.
+ *
+ * Two things go back, and they go back together: the files, from the snapshot
+ * taken before the turn could write, and the conversation — the turn and
+ * everything after it leave the thread, and the engine is resumed at the last
+ * message before them, so it does not remember what the thread no longer
+ * shows. A thread that only pretended to forget would be the window lying
+ * about what the agent is working from.
+ *
+ * A turn that changed no file is still worth undoing for the second half
+ * alone: taking back a question is most of what "undo" means in a
+ * conversation.
+ *
+ * The live process holds the whole conversation in memory, so it is let go
+ * first; the next turn relaunches at the right point. Refused while a turn is
+ * in flight, for the same reason the buttons are not drawn then.
+ */
+export async function undo(
+  sessionId: string,
+  turnId: string,
+  redo: boolean,
+): Promise<{ ok: boolean; detail: string }> {
+  const s = get(sessionId)
+  if (!s) return { ok: false, detail: 'no such conversation' }
+  const l = live.get(sessionId)
+  if (l && (l.busy || l.queue.length)) return { ok: false, detail: 'a turn is still running — stop it first' }
+  const t = s.history.find((x) => x.id === turnId)
+  if (!t) return { ok: false, detail: 'no such turn' }
+  if (redo ? !t.redoable : t.undoneBy || (!t.restorable && !t.forgettable))
+    return { ok: false, detail: redo ? 'there is nothing to bring back' : 'that turn cannot be undone' }
+
+  if (!redo && t.forgettable && l) await release(l)
+
+  // The files first: they are the half that can fail, and a conversation
+  // taken back over files that stayed put would be two different states.
+  const snapshot = redo ? 'redo_' + turnId : turnId
+  let files = 0
+  let workspaces = 0
+  let failures: string[] = []
+  if (checkpoints.has(sessionId, snapshot)) {
+    const r = await checkpoints.revert(sessionId, snapshot, redo ? 'redo of a turn' : 'undo of a turn')
+    if (!r.ok) return { ok: false, detail: r.detail }
+    ;({ files, workspaces, failures } = r)
+  }
+
+  let turns = 0
+  if (t.forgettable) {
+    const d = getDb()
+    turns = redo
+      ? d.prepare('UPDATE agent_turns SET undone_by = NULL, undone_at = NULL WHERE session_id = ? AND undone_by = ?').run(sessionId, turnId)
+          .changes
+      : d
+          .prepare(
+            'UPDATE agent_turns SET undone_by = ?, undone_at = ? WHERE session_id = ? AND seq >= ? AND undone_by IS NULL',
+          )
+          .run(turnId, Date.now(), sessionId, t.seq).changes
+  }
+
+  append({
+    type: 'agent.reverted',
+    level: failures.length ? 'warn' : 'info',
+    actor: { kind: 'agent', sessionId, engine: '' },
+    workspaceId: s.workspaceIds[0] ?? null,
+    // Which direction it went, and whether the conversation went with it.
+    // The window draws a files-only undo as a line in the thread; one that
+    // took turns away is drawn by the turns being gone.
+    payload: { turnId, redo, files, workspaces, failures, turns, conversation: t.forgettable },
+  })
+  agentBus.emit('changed')
+
+  const what = [
+    ...(turns ? [turns + (turns === 1 ? ' turn' : ' turns')] : []),
+    ...(files ? [files + (files === 1 ? ' file' : ' files')] : []),
+  ]
+  const detail = (redo ? 'brought back' : 'undone') + (what.length ? ' — ' + what.join(', ') : '')
+  return { ok: true, detail: failures.length ? detail + ' — ' + failures.join('; ') : detail }
 }
 
 /**

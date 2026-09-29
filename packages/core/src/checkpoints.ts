@@ -234,11 +234,6 @@ function forTurn(sessionId: string, turnId: string): Checkpoint[] {
   return [...latest.values()]
 }
 
-/** An undo's own snapshot is filed under the turn it undid, prefixed. */
-function isRedo(turnId: string): boolean {
-  return turnId.startsWith('redo_')
-}
-
 export interface RevertPreviewEntry {
   workspaceId: string
   name: string
@@ -291,6 +286,15 @@ export interface RevertResult {
   detail: string
   /** The snapshot taken on the way in, so the undo is itself undoable. */
   redoTurnId: string | null
+  /** What moved, counted from the paths that did — for the journal entry. */
+  files: number
+  workspaces: number
+  failures: string[]
+}
+
+/** Whether a turn id names any snapshot at all. */
+export function has(sessionId: string, turnId: string): boolean {
+  return forTurn(sessionId, turnId).length > 0
 }
 
 /**
@@ -314,7 +318,8 @@ export async function revert(
   reason: string,
 ): Promise<RevertResult> {
   const cps = forTurn(sessionId, turnId)
-  if (!cps.length) return { ok: false, detail: 'no checkpoint was taken for that turn', redoTurnId: null }
+  if (!cps.length)
+    return { ok: false, detail: 'no checkpoint was taken for that turn', redoTurnId: null, files: 0, workspaces: 0, failures: [] }
 
   // One id for the whole redo, so undoing the undo is one operation across
   // every repository the turn spanned.
@@ -367,26 +372,24 @@ export async function revert(
   }
 
   if (!restored) {
-    return { ok: false, detail: failures.join('; ') || 'nothing could be restored', redoTurnId: null }
+    return {
+      ok: false,
+      detail: failures.join('; ') || 'nothing could be restored',
+      redoTurnId: null,
+      files: 0,
+      workspaces: 0,
+      failures,
+    }
   }
 
-  append({
-    type: 'agent.reverted',
-    level: failures.length ? 'warn' : 'info',
-    actor: { kind: 'agent', sessionId, engine: '' },
-    workspaceId: cps[0]!.workspaceId,
-    // Which direction it went. The two are the same operation and read as
-    // opposite ones, and a transcript that calls a redo "put back to before
-    // this turn" is describing the wrong half of it.
-    payload: { turnId, redo: isRedo(turnId), workspaces: restored, files, failures },
-  })
-
+  // Not journaled here: the undo that called this also moved the conversation,
+  // and one entry says what happened to both. See `agents.undo`.
   const detail =
     'reverted ' +
     restored +
     (restored === 1 ? ' repository' : ' repositories') +
     (failures.length ? ' — ' + failures.join('; ') : '')
-  return { ok: true, detail, redoTurnId }
+  return { ok: true, detail, redoTurnId, files, workspaces: restored, failures }
 }
 
 /**

@@ -19,7 +19,7 @@ import PermissionAsk from '../agent/PermissionAsk.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
   activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFiles,
-  askRevert, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
+  askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
   sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
   transcriptOf,
 } from '../../core/store.js'
@@ -247,7 +247,10 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
       continue
     }
     if (e.type === 'agent.reverted') {
-      const p = e.payload as { files?: number; workspaces?: number; redo?: boolean }
+      const p = e.payload as { files?: number; workspaces?: number; redo?: boolean; conversation?: boolean }
+      // An undo that took turns away is drawn by their being folded away; a
+      // line saying so under the last answer would be a second, louder copy.
+      if (p?.conversation) continue
       into.push({
         kind: 'revert',
         id: e.id,
@@ -318,6 +321,52 @@ const exchanges = computed<Exchange[]>(() => {
     return { turn, items, rows: rowsOf(items) }
   })
 })
+
+/**
+ * §16 — the turns an undo took out of the conversation, folded to one line.
+ *
+ * One line per run of hidden turns, whichever undo hid each of them: two
+ * undos in a row leave adjacent runs, and three lines stacked on top of each
+ * other read as three events when there is one gap in the thread. The agent
+ * no longer remembers any of it, so neither does the thread by default; Show
+ * is for reading what it said.
+ */
+interface Fold {
+  /** The run's first turn, which is what Show remembers it by. */
+  key: string
+  turns: number
+  /** The way forward again — only the latest undo's, and only until something new is said. */
+  redo: AgentTurn | null
+}
+
+const folds = computed<(Fold | null)[]>(() => {
+  const xs = exchanges.value
+  return xs.map((x, i) => {
+    if (!x.turn.undoneBy || xs[i - 1]?.turn.undoneBy) return null
+    let n = 0
+    while (xs[i + n]?.turn.undoneBy) n++
+    const run = xs.slice(i, i + n)
+    return { key: x.turn.id, turns: n, redo: run.find((y) => y.turn.redoable)?.turn ?? null }
+  })
+})
+
+/** The fold a hidden exchange sits under, for whether it is showing. */
+const foldOf = computed<(string | null)[]>(() => {
+  let key: string | null = null
+  return exchanges.value.map((x, i) => {
+    if (!x.turn.undoneBy) return (key = null)
+    return (key = folds.value[i]?.key ?? key)
+  })
+})
+
+/** Which folds are open for reading. Per view: nobody asked for this to stick. */
+const unfolded = ref(new Set<string>())
+function toggleFold(key: string): void {
+  const next = new Set(unfolded.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  unfolded.value = next
+}
 
 /**
  * §3.3 — the sentence being written right now, which is not in the journal and
@@ -1031,7 +1080,29 @@ function ago(ts: number): string {
             listed, what was said in them is gone.
           </p>
 
-          <div v-for="(x, i) in exchanges" :key="x.turn.id" class="ex">
+          <template v-for="(x, i) in exchanges" :key="x.turn.id">
+          <!-- §16 — what an undo took away, as one quiet line where it was. -->
+          <div v-if="folds[i]" class="fold">
+            <Undo2 class="sm" />
+            <span>{{ folds[i]!.turns }} turn{{ folds[i]!.turns === 1 ? '' : 's' }} undone</span>
+            <button class="lnk" @click="toggleFold(folds[i]!.key)">
+              {{ unfolded.has(folds[i]!.key) ? 'Hide' : 'Show' }}
+            </button>
+            <template v-if="folds[i]!.redo && !queueing">
+              <button
+                class="lnk"
+                title="Bring these turns back, with their files — the agent remembers them again"
+                @click="askUndo(selected.id, folds[i]!.redo!, true)"
+              >
+                Redo
+              </button>
+            </template>
+          </div>
+          <div
+            v-if="!x.turn.undoneBy || unfolded.has(foldOf[i]!)"
+            class="ex"
+            :class="{ gone: x.turn.undoneBy }"
+          >
             <!-- The half a person wrote, and its own footer.
                  
                  Only as wide as what is in it, and hovered on its own: the two
@@ -1109,21 +1180,30 @@ function ago(ts: number): string {
                      way to stop a turn is the Stop under the box; once it
                      lands, both come back. Copy of what *you* wrote stays —
                      nothing it does touches the tree. -->
+                <!-- A Redo that brings turns back lives on their fold, where
+                     they are; this one is for an undo that moved files only. -->
                 <button
-                  v-if="x.turn.redoable && x.turn.status !== 'running'"
+                  v-if="x.turn.redoable && !x.turn.forgettable && !x.turn.undoneBy && !queueing"
                   class="act"
                   title="Redo — bring back what the undo discarded"
                   aria-label="Redo this turn"
-                  @click="askRevert(selected.id, x.turn, true)"
+                  @click="askUndo(selected.id, x.turn, true)"
                 >
                   <Redo2 class="sm" />
                 </button>
+                <!-- Offered for every turn the conversation can be taken back
+                     to, whether or not it touched a file: taking back a
+                     question is most of what undo means here. -->
                 <button
-                  v-if="x.turn.restorable && x.turn.status !== 'running'"
+                  v-if="(x.turn.restorable || x.turn.forgettable) && !x.turn.undoneBy && !queueing"
                   class="act"
-                  title="Undo from here — put the files back to how they were before this turn"
+                  :title="
+                    x.turn.forgettable
+                      ? 'Undo from here — the conversation and the files go back to before this turn'
+                      : 'Undo from here — put the files back to how they were before this turn'
+                  "
                   aria-label="Undo from here"
-                  @click="askRevert(selected.id, x.turn, false)"
+                  @click="askUndo(selected.id, x.turn, false)"
                 >
                   <Undo2 class="sm" />
                 </button>
@@ -1246,6 +1326,7 @@ function ago(ts: number): string {
             </div>
             </div>
           </div>
+          </template>
 
           <!-- Said, and not yet asked. In the shape of a question because that
                is what it is, and dimmed because the engine has not seen it. -->
@@ -1781,6 +1862,48 @@ function ago(ts: number): string {
 }
 /* Keyboard reach as well as pointer: an escape hatch you cannot tab to is an
    escape hatch for one kind of person. */
+
+/* ── §16, what an undo took away ─────────────────────────────────────────
+ *
+ * One line where the turns were, at the weight of the timestamp: neutral ink,
+ * because nothing here needs anyone — amber is for that, and a fold is a fact.
+ * The rules either side make it read as a seam in the thread rather than as
+ * one more thing the agent said. */
+.fold {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Auto on both sides, like every other child of the thread: a bare \`0\`
+     here overrode the column's centring and ran the rules out to the left
+     edge of the panel. */
+  margin: 22px auto;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.fold::before, .fold::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.fold::before { margin-right: 8px; }
+.fold::after { margin-left: 8px; }
+.fold .lucide { flex: none; width: 12px; height: 12px; }
+/* The fact, then the two things to do about it, told apart by room and ink
+   rather than by a dot between them. The first link keeps its distance from
+   the sentence; the second sits beside it as one of a pair. */
+.fold span { margin-right: 6px; }
+.fold .lnk {
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  font-size: inherit;
+  color: var(--text-muted);
+  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
+}
+.fold .lnk:hover { color: var(--text); background: var(--hover); }
+/* Unfolded to be read, not to be worked on: dimmed, and nothing under it can
+   be pressed except the copy buttons, which take nothing from anyone. */
+.ex.gone { opacity: 0.5; }
 
 /* What an undo left behind, in the thread, at the weight of a fact. */
 .undone {

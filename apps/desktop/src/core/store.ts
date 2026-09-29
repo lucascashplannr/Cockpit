@@ -1,6 +1,6 @@
-import { computed, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, reactive, ref, shallowRef, toRaw, watch } from 'vue'
 import type {
-  AddRepoSource, AgentScope, AgentScopePreview, Attachment, AttachmentInput,
+  AddRepoSource, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, Topic,
@@ -118,25 +118,6 @@ export type ShellView = 'agent' | 'split' | 'review'
 /** The ladder, in order. The one place that says what "next" means. */
 export const SHELL_VIEWS: ShellView[] = ['agent', 'split', 'review']
 
-
-/**
- * §16 — an undo waiting to be confirmed, with what it would change.
- *
- * `plan` is null while the core is still working out the answer: the dialog
- * opens immediately and fills in, rather than the button hanging for the
- * length of a `git diff` on a large repository with nothing on screen.
- */
-export interface PendingRevert {
-  sessionId: string
-  turnId: string
-  /** Going forward again, rather than back: the same call, the other way. */
-  redo: boolean
-  /** Which turn, in the words it was asked in. */
-  turnSeq: number
-  turnPrompt: string
-  plan: RevertPreviewEntry[] | null
-  busy: boolean
-}
 
 /**
  * What the ladder sits at until somebody moves it.
@@ -299,7 +280,6 @@ export const state = reactive({
    * work, and those are confirmed in a dialog in this app, never in a strip of
    * text that a stray click can dismiss.
    */
-  pendingRevert: null as PendingRevert | null,
 
   /**
    * The attachment being looked at properly — a picture, a paste or a file —
@@ -3309,6 +3289,12 @@ interface ConfirmBase {
   cancel?: string
   /** Asked to be typed back before the button will do anything. */
   typeToConfirm?: string
+  /**
+   * Still being worked out. The question opens at once and its sentences fill
+   * in, rather than the button hanging for the length of a `git diff` with
+   * nothing on screen — but it cannot be answered before they have.
+   */
+  waiting?: boolean
 }
 
 /**
@@ -4403,42 +4389,154 @@ export async function sendTurn(
 
 /* ── §16, the undo ──────────────────────────────────────────────────────── */
 
-/**
- * Asking is not doing. This opens the confirmation and then reads what would
- * change; nothing has moved when it returns.
- */
-export async function askRevert(
-  sessionId: string,
-  turn: { id: string; seq: number; prompt: string },
-  redo: boolean,
-): Promise<void> {
-  const turnId = redo ? 'redo_' + turn.id : turn.id
-  state.pendingRevert = {
-    sessionId,
-    turnId,
-    redo,
-    turnSeq: turn.seq,
-    turnPrompt: turn.prompt,
-    plan: null,
-    busy: false,
-  }
-  const r = await guard(() => client.call('agent.revertPreview', { sessionId, turnId }))
-  // Only if it is still the same question: the dialog can be dismissed, or
-  // another turn asked about, while this was in flight.
-  if (state.pendingRevert?.turnId === turnId) state.pendingRevert.plan = r ?? []
+/** "1 file" — the count and its noun, agreeing. */
+function count(n: number, noun: string): string {
+  return n + ' ' + noun + (n === 1 ? '' : 's')
 }
 
-export async function applyPendingRevert(): Promise<void> {
-  const p = state.pendingRevert
-  if (!p || p.busy) return
-  p.busy = true
-  const r = await guard(() => client.call('agent.revert', { sessionId: p.sessionId, turnId: p.turnId }))
-  p.busy = false
-  if (!r) return
-  // Closed only on an answer: a dialog that vanishes on failure takes the
-  // reason with it.
-  if (r.ok) state.pendingRevert = null
-  toast(r.ok ? 'ok' : 'error', r.detail)
+/** What the files would do, as the sentence that says so. */
+function filesSentence(plan: RevertPreviewEntry[], redo: boolean): string {
+  const verb = redo ? 'come back' : 'go back'
+  if (!plan.length) return redo ? 'No file changes with it.' : 'No file has changed since, so none move.'
+  const files = plan.reduce((n, e) => n + e.files, 0)
+  const ins = plan.reduce((n, e) => n + e.insertions, 0)
+  const del = plan.reduce((n, e) => n + e.deletions, 0)
+  const where = plan.length === 1 ? 'in ' + plan[0]!.name : 'across ' + plan.map((e) => e.name).join(', ')
+  return count(files, 'file') + ' ' + (files === 1 ? verb + 's' : verb) + ' ' + where + ' (+' + ins + ' −' + del + ').'
+}
+
+/**
+ * The files a turn went in with, back in the box it was written in.
+ *
+ * Under the handles they had, so the `#image` in the returned sentence is the
+ * chip it was rather than plain text pointing at nothing. Read back from the
+ * core's copy — the window never kept the bytes once they were sent. Anything
+ * whose copy is gone is simply not there; the sentence still names it, and a
+ * toast would be louder than the loss.
+ */
+async function restoreFiles(key: string, sent: Attachment[]): Promise<void> {
+  const back: DraftFile[] = []
+  for (const a of sent) {
+    const data = await guard(() => client.call('agent.attachment', { path: a.path }))
+    if (!data) continue
+    back.push({
+      id: 'df_' + Math.random().toString(36).slice(2, 10),
+      name: a.name,
+      handle: a.handle,
+      mediaType: a.mediaType,
+      bytes: a.bytes,
+      data,
+      ...(a.pasted ? { pasted: true, text: fromBase64(data) } : {}),
+    })
+  }
+  // Only into a box that is still as it was left: something typed or dropped
+  // in the meantime is theirs, and this does not get to reorder it.
+  if (back.length && !state.attachments[key]?.length) state.attachments[key] = back
+}
+
+/**
+ * §16 — undo from a turn, or redo the last undo, asked the way every other
+ * question in the app is asked.
+ *
+ * It had a dialog of its own — a badge, a rule under the title, an amber
+ * button — which made a reversible step look like the most dangerous thing on
+ * screen. It is the same shape as Commit now: the question, their words
+ * quoted, what happens in sentences, one button that says the verb.
+ *
+ * The files half is read from the core after the dialog is up; the button
+ * waits for it, because an undo whose size is unknown is a gamble.
+ */
+export async function askUndo(sessionId: string, turn: AgentTurn, redo: boolean): Promise<void> {
+  const conv = state.agents.find((a) => a.id === sessionId)
+  const history = conv?.history ?? []
+  // What leaves the thread with it: this turn, and what is still showing after it.
+  const taking = redo
+    ? history.filter((t) => t.undoneBy === turn.id).length
+    : history.filter((t) => t.seq >= turn.seq && !t.undoneBy).length
+  const later = taking - 1
+  const convo = turn.forgettable
+
+  const say = (files: string): string[] => {
+    const lines: string[] = []
+    if (redo) {
+      lines.push(
+        convo
+          ? (taking > 1 ? 'The ' + count(taking, 'turn') + ' come back' : 'The turn comes back') +
+              ' into the conversation, and the agent remembers them again.'
+          : 'The files go back to how they were after this turn ran.',
+      )
+    } else if (convo) {
+      lines.push(
+        'The conversation goes back to before this was asked' +
+          (later > 0 ? ', along with the ' + count(later, 'turn') + ' after it' : '') +
+          '. The agent forgets ' +
+          (later > 0 ? 'them' : 'it') +
+          ' too.',
+      )
+    } else {
+      lines.push('The files go back to how they were before this turn was asked.')
+      lines.push(
+        'This conversation began before undo could take the agent back as well, so the turns stay and the agent still remembers them.',
+      )
+    }
+    lines.push(files)
+    lines.push(redo ? 'Undo takes it all away again.' : 'Nothing is lost — Redo brings it all back.')
+    return lines
+  }
+
+  const turnId = redo ? 'redo_' + turn.id : turn.id
+  const title = redo
+    ? convo && taking > 1
+      ? 'Bring back ' + count(taking, 'turn') + '?'
+      : 'Bring this turn back?'
+    : convo && later > 0
+      ? 'Undo this turn and the ' + count(later, 'turn') + ' after it?'
+      : 'Undo this turn?'
+
+  const q: PendingConfirm = {
+    title,
+    quote: turn.prompt,
+    body: say(redo ? 'Reading what would come back…' : 'Reading what would change…'),
+    verb: redo ? 'Redo' : 'Undo',
+    done: redo ? 'Brought back' : 'Undone',
+    danger: false,
+    waiting: true,
+    run: async () => {
+      const r = await guard(() => client.call('agent.undo', { sessionId, turnId: turn.id, redo }))
+      if (!r) return false
+      if (!r.ok) {
+        toast('error', r.detail)
+        return false
+      }
+      q.done = r.detail
+      // What was taken back is what you were about to rephrase, most of the
+      // time: it goes back in the box — unless the box already has something
+      // in it, which is never thrown away for this.
+      if (!redo && convo && conv) {
+        const key = draftKey(conv.scope, conv.id)
+        if (!(state.drafts[key] ?? '').trim() && !state.attachments[key]?.length) {
+          state.drafts[key] = turn.prompt
+          void restoreFiles(key, turn.attachments ?? [])
+        }
+      }
+      return true
+    },
+  }
+  state.pendingConfirm = q
+
+  const plan = (await guard(() => client.call('agent.revertPreview', { sessionId, turnId }))) ?? []
+  // Only if it is still the same question: the dialog can be dismissed, or
+  // another turn asked about, while this was in flight.
+  const open = state.pendingConfirm
+  if (!open || toRaw(open) !== q) return
+  open.body = say(filesSentence(plan, redo))
+  // Nothing at all to do is a real answer, not an error: an undo that could
+  // only move the files, over files that have not moved.
+  if (!convo && !plan.length) {
+    open.body = ['The files are already in that state — there is nothing to put back.']
+    return
+  }
+  open.waiting = false
 }
 
 /**

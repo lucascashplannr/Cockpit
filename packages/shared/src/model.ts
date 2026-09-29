@@ -831,6 +831,19 @@ export interface AgentTurn {
    * rather than merely true.
    */
   redoable: boolean
+  /**
+   * §16 — whether undoing from here also takes the conversation back: the
+   * turn and those after it leave the thread, and the engine resumes before
+   * them. False for an engine that cannot be resumed at a message, and for a
+   * thread from before that was recorded — there an undo moves the files only.
+   */
+  forgettable: boolean
+  /**
+   * The turn whose undo took this one out of the conversation, or null while
+   * it is still in it. The thread folds these away; a Redo from the turn named
+   * here brings back exactly the ones it took.
+   */
+  undoneBy: string | null
   /** §16 — what it cost and how full the window was. Null before it lands. */
   usage: TurnUsage | null
   /**

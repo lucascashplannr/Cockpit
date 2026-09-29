@@ -306,6 +306,20 @@ function migrate(d: Db): void {
   // turn rather than on the session: it is a property of what was asked, and a
   // thread reread next week has to show what was attached to *which* question.
   addColumn(d, 'agent_turns', 'attachments', "TEXT NOT NULL DEFAULT '[]'")
+  // §16 — undoing a turn takes the conversation back as well as the files.
+  // `engine_anchor` is the engine's id for the last message the turn wrote: a
+  // later undo resumes the engine *at* it, so it forgets what came after.
+  // `undone_by` hides a turn from the thread and names the undo that did it,
+  // so a Redo brings back exactly the turns it took and no others.
+  addColumn(d, 'agent_turns', 'engine_anchor', 'TEXT')
+  addColumn(d, 'agent_turns', 'undone_by', 'TEXT')
+  // Which engine session the anchor is a message of: after an undo back to the
+  // first turn the engine starts afresh, and an anchor from the old session
+  // names a message the new one has never heard of.
+  addColumn(d, 'agent_turns', 'anchor_session', 'TEXT')
+  // When the undo that hid it happened. A Redo is only honest while nothing
+  // has been asked since — and "since" is a time, not a position in the thread.
+  addColumn(d, 'agent_turns', 'undone_at', 'INTEGER')
 
   remapVocabulary(d)
   backfillScopes(d)

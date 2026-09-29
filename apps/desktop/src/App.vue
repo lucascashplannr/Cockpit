@@ -13,7 +13,6 @@ import ContextMenu from './components/ContextMenu.vue'
 import DetailsDialog from './components/DetailsDialog.vue'
 import AttachmentViewer from './components/AttachmentViewer.vue'
 import PlanDialog from './components/PlanDialog.vue'
-import RevertDialog from './components/RevertDialog.vue'
 import ProjectDialog from './components/ProjectDialog.vue'
 import NewProjectDialog from './components/NewProjectDialog.vue'
 import AddRepoDialog from './components/AddRepoDialog.vue'
@@ -108,11 +107,7 @@ function onKey(e: KeyboardEvent) {
     // First, because it is on top of everything: a picture opened over a
     // dialog closes back to the dialog, not past it.
     if (state.pendingView) state.pendingView = null
-    else if (state.pendingRevert) {
-      // Never while it is running: the work is already happening and closing
-      // the dialog would only hide its outcome.
-      if (!state.pendingRevert.busy) state.pendingRevert = null
-    } else if (state.newProjectOpen) state.newProjectOpen = false
+    else if (state.newProjectOpen) state.newProjectOpen = false
     else if (state.addRepoProjectId) state.addRepoProjectId = null
     else if (state.settingsOpen) state.settingsOpen = false
     else if (state.serviceOpen) state.serviceOpen = false
@@ -339,7 +334,6 @@ onUnmounted(() => {
     <ConfirmDialog v-if="state.pendingConfirm" />
     <RunCommandDialog v-if="state.pendingCommand" />
     <DeclarationsDialog v-if="state.declareOpen" />
-    <RevertDialog />
     <ProjectDialog />
     <DetailsDialog />
     <ContextMenu />

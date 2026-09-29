@@ -49,7 +49,7 @@ function cancel(): void {
 }
 
 async function go(): Promise<void> {
-  if (!armed.value || state.planBusy) return
+  if (!armed.value || state.planBusy || c.value?.waiting) return
   await applyPendingConfirm()
   open.value = false
 }
@@ -169,7 +169,7 @@ watch(
           ref="yes"
           class="btn"
           :class="danger ? 'danger solid' : 'primary'"
-          :disabled="state.planBusy || !armed"
+          :disabled="state.planBusy || !armed || c.waiting"
           @click="go"
         >
           {{ state.planBusy ? 'Working…' : c.verb }}

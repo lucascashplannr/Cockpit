@@ -880,15 +880,17 @@ export interface Rpc {
     result: RevertPreviewEntry[]
   }
   /**
-   * §16 — the working tree as it stood before that turn, put back: files
-   * edited, files created, files deleted, tracked or not, committed or not.
+   * §16 — back to before that turn was asked, or forward again with `redo`.
    *
-   * The state being discarded is snapshotted on the way in, so this is not a
-   * one-way door — `redoTurnId` names the checkpoint that holds it.
+   * The working tree as it stood — files edited, created, deleted, tracked or
+   * not — and, where the engine allows it (`AgentTurn.forgettable`), the
+   * conversation too: the turn and those after it leave the thread and the
+   * engine's memory. What is discarded is snapshotted on the way in, so this
+   * is not a one-way door.
    */
-  'agent.revert': {
-    params: { sessionId: string; turnId: string }
-    result: { ok: boolean; detail: string; redoTurnId: string | null }
+  'agent.undo': {
+    params: { sessionId: string; turnId: string; redo: boolean }
+    result: { ok: boolean; detail: string }
   }
 
   'memory.read': { params: { workspaceId: string }; result: MemoryDoc | null }
