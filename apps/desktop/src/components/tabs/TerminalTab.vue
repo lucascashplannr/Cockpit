@@ -113,6 +113,9 @@ const MAC_KEYS: Record<string, string> = {
 
 function onKey(e: KeyboardEvent): boolean {
   const meta = isMac ? e.metaKey : e.ctrlKey && e.shiftKey
+  // The window's view chord, not the shell's: left to bubble, or xterm turns
+  // ⌘⌥← into an escape sequence and the prompt gets it instead of the ladder.
+  if (e.metaKey && e.altKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) return false
   if (!meta || e.altKey) return true
   if (e.key.toLowerCase() === 'f') {
     if (e.type === 'keydown') openFind()

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { SHELL_VIEWS, setView, state } from '../core/store.js'
+import { SHELL_VIEWS, setView, state, viewKey } from '../core/store.js'
 import type { ShellView } from '../core/store.js'
 
 /**
@@ -14,17 +14,27 @@ import type { ShellView } from '../core/store.js'
  * away, and no click is a guess about what the next one will do.
  *
  * Drawn as a ladder, left to right, in the order the review grows: none of the
- * window, some of it, all of it. That is also the order ⌘⌥← and ⌘⌥→ walk, so
- * the keystroke and the control tell the same story.
+ * window, some of it, all of it. That is also the order ⌘⌥← and ⌘⌥→ walk —
+ * round, off either end onto the other — so the keystroke and the control tell
+ * the same story.
  *
  * It ends the bar because it is the one control there that is about the
  * *window* rather than about the thing the window is showing.
  */
 
+/* Every rung names the key that reaches it from where you are — the ladder
+   wraps, so that is always one arrow, or Escape for the Agent. Worked out per
+   hover rather than printed once, because a list of every key that could ever
+   land there is a thing to read, and one key is a thing to press. */
 const META: Record<ShellView, { label: string; hint: string }> = {
-  agent: { label: 'Agent', hint: 'Agent only — the conversation takes the width (⌘⌥←)' },
+  agent: { label: 'Agent', hint: 'Agent only — the conversation takes the width' },
   split: { label: 'Split', hint: 'Agent and review side by side' },
-  review: { label: 'Review', hint: 'Review only — diff, code, journal, terminal (⌘⌥→)' },
+  review: { label: 'Review', hint: 'Review only — diff, code, journal, terminal' },
+}
+
+function title(v: ShellView): string {
+  const key = v === state.view ? undefined : viewKey(v)
+  return key ? `${META[v].hint}   ${key}` : META[v].hint
 }
 
 /**
@@ -52,7 +62,7 @@ const views = SHELL_VIEWS.map((v) => ({ id: v, cut: CUT[v], ...META[v] }))
       v-for="v in views"
       :key="v.id"
       :class="{ on: state.view === v.id }"
-      :title="v.hint"
+      :title="title(v.id)"
       :aria-label="v.label"
       :aria-pressed="state.view === v.id"
       @click="setView(v.id)"

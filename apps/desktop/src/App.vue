@@ -139,8 +139,13 @@ function onKey(e: KeyboardEvent) {
     stepAttachment(e.key === 'ArrowRight' ? 1 : -1)
     return
   }
-  if (typing) return
 
+  // Below here only while nothing is being typed — but the window's own
+  // chords are above that line, because the caret is in the composer nearly
+  // all the time and a shortcut that only works after clicking away from it
+  // is one you stop trusting. Neither ⌘1 nor ⌘⌥← means anything to a text
+  // field on a Mac, so there is nothing to take them from.
+  //
   // ⌘1 is the Agent, because the Agent is what the window is for; the review
   // tools follow it. Read from the same list the strips draw, so a number can
   // never land on a tool this workspace does not have. `code` rather than
@@ -163,6 +168,8 @@ function onKey(e: KeyboardEvent) {
     stepView(e.code === 'ArrowRight' ? 1 : -1)
     return
   }
+
+  if (typing) return
 
   const w = activeWorkspace.value
   if (!w) return

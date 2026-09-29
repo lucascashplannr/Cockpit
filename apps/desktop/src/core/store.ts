@@ -689,14 +689,27 @@ export const showsReview = computed(() => state.view !== 'agent' && !!activeWork
 
 /**
  * One step along the ladder — `+1` hands width to the review, `-1` to the
- * Agent. Written as a step rather than as three `setView` calls because that
- * is what the keys do and what the ends of the control do; it clamps rather
- * than wrapping, so holding a key cannot cycle you past the view you wanted.
+ * Agent. It wraps: past the last rung is the first, so either arrow reaches
+ * any view and three views are never more than one press from each other in
+ * the direction you happen to be leaning. Key repeat is the price — holding
+ * the key cycles — and a held key is not how anyone picks a layout.
  */
 export function stepView(by: 1 | -1): void {
+  const n = SHELL_VIEWS.length
   const at = SHELL_VIEWS.indexOf(state.view)
-  const next = SHELL_VIEWS[Math.min(SHELL_VIEWS.length - 1, Math.max(0, at + by))]!
-  setView(next)
+  setView(SHELL_VIEWS[(at + by + n) % n]!)
+}
+
+/**
+ * The keystroke that reaches `to` from the view you are in: Escape for the
+ * Agent, which is home from anywhere, and otherwise the arrow that gets there
+ * in one step. The ladder wraps, so with three views there always is one.
+ */
+export function viewKey(to: ShellView): string | undefined {
+  if (to === 'agent') return 'Esc'
+  const n = SHELL_VIEWS.length
+  const by = (SHELL_VIEWS.indexOf(to) - SHELL_VIEWS.indexOf(state.view) + n) % n
+  return by === 1 ? '⌘⌥→' : by === n - 1 ? '⌘⌥←' : undefined
 }
 
 export function setView(view: ShellView): void {

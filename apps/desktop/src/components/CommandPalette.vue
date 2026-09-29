@@ -15,7 +15,7 @@ import {
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import type { Scored } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, mergeTopic, markResolved, newProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state,
+  SHELL_VIEWS, setView, viewKey, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, mergeTopic, markResolved, newProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -37,9 +37,9 @@ import type { ShellView, TabId } from '../core/store.js'
 
 /** §12's ladder, said in words — the switcher says it in three glyphs. */
 const VIEW_LABELS: Record<ShellView, { label: string; hint: string }> = {
-  agent: { label: 'Agent only', hint: 'the conversation takes the window — ⌘⌥←' },
+  agent: { label: 'Agent only', hint: 'the conversation takes the window' },
   split: { label: 'Agent and review side by side', hint: 'the two columns' },
-  review: { label: 'Review only', hint: 'diff, code, journal, terminal across the window — ⌘⌥→' },
+  review: { label: 'Review only', hint: 'diff, code, journal, terminal across the window' },
 }
 
 interface Item {
@@ -455,6 +455,7 @@ function buildCommands(lvl: Level): Item[] {
         group: 'View',
         icon: Columns2,
         keywords: 'layout',
+        keys: viewKey(v),
         run: act(() => setView(v)),
       })
     }
