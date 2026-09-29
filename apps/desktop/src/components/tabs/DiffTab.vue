@@ -3,11 +3,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { CommitPreview, DiffFile, FileDiff, StashEntry, Workspace } from '@cockpit/shared'
 import type { Component } from 'vue'
 import {
-  Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, FileCode, GitBranch, LoaderCircle,
+  Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, Code, Columns2, Eye, FileCode, Rows2, GitBranch, LoaderCircle,
   ChevronUp, GitCommitHorizontal, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
-  Undo2, User, UsersRound,
+  Copy, FolderOpen, Info, Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
+import MarkdownPreview from '../MarkdownPreview.vue'
 import {
   LAYOUT_LIMITS, commit, commitPreview, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetColumnWidth,
   resetCommitHeight, saveLayout, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
@@ -114,6 +115,7 @@ onBeforeUnmount(() => {
 
 const files = ref<DiffFile[]>([])
 const current = ref<FileDiff | null>(null)
+const selected = ref<string | null>(null)
 
 /* ── one text, or two ─────────────────────────────────────────────────────
  *
@@ -142,6 +144,96 @@ function setView(v: DiffView): void {
   }
 }
 const split = computed(() => view.value === 'split' && !narrow.value)
+
+/* ── a markdown file, read as it reads ────────────────────────────────────
+ *
+ * A doc is reviewed twice: once as source, for what exactly changed, and once
+ * rendered, for whether it still reads. The second used to mean opening it
+ * somewhere else. Code is the default because this is a diff first; Preview
+ * is remembered like Unified/Split is.
+ *
+ * The preview is the whole file as it stands on disk, not the hunks — a
+ * rendered fragment of a table or a list is not something you can read. What
+ * changed is carried over as marks in the margin.
+ */
+type MdView = 'code' | 'preview'
+const MD_KEY = 'cockpit.diffMarkdownView'
+function readMdView(): MdView {
+  try {
+    return localStorage.getItem(MD_KEY) === 'preview' ? 'preview' : 'code'
+  } catch {
+    return 'code'
+  }
+}
+const mdView = ref<MdView>(readMdView())
+function setMdView(v: MdView): void {
+  mdView.value = v
+  try {
+    localStorage.setItem(MD_KEY, v)
+  } catch {
+    /* remembered for this session only */
+  }
+}
+
+/** A deleted file has nothing on disk to render. */
+const isMarkdown = computed(() => {
+  const path = selected.value
+  if (!path || !/\.(md|markdown)$/i.test(path)) return false
+  return files.value.find((f) => f.path === path)?.status !== 'D'
+})
+const previewing = computed(() => isMarkdown.value && mdView.value === 'preview')
+
+const preview = ref<{ path: string; content: string; truncated: boolean } | null>(null)
+
+/**
+ * Read again whenever the diff is: `current` is replaced on every reload the
+ * panel does (a discard, the watcher firing), and the preview has to follow it
+ * or its marks would point at lines that moved.
+ */
+watch(
+  [previewing, current],
+  async () => {
+    const path = selected.value
+    if (!previewing.value || !path) return
+    const r = await guard(() => client.call('fs.read', { workspaceId: props.workspace.id, rel: path }))
+    if (selected.value !== path) return
+    preview.value = r && !r.binary ? { path, content: r.content, truncated: r.truncated } : null
+  },
+  { immediate: true },
+)
+
+/**
+ * The diff, in the new file's line numbers. Added lines are `changed`; a run
+ * of deletions with nothing added in its place is a `cut` before the line that
+ * follows it. A file that is new from top to bottom marks nothing — every
+ * block in green says no more than the A in the list does.
+ */
+const marks = computed(() => {
+  const lines = current.value?.lines ?? []
+  const changed = new Set<number>()
+  const cut = new Set<number>()
+  if (!lines.some((l) => l.kind === 'context' || l.kind === 'del')) return { changed, cut }
+  let last = 0
+  let dropped = false
+  for (const l of lines) {
+    if (l.kind === 'del') dropped = true
+    else if (l.kind === 'add') {
+      changed.add(l.newLine!)
+      last = l.newLine!
+      dropped = false
+    } else if (l.kind === 'context') {
+      if (dropped) cut.add(l.newLine!)
+      last = l.newLine!
+      dropped = false
+    } else if (dropped) {
+      // A hunk that ends on a deletion: the cut sits before whatever came next.
+      cut.add(last + 1)
+      dropped = false
+    }
+  }
+  if (dropped) cut.add(last + 1)
+  return { changed, cut }
+})
 
 type Cell = { num: number | null; kind: 'context' | 'add' | 'del' | 'blank'; text: string }
 type SplitRow = { meta: string; hunk: number } | { left: Cell; right: Cell }
@@ -186,7 +278,6 @@ const splitRows = computed<SplitRow[]>(() => {
   }
   return rows
 })
-const selected = ref<string | null>(null)
 const loading = ref(false)
 
 /* ── §16 — discarding, and never for good ─────────────────────────────────
@@ -530,9 +621,19 @@ const menuOpen = ref(false)
 const menuRoot = ref<HTMLElement | null>(null)
 function onDocDown(e: MouseEvent) {
   if (menuRoot.value && !menuRoot.value.contains(e.target as Node)) menuOpen.value = false
+  if (detailRoot.value && !detailRoot.value.contains(e.target as Node)) detailOpen.value = false
 }
-onMounted(() => document.addEventListener('mousedown', onDocDown))
-onBeforeUnmount(() => document.removeEventListener('mousedown', onDocDown))
+function onDocKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') detailOpen.value = false
+}
+onMounted(() => {
+  document.addEventListener('mousedown', onDocDown)
+  document.addEventListener('keydown', onDocKey)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocDown)
+  document.removeEventListener('keydown', onDocKey)
+})
 
 const commitLabel = computed(() => {
   if (committing.value) return 'Planning…'
@@ -684,6 +785,74 @@ watch([() => props.workspace.id, stageAll], () => void refreshCommit(), { immedi
 watch(() => props.workspace.id, () => void refreshStashes(), { immediate: true })
 // The counts come from the core's own probe, so they follow every push.
 watch(() => props.workspace.git, () => void refreshCommit())
+
+/* ── about the file ───────────────────────────────────────────────────────
+ *
+ * The header shows the name and nothing else; this is where the rest went.
+ * What the diff already knows is shown at once, and what only the disk knows
+ * — its length, its size, when it last moved — is read when the panel opens,
+ * not every time a file is selected.
+ */
+const STATUS: Record<DiffFile['status'], string> = {
+  A: 'Added', M: 'Modified', D: 'Deleted', R: 'Renamed', C: 'Copied', U: 'Unmerged',
+}
+const WHO: Record<DiffFile['attribution'], string> = {
+  human: 'Human', agent: 'Agent', mixed: 'Human and agent', unknown: 'Unknown',
+}
+const selectedFile = computed(() => files.value.find((f) => f.path === selected.value) ?? null)
+const hunkCount = computed(() => (current.value?.lines ?? []).filter((l) => l.kind === 'meta').length)
+
+const detailRoot = ref<HTMLElement | null>(null)
+const detailOpen = ref(false)
+const detail = ref<{ path: string; lines: number | null; bytes: number; mtime: number } | null>(null)
+
+async function toggleDetail() {
+  detailOpen.value = !detailOpen.value
+  const path = selected.value
+  if (!detailOpen.value || !path || selectedFile.value?.status === 'D') return
+  const r = await guard(() => client.call('fs.read', { workspaceId: props.workspace.id, rel: path }))
+  if (!r || selected.value !== path) return
+  // A truncated or binary read cannot be counted, so it is not.
+  const whole = !r.binary && !r.truncated
+  detail.value = {
+    path,
+    lines: whole ? r.content.split('\n').length - (r.content.endsWith('\n') ? 1 : 0) : null,
+    bytes: whole ? new TextEncoder().encode(r.content).length : 0,
+    mtime: r.mtimeMs,
+  }
+}
+
+watch(selected, () => {
+  detailOpen.value = false
+  detail.value = null
+})
+
+function bytes(n: number): string {
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  return (n / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+async function copyPath() {
+  if (!selected.value) return
+  await navigator.clipboard.writeText(selected.value)
+  detailOpen.value = false
+  toast('info', 'Path copied')
+}
+
+async function revealFolder() {
+  const path = selected.value
+  if (!path) return
+  detailOpen.value = false
+  const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : undefined
+  await guard(() =>
+    client.call('workspace.openIn', {
+      workspaceId: props.workspace.id,
+      target: 'finder',
+      ...(dir ? { path: dir } : {}),
+    }),
+  )
+}
 
 async function openInIde() {
   if (!selected.value) return
@@ -1124,18 +1293,89 @@ const mark: Record<string, Component> = {
         <button v-if="narrow" class="icon-btn back" title="Back to the files" @click="drilled = false">
           <ArrowLeft class="sm" />
         </button>
-        <span class="mono vpath">{{ selected }}</span>
+        <!-- The name alone: the folders are in the list beside it, and the
+             rest of what there is to know about the file is one click away. -->
+        <div ref="detailRoot" class="vname">
+          <span class="mono vpath" :title="selected">{{ baseName(selected) }}</span>
+          <button
+            class="icon-btn vinfo"
+            :class="{ on: detailOpen }"
+            title="About this file"
+            aria-label="About this file"
+            :aria-expanded="detailOpen"
+            @click="toggleDetail"
+          >
+            <Info />
+          </button>
+          <div v-if="detailOpen" class="menu vdetail" role="dialog" aria-label="About this file">
+            <div class="dpath mono selectable">{{ selected }}</div>
+            <div v-if="selectedFile?.oldPath" class="dfrom mono selectable">from {{ selectedFile.oldPath }}</div>
+            <dl class="dfacts">
+              <template v-if="selectedFile">
+                <dt>Status</dt>
+                <dd>{{ STATUS[selectedFile.status] }}</dd>
+                <dt>Written by</dt>
+                <dd class="dwho" :class="selectedFile.attribution">
+                  <component :is="mark[selectedFile.attribution]" />{{ WHO[selectedFile.attribution] }}
+                </dd>
+                <dt>Changes</dt>
+                <dd class="num">
+                  <span class="add">+{{ selectedFile.additions }}</span>
+                  <span class="del">−{{ selectedFile.deletions }}</span>
+                  <template v-if="hunkCount"> · {{ hunkCount }} {{ hunkCount === 1 ? 'hunk' : 'hunks' }}</template>
+                </dd>
+              </template>
+              <template v-if="detail">
+                <template v-if="detail.lines !== null">
+                  <dt>Lines</dt>
+                  <dd class="num">{{ detail.lines }}</dd>
+                  <dt>Size</dt>
+                  <dd class="num">{{ bytes(detail.bytes) }}</dd>
+                </template>
+                <dt>Modified</dt>
+                <dd>{{ since(detail.mtime) }}</dd>
+              </template>
+            </dl>
+            <div class="rule" />
+            <button @click="copyPath"><Copy />Copy path</button>
+            <button @click="revealFolder"><FolderOpen />Open folder</button>
+          </div>
+        </div>
         <span class="grow" />
-        <button class="btn ghost" @click="openInIde">
-          <SquareArrowOutUpRight />Open in IDE
+        <div class="vtools">
+        <!-- Each carries its icon and its word; when the column cannot spare
+             the room, the words go and the path keeps it. The title and the
+             aria-label still say what the icon means. -->
+        <button class="btn ghost vbtn" title="Open in IDE" aria-label="Open in IDE" @click="openInIde">
+          <SquareArrowOutUpRight /><span class="vlabel">Open in IDE</span>
         </button>
-        <div v-if="!narrow && current && current.lines.length" class="seg" role="group" aria-label="Diff view">
-          <button :class="{ on: view === 'unified' }" @click="setView('unified')">Unified</button>
-          <button :class="{ on: view === 'split' }" @click="setView('split')">Split</button>
+        <div v-if="isMarkdown" class="seg" role="group" aria-label="Markdown view">
+          <button :class="{ on: mdView === 'code' }" title="Code" aria-label="Code" @click="setMdView('code')">
+            <Code /><span class="vlabel">Code</span>
+          </button>
+          <button :class="{ on: mdView === 'preview' }" title="Preview" aria-label="Preview" @click="setMdView('preview')">
+            <Eye /><span class="vlabel">Preview</span>
+          </button>
+        </div>
+        <div v-if="!narrow && !previewing && current && current.lines.length" class="seg" role="group" aria-label="Diff view">
+          <button :class="{ on: view === 'unified' }" title="Unified" aria-label="Unified" @click="setView('unified')">
+            <Rows2 /><span class="vlabel">Unified</span>
+          </button>
+          <button :class="{ on: view === 'split' }" title="Split" aria-label="Split" @click="setView('split')">
+            <Columns2 /><span class="vlabel">Split</span>
+          </button>
+        </div>
         </div>
       </div>
 
-      <div class="hunks mono split" v-if="split && current && current.lines.length">
+      <div v-if="previewing" class="preview">
+        <template v-if="preview && preview.path === selected">
+          <p v-if="preview.truncated" class="ptrunc">Only the start of this file is shown — it is too large to read in full here.</p>
+          <MarkdownPreview :source="preview.content" :changed="marks.changed" :cut="marks.cut" />
+        </template>
+      </div>
+
+      <div class="hunks mono split" v-else-if="split && current && current.lines.length">
         <template v-for="(r, i) in splitRows" :key="i">
           <div v-if="'meta' in r" class="line meta">
             <span class="txt">{{ r.meta }}</span>
@@ -1582,7 +1822,13 @@ const mark: Record<string, Component> = {
 .fline.ticked .frow { color: var(--text); }
 
 
-.view { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  container: viewer / inline-size;
+}
 .vhead {
   flex: none;
   display: flex;
@@ -1622,7 +1868,65 @@ const mark: Record<string, Component> = {
   margin: 6px 0 2px;
 }
 
+.vhead .seg { flex: none; }
+/* The three controls read as one set, so they sit closer to each other than
+   to anything else in the header. */
+.vtools { flex: none; display: flex; align-items: center; gap: 4px; }
+
+.vname { position: relative; min-width: 0; display: flex; align-items: center; gap: 2px; }
+.vinfo { width: 24px; height: 24px; }
+.vinfo .lucide { width: 13px; height: 13px; }
+.vinfo.on { background: var(--active); color: var(--text); }
+.vdetail {
+  top: calc(100% + 6px);
+  left: -6px;
+  width: 300px;
+  max-width: calc(100cqw - 16px);
+  padding: 10px 5px 5px;
+}
+.dpath, .dfrom {
+  padding: 0 9px;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.dfrom { margin-top: 3px; color: var(--text-dim); }
+.dfacts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 14px;
+  margin: 10px 0 4px;
+  padding: 0 9px;
+  font-size: var(--fs-xs);
+}
+.dfacts dt { color: var(--text-dim); }
+.dfacts dd { margin: 0; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+.dwho .lucide { width: 12px; height: 12px; }
+.dwho.human { color: var(--human); }
+.dwho.agent { color: var(--agent); }
+.dwho.mixed { color: var(--warn); }
 .vhead .seg > button { height: 20px; padding: 0 8px; }
+.vhead .seg .lucide { width: 12px; height: 12px; flex: none; }
+.vhead .btn .lucide { flex: none; }
+
+/* The header is icons, and the words come back only when the viewer is wide
+   enough that they cost nothing — a full-width window, not merely a roomy one.
+   The shapes are learnt after a day; the words were only ever for the first. */
+@container viewer (max-width: 1100px) {
+  .vlabel { display: none; }
+  /* Square, and as tall as the switches beside it. */
+  .vhead .vbtn { flex: none; width: 28px; height: 28px; padding: 0; }
+  .vhead .seg > button { padding: 0 6px; }
+}
+
+.preview { flex: 1; min-height: 0; overflow: auto; }
+.ptrunc {
+  max-width: 780px;
+  margin: 14px auto 0;
+  padding: 0 32px;
+  font-size: var(--fs-xs);
+  color: var(--warn);
+}
 
 /* The numbers are for finding your place, not for reading: small, faint,
    right-aligned against the code, and never tinted by the change. */

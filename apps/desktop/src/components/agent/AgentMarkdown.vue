@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Marked } from 'marked'
+import { createMarked } from '../../core/markdown.js'
 
 /**
  * What the engine wrote, as it meant it to read.
@@ -10,12 +10,7 @@ import { Marked } from 'marked'
  * place in the app where what is on screen was the source rather than the
  * result. A model writes markdown whether or not anyone renders it.
  *
- * Raw HTML never reaches the DOM. The renderer below emits only the tags it
- * writes itself and escapes everything else, so a model that produces a
- * `<script>` — or is talked into producing one by a file it just read — yields
- * visible text rather than an execution. `v-html` in a renderer with
- * `nodeIntegration: false` is still a renderer, and this is the one surface in
- * the app whose content nobody wrote by hand.
+ * Raw HTML never reaches the DOM — `core/markdown.ts` says how.
  *
  * `live` is the same message while it is still being written: the text is
  * paced by `usePaced` before it gets here, and the only thing this adds for it
@@ -25,57 +20,7 @@ import { Marked } from 'marked'
  */
 const props = defineProps<{ text: string; live?: boolean }>()
 
-function escape(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-/**
- * Only `http(s)` and `mailto`. A `javascript:` href is the other half of the
- * hole the escaping above closes.
- */
-function safeHref(href: string): string | null {
-  try {
-    const u = new URL(href, 'https://x.invalid')
-    return ['http:', 'https:', 'mailto:'].includes(u.protocol) ? href : null
-  } catch {
-    return null
-  }
-}
-
-const md = new Marked({ gfm: true, breaks: true })
-
-md.use({
-  renderer: {
-    // Raw HTML in, escaped text out — in both block and inline position.
-    html({ raw }: { raw: string }) {
-      return escape(raw)
-    },
-    code({ text, lang }: { text: string; lang?: string }) {
-      const l = (lang ?? '').split(/\s+/)[0] ?? ''
-      return (
-        '<pre class="cm-code"' + (l ? ' data-lang="' + escape(l) + '"' : '') +
-        '><code>' + escape(text) + '</code></pre>'
-      )
-    },
-    codespan({ text }: { text: string }) {
-      return '<code class="cm-inline">' + escape(text) + '</code>'
-    },
-    link({ href, text }: { href: string; text: string }) {
-      const safe = safeHref(href)
-      if (!safe) return escape(text)
-      // §2 — the window is not a browser: a link leaves it, and never
-      // navigates the app away from itself.
-      return '<a href="' + escape(safe) + '" target="_blank" rel="noreferrer noopener">' + text + '</a>'
-    },
-    image({ text }: { text: string }) {
-      return escape(text)
-    },
-  },
-})
+const md = createMarked({ breaks: true })
 
 /**
  * Half of a marker is not emphasis yet.
