@@ -77,7 +77,9 @@ const ATTENTION_TEXT: Record<string, string> = {
 function tileTitle(name: string, root: string, projectId: string): string {
   const c = counts(projectId)
   const lines = [name + ' — ' + root]
-  if (c.agents) lines.push(c.agents + ' agent conversation(s) running')
+  if (c.running) lines.push('● ' + c.running + ' server(s) up')
+  if (c.agents) lines.push('● ' + c.agents + ' agent conversation(s) running')
+  if (c.dirty) lines.push('● ' + c.dirty + ' checkout(s) with uncommitted changes')
   if (c.attention !== 'none') lines.push(ATTENTION_TEXT[c.attention] ?? '')
   lines.push('Right-click for settings')
   return lines.filter(Boolean).join('\n')
@@ -97,18 +99,20 @@ function tileTitle(name: string, root: string, projectId: string): string {
         @contextmenu.prevent="state.editingProjectId = p.id"
       >
         <span class="gram">{{ monogram(p.name) }}</span>
-        <!-- A request, not a state: it sits on the corner rather than in the
-             row of dots, because it is the one thing here that is addressed
-             to you and the eye has to find it without counting. -->
-        <span
-          v-if="counts(p.id).attention !== 'none'"
-          class="ping"
-          :class="counts(p.id).attention"
-        />
-        <span class="badges">
-          <i v-if="counts(p.id).running" class="b run" />
-          <i v-if="counts(p.id).agents" class="b agent live" />
-          <i v-if="counts(p.id).dirty" class="b dirty" />
+        <!-- A request, not a state: a count on the corner, in the one colour
+             nothing else in the rail uses, because it is the only thing here
+             addressed to you — whatever the agent wants (a reply read, a tool
+             allowed), the answer is the same: go there. -->
+        <span v-if="counts(p.id).waiting" class="count num">{{ counts(p.id).waiting }}</span>
+        <!-- Three slots that never move: servers left, agent middle, changes
+             right. Centred dots slid around with whatever else was lit, so a
+             lone dot's place said nothing and only its hue was left to read.
+             An empty slot stays drawn as a faint grey dot, so the three places
+             are always there to read a lit one against. -->
+        <span class="slots">
+          <i class="b run" :class="{ on: counts(p.id).running }" />
+          <i class="b agent live" :class="{ on: counts(p.id).agents }" />
+          <i class="b dirty" :class="{ on: counts(p.id).dirty }" />
         </span>
       </button>
 
@@ -175,7 +179,7 @@ function tileTitle(name: string, root: string, projectId: string): string {
      is under them (TrafficLights). Nothing else in this column may start above
      them, so the rail begins where they end rather than at --col-top, and
      then a gap again so the first tile is not flush against them. */
-  padding: calc(var(--lights-h) + 12px) 0 12px;
+  padding: calc(var(--lights-h) + 6px) 0 12px;
   /* The strip the lights sit in is the window's own, so dragging it moves the
      window; every tile below opts back out. */
   -webkit-app-region: drag;
@@ -249,9 +253,17 @@ function tileTitle(name: string, root: string, projectId: string): string {
      surfaces against a sunken rail, and packed tighter they start to read as
      one segmented strip rather than a stack of separate cards. */
   gap: 10px;
+  /* The rail's full width, not the tiles': centred in the rail, this column
+     shrank to 44px, and its overflow clip then cut whatever a tile wears
+     outside its own box — the corner count and the selected tile's bar. */
+  align-self: stretch;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  /* The first tile's corner count stands 5px above it, inside this scroll
+     box's clip — so the box starts that much higher and the rail's own top
+     padding gives the difference back. */
+  padding-top: 6px;
   padding-bottom: 4px;
   /* The rail never shows a scrollbar; it is too narrow to spare the width. */
   scrollbar-width: none;
@@ -300,49 +312,66 @@ function tileTitle(name: string, root: string, projectId: string): string {
   color: var(--text);
 }
 
-/* Inside the tile, not hanging off it. The pill wore the rail's own ground so
-   it could sit across the tile's bottom edge without the dots landing half on
-   one surface and half on the other — which worked while the tile was a wash
-   of that same ground, and became a notch bitten out of the card the moment
-   the tile became a surface of its own. On a card the dots have a ground
-   already: the card's. */
-.badges {
-  position: absolute;
-  bottom: 5px;
-  left: 50%;
-  transform: translateX(-50%);
+/* Inside the tile, not hanging off it: on a card the dots have a ground
+   already, the card's. Three fixed places, so a dot is read by where it sits
+   before its hue is needed — left servers, middle agent, right changes.
+   The monogram and the row are one block, centred in the tile as a whole, so
+   the space above the letters and below the dots is the same. Pinned to the
+   bottom edge instead, the dots sat on the border and pushed the letters up,
+   and the tile read as lopsided. */
+.tile {
+  --dot: 6px;
+  --stack: 6px;
+  --ghost: 0.22;
+  flex-direction: column;
+  gap: var(--stack);
+}
+.tile .gram { line-height: 1; }
+.slots {
   display: flex;
-  gap: 3px;
+  gap: 4px;
 }
 .b {
-  width: 4px;
-  height: 4px;
+  width: var(--dot);
+  height: var(--dot);
   border-radius: 50%;
   display: block;
+  /* Off: one grey for all three, so an empty slot never reads as a state —
+     faint enough that three of them read as a place, not as three things. */
+  background: var(--text-dim);
+  opacity: var(--ghost);
 }
-.b.run { background: var(--ok); }
-.b.agent { background: var(--agent); }
-.b.dirty { background: var(--warn); }
+.b.on { opacity: 1; }
+.b.run.on { background: var(--ok); }
+.b.agent.on { background: var(--agent); }
+.b.dirty.on { background: var(--warn); }
 /* The rail's only motion. It means one thing and it is the thing worth
    catching out of the corner of the eye: an agent is working in there. */
-.b.live { animation: pulse 1.6s var(--ease-soft) infinite; }
+.b.live.on { animation: pulse 1.6s var(--ease-soft) infinite; }
 
-.ping {
+/* Cockpit's own colour, the one thing in the rail that is addressed to you.
+   Not amber or violet — those are dots here, and a corner in either read as
+   one more of them. */
+.count {
   position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  /* Ringed in the rail's own ground so it reads as sitting on the tile rather
-     than as part of the monogram. */
-  border: 2px solid var(--bg-sunken);
-  box-sizing: content-box;
+  top: -5px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  letter-spacing: 0;
+  /* Ringed in the rail's own ground so it sits on the tile's corner rather
+     than inside the monogram. */
+  box-shadow: 0 0 0 2px var(--surface-rail);
 }
-.ping.reply { background: var(--agent); }
-.ping.blocked { background: var(--warn); }
-.ping.approval { background: var(--warn); }
-.ping.failed { background: var(--danger); }
 
 .icon-btn.service { position: relative; }
 .icon-btn.service .flag {

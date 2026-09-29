@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import {
-  ChevronRight, Flag, Layers, ShieldCheck, ShieldOff, TriangleAlert, X,
+  ChevronRight, Flag, ShieldCheck, ShieldOff, TriangleAlert, X,
 } from '@lucide/vue'
 import { applyPendingPlan, state } from '../core/store.js'
 
@@ -91,7 +91,8 @@ const dangerLabel = computed(() =>
 )
 
 /**
- * §3.7 — a plan is all-or-nothing unless it says otherwise, and the difference
+ * §3.7 — a plan is all-or-nothing unless it says otherwise. The default goes
+ * unsaid; only the exception — a plan that stops and keeps what already ran —
  * matters enough to be on screen before Apply rather than discovered after it.
  */
 const halts = computed(() => plan.value?.onFailure === 'halt')
@@ -164,14 +165,11 @@ function cancel() {
         </div>
       </div>
 
-      <div class="mode" :class="{ halt: halts }">
-        <component :is="halts ? Flag : Layers" class="sm" />
-        <span v-if="halts">
+      <div v-if="halts" class="mode">
+        <Flag class="sm" />
+        <span>
           Stops at the first repository that conflicts. What already ran is kept, not rolled
           back — resolve it, then run this again.
-        </span>
-        <span v-else>
-          All or nothing: if a step fails, the ones before it are undone in reverse.
         </span>
       </div>
       </div>
@@ -262,7 +260,7 @@ function cancel() {
 /* The question, and how wide it reaches. Gives way before the footer does: a
    plan with a paragraph per repository must not push Cancel off a short
    window. */
-.say { flex: none; padding: 2px 20px 12px; }
+.say { flex: none; padding: 16px 20px 4px; }
 .say .p { margin: 0; font-size: var(--fs-sm); line-height: 1.55; color: var(--text-muted); }
 .say .p + .p { margin-top: 6px; }
 .say .lead { color: var(--text); }
@@ -271,7 +269,7 @@ function cancel() {
    confirmations, deliberately: two dialogs that fold the same thing away
    should fold it away the same way. */
 /* The one scrolling region: the plan, its warnings and its failure mode. */
-.mid { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.mid { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 0; }
 
 .what {
   display: block;
@@ -352,13 +350,12 @@ function cancel() {
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  padding: 9px 20px 12px;
+  padding: 0 20px 12px;
   font-size: var(--fs-xs);
-  color: var(--text-dim);
+  color: var(--text-muted);
   line-height: 1.55;
 }
 .mode .lucide { margin-top: 1px; flex: none; }
-.mode.halt { color: var(--text-muted); }
 
 .foot {
   flex: none;
