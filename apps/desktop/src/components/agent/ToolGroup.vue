@@ -17,9 +17,11 @@ import ToolCall from './ToolCall.vue'
  * see every day. One call gets the same line as twenty; the line is not a
  * saving of space, it is the level the transcript is read at.
  *
- * What is never folded is a refusal or a failure: those are the two outcomes
- * that change what a person should do next, so a group holding one opens
- * itself and says so on the line.
+ * A refusal or a failure folds too. It used to open itself, and a turn that
+ * went on to fix its own failed command was left with a red card in the middle
+ * of it — the loudest thing on screen, about something already dealt with.
+ * The line says so instead: it turns amber, names the count ("ran 5 commands
+ * (1 failed)") and carries the badge, which is enough to know it is there.
  */
 export interface Call {
   id: string
@@ -39,26 +41,10 @@ const props = defineProps<{
 const failed = computed(() => props.calls.filter((c) => c.denied || c.result?.isError))
 const pending = computed(() => (props.live === false ? [] : props.calls.filter((c) => !c.result)))
 
-/**
- * What is unfolded, which is three states rather than two.
- *
- * Untouched, a group holding a failure shows *the failure* — not the other
- * nineteen calls that went fine. Unfolding everything because one command
- * exited non-zero was how a turn that ran eight builds put eight cards on
- * screen to tell you about one of them, which is the opposite of what opening
- * on a failure is for.
- *
- * Clicked, it shows all of them; clicked again, none. The line itself always
- * names the failure ("ran 8 commands (1 failed)"), so nothing is ever hidden
- * by the fold — only deferred.
- */
-const manual = ref<boolean | null>(null)
-const shown = computed(() =>
-  manual.value === true ? props.calls : manual.value === false ? [] : failed.value,
-)
-/** The first click always means "all of them", whatever is already showing. */
+const open = ref(false)
+const shown = computed(() => (open.value ? props.calls : []))
 function toggle(): void {
-  manual.value = manual.value !== true
+  open.value = !open.value
 }
 
 const str = (input: Record<string, unknown>, k: string): string => {

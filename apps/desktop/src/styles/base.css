@@ -230,7 +230,9 @@ button:disabled,
   color: var(--accent-text);
   box-shadow: var(--shadow-sm);
 }
-.btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+/* Keeps its border transparent on hover: `.btn:hover` draws one, and on a
+   filled button that reads as the button growing a pixel. */
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: transparent; }
 .btn.danger { color: var(--danger); border-color: var(--danger-soft); }
 .btn.ghost {
   border-color: transparent;

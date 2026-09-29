@@ -1005,6 +1005,13 @@ export const LAYOUT_LIMITS = {
    */
   review: { min: 320, max: 900 },
   /**
+   * The file list against the diff, inside the Diff tab. Long paths want the
+   * list; a long hunk wants the viewer. The floor keeps a file name and its
+   * counts on one row; the ceiling is also held under what the tab leaves the
+   * viewer (see DiffTab).
+   */
+  files: { min: 220, max: 620 },
+  /**
    * The commit box under the file list in the Diff tab.
    *
    * A boundary one level down from the columns, and it earned a handle for the
@@ -1023,7 +1030,7 @@ export const LAYOUT_LIMITS = {
 }
 
 /** What a fresh install starts from, and what a double-click goes back to. */
-export const LAYOUT_DEFAULTS = { list: 340, review: 440 }
+export const LAYOUT_DEFAULTS = { list: 340, review: 440, files: 320 }
 
 export const layout = reactive(readLayout())
 
@@ -1033,7 +1040,13 @@ export const layout = reactive(readLayout())
  * full one for no reason. Null is therefore a real value and not a missing
  * one, and it is what a double-click on the handle goes back to.
  */
-function readLayout(): { list: number; review: number; commit: number | null; running: number | null } {
+function readLayout(): {
+  list: number
+  review: number
+  files: number
+  commit: number | null
+  running: number | null
+} {
   const fallback = { ...LAYOUT_DEFAULTS, commit: null as number | null, running: null as number | null }
   try {
     const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<typeof fallback> | null
@@ -1041,6 +1054,7 @@ function readLayout(): { list: number; review: number; commit: number | null; ru
     return {
       list: clampTo(raw.list ?? fallback.list, LAYOUT_LIMITS.list),
       review: clampTo(raw.review ?? fallback.review, LAYOUT_LIMITS.review),
+      files: clampTo(raw.files ?? fallback.files, LAYOUT_LIMITS.files),
       commit:
         typeof raw.commit === 'number' ? clampTo(raw.commit, LAYOUT_LIMITS.commit) : null,
       running:
@@ -1056,7 +1070,7 @@ function clampTo(n: number, l: { min: number; max: number }): number {
 }
 
 /** Live during a drag; only written to disk when the pointer is let go. */
-export function setColumnWidth(which: 'list' | 'review', px: number): void {
+export function setColumnWidth(which: 'list' | 'review' | 'files', px: number): void {
   layout[which] = clampTo(px, LAYOUT_LIMITS[which])
 }
 
@@ -1084,7 +1098,7 @@ export function saveLayout(): void {
 }
 
 /** Double-clicking a divider: back to the width the app shipped with. */
-export function resetColumnWidth(which: 'list' | 'review'): void {
+export function resetColumnWidth(which: 'list' | 'review' | 'files'): void {
   layout[which] = LAYOUT_DEFAULTS[which]
   saveLayout()
 }

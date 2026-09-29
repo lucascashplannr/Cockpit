@@ -3,14 +3,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { CommitPreview, DiffFile, FileDiff, StashEntry, Workspace } from '@cockpit/shared'
 import type { Component } from 'vue'
 import {
-  Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, FileCode, GitBranch,
+  Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, FileCode, GitBranch, LoaderCircle,
   ChevronUp, GitCommitHorizontal, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
   Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import {
-  LAYOUT_LIMITS, commit, commitPreview, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetCommitHeight,
-  saveLayout, selectWorkspace, setCommitHeight, stash, stashList, toast, client, state,
+  LAYOUT_LIMITS, commit, commitPreview, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetColumnWidth,
+  resetCommitHeight, saveLayout, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
 /**
@@ -71,12 +71,25 @@ const commitMax = computed(() =>
   Math.max(LAYOUT_LIMITS.commit.min, Math.min(LAYOUT_LIMITS.commit.max, panelH.value - 140)),
 )
 
+/**
+ * The file list's width, and its ceiling. Like the commit box, the limit is
+ * the panel as much as the constant: the list stops where the viewer would
+ * drop below 320px, and a panel that shrinks afterwards narrows the list
+ * rather than squeezing the diff out.
+ */
+const panelW = ref(0)
+const filesMax = computed(() =>
+  Math.max(LAYOUT_LIMITS.files.min, Math.min(LAYOUT_LIMITS.files.max, panelW.value - 320)),
+)
+const filesW = computed(() => Math.min(layout.files, filesMax.value))
+
 let ro: ResizeObserver | null = null
 let barRo: ResizeObserver | null = null
 onMounted(() => {
   ro = new ResizeObserver(([e]) => {
     if (!e) return
     narrow.value = e.contentRect.width < 620
+    panelW.value = e.contentRect.width
     panelH.value = e.contentRect.height
     if (layout.commit && layout.commit > commitMax.value) setCommitHeight(commitMax.value)
   })
@@ -715,7 +728,26 @@ const mark: Record<string, Component> = {
 </script>
 
 <template>
-  <div ref="root" class="diff" :class="{ narrow, drilled: narrow && drilled }">
+  <div
+    ref="root"
+    class="diff"
+    :class="{ narrow, drilled: narrow && drilled }"
+    :style="{ '--files-w': filesW + 'px' }"
+  >
+    <!-- The line between the list and the diff, draggable like the shell's
+         own columns. Narrow, there is one column and nothing to divide. -->
+    <Splitter
+      v-if="!narrow"
+      :style="{ left: filesW - 3 + 'px' }"
+      :size="filesW"
+      :min="LAYOUT_LIMITS.files.min"
+      :max="filesMax"
+      grows="right"
+      label="Width of the file list"
+      @resize="setColumnWidth('files', $event)"
+      @done="saveLayout"
+      @reset="resetColumnWidth('files')"
+    />
     <aside class="files">
       <!-- One bar, not two: the header counts the files until some are ticked,
            and then it counts the ticked ones and carries what you can do to
@@ -950,33 +982,40 @@ const mark: Record<string, Component> = {
                 <span v-if="git?.ahead" class="cahead num" :title="git.ahead + ' commit(s) not pushed yet'">
                   ↑{{ git.ahead }}
                 </span>
-                <span class="grow" />
-                <button
-                  class="btn ghost tiny"
-                  :disabled="!fileCount || drafting"
-                  :title="
-                    subject.trim()
-                      ? 'Draft a message from this diff — what you wrote is used as a hint'
-                      : 'Draft a message from this diff'
-                  "
-                  @click="draftMessage"
-                >
-                  <Sparkles />
-                  {{ drafting ? 'Drafting…' : 'Draft' }}
-                </button>
               </template>
             </div>
 
             <!-- The app's own field, not one drawn for this box: a commit
-                 message is text you type like any other. -->
-            <input
-              ref="subjectEl"
-              v-model="subject"
-              class="input cmsg selectable"
-              :placeholder="fileCount || amending ? 'Commit message' : 'Nothing to commit'"
-              :disabled="!fileCount && !amending"
-              @keydown.enter.prevent="$event.metaKey && doCommit()"
-            />
+                 message is text you type like any other. Draft sits at its
+                 end, because what it writes lands here. -->
+            <div class="cfield">
+              <input
+                ref="subjectEl"
+                v-model="subject"
+                class="input cmsg selectable"
+                :placeholder="fileCount || amending ? 'Commit message' : 'Nothing to commit'"
+                :disabled="!fileCount && !amending"
+                @keydown.enter.prevent="$event.metaKey && doCommit()"
+              />
+              <button
+                v-if="!amending"
+                class="icon-btn cdraft"
+                :class="{ on: drafting }"
+                :disabled="!fileCount || drafting"
+                :aria-label="drafting ? 'Drafting…' : 'Draft a message'"
+                :title="
+                  drafting
+                    ? 'Drafting…'
+                    : subject.trim()
+                      ? 'Draft a message from this diff — what you wrote is used as a hint'
+                      : 'Draft a message from this diff'
+                "
+                @click="draftMessage"
+              >
+                <LoaderCircle v-if="drafting" class="spin" />
+                <Sparkles v-else />
+              </button>
+            </div>
 
             <div class="cinclude">
               <div class="seg" role="group" aria-label="What goes into the commit">
@@ -1257,6 +1296,9 @@ const mark: Record<string, Component> = {
 .chead > .lucide { width: 13px; height: 13px; flex: none; color: var(--text-dim); }
 .chead .grow { flex: 1; }
 .chead .btn { margin-right: -6px; }
+/* One line, always: the lead keeps its words, the branch gives way. */
+.clead { flex: none; white-space: nowrap; }
+.cahead { flex: none; }
 .cwhere {
   min-width: 0;
   overflow: hidden;
@@ -1275,6 +1317,15 @@ const mark: Record<string, Component> = {
 .cbox.amending .chead > .lucide { color: var(--warn); }
 
 .cmsg:disabled { opacity: 0.6; }
+.cfield { position: relative; }
+.cfield .cmsg { padding-right: 38px; }
+.cdraft {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+}
+.cdraft .lucide { width: 14px; height: 14px; }
 
 /* What goes in: three answers, the width of the box, each counted. */
 /* The shared `.seg` well is drawn for a raised surface; on this sunken panel
@@ -1290,9 +1341,18 @@ const mark: Record<string, Component> = {
 .segn { font-size: 10px; color: var(--text-dim); }
 .seg > button.on .segn { color: var(--accent); }
 
-/* The verb, with the rest of its verbs one chevron away. */
-.csplit { position: relative; display: flex; }
-.csplit > .btn { height: 34px; }
+/* The verb, with the rest of its verbs one chevron away. One button in two
+   halves: the group carries the shadow and the halves carry none, so the seam
+   is a hairline and not two shadows meeting, and neither half moves on its
+   own when pressed. The height is every other button's. */
+.csplit {
+  position: relative;
+  display: flex;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+}
+.csplit > .btn { box-shadow: none; }
+.csplit > .btn:active:not(:disabled) { transform: none; }
 .cmain { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .cmore {
   flex: none;
@@ -1300,7 +1360,13 @@ const mark: Record<string, Component> = {
   padding: 0;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--accent-text) 25%, transparent), var(--shadow-sm);
+}
+/* The seam is the half's own left border, so it runs edge to edge (an inset
+   shadow stops a pixel short, inside the border) and survives the hover that
+   clears a primary's border. */
+.csplit > .cmore,
+.csplit > .cmore:hover:not(:disabled) {
+  border-left-color: color-mix(in srgb, var(--accent-text) 25%, transparent);
 }
 /* Still clickable with nothing to commit — Amend lives behind it — but drawn
    at the main half's weight, so the two read as one button. */
@@ -1368,7 +1434,12 @@ const mark: Record<string, Component> = {
   color: var(--text-dim);
 }
 
-.diff { display: grid; grid-template-columns: 320px minmax(0, 1fr); height: 100%; }
+.diff {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--files-w, 320px) minmax(0, 1fr);
+  height: 100%;
+}
 /* One column at a time: the list, or the file opened over it. Both are laid
    into the same cell so the switch costs no reflow of the other. */
 .diff.narrow { grid-template-columns: minmax(0, 1fr); }
