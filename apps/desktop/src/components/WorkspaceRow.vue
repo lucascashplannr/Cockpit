@@ -2,7 +2,7 @@
 import { attentionIcon } from './agent/attention.js'
 import { computed } from 'vue'
 import {
-  ArrowDownToLine, ArrowUp, Asterisk, GitBranch, GitCompareArrows,
+  ArrowDownToLine, ArrowUp, Asterisk, FileDiff, GitBranch, GitCompareArrows,
   SquareDot, TriangleAlert,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
@@ -148,7 +148,7 @@ const lead = computed(() => {
           <ArrowDownToLine class="sm" />{{ toPull }}
         </span>
         <span v-if="dirty" class="c dirty" :title="dirty + ' uncommitted change(s)'">
-          <i class="pip" />{{ dirty }}
+          <FileDiff class="sm" />{{ dirty }}
         </span>
         <span v-if="w.git.conflicted" class="c conflict" :title="'conflicted'">
           <TriangleAlert class="sm" />{{ w.git.conflicted }}
@@ -236,11 +236,4 @@ const lead = computed(() => {
 .behind { color: var(--warn); }
 .dirty { color: var(--warn); }
 .conflict { color: var(--danger); font-weight: 600; }
-.pip {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  margin-right: 2px;
-}
 </style>

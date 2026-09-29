@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { FileDiff, GitBranch, Layers, ShieldCheck } from '@lucide/vue'
+import { GitBranch, Layers, ShieldCheck } from '@lucide/vue'
 import BranchMenu from './BranchMenu.vue'
 import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
 import {
-  activeAgentScope, activeWorkspace, goTo, isBranchProtected, scopeLabel, selectedTopicGroup,
+  activeAgentScope, activeWorkspace, isBranchProtected, scopeLabel, selectedTopicGroup,
 } from '../core/store.js'
 
 /**
@@ -79,13 +79,6 @@ const branchName = computed(() =>
  */
 const guarded = computed(() => !!branchName.value && isBranchProtected(w.value, branchName.value))
 
-const changed = computed(() =>
-  covered.value.reduce((n, x) => {
-    const g = x.git
-    return n + (g ? g.staged + g.unstaged + g.untracked : 0)
-  }, 0),
-)
-
 /* ── what the bar is speaking for ─────────────────────────────────────────
  *
  * This and the branch line above it lived on two bars, one over the other, so
@@ -97,37 +90,10 @@ const changed = computed(() =>
 const scope = computed(() => activeAgentScope.value)
 const label = computed(() => scopeLabel(scope.value))
 
-/**
- * §8 — the servers, as one fact and one way in.
- *
- * They were three things on this line: a status dot, the name of the runner
- * ("node"), and a pill per bound port. Two of the three were noise wherever
- * you stood — the runner's name never changes and says nothing, and
- * a port pill beside the word `down` advertises an address nothing is
- * listening on, which is how this bar came to read `node down · web :8611`.
- *
- * So: the ports while they are actually bound, the status while they are not,
- * and the whole of it opens the tool that holds the rest.
- *
- * Nothing at all while they are down: that is the resting state, the Start
- * button beside it already says so, and a grey `down` on every bar was a word
- * about nothing happening.
- */
-const servers = computed(() => {
-  const rt = w.value?.runtime
-  if (!rt || rt.status === 'down') return null
-  const ports = rt.ports ?? []
-  const bound = rt.status === 'up' && ports.length > 0
-  return {
-    word: bound ? ports.map((p) => ':' + p.port).join(' ') : rt.status,
-    title:
-      rt.impl +
-      ' · servers ' +
-      rt.status +
-      (ports.length ? ' · ' + ports.map((p) => p.name + ' :' + p.port).join(', ') : '') +
-      ' — open the output',
-  }
-})
+/* §8 — the servers are not on this line. They were a dot and a port here, a
+ * fact beside a switch that already said the same thing in green, three inches
+ * to the right. The switch now carries the one dot, and the port became the
+ * button that opens it (WorkspaceActions, TopicActions). */
 
 </script>
 
@@ -174,8 +140,6 @@ const servers = computed(() => {
       </span>
     </span>
 
-    <span class="rule" />
-
     <!-- Everything that is merely true, in one dim run that clips rather
          than wraps: the bar keeps its line whatever the window does, and
          what falls off the end is by construction the least of it. Each
@@ -191,30 +155,8 @@ const servers = computed(() => {
         <span class="v">{{ covered.length }}</span>
       </span>
 
-      <!-- The count is the way into the review layer: what changed is the
-           reason you would open it at all. It is the one number here with
-           no verb of its own to ride on — ahead and behind have Push and
-           Catch up, and were dropped from this run for it. -->
-      <template v-if="git">
-        <button
-          class="stat num act"
-          :title="changed + ' uncommitted change(s) — open the diff'"
-          @click="goTo('diff')"
-        >
-          <FileDiff class="sm si" />
-          <span class="v" :class="changed ? 'warn' : 'zero'">{{ changed }}</span>
-        </button>
-      </template>
-
-      <button
-        v-if="servers"
-        class="stat act"
-        :title="servers.title"
-        @click="goTo('output')"
-      >
-        <i class="dot" :class="w.runtime!.status" />
-        <span class="v">{{ servers.word }}</span>
-      </button>
+      <!-- No uncommitted-changes count here: the row in the list carries
+           it, beside ahead and behind, under the same glyph it had here. -->
 
       <!-- §8 — a non-portable runtime says so, rather than failing later. -->
       <span
@@ -318,12 +260,6 @@ const servers = computed(() => {
   overflow: hidden;
 }
 .stats > * { flex: none; }
-/* The hairline sits in the middle, by eye. The branch chip's box ends 8px
-   before it; a pressable counter first carries 6px of its own padding, which
-   put its glyph 15px after it and made the rule read as belonging to the
-   chip. Pulled back by that padding — on the box, not the counter, because
-   the box clips and would cut the counter's hover off. */
-.stats:has(> .act:first-child) { margin-left: -6px; }
 
 /* The only thing on the row that wants to be wide. */
 .grow { flex: 1 1 0; min-width: 0; }
@@ -393,9 +329,6 @@ const servers = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* A hairline instead of a gap: it parts the name from the numbers without
-   adding another shape to the row. */
-.rule { flex: none; width: 1px; height: 14px; background: var(--line); }
 
 /* No pill, no fill. A stat is a word and a number. */
 .stat {
@@ -424,14 +357,6 @@ const servers = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.stat .v.warn { color: var(--warn); }
-/* Nothing changed is the resting state: the number is still there to press,
-   but it does not ask to be read. */
-.stat .v.zero { color: var(--text-dim); font-weight: 400; }
-/* The changed count is a button, because it is the reason you would open the
-   review layer at all: what moved is what there is to read. */
-.stat.act { padding: 0 6px; }
-.stat.act:hover { background: var(--hover); color: var(--text); }
 
 .head button,
 .head :deep(button),

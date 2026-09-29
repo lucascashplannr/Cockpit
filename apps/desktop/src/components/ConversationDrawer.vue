@@ -80,7 +80,13 @@ function ask(c: Conversation): void {
     verb: 'Remove',
     done: 'conversation removed',
     danger: true,
-    run: () => deleteConversation(c.id),
+    // The removal is the errand the drawer was opened for: once it is done,
+    // the drawer goes with it. A refusal leaves it open, beside the toast.
+    run: async () => {
+      const ok = await deleteConversation(c.id)
+      if (ok) state.historyOpen = false
+      return ok
+    },
   }
 }
 
@@ -257,6 +263,8 @@ function dotClass(c: Conversation): string {
 .grow { flex: 1; }
 .mini { height: 24px; padding: 0 9px; font-size: var(--fs-xs); gap: 5px; color: var(--text-muted); }
 .mini .lucide { width: 13px; height: 13px; }
+/* New and Close are one cluster of acts: closer to each other than to the title. */
+.mini + .icon-btn { margin-left: -4px; }
 
 .list { flex: 1; min-height: 0; overflow-y: auto; padding: 5px; }
 .none {

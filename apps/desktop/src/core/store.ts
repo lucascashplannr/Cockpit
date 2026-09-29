@@ -835,8 +835,10 @@ export function scopeLabel(scope: AgentScope | null): { kind: string; name: stri
       // labels the *name* beside it, and that name is the repository's in both
       // cases — so "BRANCH Init" put a category on a word that was never in it,
       // while the branch it meant was the chip to its right saying something
-      // else entirely. Anything with no git in it is just a folder.
-      return { kind: w?.repo ? 'Repository' : 'Folder', name: w?.name ?? '' }
+      // else entirely. Anything with no git in it is just a folder. "Repo"
+      // rather than the full word: the kicker is small caps ahead of the name,
+      // and at that size the long word took the room the name needed.
+      return { kind: w?.repo ? 'Repo' : 'Folder', name: w?.name ?? '' }
     }
   }
 }
@@ -4426,9 +4428,17 @@ const SERVER_KEY = 'cockpit.server'
 
 const serverChoice = ref<Record<string, string>>(readChoice(SERVER_KEY))
 
-/** The name the button switches, or null for every server on `start:`. */
+/**
+ * The name the button switches, or null for every server on `start:`.
+ *
+ * One declared server has no *all*: it is the whole list, so the button is
+ * pointed at it by name — "All servers" over a list of one said nothing the
+ * name did not. The topic's bar applies the same rule to its own list.
+ */
 export const chosenServer = computed<string | null>(() =>
-  serverChoiceFor(activeWorkspace.value, state.servers),
+  state.servers.length === 1
+    ? state.servers[0]!.name
+    : serverChoiceFor(activeWorkspace.value, state.servers),
 )
 
 /** The same choice for any checkout and its own list of servers. */

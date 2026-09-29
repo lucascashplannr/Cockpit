@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  AppWindow, ArrowDownToLine, ArrowUpFromLine, ChevronDown, CirclePlay, CircleStop, FileCode,
-  Check, GitCompareArrows, SlidersHorizontal, Terminal, Undo2,
+  AppWindow, ArrowDownToLine, ArrowUpFromLine, ChevronDown, CirclePlay, CircleStop, ExternalLink,
+  FileCode, Check, GitCompareArrows, SlidersHorizontal, Terminal, Undo2,
 } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
 import {
@@ -108,6 +108,20 @@ const runTitle = computed(() => {
 const preview = computed(() => w.value?.runtime?.preview ?? null)
 
 /**
+ * §8 — where the running servers answer, as a button beside their switch.
+ *
+ * It was a dot and a port in the bar's run of facts (`● :7873`), which opened
+ * the output rather than the address it printed, and took a word's width to
+ * say what the switch beside it already said. The core only has a preview
+ * while the servers are up, so this is there exactly as long as there is
+ * something to open.
+ */
+const openable = computed(() => (preview.value?.kind === 'url' && preview.value.value) || null)
+
+/** Coming up rather than up — the dot's one other colour, and no pulse. */
+const starting = computed(() => !target.value && w.value?.runtime?.status === 'starting')
+
+/**
  * §3.9 — while a rebase is stopped, Catch up and Push are not verbs this
  * repository has: git refuses both, and the three that do apply are in the
  * conflict panel. Absent, not greyed out.
@@ -211,7 +225,8 @@ const catchUpTitle = computed(() => {
  * difference: servers have a meaningful *all*, so that is what the button
  * points at until you pick otherwise. Picking one leaves it there, and
  * `chosenServer` falls back to all of them the moment that name stops being
- * declared.
+ * declared. With a single server there is no *all* to point at: the button
+ * is that server, by name.
  */
 const servers = computed(() => state.servers)
 const alive = computed(() => runningServers(w.value))
@@ -389,16 +404,40 @@ async function undo() {
            handle on any part of it, so a chevron there would open onto a list
            of one thing it already says. -->
       <button
-        v-if="w.runtime && !pickable"
+        v-if="w.runtime && !pickable && !openable"
         class="btn ghost sw solo"
         :class="{ on: running, guessed: !!guess }"
         :disabled="busy"
         :title="switchTitle"
         @click="toggleRuntime"
       >
-        <component :is="running ? CircleStop : CirclePlay" />
+        <i v-if="running" class="live" :class="{ starting }" />
+        <CirclePlay v-else />
         <span class="vl">{{ switchLabel }}</span>
       </button>
+      <!-- The same switch while there is an address to open: a chip of two
+           halves, the switch and the way to what it is serving. -->
+      <div v-else-if="w.runtime && !pickable" class="split" :class="{ off: busy }">
+        <button
+          class="btn ghost run sw"
+          :disabled="busy"
+          :title="switchTitle"
+          @click="toggleRuntime"
+        >
+          <i v-if="running" class="live" :class="{ starting }" />
+          <CirclePlay v-else />
+          <span class="vl">{{ switchLabel }}</span>
+        </button>
+        <span class="div" />
+        <button
+          class="btn ghost half"
+          :title="'Open ' + openable"
+          :aria-label="'Open ' + openable"
+          @click="openPreview"
+        >
+          <ExternalLink />
+        </button>
+      </div>
 
       <!-- §8 — and the split one wherever the servers have names.
 
@@ -420,20 +459,40 @@ async function undo() {
           :title="switchTitle"
           @click="toggleRuntime"
         >
-          <component :is="running ? CircleStop : CirclePlay" />
+          <i v-if="running" class="live" :class="{ starting }" />
+          <CirclePlay v-else />
           <span class="vl">{{ switchLabel }}</span>
         </button>
+        <!-- §8 — where they answer, between the switch and the list: the
+             address is the tooltip, the glyph says it leaves the window. It
+             was a dot and a port in the bar's run of facts, opening the
+             output rather than the address it printed. -->
+        <template v-if="openable">
+          <span class="div" />
+          <button
+            class="btn ghost half"
+            :title="'Open ' + openable"
+            :aria-label="'Open ' + openable"
+            @click="openPreview"
+          >
+            <ExternalLink />
+          </button>
+        </template>
         <span class="div" />
         <OverflowMenu class="pick" label="Pick what this switch starts" :disabled="busy">
           <template #trigger><ChevronDown /></template>
           <!-- First, and separated: it is not one of the servers, it is all of
-               them, and it is what the button does by default. -->
-          <button @click="chooseServer(null)">
-            <component :is="running && !target ? CircleStop : CirclePlay" />
-            All servers
-            <Check v-if="!target" class="tick" aria-label="on the button" />
-          </button>
-          <span class="rule" />
+               them, and it is what the button does by default. Only where
+               there are several — all of one server is that server, and the
+               button is already pointed at it by name. -->
+          <template v-if="servers.length > 1">
+            <button @click="chooseServer(null)">
+              <component :is="running && !target ? CircleStop : CirclePlay" />
+              All servers
+              <Check v-if="!target" class="tick" aria-label="on the button" />
+            </button>
+            <span class="rule" />
+          </template>
           <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
             <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
             {{ s.name }}
@@ -531,7 +590,21 @@ async function undo() {
    list's counters use for the same two facts. */
 .nudge { color: var(--warn); }
 .ready { color: var(--ok); }
-.verbs .btn.on { color: var(--ok); }
+
+/* Running, said by one dot rather than by the whole switch.
+ *
+ * The switch used to turn green, label and glyph, and that made it the
+ * loudest thing on the bar and the bar three colours at once. The fact is
+ * worth seeing from across the room, but it is one bit: a 6px dot in the
+ * glyph's slot carries it, and the label stays the ink of every other verb. */
+.live { flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; }
+.live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.live.starting::before { background: var(--warn); }
+
+/* The way to the address, as a half of the switch's chip: a glyph, no word.
+   Last in the chip when there is no list after it, so it rounds that end. */
+.verbs .split .btn.half { padding: 0 6px; }
+.verbs .split .btn.half:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 
 /* ── the split Run (§8) ──────────────────────────────────────────────
  *

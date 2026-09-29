@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ArrowUp, Check, ChevronDown, GitCompareArrows, GitMerge, Pause, Play, Terminal } from '@lucide/vue'
+import {
+  ArrowUp, Check, ChevronDown, ExternalLink, GitCompareArrows, GitMerge, Pause, Play, Terminal,
+} from '@lucide/vue'
 import type { DeclaredCommand, DeclaredServer } from '@cockpit/shared'
 import OverflowMenu from './OverflowMenu.vue'
 import type { ListGroup } from '../core/store.js'
 import {
-  askCommand, chooseCommand, client, commandChoiceFor, mergeTopic, pointServer, pushTopic,
+  askCommand, chooseCommand, client, commandChoiceFor, guard, mergeTopic, pointServer, pushTopic,
   rebaseTopic, runningServers, serverChoiceFor, startTopic, state, stopTopic, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
@@ -181,8 +183,14 @@ watch(
 )
 
 const alive = computed(() => runningServers(folder.value))
-/** Null is every server — the topic's own switch, as it has always been. */
-const target = computed(() => serverChoiceFor(folder.value, servers.value))
+/**
+ * Null is every server — the topic's own switch, as it has always been. One
+ * declared server has no *all*, as on the repository's bar: the button is
+ * that server, by name.
+ */
+const target = computed(() =>
+  servers.value.length === 1 ? servers.value[0]!.name : serverChoiceFor(folder.value, servers.value),
+)
 
 const running = computed(() =>
   target.value ? alive.value.has(target.value) : f.value?.state === 'running',
@@ -197,6 +205,17 @@ const switchTitle = computed(() => {
     ? 'Stop the servers — the branches stay where they are'
     : 'Start the servers for every repository in this topic'
 })
+
+/** Where the topic's servers answer, while they do — see WorkspaceActions. */
+const openable = computed(() => {
+  const p = folder.value?.runtime?.preview
+  return (p?.kind === 'url' && p.value) || null
+})
+
+async function openPreview() {
+  const w = folder.value
+  if (w) await guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'browser' }))
+}
 
 async function toggle() {
   const w = folder.value
@@ -277,29 +296,62 @@ const runTitle = computed(() => {
          its own, exactly as a repository's is: the left half is the whole
          topic until one of them is picked. -->
     <button
-      v-if="!servers.length"
+      v-if="!servers.length && !openable"
       class="btn ghost sw solo"
       :class="{ on: running }"
       :title="switchTitle"
       @click="toggle"
     >
-      <component :is="running ? Pause : Play" />
+      <i v-if="running" class="live" />
+      <Play v-else />
       <span class="vl">{{ switchLabel }}</span>
     </button>
-    <div v-else class="split">
-      <button class="btn ghost run" :class="{ on: running, sw: !target }" :title="switchTitle" @click="toggle">
-        <component :is="running ? Pause : Play" />
+    <!-- While the servers answer somewhere, the way there is a half of the
+         switch's own chip — see WorkspaceActions. -->
+    <div v-else-if="!servers.length" class="split">
+      <button class="btn ghost run sw" :title="switchTitle" @click="toggle">
+        <i v-if="running" class="live" />
+        <Play v-else />
         <span class="vl">{{ switchLabel }}</span>
       </button>
       <span class="div" />
+      <button
+        class="btn ghost half"
+        :title="'Open ' + openable"
+        :aria-label="'Open ' + openable"
+        @click="openPreview"
+      >
+        <ExternalLink />
+      </button>
+    </div>
+    <div v-else class="split">
+      <button class="btn ghost run" :class="{ on: running, sw: !target }" :title="switchTitle" @click="toggle">
+        <i v-if="running" class="live" />
+        <Play v-else />
+        <span class="vl">{{ switchLabel }}</span>
+      </button>
+      <template v-if="openable">
+        <span class="div" />
+        <button
+          class="btn ghost half"
+          :title="'Open ' + openable"
+          :aria-label="'Open ' + openable"
+          @click="openPreview"
+        >
+          <ExternalLink />
+        </button>
+      </template>
+      <span class="div" />
       <OverflowMenu class="pick" label="Pick what this switch starts">
         <template #trigger><ChevronDown /></template>
-        <button @click="chooseServer(null)">
-          <component :is="f!.state === 'running' && !target ? Pause : Play" />
-          All servers
-          <Check v-if="!target" class="tick" aria-label="on the button" />
-        </button>
-        <span class="rule" />
+        <template v-if="servers.length > 1">
+          <button @click="chooseServer(null)">
+            <component :is="f!.state === 'running' && !target ? Pause : Play" />
+            All servers
+            <Check v-if="!target" class="tick" aria-label="on the button" />
+          </button>
+          <span class="rule" />
+        </template>
         <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
           <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
           {{ s.name }}
@@ -364,7 +416,13 @@ const runTitle = computed(() => {
    Committed and ahead is the one where merging is. */
 .nudge { color: var(--warn); }
 .ready { color: var(--ok); }
-.verbs .btn.on { color: var(--ok); }
+
+/* Running is one dot in the glyph's slot, not a green switch — the repository
+   bar's reasoning, drawn the same. */
+.live { flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; }
+.live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.verbs .split .btn.half { padding: 0 6px; }
+.verbs .split .btn.half:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 
 /* ── the split buttons, drawn as the repository bar draws them ─────── */
 .split {
