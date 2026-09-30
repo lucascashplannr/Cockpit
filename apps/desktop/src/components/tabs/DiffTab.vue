@@ -1273,39 +1273,33 @@ const mark: Record<string, Component> = {
                 <button v-else @click="stopAmend(); menuOpen = false">
                   <GitCommitHorizontal /> New commit instead
                 </button>
+                <!-- Not committing is a real answer, and it was the one the
+                     window had no button for: the tree had to be clean to close
+                     a topic or switch a branch, and the only way there was a
+                     commit you did not mean or a terminal. -->
+                <template v-if="dirty && !amending">
+                  <div class="rule" />
+                  <button
+                    :disabled="stashing"
+                    :title="
+                      subject.trim()
+                        ? 'Stash everything, labelled with the summary above — listed here until you put it back'
+                        : 'Stash everything — listed here until you put it back'
+                    "
+                    @click="menuOpen = false; setAside()"
+                  >
+                    <Archive />
+                    {{ elsewhere.length ? 'Set aside all ' + (elsewhere.length + 1) + ' repos' : 'Set aside' }}
+                  </button>
+                </template>
               </div>
             </div>
           </div>
 
-          <!-- Not committing is a real answer, and it was the one the window
-               had no button for: the tree had to be clean to close a topic or
-               switch a branch, and the only way there was a commit you did not
-               mean or a terminal. The last commit sits beside it as context:
-               what this one follows, and what Amend would rewrite. -->
-          <div class="cafter">
-            <button
-              v-if="dirty"
-              class="btn ghost tiny"
-              :disabled="stashing"
-              :title="
-                subject.trim()
-                  ? 'Stash everything, labelled with the summary above — listed here until you put it back'
-                  : 'Stash everything — listed here until you put it back'
-              "
-              @click="setAside"
-            >
-              <Archive />
-              {{
-                stashing
-                  ? 'Planning…'
-                  : elsewhere.length
-                    ? 'Set aside all ' + (elsewhere.length + 1) + ' repos'
-                    : 'Set aside'
-              }}
-            </button>
-            <span class="grow" />
+          <!-- The last commit, as context: what this one follows, and what
+               Amend would rewrite. -->
+          <div v-if="git?.lastCommit && !amending" class="cafter">
             <span
-              v-if="git?.lastCommit && !amending"
               class="clast"
               :title="git.lastCommit.hash.slice(0, 7) + ' · ' + git.lastCommit.author"
             >
@@ -1687,8 +1681,6 @@ const mark: Record<string, Component> = {
   min-height: 24px;
   margin-top: 10px;
 }
-.cafter .grow { flex: 1; }
-.cafter > .btn { margin-left: -8px; }
 .clast {
   display: flex;
   align-items: baseline;
