@@ -37,8 +37,10 @@
  * deletes it, and the notes that name it lead nowhere.
  *
  * 2.12 — `agent.removed`, so the drawer can show what was removed but kept.
+ *
+ * 2.13 — `git.graph`, `git.show` and `git.showFile`, for the Commits tool.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 12 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 13 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

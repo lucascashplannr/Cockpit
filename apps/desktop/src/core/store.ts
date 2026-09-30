@@ -94,7 +94,7 @@ export const revealLabel =
 const PORT = host?.corePort ?? 7717
 const CORE_URL = 'ws://127.0.0.1:' + PORT
 
-export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'docs' | 'output' | 'journal' | 'terminal' | 'ticket'
+export type TabId = 'code' | 'diff' | 'commits' | 'agent' | 'memory' | 'docs' | 'output' | 'journal' | 'terminal' | 'ticket'
 
 /**
  * The four roles, in the order they are used.
@@ -106,7 +106,7 @@ export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'docs' | 'output' | '
  *
  * The Agent owns the panel permanently; these are what open beside it.
  */
-export type ReviewTool = 'diff' | 'code' | 'output' | 'journal' | 'terminal' | 'memory' | 'docs'
+export type ReviewTool = 'diff' | 'commits' | 'code' | 'output' | 'journal' | 'terminal' | 'memory' | 'docs'
 
 /**
  * §12 — how the window is divided between the two things it can show on the
@@ -658,6 +658,9 @@ export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
   if (!w) return []
   const ids: ReviewTool[] = []
   if (w.git) ids.push('diff')
+  // §2 — what was committed and pushed, beside what is not committed yet: the
+  // two halves of "where is my work", and both absent without a repository.
+  if (w.git) ids.push('commits')
   ids.push('code')
   // Always, even with nothing declared: it is also where the rest of the
   // project's running servers are listed, and where the first one is set up.

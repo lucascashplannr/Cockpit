@@ -143,6 +143,7 @@ vocabulaire à réapprendre à chaque écran.
 | une branche où Cockpit refuse le commit, et le push de ce qui n'est pas arrivé par Send to | **Protected** | locked, locked branch |
 | le démon permanent | **the service** | core, daemon |
 | un enregistrement du fil d'un moteur | **Transcript** | session file |
+| les commits d'un dépôt, dessinés en graphe avec leurs push | **Commits** | history (c'est la liste des conversations), log, graph |
 
 | Action | Le verbe | Jamais |
 |---|---|---|

@@ -7,7 +7,7 @@ import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
   AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, CockpitSettings,
-  CommandRunResult, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
+  CommandRunResult, CommitDetail, CommitGraph, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DeclaredServer,
   DatabasePlan,
   DiffFile, Topic,
@@ -675,6 +675,20 @@ export interface Rpc {
   'git.log': {
     params: { workspaceId: string; limit?: number }
     result: { hash: string; subject: string; author: string; ts: number; refs: string }[]
+  }
+  /**
+   * §2 — the Commits tool: what was committed and what was pushed, drawn as a
+   * graph. `branch` is HEAD, its upstream and the base — how this branch sits
+   * against the two things it is measured by; `all` is every branch and tag.
+   */
+  'git.graph': {
+    params: { workspaceId: string; scope: 'branch' | 'all'; limit?: number }
+    result: CommitGraph
+  }
+  'git.show': { params: { workspaceId: string; hash: string }; result: CommitDetail }
+  'git.showFile': {
+    params: { workspaceId: string; hash: string; path: string; oldPath?: string | null }
+    result: FileDiff
   }
 
   /**

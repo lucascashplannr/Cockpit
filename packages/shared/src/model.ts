@@ -1006,6 +1006,62 @@ export interface FileDiff {
   lines: DiffHunkLine[]
 }
 
+/**
+ * A ref as the Commits graph draws it. `current` is the branch HEAD is on;
+ * `head` is HEAD itself when it is detached and so has no branch to stand for it.
+ */
+export interface GraphRef {
+  name: string
+  kind: 'local' | 'remote' | 'tag' | 'head'
+  current: boolean
+}
+
+export interface GraphCommit {
+  hash: string
+  /** First parent first — the lane a commit continues is always its first. */
+  parents: string[]
+  subject: string
+  author: string
+  email: string
+  /** Author time, ms. */
+  ts: number
+  refs: GraphRef[]
+  /**
+   * Reachable from a remote-tracking ref. Meaningless when the repository has
+   * no remote at all, which `CommitGraph.hasRemote` says.
+   */
+  pushed: boolean
+  /** A co-author trailer names an agent (Claude, Codex, Copilot…). */
+  agent: boolean
+  /**
+   * Every push that left this commit at the tip of a remote branch, read from
+   * that ref's reflog (`update by push`). Git keeps no other record of a push.
+   */
+  pushes: { ref: string; ts: number }[]
+}
+
+export interface CommitGraph {
+  commits: GraphCommit[]
+  /** There are older commits past `limit`. */
+  more: boolean
+  hasRemote: boolean
+}
+
+export interface CommitDetail {
+  hash: string
+  parents: string[]
+  author: string
+  email: string
+  ts: number
+  committer: string
+  committedTs: number
+  subject: string
+  /** The message after its subject line, trimmed. Empty when there is none. */
+  body: string
+  /** Against the first parent — a merge shows what it brought in. */
+  files: Omit<DiffFile, 'attribution'>[]
+}
+
 export interface SearchHit {
   workspaceId: string
   path: string

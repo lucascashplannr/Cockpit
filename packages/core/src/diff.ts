@@ -104,7 +104,7 @@ export async function file(workspaceId: string, path: string, base?: string): Pr
   return { path, binary: false, lines: parseUnified(text) }
 }
 
-function parseUnified(text: string): DiffHunkLine[] {
+export function parseUnified(text: string): DiffHunkLine[] {
   const out: DiffHunkLine[] = []
   let oldLine = 0
   let newLine = 0

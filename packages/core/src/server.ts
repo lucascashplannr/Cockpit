@@ -17,6 +17,7 @@ import * as scaffold from './scaffold.js'
 import * as files from './files.js'
 import * as search from './search.js'
 import * as diff from './diff.js'
+import * as history from './history.js'
 import * as plans from './plans.js'
 import * as memory from './memory.js'
 import * as docs from './docs.js'
@@ -638,6 +639,12 @@ const handlers: Record<string, Handler> = {
     const { log } = await import('./git.js')
     return log(ws.path, p.limit ?? 40)
   },
+  /** §2 — the Commits tool. Read-only, and probed on every call (§3.4). */
+  'git.graph': (p: { workspaceId: string; scope: 'branch' | 'all'; limit?: number }) =>
+    history.graph(p.workspaceId, p.scope === 'all' ? 'all' : 'branch', p.limit),
+  'git.show': (p: { workspaceId: string; hash: string }) => history.show(p.workspaceId, p.hash),
+  'git.showFile': (p: { workspaceId: string; hash: string; path: string; oldPath?: string | null }) =>
+    history.showFile(p.workspaceId, p.hash, p.path, p.oldPath),
 
   'runtime.up': async (p: { workspaceId: string; names?: string[] }) => {
     const ws = registry.requireWorkspace(p.workspaceId)

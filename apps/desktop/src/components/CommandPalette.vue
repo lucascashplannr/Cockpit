@@ -6,7 +6,7 @@ import {
   AppWindow, ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookMarked, Box, Check, CloudDownload,
   Columns2, FileCode,
   FolderOpen,
-  FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitMerge, Globe, History, Layers, Pause, Play, RefreshCw,
+  FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitGraph, GitMerge, Globe, History, Layers, Pause, Play, RefreshCw,
   ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, Stamp, TextSearch,
   Terminal, Trash2, Undo2,
@@ -438,6 +438,7 @@ function buildCommands(lvl: Level): Item[] {
   if (w) {
     tab('code', 'Code', FileCode)
     if (w.git) tab('diff', 'Diff', GitCompareArrows)
+    if (w.git) tab('commits', 'Commits', GitGraph)
     tab('agent', 'Agent', Sparkles)
     tab('memory', 'Memory', BookMarked)
     tab('journal', 'Journal', ScrollText)
