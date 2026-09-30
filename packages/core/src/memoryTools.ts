@@ -51,8 +51,10 @@ export const MEMORY_RULES = [
   `${NOTE}: one line, written for a colleague who has not seen this conversation —`,
   'a decision and its reason (Decisions); an approach tried or considered and dropped, and why (Ruled out);',
   'something that must not break (Constraints); an interface other code relies on — endpoint, payload,',
-  'event, file — and where it lives (Contracts).',
-  `${STATE}: replace where the work stands — done, half-done, next. Call it when you finish a piece of work.`,
+  'event, file — and where it lives (Contracts); a question only the person can answer, and what hangs',
+  'on it (Open questions). When a note supersedes one already there — a question answered, a contract',
+  'changed — pass the old one as `replaces` so the memory says one thing about one fact.',
+  `${STATE}: replace where the work stands — done, in progress, next. Call it when you finish a piece of work.`,
   'Before you end a turn in which a decision was made — by you or by the person — or an interface',
   'was created or changed, note it: that is the moment it is still in front of you.',
   'Do not log steps, restate the code, or note what git already shows. Note only what would change',
@@ -66,11 +68,16 @@ const TOOLS = [
     name: NOTE,
     description:
       'Add one line to the shared memory of this topic or project. Other agents and the next conversation read it. ' +
-      'Use for decisions with their reason, rejected approaches with why, constraints, and contracts other code relies on (with where they live).',
+      'Use for decisions with their reason, rejected approaches with why, constraints, contracts other code relies on (with where they live), ' +
+      'and open questions waiting on the person. Pass `replaces` when this supersedes an existing entry.',
     inputSchema: {
       type: 'object',
       properties: {
         section: { type: 'string', enum: NOTE_SECTIONS, description: 'Where it belongs.' },
+        replaces: {
+          type: 'string',
+          description: 'Optional: the words of an existing entry this one supersedes. It is removed.',
+        },
         text: {
           type: 'string',
           description: 'One self-contained line. Name files, endpoints and payloads exactly. Cockpit signs it — add no name or date.',
@@ -173,9 +180,10 @@ function call(
     case NOTE: {
       const line = str('text')
       if (!line) return text('Nothing to note: `text` is empty.', true)
-      const entry = memory.note(home, str('section') || 'Decisions', line, signature(c), actor)
-      own.add(entry)
-      return text('Noted in the ' + home.kind + ' memory.')
+      const r = memory.note(home, str('section') || 'Decisions', line, signature(c), actor, str('replaces') || undefined)
+      own.add(r.entry)
+      if (str('replaces') && !r.replaced) return text('Noted — but no entry matched `replaces`, so nothing was removed.')
+      return text('Noted in the ' + home.kind + ' memory' + (r.replaced ? ', replacing the old entry.' : '.'))
     }
     case STATE: {
       const body = str('text')
@@ -184,7 +192,7 @@ function call(
       return text('State replaced in the ' + home.kind + ' memory.')
     }
     case READ:
-      return text(memory.contentAt(home.file) ?? 'The memory is empty.')
+      return text(memory.contentAt(home.file, home.kind) ?? 'The memory is empty.')
     default:
       return text('Unknown tool: ' + name, true)
   }

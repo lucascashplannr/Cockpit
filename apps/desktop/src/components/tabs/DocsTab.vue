@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import type { DocsProposal, DocsProposalSet, Workspace } from '@cockpit/shared'
-import { BookOpen, Check, CircleAlert, FilePen, FilePlus, FileX, Pencil, X } from '@lucide/vue'
-import { dismissDocsSet, resolveDocsPage, state } from '../../core/store.js'
+import { BookMarked, BookOpen, Check, CircleAlert, FilePen, FilePlus, FileX, Pencil, X } from '@lucide/vue'
+import { dismissDocsSet, resolveDocsForget, resolveDocsPage, state } from '../../core/store.js'
 import { lineDiff } from '../../core/linediff.js'
+import { createMarked } from '../../core/markdown.js'
 
 /**
  * §9 — what the Document step proposed to the docs, waiting on a person.
@@ -26,6 +27,33 @@ const editing = reactive<Record<string, string>>({})
 const busy = ref<string | null>(null)
 
 const key = (s: DocsProposalSet, f: DocsProposal) => s.id + ':' + f.path
+
+/* ── the memory, emptying into the docs ────────────────────────────────────
+ *
+ * What the agent took out of its copy of the memory because a page now says
+ * it. One card, after the pages, every entry ticked; untick what should stay.
+ */
+const md = createMarked({ breaks: false })
+const kept = reactive<Record<string, string[]>>({})
+const pagesOpen = (s: DocsProposalSet) => s.files.some((f) => f.state === 'pending')
+function entryHtml(line: string): string {
+  const text = line
+    .replace(/^\s*[-*+]\s+/, '')
+    .replace(/\s*_\([^()]{1,60},\s*\d{1,2}\s+[A-Za-z]{3,5}\)_\s*$/, '')
+  return md.parseInline(text) as string
+}
+function toggleKeep(s: DocsProposalSet, line: string): void {
+  const list = kept[s.id] ?? []
+  kept[s.id] = list.includes(line) ? list.filter((l) => l !== line) : [...list, line]
+}
+async function forget(s: DocsProposalSet, accept: boolean): Promise<void> {
+  busy.value = s.id + ':forget'
+  try {
+    await resolveDocsForget(s, accept, kept[s.id] ?? [])
+  } finally {
+    busy.value = null
+  }
+}
 const waiting = (s: DocsProposalSet) => s.files.filter((f) => f.state === 'pending')
 
 function tail(path: string): string {
@@ -162,6 +190,49 @@ async function acceptAll(s: DocsProposalSet): Promise<void> {
               </button>
             </div>
           </article>
+
+        <article v-if="s.forget?.state === 'pending'" class="card">
+          <div class="chead static">
+            <BookMarked class="sm dim" />
+            <span class="kind">Memory</span>
+            <span class="path">
+              {{ s.forget.entries.length }} {{ s.forget.entries.length === 1 ? 'entry' : 'entries' }} the docs now cover
+            </span>
+          </div>
+          <p class="why">
+            {{
+              pagesOpen(s)
+                ? 'Decide the pages first — a note goes only once a page says it for good.'
+                : 'The accepted pages say these for good, so the memory can let them go. Untick what should stay.'
+            }}
+          </p>
+          <ul class="forget selectable">
+            <li v-for="e in s.forget.entries" :key="e">
+              <label>
+                <input
+                  type="checkbox"
+                  :checked="!(kept[s.id] ?? []).includes(e)"
+                  :disabled="pagesOpen(s)"
+                  @change="toggleKeep(s, e)"
+                />
+                <span class="etext" v-html="entryHtml(e)" />
+              </label>
+            </li>
+          </ul>
+          <div class="cfoot">
+            <button
+              class="btn primary"
+              :disabled="pagesOpen(s) || busy === s.id + ':forget' || (kept[s.id]?.length ?? 0) === s.forget.entries.length"
+              @click="forget(s, true)"
+            >
+              <Check />Remove from memory
+            </button>
+            <span class="grow" />
+            <button class="btn ghost" :disabled="busy === s.id + ':forget'" @click="forget(s, false)">
+              <X />Keep all
+            </button>
+          </div>
+        </article>
       </section>
     </div>
   </div>
@@ -236,6 +307,12 @@ async function acceptAll(s: DocsProposalSet): Promise<void> {
   padding: 9px 12px;
   text-align: left;
 }
+.chead.static { cursor: default; }
+.forget { list-style: none; margin: 0; padding: 2px 12px 8px; font-size: var(--fs-sm); color: var(--text-muted); }
+.forget li + li { margin-top: 4px; }
+.forget label { display: flex; gap: 8px; align-items: flex-start; line-height: 1.5; }
+.forget input { flex: none; margin-top: 3px; }
+.forget .etext :deep(code) { padding: 1px 4px; border-radius: 4px; background: var(--active); font-family: var(--mono); font-size: 0.88em; }
 .kind { flex: none; font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); }
 .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); color: var(--text); }
 .card > .why { margin: -4px 12px 8px; font-size: var(--fs-xs); line-height: 1.5; }

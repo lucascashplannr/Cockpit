@@ -63,9 +63,10 @@ export function commandIn(prompt: string): { command: AgentCommand; args: string
 const HANDOFF_WORDS = [
   'Handoff: this conversation is about to be cleared, and the next one starts from the memory alone.',
   'Bring the memory up to date for whoever picks this up — the next conversation here, or an agent in',
-  'another repository: note every decision, contract, constraint or dropped approach from this',
-  'conversation that is not in it yet, then set the state (done, half-done, next, and the files that',
-  'matter). Do not change any code. Reply with one short line.',
+  'another repository: note every decision, contract, constraint, dropped approach or open question',
+  'from this conversation that is not in it yet (replacing the entries they supersede), then set the',
+  'state (done, in progress, next, and the files that matter). Do not change any code. Reply with one',
+  'short line.',
 ].join(' ')
 
 export const HANDOFF_PROMPT = HANDOFF_WORDS
@@ -84,8 +85,8 @@ export function isHandoff(prompt: string | null | undefined): boolean {
  */
 const DOCUMENT_WORDS = 'Documentation step: propose updates to this project\'s documentation'
 
-export function documentPrompt(dir: string): string {
-  return [
+export function documentPrompt(dir: string, memoryCopy?: string | null): string {
+  const lines = [
     DOCUMENT_WORDS + ' from what this conversation and the memory established.',
     'A working copy of the documentation is at ' + dir + ' — read its guide or index first, and follow',
     'its structure, language and conventions. Edit pages there, or add pages there; write nowhere else,',
@@ -93,14 +94,25 @@ export function documentPrompt(dir: string): string {
     'and their reasons, constraints. Not progress, not state, not what git already shows. If nothing',
     'deserves documenting, change nothing. Finish with one line per changed page: its path relative to',
     'the copy, an em dash, and why.',
-  ].join(' ')
+  ]
+  // The memory empties into the docs: what a page now says for good, the
+  // memory no longer has to carry. Deleting from a copy, so a person decides.
+  if (memoryCopy) {
+    lines.push(
+      'Last, a copy of the memory is at ' + memoryCopy + ': delete from it the entries your pages now',
+      'cover in full — only those, only whole lines, and change nothing else in it. The rest stays in the',
+      'memory.',
+    )
+  }
+  return lines.join(' ')
 }
 
 /** `/clear` with docs linked: the handoff and the proposals in one turn. */
-export function handoffPrompt(docsDir: string | null): string {
+export function handoffPrompt(docsDir: string | null, memoryCopy?: string | null): string {
   if (!docsDir) return HANDOFF_PROMPT
-  return HANDOFF_PROMPT.replace(/ Reply with one short line\.$/, '') +
-    ' Then, as a second step — ' + documentPrompt(docsDir).replace(DOCUMENT_WORDS, 'propose updates to the documentation')
+  return HANDOFF_PROMPT.replace(/ Reply with one\s+short line\.$/, '') +
+    ' Then, as a second step — ' +
+    documentPrompt(docsDir, memoryCopy).replace(DOCUMENT_WORDS, 'propose updates to the documentation')
 }
 
 export function isDocument(prompt: string | null | undefined): boolean {

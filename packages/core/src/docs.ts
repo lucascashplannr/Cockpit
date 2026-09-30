@@ -9,6 +9,7 @@ import { allWorkspaces, getProject } from './registry.js'
 import { attachmentsRoot } from './attachments.js'
 import { isInside } from './config.js'
 import { append } from './journal.js'
+import * as memory from './memory.js'
 
 /**
  * §9 — "Un wiki alimenté séparément meurt en trois mois, toujours. Un wiki
@@ -130,7 +131,16 @@ export function copyDir(id: string): string {
 interface Stored extends DocsProposalSet {
   /** Each page's hash when the copy was taken: what "changed" is measured from. */
   base: Record<string, string>
+  /** The memory the copy was taken of, and its entries then — what a deletion is measured from. */
+  memory: { file: string; kind: memory.MemoryHome['kind']; entries: string[] } | null
 }
+
+/** Where the agent prunes — beside the docs copy, never inside it. */
+export function memoryCopy(id: string): string {
+  return join(setDir(id), 'memory.md')
+}
+
+const ENTRY = /^\s*[-*+]\s+/
 
 function save(set: Stored): void {
   writeFileSync(join(setDir(set.id), 'set.json'), JSON.stringify(set), 'utf8')
@@ -180,7 +190,12 @@ function pagesUnder(root: string): string[] {
  * A fresh working copy of the project's docs, for one Document step. Answers
  * the set, still `drafting`: it becomes proposals once the turn has landed.
  */
-export function stage(projectId: string, sessionId: string, title: string): Stored {
+export function stage(
+  projectId: string,
+  sessionId: string,
+  title: string,
+  home?: memory.MemoryHome | null,
+): Stored {
   const info = docsOf(projectId)
   if (!info) throw new Error('this project has no documentation linked — set one in the project settings')
   const id = newId('docs_')
@@ -203,7 +218,14 @@ export function stage(projectId: string, sessionId: string, title: string): Stor
     status: 'drafting',
     detail: null,
     files: [],
+    forget: null,
     base,
+    memory: null,
+  }
+  const mem = home ? memory.contentAt(home.file, home.kind) : null
+  if (home && mem && memory.hasEntries(mem)) {
+    writeFileSync(memoryCopy(id), mem, 'utf8')
+    set.memory = { file: home.file, kind: home.kind, entries: mem.split('\n').filter((l) => ENTRY.test(l)) }
   }
   save(set)
   return set
@@ -258,6 +280,13 @@ export function collect(id: string, reply: string, actor?: Actor): DocsProposalS
   }
   files.sort((a, b) => a.path.localeCompare(b.path))
   set.files = files
+  // Entries deleted from the memory copy: proposed for removal, but only
+  // alongside pages — pruning what no page now says would lose it.
+  if (set.memory && files.length && existsSync(memoryCopy(id))) {
+    const left = new Set(readFileSync(memoryCopy(id), 'utf8').split('\n'))
+    const gone = set.memory.entries.filter((l) => !left.has(l))
+    if (gone.length) set.forget = { entries: gone, state: 'pending' }
+  }
   set.status = 'ready'
   set.detail = files.length ? null : 'nothing worth documenting'
   save(set)
@@ -290,8 +319,8 @@ function reasonsIn(reply: string): Map<string, string> {
 }
 
 function strip(s: Stored): DocsProposalSet {
-  const { base: _base, ...rest } = s
-  return rest
+  const { base: _base, memory: _memory, ...rest } = s
+  return { ...rest, forget: rest.forget ?? null }
 }
 
 /** Sets still waiting on someone, newest first. Resolved ones fall away. */
@@ -306,7 +335,9 @@ export function pending(projectId: string): DocsProposalSet[] {
     .map(load)
     .filter((s): s is Stored => !!s && s.projectId === projectId)
     .filter(
-      (s) => s.status !== 'dismissed' && (s.status !== 'ready' || s.files.some((f) => f.state === 'pending')),
+      (s) =>
+        s.status !== 'dismissed' &&
+        (s.status !== 'ready' || s.files.some((f) => f.state === 'pending') || s.forget?.state === 'pending'),
     )
     .sort((a, b) => b.createdAt - a.createdAt)
     .map(strip)
@@ -339,10 +370,31 @@ export function resolvePage(
   return strip(set)
 }
 
+/**
+ * The memory's pruning, decided — after the pages. `keep` is what the person
+ * unticked: those stay. Removed lines are matched exactly, so an entry
+ * rewritten in the meantime is never taken.
+ */
+export function resolveForget(id: string, accept: boolean, keep: string[] = []): DocsProposalSet {
+  const set = load(id)
+  if (!set?.forget) throw new Error('nothing to forget in ' + id)
+  if (set.files.some((f) => f.state === 'pending')) throw new Error('decide the pages first')
+  if (accept && set.memory) {
+    const drop = set.forget.entries.filter((l) => !keep.includes(l))
+    memory.forget({ file: set.memory.file, kind: set.memory.kind, label: '', workspaceId: null }, drop, {
+      kind: 'human',
+    })
+  }
+  set.forget.state = accept ? 'accepted' : 'rejected'
+  save(set)
+  return strip(set)
+}
+
 export function dismiss(id: string): void {
   const set = load(id)
   if (!set) return
   for (const f of set.files) if (f.state === 'pending') f.state = 'rejected'
+  if (set.forget?.state === 'pending') set.forget.state = 'rejected'
   set.status = 'dismissed'
   save(set)
   finishIfDone(set, true)
@@ -361,6 +413,12 @@ function write(set: Stored, f: DocsProposal, content?: string): void {
 
 /** The working copy goes once nothing in it is waiting; the record stays. */
 function finishIfDone(set: Stored, force = false): void {
+  // Every page decided and not one kept: nothing says the notes for good, so
+  // they stay in the memory.
+  if (set.forget?.state === 'pending' && set.files.every((f) => f.state === 'rejected')) {
+    set.forget.state = 'rejected'
+    save(set)
+  }
   if (!force && set.files.some((f) => f.state === 'pending')) return
   rmSync(copyDir(set.id), { recursive: true, force: true })
 }

@@ -1838,7 +1838,7 @@ async function launch(
   // next turn is told. Only an engine that holds the memory tools is told
   // about the memory's rules; the preamble itself is for any engine.
   const home = memory.homeOf(session)
-  const memorySeen = home ? memory.contentAt(home.file) : null
+  const memorySeen = home ? memory.contentAt(home.file, home.kind) : null
   const opening = [memory.preamble(home), docs.preambleBlock(docsInfo), preamble.trim()]
     .filter(Boolean)
     .join('\n\n')
@@ -2276,7 +2276,7 @@ async function flushQueue(l: Live): Promise<void> {
 function memoryNews(l: Live): string {
   const home = memory.homeOf(l.session)
   if (!home) return ''
-  const now = memory.contentAt(home.file)
+  const now = memory.contentAt(home.file, home.kind)
   if (now === l.memorySeen) return ''
   const added = memory.newSince(l.memorySeen, now, l.memoryOwn)
   l.memorySeen = now

@@ -1,18 +1,19 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
   MEMORY_SECTIONS, RULED_OUT_SECTION, STATE_SECTION, canonicalSection, englishMemory, hasMemoryEntries,
-  memoryTemplate,
+  memoryTemplate, shapedMemory,
 } from '@cockpit/shared'
-import type { Actor, Conversation, TranscriptFile, MemoryDoc } from '@cockpit/shared'
+import type { MemoryKind } from '@cockpit/shared'
+import type { Actor, Conversation, MemoryDoc } from '@cockpit/shared'
 import { getProject, getTopic, getWorkspace, memoryFileOf, requireWorkspace, topicMemoryFile } from './registry.js'
 import { append } from './journal.js'
 
 /**
  * §6 — three distinct layers, and conflating them is the mistake to avoid:
- *   memory.md    durable, hand-editable, read by agents
- *   journal      automatic, append-only (lives in SQLite, see journal.ts)
- *   sessions/    disposable, listable, comparable
+ *   memory.md       durable, hand-editable, read by agents
+ *   journal         automatic, append-only (lives in SQLite, see journal.ts)
+ *   conversations   disposable, resumable (agent_sessions in SQLite, agents.ts)
  *
  * The point of the separation: clearing a session becomes free.
  * §15 — memory is versioned, so a colleague can pick up a topic and
@@ -20,10 +21,6 @@ import { append } from './journal.js'
  */
 
 export const SECTIONS = MEMORY_SECTIONS
-
-function cockpitDir(wsPath: string): string {
-  return join(wsPath, '.cockpit')
-}
 
 /**
  * §6 is titled "la mémoire **de topic**", and that is the whole point: the
@@ -47,7 +44,7 @@ export interface MemoryHome {
   file: string
   /** What the preamble calls it: the topic's name, or the project's. */
   label: string
-  kind: 'topic' | 'project'
+  kind: MemoryKind
   /** The checkout whose id the journal files the writes under. */
   workspaceId: string | null
 }
@@ -73,34 +70,37 @@ export function homeOf(c: Pick<Conversation, 'topicId' | 'workspaceIds'>): Memor
  */
 export function preamble(home: MemoryHome | null): string {
   if (!home) return ''
-  const content = contentAt(home.file)?.trim()
+  const content = contentAt(home.file, home.kind)?.trim()
   if (!content || !hasMemoryEntries(content)) return ''
   return [
     '# ' + (home.kind === 'topic' ? 'Topic' : 'Project') + ' memory — ' + home.label,
     'Shared by every conversation on this ' + home.kind + ', in every repository, and by the one',
     'that picks up after this one is cleared. "' + RULED_OUT_SECTION + '" lists approaches already',
     'rejected for a reason: do not re-propose them. "Contracts" is what other code relies on.',
+    '"Open questions" are waiting on the person: ask them rather than guessing.',
     '',
     content,
   ].join('\n')
 }
 
+/** Anything written beyond the template — the shared test, under the core's name. */
+export const hasEntries = hasMemoryEntries
+
 /**
  * The file as it stands, or null — for the preamble and the live update.
- * Always in English: a memory written by an earlier build under the French
- * headings reads as if it had been written today.
+ * Always in the current shape: a memory written by an earlier build, in French
+ * or in the old order, reads as if it had been written today. Only headings
+ * move; what is under them is untouched. The file itself catches up on the
+ * next write.
  */
-export function contentAt(file: string): string | null {
+export function contentAt(file: string, kind: MemoryKind): string | null {
   try {
-    return existsSync(file) ? englishMemory(readFileSync(file, 'utf8')) : null
+    return existsSync(file) ? shapedMemory(englishMemory(readFileSync(file, 'utf8')), kind) : null
   } catch {
     return null
   }
 }
 
-export function sessionsDir(wsPath: string): string {
-  return join(cockpitDir(wsPath), 'sessions')
-}
 
 function parseSections(content: string): { title: string; body: string }[] {
   const out: { title: string; body: string }[] = []
@@ -125,13 +125,18 @@ function parseSections(content: string): { title: string; body: string }[] {
  */
 export function read(workspaceId: string): MemoryDoc {
   const p = memoryFile(workspaceId)
-  const content = contentAt(p) ?? memoryTemplate(titleFor(workspaceId))
+  const kind = kindOf(workspaceId)
+  const content = contentAt(p, kind) ?? memoryTemplate(kind, titleFor(workspaceId))
   return {
     path: p,
     content,
     sections: parseSections(content),
     updatedAt: existsSync(p) ? statSync(p).mtimeMs : null,
   }
+}
+
+function kindOf(workspaceId: string): MemoryKind {
+  return requireWorkspace(workspaceId).topicId ? 'topic' : 'project'
 }
 
 /** A topic's memory opens with its name; the project's needs none. */
@@ -168,17 +173,63 @@ export function promote(workspaceId: string, section: string, text: string): voi
  * Answers the line it wrote, so the conversation that wrote it can be told
  * apart from the others when their notes are passed on (see `newSince`).
  */
-export function note(home: MemoryHome, section: string, text: string, by: string, actor: Actor): string {
-  const content = ensureAt(home)
+export function note(
+  home: MemoryHome,
+  section: string,
+  text: string,
+  by: string,
+  actor: Actor,
+  /**
+   * An entry this one supersedes — an open question now answered, a contract
+   * that changed. Matched on its words, signature aside; it goes, this comes.
+   * Without it a memory only ever grows, and says two things about one fact.
+   */
+  replaces?: string,
+): { entry: string; replaced: string | null } {
+  let content = ensureAt(home)
+  let replaced: string | null = null
+  if (replaces?.trim()) {
+    const r = withoutEntry(content, replaces)
+    content = r.content
+    replaced = r.removed
+  }
   const entry = '- ' + unsigned(oneLine(text)) + ' _(' + by + ', ' + shortDate() + ')_'
   writeAt(home, withEntry(content, canonicalSection(section), entry))
   append({
     type: 'memory.promoted',
     actor,
     workspaceId: home.workspaceId,
-    payload: { section: canonicalSection(section), text: text.slice(0, 500), by },
+    payload: { section: canonicalSection(section), text: text.slice(0, 500), by, ...(replaced ? { replaced } : {}) },
   })
-  return entry
+  return { entry, replaced }
+}
+
+/**
+ * Entries gone from the memory — the Document step's pruning, once a person
+ * has accepted it: what the docs now say, the memory no longer has to. Exact
+ * lines only; an entry rewritten since the proposal is left where it is.
+ */
+export function forget(home: MemoryHome, lines: string[], actor: Actor): number {
+  const content = contentAt(home.file, home.kind)
+  if (!content) return 0
+  const drop = new Set(lines)
+  const kept = content.split('\n').filter((l) => !drop.has(l))
+  const removed = content.split('\n').length - kept.length
+  if (!removed) return 0
+  writeAt(home, kept.join('\n'))
+  append({ type: 'memory.written', actor, workspaceId: home.workspaceId, payload: { forgot: removed } })
+  return removed
+}
+
+/** The first `- ` entry whose words contain `words`, taken out. */
+function withoutEntry(content: string, words: string): { content: string; removed: string | null } {
+  const key = (s: string) => unsigned(s.replace(/^\s*[-*+]\s+/, '')).toLowerCase().replace(/\s+/g, ' ').trim()
+  const want = key(words)
+  const lines = content.split('\n')
+  const i = lines.findIndex((l) => /^\s*[-*+]\s+/.test(l) && (key(l) === want || key(l).includes(want)))
+  if (i === -1 || !want) return { content, removed: null }
+  const [removed] = lines.splice(i, 1)
+  return { content: lines.join('\n'), removed: removed ?? null }
 }
 
 /**
@@ -195,7 +246,7 @@ export function setState(home: MemoryHome, text: string, by: string, actor: Acto
 }
 
 function ensureAt(home: MemoryHome): string {
-  return contentAt(home.file) ?? memoryTemplate(home.kind === 'topic' ? home.label : undefined)
+  return contentAt(home.file, home.kind) ?? memoryTemplate(home.kind, home.kind === 'topic' ? home.label : undefined)
 }
 
 function writeAt(home: MemoryHome, content: string): void {
@@ -291,24 +342,4 @@ function withSection(content: string, section: string, body: string): string {
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/** §6 — sessions are disposable, listable, comparable. */
-export function sessions(workspaceId: string): TranscriptFile[] {
-  const ws = requireWorkspace(workspaceId)
-  const dir = sessionsDir(ws.path)
-  if (!existsSync(dir)) return []
-  return readdirSync(dir)
-    .filter((f) => f.endsWith('.jsonl') || f.endsWith('.md'))
-    .map((f) => {
-      const st = statSync(join(dir, f))
-      return {
-        id: f.replace(/\.(jsonl|md)$/, ''),
-        path: join(dir, f),
-        startedAt: st.birthtimeMs || st.mtimeMs,
-        engine: f.split('-')[0] ?? 'unknown',
-        bytes: st.size,
-      }
-    })
-    .sort((a, b) => b.startedAt - a.startedAt)
 }

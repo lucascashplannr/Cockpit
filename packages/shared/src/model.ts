@@ -1054,14 +1054,12 @@ export interface DocsProposalSet {
   status: 'drafting' | 'ready' | 'failed' | 'dismissed'
   detail: string | null
   files: DocsProposal[]
-}
-
-export interface TranscriptFile {
-  id: string
-  path: string
-  startedAt: number
-  engine: string
-  bytes: number
+  /**
+   * The memory entries the docs now cover, proposed for removal — the memory
+   * emptying into the docs. Decided after the pages: pruning a note only makes
+   * sense once the page that says it for good has been accepted.
+   */
+  forget: { entries: string[]; state: 'pending' | 'accepted' | 'rejected' } | null
 }
 
 export interface CoreStatus {

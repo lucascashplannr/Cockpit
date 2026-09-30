@@ -6,7 +6,7 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, TranscriptFile, CockpitSettings,
+  AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, CockpitSettings,
   CommandRunResult, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DeclaredServer,
   DatabasePlan,
@@ -842,6 +842,8 @@ export interface Rpc {
     params: { setId: string; path: string; accept: boolean; content?: string }
     result: DocsProposalSet
   }
+  /** The memory entries the docs now cover: removed (all but `keep`) or kept. After the pages. */
+  'docs.forget': { params: { setId: string; accept: boolean; keep?: string[] }; result: DocsProposalSet }
   'docs.dismiss': { params: { setId: string }; result: { ok: true } }
   /**
    * §6 — the conversation removed, and only the conversation.
@@ -941,7 +943,6 @@ export interface Rpc {
   'memory.read': { params: { workspaceId: string }; result: MemoryDoc | null }
   'memory.write': { params: { workspaceId: string; content: string }; result: { ok: true } }
   'memory.promote': { params: { workspaceId: string; section: string; text: string }; result: { ok: true } }
-  'memory.sessions': { params: { workspaceId: string }; result: TranscriptFile[] }
 
   'journal.tail': {
     params: { workspaceId?: string; projectId?: string; limit?: number; types?: string[] }

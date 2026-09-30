@@ -331,7 +331,7 @@ function createMemory(topicId: string): void {
   const file = registry.topicMemoryFile(f)
   if (existsSync(file)) return
   mkdirSync(dirname(file), { recursive: true })
-  writeFileSync(file, memoryTemplate(f.name), 'utf8')
+  writeFileSync(file, memoryTemplate('topic', f.name), 'utf8')
 }
 
 /**

@@ -255,7 +255,7 @@ function stageDocsFor(c: Conversation): ReturnType<typeof docs.stage> | null {
   const projectId = projectOfConversation(c)
   if (!projectId || !docs.docsOf(projectId)) return null
   try {
-    return docs.stage(projectId, c.id, c.title ?? c.prompt.slice(0, 60))
+    return docs.stage(projectId, c.id, c.title ?? c.prompt.slice(0, 60), memory.homeOf(c))
   } catch {
     return null
   }
@@ -804,7 +804,10 @@ const handlers: Record<string, Handler> = {
     // §9 — with docs linked, the same turn drafts the proposals: one turn, not
     // two, on the one moment the whole conversation is still in front of it.
     const set = stageDocsFor(c)
-    const sent = await sendOnBehalf(p.sessionId, handoffPrompt(set ? docs.copyDir(set.id) : null))
+    const sent = await sendOnBehalf(
+      p.sessionId,
+      handoffPrompt(set ? docs.copyDir(set.id) : null, set?.memory ? docs.memoryCopy(set.id) : null),
+    )
     if (!sent.ok) {
       if (set) docs.fail(set.id, sent.reason)
       return sent
@@ -825,8 +828,11 @@ const handlers: Record<string, Handler> = {
     if (!projectId || !docs.docsOf(projectId)) {
       return { ok: false as const, reason: 'this project has no documentation linked — set it in the project settings' }
     }
-    const set = docs.stage(projectId, c.id, c.title ?? c.prompt.slice(0, 60))
-    const sent = await sendOnBehalf(p.sessionId, documentPrompt(docs.copyDir(set.id)))
+    const set = docs.stage(projectId, c.id, c.title ?? c.prompt.slice(0, 60), memory.homeOf(c))
+    const sent = await sendOnBehalf(
+      p.sessionId,
+      documentPrompt(docs.copyDir(set.id), set.memory ? docs.memoryCopy(set.id) : null),
+    )
     if (!sent.ok) {
       docs.fail(set.id, sent.reason)
       return sent
@@ -838,6 +844,8 @@ const handlers: Record<string, Handler> = {
   'docs.pending': (p: { projectId: string }) => docs.pending(p.projectId),
   'docs.resolve': (p: { setId: string; path: string; accept: boolean; content?: string }) =>
     docs.resolvePage(p.setId, p.path, p.accept, p.content),
+  'docs.forget': (p: { setId: string; accept: boolean; keep?: string[] }) =>
+    docs.resolveForget(p.setId, p.accept, p.keep),
   'docs.dismiss': (p: { setId: string }) => {
     docs.dismiss(p.setId)
     return { ok: true }
@@ -934,7 +942,6 @@ const handlers: Record<string, Handler> = {
     pushWorkspaces()
     return { ok: true }
   },
-  'memory.sessions': (p: { workspaceId: string }) => memory.sessions(p.workspaceId),
 
   'journal.tail': (p: { workspaceId?: string; projectId?: string; limit?: number; types?: string[] }) =>
     tail(p ?? {}),

@@ -8,8 +8,26 @@
  * window then displayed; `englishMemory` converts those in place.
  */
 
-export const MEMORY_SECTIONS = ['Goal', 'Decisions', 'Contracts', 'Constraints', 'Ruled out', 'State'] as const
+/**
+ * In the order a fresh conversation needs them: what this is for, where it
+ * stands and what is waiting on a person — then what is settled, relied on,
+ * guarded and rejected. State and Open questions were once last or absent,
+ * and they are the first thing a handoff has to say.
+ */
+export const MEMORY_SECTIONS = [
+  'Goal', 'State', 'Open questions', 'Decisions', 'Contracts', 'Constraints', 'Ruled out',
+] as const
 export type MemorySection = (typeof MEMORY_SECTIONS)[number]
+
+/** A memory is a topic's or a project's; a project has no single goal. */
+export type MemoryKind = 'topic' | 'project'
+
+export function sectionsFor(kind: MemoryKind): readonly MemorySection[] {
+  return kind === 'topic' ? MEMORY_SECTIONS : MEMORY_SECTIONS.filter((s) => s !== 'Goal')
+}
+
+/** Undecided, and waiting on a person — the part of a handoff most easily lost. */
+export const OPEN_QUESTIONS_SECTION: MemorySection = 'Open questions'
 
 /** Replaced whole by `memory_state`, never added to — a state is true once. */
 export const STATE_SECTION: MemorySection = 'State'
@@ -21,6 +39,9 @@ export const STATE_SECTION: MemorySection = 'State'
 export const RULED_OUT_SECTION: MemorySection = 'Ruled out'
 
 const GUIDANCE: Partial<Record<MemorySection, string>> = {
+  Goal: '_(what this work is for)_',
+  State: '_(done, in progress, next)_',
+  'Open questions': '_(undecided and waiting on a person — and what hangs on each)_',
   Decisions: '_(what was settled, and why)_',
   Contracts: '_(what other code relies on — endpoints, payloads, events, files — and where it lives)_',
   Constraints: '_(what must not break)_',
@@ -28,9 +49,9 @@ const GUIDANCE: Partial<Record<MemorySection, string>> = {
 }
 
 /** A new memory: every heading, with a line under each that says what goes there. */
-export function memoryTemplate(title?: string): string {
+export function memoryTemplate(kind: MemoryKind, title?: string): string {
   const out: string[] = title ? ['# ' + title, ''] : []
-  for (const s of MEMORY_SECTIONS) {
+  for (const s of sectionsFor(kind)) {
     out.push('## ' + s)
     const g = GUIDANCE[s]
     if (g) out.push(g)
@@ -98,4 +119,52 @@ export function canonicalSection(section: string): string {
   const fr = Object.keys(FRENCH).find((k) => key(k) === key(t))
   if (fr) return FRENCH[fr]!
   return MEMORY_SECTIONS.find((s) => key(s) === key(t)) ?? t
+}
+
+/**
+ * A memory in the current shape: its sections in `MEMORY_SECTIONS` order, the
+ * ones it lacks added empty with their guidance, and any section of its own
+ * kept, in its own order, after them. What is written under a heading moves
+ * with it and is never changed. A project's Goal goes only when nothing is in it.
+ */
+export function shapedMemory(content: string, kind: MemoryKind): string {
+  const lines = content.split('\n')
+  const first = lines.findIndex((l) => /^##[ \t]+/.test(l))
+  const head = (first === -1 ? lines : lines.slice(0, first)).join('\n').replace(/\s+$/, '')
+  const bodies = new Map<string, string>()
+  const own: string[] = []
+  if (first !== -1) {
+    let title = ''
+    let body: string[] = []
+    const keep = () => {
+      if (!title) return
+      const key = canonicalSection(title)
+      if (bodies.has(key)) bodies.set(key, bodies.get(key) + '\n' + body.join('\n'))
+      else {
+        bodies.set(key, body.join('\n'))
+        if (!(MEMORY_SECTIONS as readonly string[]).includes(key)) own.push(key)
+      }
+    }
+    for (const l of lines.slice(first)) {
+      const h = /^##[ \t]+(.+?)[ \t]*$/.exec(l)
+      if (h) {
+        keep()
+        title = h[1]!
+        body = []
+      } else body.push(l)
+    }
+    keep()
+  }
+  const out: string[] = head ? [head, ''] : []
+  const put = (title: string, body: string) => {
+    const b = body.replace(/^\s*\n/, '').replace(/\s+$/, '')
+    out.push('## ' + title, ...(b ? [b] : []), '')
+  }
+  for (const s of MEMORY_SECTIONS) {
+    const body = bodies.get(s)
+    if (s === 'Goal' && kind === 'project' && !(body && hasMemoryEntries(body))) continue
+    put(s, body?.trim() ? body : (GUIDANCE[s] ?? ''))
+  }
+  for (const t of own) put(t, bodies.get(t) ?? '')
+  return out.join('\n')
 }

@@ -1115,6 +1115,14 @@ export const LAYOUT_LIMITS = {
    */
   treeHeight: { min: 84, max: 4000 },
   /**
+   * The Memory tool's side — where you add to the memory by hand —
+   * against the memory itself: its width beside it, its height under it when
+   * the column is too narrow for two. The tab sets the ceilings, keeping the
+   * memory 320 wide or 140 tall.
+   */
+  memorySide: { min: 240, max: 4000 },
+  memorySideHeight: { min: 120, max: 4000 },
+  /**
    * The commit box under the file list in the Diff tab.
    *
    * A boundary one level down from the columns, and it earned a handle for the
@@ -1133,7 +1141,9 @@ export const LAYOUT_LIMITS = {
 }
 
 /** What a fresh install starts from, and what a double-click goes back to. */
-export const LAYOUT_DEFAULTS = { list: 340, review: 360, files: 300, tree: 272, treeHeight: 240 }
+export const LAYOUT_DEFAULTS = {
+  list: 340, review: 360, files: 300, tree: 272, treeHeight: 240, memorySide: 310,
+}
 
 export const layout = reactive(readLayout())
 
@@ -1149,10 +1159,17 @@ function readLayout(): {
   files: number
   tree: number
   treeHeight: number
+  memorySide: number
+  memorySideHeight: number | null
   commit: number | null
   running: number | null
 } {
-  const fallback = { ...LAYOUT_DEFAULTS, commit: null as number | null, running: null as number | null }
+  const fallback = {
+    ...LAYOUT_DEFAULTS,
+    commit: null as number | null,
+    running: null as number | null,
+    memorySideHeight: null as number | null,
+  }
   try {
     const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<typeof fallback> | null
     if (!raw) return fallback
@@ -1162,6 +1179,9 @@ function readLayout(): {
       files: clampTo(raw.files ?? fallback.files, LAYOUT_LIMITS.files),
       tree: clampTo(raw.tree ?? fallback.tree, LAYOUT_LIMITS.tree),
       treeHeight: clampTo(raw.treeHeight ?? fallback.treeHeight, LAYOUT_LIMITS.treeHeight),
+      memorySide: clampTo(raw.memorySide ?? fallback.memorySide, LAYOUT_LIMITS.memorySide),
+      memorySideHeight:
+        typeof raw.memorySideHeight === 'number' ? clampTo(raw.memorySideHeight, LAYOUT_LIMITS.memorySideHeight) : null,
       commit:
         typeof raw.commit === 'number' ? clampTo(raw.commit, LAYOUT_LIMITS.commit) : null,
       running:
@@ -1193,6 +1213,20 @@ export function resetCommitHeight(): void {
 
 export function setRunningHeight(px: number): void {
   layout.running = clampTo(px, LAYOUT_LIMITS.running)
+}
+
+/**
+ * The Memory tool's side, stacked under the memory. Like the commit box it has
+ * no default height: left alone it is as tall as the form in it, and null is
+ * what a double-click goes back to.
+ */
+export function setMemorySideHeight(px: number): void {
+  layout.memorySideHeight = clampTo(px, LAYOUT_LIMITS.memorySideHeight)
+}
+
+export function resetMemorySideHeight(): void {
+  layout.memorySideHeight = null
+  saveLayout()
 }
 
 export function resetRunningHeight(): void {
@@ -3286,6 +3320,15 @@ export async function resolveDocsPage(
   content?: string,
 ): Promise<void> {
   const r = await guard(() => client.call('docs.resolve', { setId: set.id, path, accept, content }))
+  if (r) await refreshDocs(set.projectId)
+}
+
+/** The memory's pruning, after the pages: all removed but `keep`, or all kept. */
+export async function resolveDocsForget(set: DocsProposalSet, accept: boolean, keep: string[] = []): Promise<void> {
+  const r = await guard(
+    () => client.call('docs.forget', { setId: set.id, accept, keep }),
+    accept ? 'removed from the memory' : undefined,
+  )
   if (r) await refreshDocs(set.projectId)
 }
 
