@@ -1003,6 +1003,15 @@ defineExpose({ focus: () => box.value?.focus(), take })
   overflow-wrap: break-word;
   word-break: normal;
   tab-size: 4;
+  /* The box is two or three rows and scrolls past that, and the moment it does
+     the textarea grows a scrollbar that takes `--sbw` out of its line length.
+     The mirror never scrolls on its own, so it kept the full width, broke its
+     lines a word later, and every pill after the first wrap slid off its word —
+     then drifted further on scroll, because the mirror's shorter content ran
+     out of scroll range before the textarea's did. Reserving the gutter on both,
+     always, gives them one line length whether there is anything to scroll or
+     not; the track is transparent, so the reserved room paints nothing. */
+  scrollbar-gutter: stable;
 }
 
 .prompt {
