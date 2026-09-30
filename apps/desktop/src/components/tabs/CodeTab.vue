@@ -12,8 +12,9 @@ import { html } from '@codemirror/lang-html'
 import { php } from '@codemirror/lang-php'
 import type { FileEntry, Workspace } from '@cockpit/shared'
 import {
-  ChevronDown, ChevronRight, Copy, File, FileCode, Folder, FolderOpen, Info, Save, Search,
+  ChevronDown, ChevronRight, Code, Copy, Eye, File, FileCode, Folder, FolderOpen, Info, Save, Search,
 } from '@lucide/vue'
+import MarkdownPreview from '../MarkdownPreview.vue'
 import Splitter from '../Splitter.vue'
 import {
   LAYOUT_DEFAULTS, LAYOUT_LIMITS, client, guard, layout, resetPlaceWidth, savePlaceWidth, setColumnWidth, state,
@@ -80,6 +81,8 @@ const dirty = ref(false)
 const host = ref<HTMLElement | null>(null)
 const view = shallowRef<EditorView | null>(null)
 const langCompartment = new Compartment()
+/** Bumped on every edit and every open, so what reads the document follows it. */
+const docTick = ref(0)
 
 function languageFor(path: string) {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -193,11 +196,14 @@ async function openFile(path: string, line: number | null = null) {
         langCompartment.of(languageFor(path)),
         cockpitTheme,
         EditorView.updateListener.of((u) => {
-          if (u.docChanged) dirty.value = true
+          if (!u.docChanged) return
+          dirty.value = true
+          docTick.value++
         }),
       ],
     }),
   })
+  docTick.value++
   // A search hit is a line, not a file: land on it, in the middle of the
   // screen, where the eye is already going.
   if (line) {
@@ -235,6 +241,42 @@ async function save() {
 
 watch(() => props.workspace.id, loadRoot, { immediate: true })
 watch(() => state.codeRequest, takeRequest)
+
+/* ── a markdown file, read as it reads ────────────────────────────────────
+ *
+ * The same switch the Diff has, for the same reason: a doc is written as
+ * source and read rendered. Here the preview is the editor's own document,
+ * unsaved edits included — what you would save is what you see. Code is the
+ * default because this is an editor first; Preview is remembered, apart from
+ * the Diff's, since the two are asked for different things.
+ */
+type MdView = 'code' | 'preview'
+const MD_KEY = 'cockpit.codeMarkdownView'
+function readMdView(): MdView {
+  try {
+    return localStorage.getItem(MD_KEY) === 'preview' ? 'preview' : 'code'
+  } catch {
+    return 'code'
+  }
+}
+const mdView = ref<MdView>(readMdView())
+function setMdView(v: MdView): void {
+  mdView.value = v
+  try {
+    localStorage.setItem(MD_KEY, v)
+  } catch {
+    /* remembered for this session only */
+  }
+  // Hidden, the editor measured nothing; it has to find its size again.
+  if (v === 'code') requestAnimationFrame(() => view.value?.requestMeasure())
+}
+
+const isMarkdown = computed(() => !!openPath.value && /\.(md|markdown)$/i.test(openPath.value))
+const previewing = computed(() => isMarkdown.value && mdView.value === 'preview')
+const mdSource = computed(() => {
+  void docTick.value
+  return view.value?.state.doc.toString() ?? ''
+})
 
 /* ── about the file ───────────────────────────────────────────────────────
  *
@@ -428,6 +470,14 @@ onBeforeUnmount(() => view.value?.destroy())
           </div>
         </div>
         <span class="grow" />
+        <div v-if="isMarkdown" class="seg" role="group" aria-label="Markdown view">
+          <button :class="{ on: mdView === 'code' }" title="Code" aria-label="Code" @click="setMdView('code')">
+            <Code /><span class="vlabel">Code</span>
+          </button>
+          <button :class="{ on: mdView === 'preview' }" title="Preview" aria-label="Preview" @click="setMdView('preview')">
+            <Eye /><span class="vlabel">Preview</span>
+          </button>
+        </div>
         <button
           class="icon-btn esave"
           :class="{ due: dirty }"
@@ -439,7 +489,10 @@ onBeforeUnmount(() => view.value?.destroy())
           <Save />
         </button>
       </div>
-      <div v-show="openPath" ref="host" class="cm" />
+      <div v-show="openPath && !previewing" ref="host" class="cm" />
+      <div v-if="openPath && previewing" class="preview">
+        <MarkdownPreview :source="mdSource" />
+      </div>
       <div v-if="!openPath" class="empty">
         <FileCode />
         <strong>No file open</strong>
@@ -571,4 +624,15 @@ onBeforeUnmount(() => view.value?.destroy())
 /* Only worth pressing when there is something to write; then it says so. */
 .esave.due { color: var(--accent); }
 .cm { flex: 1; min-height: 0; overflow: hidden; }
+.preview { flex: 1; min-height: 0; overflow: auto; }
+
+.ehead .seg { flex: none; }
+.ehead .seg > button { height: 20px; padding: 0 8px; }
+.ehead .seg .lucide { width: 12px; height: 12px; flex: none; }
+/* As in the Diff: the words come back only when the editor is wide enough
+   that they cost nothing. */
+@container editor (max-width: 1100px) {
+  .vlabel { display: none; }
+  .ehead .seg > button { padding: 0 6px; }
+}
 </style>

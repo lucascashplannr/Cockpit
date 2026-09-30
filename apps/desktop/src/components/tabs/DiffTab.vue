@@ -1973,6 +1973,9 @@ const mark: Record<string, Component> = {
   .vlabel { display: none; }
   /* Square, and as tall as the switches beside it. */
   .vhead .vbtn { flex: none; width: 28px; height: 28px; padding: 0; }
+  /* Two bare icons already carry their own inset; the set's gap on top of it
+     pushed them apart. */
+  .vhead .vbtn + .vbtn { margin-left: -4px; }
   .vhead .seg > button { padding: 0 6px; }
 }
 
