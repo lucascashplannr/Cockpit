@@ -28,8 +28,11 @@
  * 2.9 — `declare.forgetGuess`, and `Declarations.guesses`. An older core sends
  * no guesses, so the sheet would go back to saying "nothing declared" over a
  * repository that has a Start.
+ *
+ * 2.10 — `fs.readImage`, so the Code tab can show an image rather than open
+ * it as an empty text file.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 9 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 10 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

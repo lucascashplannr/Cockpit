@@ -542,6 +542,11 @@ export interface Rpc {
     params: { workspaceId: string; rel: string }
     result: { content: string; mtimeMs: number; truncated: boolean; binary: boolean }
   }
+  /** An image's bytes, base64. `data` is null past the size the window will draw. */
+  'fs.readImage': {
+    params: { workspaceId: string; rel: string }
+    result: { data: string | null; mediaType: string; bytes: number; mtimeMs: number }
+  }
   'fs.write': {
     params: { workspaceId: string; rel: string; content: string; expectMtimeMs: number | null }
     result: { ok: boolean; conflict?: boolean; mtimeMs: number }

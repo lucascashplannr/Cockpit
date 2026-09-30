@@ -495,6 +495,7 @@ const handlers: Record<string, Handler> = {
 
   'fs.list': (p: { workspaceId: string; rel: string }) => files.list(p.workspaceId, p.rel),
   'fs.read': (p: { workspaceId: string; rel: string }) => files.read(p.workspaceId, p.rel),
+  'fs.readImage': (p: { workspaceId: string; rel: string }) => files.readImage(p.workspaceId, p.rel),
   'fs.write': (p: { workspaceId: string; rel: string; content: string; expectMtimeMs: number | null }) => {
     // §16 — the window asks first; this is the wall behind the question.
     const refusal = writeRefusal([registry.requireWorkspace(p.workspaceId)], 'save')

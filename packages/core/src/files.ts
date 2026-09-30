@@ -74,6 +74,33 @@ export function read(workspaceId: string, rel: string) {
 }
 
 /**
+ * The raster formats a window can draw, by extension. SVG is not here: it is
+ * text, read by `read` and drawn from the editor's own document.
+ */
+const IMAGE_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+}
+/** Over this the bytes stay on disk: a base64 frame this size stalls the socket. */
+const MAX_IMAGE = 20 * 1024 * 1024
+
+export function readImage(workspaceId: string, rel: string) {
+  const ws = requireWorkspace(workspaceId)
+  const full = safeResolve(ws.path, rel)
+  const mediaType = IMAGE_TYPES[rel.split('.').pop()?.toLowerCase() ?? '']
+  if (!mediaType) throw new Error('not an image: ' + rel)
+  const st = statSync(full)
+  const data = st.size > MAX_IMAGE ? null : readFileSync(full).toString('base64')
+  return { data, mediaType, bytes: st.size, mtimeMs: st.mtimeMs }
+}
+
+/**
  * §16 — "Vérification de la date de modification avant toute écriture."
  * Without it a manual edit silently overwrites an agent's work, or the reverse.
  */

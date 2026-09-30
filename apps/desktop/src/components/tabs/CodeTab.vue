@@ -132,6 +132,7 @@ async function loadDir(rel: string): Promise<FileEntry[]> {
 async function loadRoot() {
   openPath.value = null
   dirty.value = false
+  image.value = null
   view.value?.destroy()
   view.value = null
   const entries = await loadDir('.')
@@ -168,12 +169,37 @@ function flatten(nodes: Node[]): Node[] {
   return out
 }
 
+/**
+ * An image is looked at, not edited: its bytes come over as they are and it
+ * opens straight into the same stage an SVG's preview uses, with no editor
+ * behind it and nothing to save.
+ */
+const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'ico'])
+const image = ref<{ url: string | null; bytes: number } | null>(null)
+
+function isImage(path: string): boolean {
+  return IMAGE_EXT.has(path.split('.').pop()?.toLowerCase() ?? '')
+}
+
+async function openImage(path: string) {
+  const r = await guard(() => client.call('fs.readImage', { workspaceId: props.workspace.id, rel: path }))
+  if (!r) return
+  openPath.value = path
+  openMtime.value = r.mtimeMs
+  dirty.value = false
+  view.value?.destroy()
+  view.value = null
+  image.value = { url: r.data ? 'data:' + r.mediaType + ';base64,' + r.data : null, bytes: r.bytes }
+}
+
 async function openFile(path: string, line: number | null = null) {
+  if (isImage(path)) return openImage(path)
   const r = await guard(() => client.call('fs.read', { workspaceId: props.workspace.id, rel: path }))
   if (!r) return
   openPath.value = path
   openMtime.value = r.mtimeMs
   dirty.value = false
+  image.value = null
 
   const doc = r.binary ? '' : r.content
   const el = host.value
@@ -242,28 +268,28 @@ async function save() {
 watch(() => props.workspace.id, loadRoot, { immediate: true })
 watch(() => state.codeRequest, takeRequest)
 
-/* ── a markdown file, read as it reads ────────────────────────────────────
+/* ── a file that is drawn, read as it is drawn ───────────────────────────
  *
- * The same switch the Diff has, for the same reason: a doc is written as
- * source and read rendered. Here the preview is the editor's own document,
- * unsaved edits included — what you would save is what you see. Code is the
- * default because this is an editor first; Preview is remembered, apart from
- * the Diff's, since the two are asked for different things.
+ * The same switch the Diff has, for the same reason: a doc or an image is
+ * written as source and read rendered. Here the preview is the editor's own
+ * document, unsaved edits included — what you would save is what you see.
+ * Code is the default because this is an editor first; Preview is remembered,
+ * apart from the Diff's, since the two are asked for different things.
  */
-type MdView = 'code' | 'preview'
-const MD_KEY = 'cockpit.codeMarkdownView'
-function readMdView(): MdView {
+type PreviewView = 'code' | 'preview'
+const PREVIEW_KEY = 'cockpit.codePreviewView'
+function readPreviewView(): PreviewView {
   try {
-    return localStorage.getItem(MD_KEY) === 'preview' ? 'preview' : 'code'
+    return localStorage.getItem(PREVIEW_KEY) === 'preview' ? 'preview' : 'code'
   } catch {
     return 'code'
   }
 }
-const mdView = ref<MdView>(readMdView())
-function setMdView(v: MdView): void {
-  mdView.value = v
+const previewView = ref<PreviewView>(readPreviewView())
+function setPreviewView(v: PreviewView): void {
+  previewView.value = v
   try {
-    localStorage.setItem(MD_KEY, v)
+    localStorage.setItem(PREVIEW_KEY, v)
   } catch {
     /* remembered for this session only */
   }
@@ -271,12 +297,42 @@ function setMdView(v: MdView): void {
   if (v === 'code') requestAnimationFrame(() => view.value?.requestMeasure())
 }
 
-const isMarkdown = computed(() => !!openPath.value && /\.(md|markdown)$/i.test(openPath.value))
-const previewing = computed(() => isMarkdown.value && mdView.value === 'preview')
-const mdSource = computed(() => {
+/** What the open file can be previewed as, if anything. */
+const previewKind = computed<'markdown' | 'svg' | null>(() => {
+  const ext = openPath.value?.split('.').pop()?.toLowerCase()
+  if (ext === 'md' || ext === 'markdown') return 'markdown'
+  if (ext === 'svg') return 'svg'
+  return null
+})
+const previewing = computed(() => previewKind.value !== null && previewView.value === 'preview')
+const docSource = computed(() => {
   void docTick.value
   return view.value?.state.doc.toString() ?? ''
 })
+
+/**
+ * An SVG goes through an <img>, never into the page: as an image it cannot run
+ * a script or fetch anything, whatever the file holds. Sized to fit — it is a
+ * vector, so a 24px icon is as sharp at the size it can be looked at — with
+ * the size it asks for said underneath.
+ */
+const svgUrl = computed(() =>
+  previewKind.value === 'svg' && previewing.value
+    ? 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(docSource.value)
+    : '',
+)
+/** What the stage draws: an image as it is, or an SVG's preview. */
+const drawUrl = computed(() => image.value?.url ?? svgUrl.value)
+const drawSize = ref<{ w: number; h: number } | null>(null)
+const drawBroken = ref(false)
+watch(drawUrl, () => {
+  drawSize.value = null
+  drawBroken.value = false
+})
+function onDrawLoad(e: Event) {
+  const img = e.target as HTMLImageElement
+  drawSize.value = { w: img.naturalWidth, h: img.naturalHeight }
+}
 
 /* ── about the file ───────────────────────────────────────────────────────
  *
@@ -453,6 +509,14 @@ onBeforeUnmount(() => view.value?.destroy())
           <div v-if="detailOpen" class="menu edetail" role="dialog" aria-label="About this file">
             <div class="dpath mono selectable">{{ openPath }}</div>
             <dl class="dfacts">
+              <template v-if="image">
+                <template v-if="drawSize">
+                  <dt>Dimensions</dt>
+                  <dd class="num">{{ drawSize.w }} × {{ drawSize.h }}</dd>
+                </template>
+                <dt>Size</dt>
+                <dd class="num">{{ bytes(image.bytes) }}</dd>
+              </template>
               <template v-if="detail">
                 <dt>Lines</dt>
                 <dd class="num">{{ detail.lines }}</dd>
@@ -470,15 +534,16 @@ onBeforeUnmount(() => view.value?.destroy())
           </div>
         </div>
         <span class="grow" />
-        <div v-if="isMarkdown" class="seg" role="group" aria-label="Markdown view">
-          <button :class="{ on: mdView === 'code' }" title="Code" aria-label="Code" @click="setMdView('code')">
+        <div v-if="previewKind" class="seg" role="group" aria-label="File view">
+          <button :class="{ on: previewView === 'code' }" title="Code" aria-label="Code" @click="setPreviewView('code')">
             <Code /><span class="vlabel">Code</span>
           </button>
-          <button :class="{ on: mdView === 'preview' }" title="Preview" aria-label="Preview" @click="setMdView('preview')">
+          <button :class="{ on: previewView === 'preview' }" title="Preview" aria-label="Preview" @click="setPreviewView('preview')">
             <Eye /><span class="vlabel">Preview</span>
           </button>
         </div>
         <button
+          v-if="!image"
           class="icon-btn esave"
           :class="{ due: dirty }"
           :disabled="!dirty"
@@ -489,9 +554,23 @@ onBeforeUnmount(() => view.value?.destroy())
           <Save />
         </button>
       </div>
-      <div v-show="openPath && !previewing" ref="host" class="cm" />
-      <div v-if="openPath && previewing" class="preview">
-        <MarkdownPreview :source="mdSource" />
+      <div v-show="openPath && !previewing && !image" ref="host" class="cm" />
+      <div v-if="openPath && previewing && previewKind === 'markdown' && !image" class="preview">
+        <MarkdownPreview :source="docSource" />
+      </div>
+      <div v-else-if="openPath && (image || (previewing && previewKind === 'svg'))" class="preview drawview">
+        <p v-if="image && !image.url" class="drawnote">
+          Too large to show here ({{ bytes(image.bytes) }}) — open the folder to look at it.
+        </p>
+        <p v-else-if="drawBroken" class="drawnote bad">
+          {{ image ? 'This image does not draw — the file may be damaged.' : 'This SVG does not draw — the source has an error in it.' }}
+        </p>
+        <template v-else>
+          <div class="drawstage">
+            <img :src="drawUrl" alt="" @load="onDrawLoad" @error="drawBroken = true" />
+          </div>
+          <span v-if="drawSize" class="drawsize num">{{ drawSize.w }} × {{ drawSize.h }}</span>
+        </template>
       </div>
       <div v-if="!openPath" class="empty">
         <FileCode />
@@ -625,6 +704,36 @@ onBeforeUnmount(() => view.value?.destroy())
 .esave.due { color: var(--accent); }
 .cm { flex: 1; min-height: 0; overflow: hidden; }
 .preview { flex: 1; min-height: 0; overflow: auto; }
+
+.drawview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+}
+/* A checkerboard behind it, so what is transparent reads as transparent and
+   not as the panel's own colour. */
+.drawstage {
+  display: flex;
+  width: 100%;
+  max-width: 720px;
+  height: min(480px, calc(100% - 30px));
+  min-height: 120px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-sunken);
+  background-image:
+    linear-gradient(45deg, var(--hover) 25%, transparent 25%, transparent 75%, var(--hover) 75%),
+    linear-gradient(45deg, var(--hover) 25%, transparent 25%, transparent 75%, var(--hover) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+.drawstage img { width: 100%; height: 100%; object-fit: contain; }
+.drawsize, .drawnote { font-size: var(--fs-xs); color: var(--text-dim); }
+.drawnote.bad { color: var(--warn); }
 
 .ehead .seg { flex: none; }
 .ehead .seg > button { height: 20px; padding: 0 8px; }
