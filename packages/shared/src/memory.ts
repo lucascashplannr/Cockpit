@@ -19,11 +19,30 @@ export const MEMORY_SECTIONS = [
 ] as const
 export type MemorySection = (typeof MEMORY_SECTIONS)[number]
 
-/** A memory is a topic's or a project's; a project has no single goal. */
-export type MemoryKind = 'topic' | 'project'
+/**
+ * Whose memory it is. A topic's and a named one are each one piece of work, so
+ * they have a Goal; the project's old single memory has no single goal.
+ */
+export type MemoryKind = 'topic' | 'named' | 'project'
 
 export function sectionsFor(kind: MemoryKind): readonly MemorySection[] {
-  return kind === 'topic' ? MEMORY_SECTIONS : MEMORY_SECTIONS.filter((s) => s !== 'Goal')
+  return kind === 'project' ? MEMORY_SECTIONS.filter((s) => s !== 'Goal') : MEMORY_SECTIONS
+}
+
+/**
+ * What a conversation's memory is, as stored on it:
+ * - `off`   — none: no memory tools, nothing read, nothing written
+ * - `new`   — one is created, named after the conversation, the first time the
+ *             agent writes something down; until then there is nothing to read
+ * - `topic:<id>`, `project`, or a named memory's id — that one
+ */
+export type MemoryChoice = string
+export const MEMORY_OFF = 'off'
+export const MEMORY_NEW = 'new'
+export const PROJECT_MEMORY = 'project'
+
+export function topicMemoryId(topicId: string): string {
+  return 'topic:' + topicId
 }
 
 /** Undecided, and waiting on a person — the part of a handoff most easily lost. */

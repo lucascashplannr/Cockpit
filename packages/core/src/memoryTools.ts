@@ -1,4 +1,4 @@
-import { STATE_SECTION } from '@cockpit/shared'
+import { MEMORY_NEW, STATE_SECTION } from '@cockpit/shared'
 import type { Actor, Conversation } from '@cockpit/shared'
 import * as memory from './memory.js'
 import { getWorkspace } from './registry.js'
@@ -171,8 +171,19 @@ function call(
   args: Record<string, unknown>,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
   const text = (t: string, isError = false) => ({ content: [{ type: 'text' as const, text: t }], ...(isError ? { isError } : {}) })
-  const home = memory.homeOf(c)
-  if (!home) return text('This conversation has no topic or project to keep a memory in.', true)
+  let home = memory.homeOf(c)
+  // §6 — "new": the memory comes into being with the first thing worth
+  // keeping, named after the conversation, and the conversation is pointed at
+  // it from then on (the driver persists the change).
+  if (!home && c.memory === MEMORY_NEW && name !== READ) {
+    const projectId = c.workspaceIds.map((id) => getWorkspace(id)?.projectId).find(Boolean)
+    if (projectId) {
+      c.memory = memory.createNamed(projectId, c.title || c.prompt.slice(0, 60) || 'Memory')
+      home = memory.homeOf(c)
+    }
+  }
+  if (!home && name === READ) return text('Nothing is written in this memory yet.')
+  if (!home) return text('This conversation has no memory to write to.', true)
   const actor: Actor = { kind: 'agent', engine: c.engine, sessionId: c.id }
   const str = (k: string): string => (typeof args[k] === 'string' ? (args[k] as string).trim() : '')
 

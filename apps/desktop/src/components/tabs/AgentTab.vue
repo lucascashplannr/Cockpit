@@ -21,6 +21,7 @@ import {
   activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
+  chooseMemory,
   threadScrollOf, toast, transcriptOf, type ThreadScroll,
 } from '../../core/store.js'
 import {
@@ -532,6 +533,8 @@ async function clearThread(): Promise<void> {
     handingOff.value = null
     agentDraft.value = ''
     await guard(() => client.call('agent.stop', { sessionId: s.id }))
+    const now = state.agents.find((c) => c.id === s.id)
+    if (scope.value && now) chooseMemory(scope.value, now.memory)
     if (scope.value) startFresh(scope.value)
     return
   }
@@ -566,6 +569,9 @@ async function clearThread(): Promise<void> {
   // handoff, and a conversation let go meanwhile has nothing to stop.
   const now = state.agents.find((c) => c.id === s?.id)
   if (now && isLive(now)) await guard(() => client.call('agent.stop', { sessionId: now.id }))
+  // §6 — the next conversation carries on with the same memory: that is what
+  // clearing *is*. The chip shows it, and one click changes it.
+  if (on && now) chooseMemory(on, now.memory)
   if (on) startFresh(on)
 }
 
@@ -1248,6 +1254,7 @@ function ago(ts: number): string {
           :sources="sources"
           :engines="engines"
           :engine="engine"
+          :scope="scope"
           placeholder="Describe the change. @ for a file, ⏎ to start, ⌘⏎ for a new line."
           @update:engine="engine = $event"
           @send="send"
@@ -1649,6 +1656,7 @@ function ago(ts: number): string {
           :busy="queueing"
           :sources="sources"
           :session="selected"
+          :scope="scope"
           @stop="stopConversation(selected.id)"
           :placeholder="
             queueing
@@ -2200,9 +2208,23 @@ function ago(ts: number): string {
 .undone.compacted .lucide { color: var(--text-dim); }
 /* A memory note: the section as a quiet label, the line itself one row that
    ellipsises — the whole of it is in the Memory tool, a click away. */
-.undone.memo { margin: 6px 0; min-width: 0; }
-/* Nothing here needs you, so none of the amber ground either. */
-.undone.memo, .undone.handoff { background: transparent; border-left-color: var(--line); }
+.undone.memo { min-width: 0; }
+/* Nothing here needs you, and nothing here opens: the tool fold's row —
+   its measure, its size, its muted ink — with the book where its chevron is,
+   and none of the box a warning line wears. */
+.undone.memo,
+.undone.handoff {
+  gap: 7px;
+  margin: 8px 0;
+  padding: 5px 8px 5px 4px;
+  border-left: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.undone.memo .lucide,
+.undone.handoff .lucide { width: 11px; height: 11px; color: var(--text-dim); }
 .memo-sec { flex: none; color: var(--text-dim); font-weight: 600; }
 .memo-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

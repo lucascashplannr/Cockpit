@@ -132,7 +132,7 @@ interface Stored extends DocsProposalSet {
   /** Each page's hash when the copy was taken: what "changed" is measured from. */
   base: Record<string, string>
   /** The memory the copy was taken of, and its entries then — what a deletion is measured from. */
-  memory: { file: string; kind: memory.MemoryHome['kind']; entries: string[] } | null
+  memory: { id: string; file: string; kind: memory.MemoryHome['kind']; entries: string[] } | null
 }
 
 /** Where the agent prunes — beside the docs copy, never inside it. */
@@ -225,7 +225,7 @@ export function stage(
   const mem = home ? memory.contentAt(home.file, home.kind) : null
   if (home && mem && memory.hasEntries(mem)) {
     writeFileSync(memoryCopy(id), mem, 'utf8')
-    set.memory = { file: home.file, kind: home.kind, entries: mem.split('\n').filter((l) => ENTRY.test(l)) }
+    set.memory = { id: home.id, file: home.file, kind: home.kind, entries: mem.split('\n').filter((l) => ENTRY.test(l)) }
   }
   save(set)
   return set
@@ -381,7 +381,7 @@ export function resolveForget(id: string, accept: boolean, keep: string[] = []):
   if (set.files.some((f) => f.state === 'pending')) throw new Error('decide the pages first')
   if (accept && set.memory) {
     const drop = set.forget.entries.filter((l) => !keep.includes(l))
-    memory.forget({ file: set.memory.file, kind: set.memory.kind, label: '', workspaceId: null }, drop, {
+    memory.forget({ id: set.memory.id, file: set.memory.file, kind: set.memory.kind, label: '', workspaceId: null }, drop, {
       kind: 'human',
     })
   }

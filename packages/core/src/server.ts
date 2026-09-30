@@ -1,7 +1,9 @@
 import { join, resolve } from 'node:path'
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
-import { PROTOCOL_VERSION, documentPrompt, handoffPrompt, isHandoff } from '@cockpit/shared'
+import {
+  MEMORY_NEW, MEMORY_OFF, PROTOCOL_VERSION, documentPrompt, handoffPrompt, isHandoff, topicMemoryId,
+} from '@cockpit/shared'
 import type {
   AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
   Conversation, PermissionMode, ProjectSettings, ServerBoardRow, ServerPush, Workspace,
@@ -720,6 +722,7 @@ const handlers: Record<string, Handler> = {
     topicId?: string
     options?: agents.EngineOptions
     attachments?: AttachmentInput[]
+    memory?: string
   }) => {
     // §7 — the scope says what this is for. A caller that only knows where it
     // is standing may still pass workspaces, and that reads as a workspace
@@ -764,6 +767,9 @@ const handlers: Record<string, Handler> = {
       allow: allowFor(r.workspaces[0]?.projectId),
       options: p.options,
       attachments: p.attachments,
+      // §6 — as chosen in the composer; a topic's own memory, or a new one,
+      // when nothing was said.
+      memory: p.memory ?? (r.topicId ? topicMemoryId(r.topicId) : MEMORY_NEW),
     })
     pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints }
@@ -800,7 +806,10 @@ const handlers: Record<string, Handler> = {
     // that has said nothing — or whose last turn already was this — has
     // nothing to hand over.
     const last = agents.turnsOf(p.sessionId).at(-1)
-    if (c.engine !== 'claude' || !last || isHandoff(last.prompt)) return { ok: true as const, skipped: true }
+    // Nor one that was asked to keep no memory: there is nowhere to hand off to.
+    if (c.engine !== 'claude' || c.memory === MEMORY_OFF || !last || isHandoff(last.prompt)) {
+      return { ok: true as const, skipped: true }
+    }
     // §9 — with docs linked, the same turn drafts the proposals: one turn, not
     // two, on the one moment the whole conversation is still in front of it.
     const set = stageDocsFor(c)
@@ -931,14 +940,16 @@ const handlers: Record<string, Handler> = {
     return r
   },
 
-  'memory.read': (p: { workspaceId: string }) => memory.read(p.workspaceId),
-  'memory.write': (p: { workspaceId: string; content: string }) => {
-    memory.write(p.workspaceId, p.content)
+  'memory.list': (p: { projectId: string }) => memory.list(p.projectId),
+  'memory.read': (p: { workspaceId: string; memoryId?: string }) => memory.read(p.workspaceId, p.memoryId),
+  'memory.erase': (p: { workspaceId: string; memoryId?: string }) => memory.erase(p.workspaceId, p.memoryId),
+  'memory.write': (p: { workspaceId: string; content: string; memoryId?: string }) => {
+    memory.write(p.workspaceId, p.content, p.memoryId)
     pushWorkspaces()
     return { ok: true }
   },
-  'memory.promote': (p: { workspaceId: string; section: string; text: string }) => {
-    memory.promote(p.workspaceId, p.section, p.text)
+  'memory.promote': (p: { workspaceId: string; section: string; text: string; memoryId?: string }) => {
+    memory.promote(p.workspaceId, p.section, p.text, p.memoryId)
     pushWorkspaces()
     return { ok: true }
   },

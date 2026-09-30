@@ -2,10 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { OPEN_QUESTIONS_SECTION, RULED_OUT_SECTION, sectionsFor } from '@cockpit/shared'
 import type { MemoryDoc, Workspace } from '@cockpit/shared'
-import { ChevronRight, Copy, CornerDownLeft, Info, Pencil, Save, X } from '@lucide/vue'
+import { Check, ChevronDown, ChevronRight, Copy, CornerDownLeft, Info, Pencil, Save, Trash2, X } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, client, guard, layout, resetColumnWidth, resetMemorySideHeight, saveLayout,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, activeAgentScope, askEraseMemory, client, guard, layout, memoryChoiceFor, memoryLabel,
+  openThreadFor, resetColumnWidth, resetMemorySideHeight, saveLayout,
   setColumnWidth, setMemorySideHeight, state, toast,
 } from '../../core/store.js'
 import { createMarked } from '../../core/markdown.js'
@@ -20,6 +21,36 @@ import { createMarked } from '../../core/markdown.js'
 const props = defineProps<{ workspace: Workspace }>()
 
 const doc = ref<MemoryDoc | null>(null)
+
+/* ── which memory ─────────────────────────────────────────────────────────
+ *
+ * The one the conversation on screen uses — or, before it starts, the one the
+ * composer's chip is set to. The name at the top opens every memory of the
+ * project, to read one, clean it up or erase it without touching which one
+ * the conversation uses.
+ */
+const bound = computed<string | null>(() => {
+  const sc = activeAgentScope.value
+  const c = openThreadFor(sc)
+  return c ? c.memory : sc ? memoryChoiceFor(sc) : null
+})
+const viewing = ref<string | null>(null)
+const shownId = computed(() => viewing.value ?? bound.value)
+/** A memory with a file behind it, rather than "new" or "off". */
+const real = computed(() => !!shownId.value && shownId.value !== 'new' && shownId.value !== 'off')
+const memories = computed(() => state.memories[props.workspace.projectId] ?? [])
+const shownName = computed(() =>
+  doc.value && real.value ? doc.value.name : memoryLabel(props.workspace.projectId, shownId.value ?? 'new'),
+)
+const switcherOpen = ref(false)
+const switcherRoot = ref<HTMLElement | null>(null)
+function view(id: string | null): void {
+  viewing.value = id === bound.value ? null : id
+  switcherOpen.value = false
+}
+watch(bound, () => {
+  viewing.value = null
+})
 const draft = ref('')
 const editing = ref(false)
 const addText = ref('')
@@ -204,10 +235,6 @@ const detailRoot = ref<HTMLElement | null>(null)
 const detailOpen = ref(false)
 const dirty = computed(() => editing.value && draft.value !== (doc.value?.content ?? ''))
 
-function baseName(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1)
-}
-
 function since(ts: number): string {
   const m = Math.max(0, Math.round((Date.now() - ts) / 60_000))
   if (m < 1) return 'just now'
@@ -226,9 +253,13 @@ async function copyPath() {
 
 function onDocDown(e: MouseEvent) {
   if (detailRoot.value && !detailRoot.value.contains(e.target as Node)) detailOpen.value = false
+  if (switcherRoot.value && !switcherRoot.value.contains(e.target as Node)) switcherOpen.value = false
 }
 function onDocKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') detailOpen.value = false
+  if (e.key === 'Escape') {
+    detailOpen.value = false
+    switcherOpen.value = false
+  }
   // ⌘S saves here as it does in the Code tab — only while the file is open.
   if (editing.value && e.key === 's' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault()
@@ -248,14 +279,22 @@ function cancelEdit() {
 
 async function load() {
   editing.value = false
-  const d = await guard(() => client.call('memory.read', { workspaceId: props.workspace.id }))
+  if (!real.value) {
+    doc.value = null
+    draft.value = ''
+    return
+  }
+  const id = shownId.value!
+  const d = await guard(() => client.call('memory.read', { workspaceId: props.workspace.id, memoryId: id }))
+  // Only if it is still the one asked for: switching fast must not land on the last answer.
+  if (shownId.value !== id) return
   doc.value = d ?? null
   draft.value = d?.content ?? ''
 }
 
 async function save() {
   const r = await guard(
-    () => client.call('memory.write', { workspaceId: props.workspace.id, content: draft.value }),
+    () => client.call('memory.write', { workspaceId: props.workspace.id, content: draft.value, memoryId: doc.value?.id }),
     'memory saved',
   )
   if (r) {
@@ -276,6 +315,7 @@ async function add() {
       workspaceId: props.workspace.id,
       section: addSection.value,
       text,
+      memoryId: doc.value?.id,
     }),
   )
   if (r) {
@@ -308,7 +348,7 @@ watch(
   },
 )
 
-watch(() => props.workspace.id, load, { immediate: true })
+watch([() => props.workspace.id, shownId], load, { immediate: true })
 </script>
 
 <template>
@@ -319,9 +359,32 @@ watch(() => props.workspace.id, load, { immediate: true })
     :style="{ '--side-w': sideW + 'px', '--side-h': sideH === null ? 'auto' : sideH + 'px' }"
   >
     <div class="main">
-      <div v-if="doc" class="ehead">
-        <div ref="detailRoot" class="ename">
-          <span class="mono ep" :title="doc.path">{{ baseName(doc.path) }}</span>
+      <div class="ehead">
+        <div ref="switcherRoot" class="switcher">
+          <button
+            class="mname"
+            :class="{ open: switcherOpen, other: !!viewing }"
+            :title="viewing ? 'Another memory than this conversation\'s' : 'This conversation\'s memory — every memory of the project is here'"
+            @click="switcherOpen = !switcherOpen"
+          >
+            <span class="mn">{{ shownName }}</span>
+            <ChevronDown class="mchev" />
+          </button>
+          <ul v-if="switcherOpen" class="menu mmenu">
+            <li v-if="viewing && bound">
+              <button @click="view(bound)"><ChevronRight class="back" />Back to this conversation's</button>
+            </li>
+            <li v-for="m in memories" :key="m.id">
+              <button @click="view(m.id)">
+                <Check class="tick" :class="{ hidden: m.id !== shownId }" />
+                <span class="mnm">{{ m.name }}</span>
+                <span class="mhint">{{ m.entries }} {{ m.entries === 1 ? 'note' : 'notes' }} · {{ since(m.updatedAt) }}</span>
+              </button>
+            </li>
+            <li v-if="!memories.length" class="mnone">No memory in this project yet.</li>
+          </ul>
+        </div>
+        <div v-if="doc" ref="detailRoot" class="ename">
           <span v-if="dirty" class="edirty" title="Unsaved changes" aria-label="Unsaved changes" />
           <button
             class="icon-btn einfo"
@@ -359,14 +422,33 @@ watch(() => props.workspace.id, load, { immediate: true })
             <Save />
           </button>
         </template>
-        <button v-else class="icon-btn eact" title="Edit raw" aria-label="Edit raw" @click="startEdit">
-          <Pencil />
-        </button>
+        <template v-else-if="doc">
+          <!-- Only when there is something to lose: an empty form has nothing to erase. -->
+          <button
+            v-if="sections.some((x) => x.entries.length) || doc.kind === 'named'"
+            class="icon-btn eact erase"
+            title="Erase this memory"
+            aria-label="Erase this memory"
+            @click="askEraseMemory(workspace.id, doc)"
+          >
+            <Trash2 />
+          </button>
+          <button class="icon-btn eact" title="Edit raw" aria-label="Edit raw" @click="startEdit">
+            <Pencil />
+          </button>
+        </template>
       </div>
 
       <!-- Never "no memory": every topic and project has one from the start,
            and the empty form is what says where things go. -->
-      <template v-if="!editing">
+      <!-- A conversation with no memory yet, or none at all: said plainly,
+           with the way to another one right above it. -->
+      <div v-if="!real" class="nomem">
+        <strong>{{ shownId === 'off' ? 'No memory for this conversation' : 'No memory yet' }}</strong>
+        <span v-if="shownId === 'off'">It reads nothing and writes nothing down. Pick one in the composer's Memory chip next time.</span>
+        <span v-else>It starts with the first note the agent writes, named after the conversation.</span>
+      </div>
+      <template v-else-if="!editing">
         <div class="doc">
           <section
             v-for="x in sections"
@@ -412,7 +494,7 @@ watch(() => props.workspace.id, load, { immediate: true })
     </div>
 
     <Splitter
-      v-if="!stacked"
+      v-if="real && !stacked"
       :style="{ left: panelW - sideW - 3 + 'px' }"
       :size="sideW"
       :min="LAYOUT_LIMITS.memorySide.min"
@@ -425,7 +507,7 @@ watch(() => props.workspace.id, load, { immediate: true })
       @reset="resetColumnWidth('memorySide')"
     />
     <Splitter
-      v-else
+      v-else-if="real"
       :size="sideH ?? sideMeasured"
       :min="LAYOUT_LIMITS.memorySideHeight.min"
       :max="sideHMax"
@@ -437,7 +519,7 @@ watch(() => props.workspace.id, load, { immediate: true })
       @reset="resetMemorySideHeight"
     />
 
-    <aside ref="side" class="side">
+    <aside v-show="real" ref="side" class="side">
       <!-- The composer's shape, at the size of a note: what you write, the
            section it goes into, and the one act. -->
       <div class="well">
@@ -494,6 +576,58 @@ watch(() => props.workspace.id, load, { immediate: true })
   border-bottom: 1px solid var(--line);
 }
 .ename { position: relative; min-width: 0; display: flex; align-items: center; gap: 2px; }
+
+/* The memory's name, and every other one behind it. */
+.switcher { position: relative; min-width: 0; }
+.mname {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 6px 0 4px;
+  margin-left: -4px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+.mname:hover, .mname.open { background: var(--hover); }
+/* Reading another memory than the conversation's: said by the name itself. */
+.mname.other .mn { color: var(--accent); }
+.mn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mchev { flex: none; width: 12px; height: 12px; color: var(--text-dim); }
+.mmenu {
+  top: calc(100% + 6px);
+  left: -6px;
+  width: 320px;
+  max-width: calc(100cqw - 16px);
+  max-height: 340px;
+  overflow-y: auto;
+  list-style: none;
+  padding: 5px;
+}
+.mmenu .tick { width: 12px; height: 12px; color: var(--accent); }
+.mmenu .tick.hidden { visibility: hidden; }
+.mmenu .back { transform: rotate(180deg); }
+.mmenu button { display: flex; align-items: center; gap: 7px; width: 100%; }
+.mnm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mhint { flex: none; margin-left: auto; padding-left: 14px; font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+.mnone { padding: 6px 9px; font-size: var(--fs-xs); color: var(--text-dim); }
+
+.nomem {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 340px;
+  margin: 48px auto 0;
+  padding: 0 20px;
+  text-align: center;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.nomem strong { color: var(--text); }
 .ep {
   font-size: var(--fs-xs);
   color: var(--text-muted);
@@ -539,6 +673,7 @@ watch(() => props.workspace.id, load, { immediate: true })
 .eact .lucide { width: 14px; height: 14px; }
 /* Only worth pressing when there is something to write; then it says so. */
 .esave.due { color: var(--accent); }
+.erase:hover:not(:disabled) { color: var(--danger); }
 
 /* A heading is a fold: the chevron, the name, how much is under it. Closed,
    or empty, it says what goes there instead. */

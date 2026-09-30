@@ -113,7 +113,13 @@ onBeforeUnmount(() => {
 /* The label is context, the value is the answer: only one of them is worth
    full contrast at a glance. */
 .lbl { color: var(--text-dim); }
-.val { color: var(--text); font-weight: 550; }
+.val {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-weight: 550;
+}
 .chev { width: 11px; height: 11px; color: var(--text-dim); }
 
 .menu {
@@ -127,7 +133,7 @@ onBeforeUnmount(() => {
      against it and every hint wraps. Size to the widest row instead. */
   width: max-content;
   min-width: 150px;
-  max-width: 280px;
+  max-width: 320px;
   list-style: none;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
@@ -152,7 +158,7 @@ onBeforeUnmount(() => {
 .tick { width: 12px; height: 12px; flex: none; color: var(--accent); }
 /* Held rather than removed, so the labels do not shift as the tick moves. */
 .tick.hidden { visibility: hidden; }
-.name { flex: none; }
+.name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Pushed to the right edge so the hints read as one column, not a ragged one. */
-.hint { margin-left: auto; padding-left: 18px; color: var(--text-dim); font-size: 10px; white-space: nowrap; }
+.hint { flex: none; margin-left: auto; padding-left: 18px; color: var(--text-dim); font-size: 10px; white-space: nowrap; }
 </style>

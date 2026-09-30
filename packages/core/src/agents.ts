@@ -4,7 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { CLAUDE_MODELS, commandIn, newId } from '@cockpit/shared'
+import { CLAUDE_MODELS, MEMORY_OFF, commandIn, newId } from '@cockpit/shared'
 import type {
   AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, PermissionMode,
   PermissionRequest, TurnUsage,
@@ -80,6 +80,12 @@ export interface LaunchContext {
    * applied to the agent itself: it reads and proposes, and writes nothing.
    */
   permissionMode?: PermissionMode
+  /**
+   * §6 — whether the conversation has a memory at all. Off, the engine is not
+   * handed the memory tools nor told about them: a conversation asked to keep
+   * nothing should not be invited to.
+   */
+  memory?: boolean
 }
 
 /**
@@ -280,7 +286,8 @@ export interface EngineSpec {
    * whatever the mode does not approve by itself is refused.
    */
   control?: {
-    open(): string
+    /** `memory`: whether the memory tools are hosted on this channel. */
+    open(memory: boolean): string
     answer(requestId: string, allow: boolean, input: Record<string, unknown>): string
     setMode(requestId: string, mode: PermissionMode): string
     unsupported(requestId: string): string
@@ -362,7 +369,7 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // §16 — the tool set, replaced rather than added to. Comma-joined into one
     // argument on purpose: the flag is variadic, so space-separated values
     // would swallow the flag that follows them.
-    '--tools', [...ctx.tools, ...memoryTools.TOOL_NAMES].join(','),
+    '--tools', [...ctx.tools, ...(ctx.memory ? memoryTools.TOOL_NAMES : [])].join(','),
     ...(ctx.deny.length ? ['--disallowedTools', ctx.deny.join(',')] : []),
     // Chosen in the composer. What the mode does not approve by itself comes
     // back over stdio as a `can_use_tool` request and waits for the window.
@@ -378,12 +385,11 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // §6 — the memory, hosted by this process over the control channel. Not
     // behind a question: a gate on the memory is the separate effort that
     // stops it being written (memoryTools.ts).
-    '--mcp-config', memoryTools.MCP_CONFIG,
-    '--allowedTools', memoryTools.TOOL_NAMES.join(','),
+    ...(ctx.memory ? ['--mcp-config', memoryTools.MCP_CONFIG, '--allowedTools', memoryTools.TOOL_NAMES.join(',')] : []),
     // What the two flags above actually forbid, in words the engine reads
     // before it writes its first command rather than after — and when to
     // write the memory, which nothing else would tell it.
-    '--append-system-prompt', SHELL_RULES + '\n\n' + memoryTools.MEMORY_RULES,
+    '--append-system-prompt', SHELL_RULES + (ctx.memory ? '\n\n' + memoryTools.MEMORY_RULES : ''),
     ...(ctx.model ? ['--model', ctx.model] : []),
     ...(ctx.effort ? ['--effort', ctx.effort] : []),
     ...ctx.extraDirs.flatMap((d) => ['--add-dir', d]),
@@ -446,6 +452,12 @@ function engineEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env }
   for (const key of INHERITED_SESSION_VARS) delete env[key]
   env.CLAUDE_CODE_PROMPT_CACHE_TTL ??= '1h'
+  // §6 — one memory, Cockpit's. `claude` keeps an "auto memory" of its own in
+  // ~/.claude/projects/<cwd>/memory/, and told about it in its system prompt,
+  // an agent with a brand-new Cockpit memory (nothing yet to steer it) wrote
+  // its decision there instead: outside the scope, invisible to the window,
+  // unshared with any other conversation, and never documented or erased.
+  env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1'
   return env
 }
 
@@ -674,11 +686,11 @@ const claudeEngine: EngineSpec = {
     // `sdkMcpServers` is what makes the `sdk` server in `--mcp-config` this
     // process: without it the engine lists the memory tools and has nobody to
     // send their calls to.
-    open: () =>
+    open: (memory) =>
       JSON.stringify({
         type: 'control_request',
         request_id: 'init',
-        request: { subtype: 'initialize', sdkMcpServers: [memoryTools.SERVER] },
+        request: { subtype: 'initialize', ...(memory ? { sdkMcpServers: [memoryTools.SERVER] } : {}) },
       }),
     mcp: (requestId, response) =>
       JSON.stringify({
@@ -1024,12 +1036,12 @@ agentBus.setMaxListeners(50)
 function persist(s: Conversation): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, topic_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title, denials)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, topic_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title, denials, memory)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET status=excluded.status, ended_at=excluded.ended_at,
          turns=excluded.turns, last_message=excluded.last_message,
          lease_id=excluded.lease_id, engine_session_id=excluded.engine_session_id,
-         prompt=excluded.prompt, denials=excluded.denials`,
+         prompt=excluded.prompt, denials=excluded.denials, memory=excluded.memory`,
     )
     .run(
       s.id,
@@ -1051,6 +1063,7 @@ function persist(s: Conversation): void {
       // Frozen at turn 1: `prompt` moves with the conversation, this does not.
       s.title,
       JSON.stringify(s.denials),
+      s.memory,
     )
 }
 
@@ -1362,6 +1375,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     leaseId: r.lease_id === null ? null : String(r.lease_id),
     lastMessage: r.last_message === null ? null : String(r.last_message),
     topicId: r.topic_id == null ? null : String(r.topic_id),
+    memory: r.memory == null ? 'off' : String(r.memory),
     engineSessionId,
     // §6 — an ended session is not a dead one. As long as the engine still
     // holds the conversation, picking it back up tomorrow is one click.
@@ -1501,6 +1515,8 @@ export interface StartAgentInput {
   options?: EngineOptions
   /** Screenshots and files pasted, dropped or picked into the box. */
   attachments?: AttachmentInput[]
+  /** §6 — `off`, `new`, or a memory's id. The caller decides the default. */
+  memory: string
 }
 
 export type StartAgentResult = { sessionId: string } | { denied: true; reason: string }
@@ -1540,6 +1556,7 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     leaseId: null,
     lastMessage: null,
     topicId: input.topicId ?? null,
+    memory: input.memory,
     engineSessionId: null,
     resumable: false,
     prompt: input.prompt,
@@ -1635,6 +1652,11 @@ async function nameConversation(bin: string, sessionId: string, typed: string, p
   if (!changed) return
   const l = live.get(sessionId)
   if (l) l.session.title = name
+  // §6 — a memory born before the name arrived was named after the prompt;
+  // it takes the conversation's name, unless someone has renamed it since.
+  const c = l?.session ?? get(sessionId)
+  const projectId = c?.workspaceIds.map((id) => getWorkspace(id)?.projectId).find(Boolean)
+  if (c && projectId) memory.retitle(projectId, c.memory, typed, name)
 }
 
 function cleanName(raw: string): string {
@@ -1824,6 +1846,7 @@ async function launch(
     model: opts?.model,
     effort: engineEffort(opts?.effort),
     permissionMode: modeOf(opts),
+    memory: session.memory !== MEMORY_OFF,
   }
   // The turn in the order it was written: the words, each attachment at the
   // point its `#handle` put it, and whatever nobody pointed at at the end.
@@ -1886,7 +1909,7 @@ async function launch(
   live.set(session.id, l)
 
   if (spec.streaming && spec.encodeTurn) {
-    if (spec.control) child.stdin?.write(spec.control.open() + '\n')
+    if (spec.control) child.stdin?.write(spec.control.open(ctx.memory !== false) + '\n')
     // The process serves the whole conversation, so its stdin stays open: it
     // is the channel every later turn arrives on.
     child.stdin?.write(spec.encodeTurn(withFiles, segs) + '\n')
@@ -2055,8 +2078,12 @@ async function launch(
             break
           }
           let reply: Record<string, unknown> | null
+          const was = l.session.memory
           try {
             reply = memoryTools.handle(l.session, l.memoryOwn, ev.message as never)
+            // A `new` memory that has just come into being: the conversation
+            // is pointed at it for good, and the window hears which one.
+            if (l.session.memory !== was) changed = true
           } catch (e) {
             const id = (ev.message as { id?: unknown } | undefined)?.id
             reply = { jsonrpc: '2.0', id, error: { code: -32603, message: (e as Error).message } }

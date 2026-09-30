@@ -912,6 +912,12 @@ export interface Conversation {
   /** Which topic it was run under, when it was run under one (§4). */
   topicId: string | null
   /**
+   * §6 — the memory this conversation reads and writes: `off`, `new` (created
+   * on its first note), or a memory's id. Chosen when it starts; a `/clear`
+   * hands the next conversation the same one.
+   */
+  memory: string
+  /**
    * The engine's own resume handle (`claude --resume`, `codex exec resume`).
    * Without it a session dies with the daemon, and multi-day work is a fiction.
    */
@@ -1002,7 +1008,21 @@ export interface SearchHit {
   text: string
 }
 
+/** One memory a conversation can be pointed at, as the picker lists it. */
+export interface MemorySummary {
+  id: string
+  name: string
+  kind: 'topic' | 'named' | 'project'
+  /** How many entries are written in it — what "is this the one?" is judged by. */
+  entries: number
+  updatedAt: number
+}
+
 export interface MemoryDoc {
+  /** Which memory this is, for everything that edits it. */
+  id: string
+  name: string
+  kind: 'topic' | 'named' | 'project'
   path: string
   content: string
   sections: { title: string; body: string }[]

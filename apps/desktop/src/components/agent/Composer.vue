@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { CornerDownLeft, FileCode, FileText, Paperclip, Square, SquareSlash, UnfoldVertical, X } from '@lucide/vue'
+import { BookMarked, CornerDownLeft, FileCode, FileText, Paperclip, Square, SquareSlash, UnfoldVertical, X } from '@lucide/vue'
 import {
-  agentDraft, agentFiles, attachFiles, attachText, client, dataUrl, detachFile, engineName, guard,
-  isLive, isLongPaste, openDraftFiles, placedHandles, saveComposer, state, switchMode,
+  agentDraft, agentFiles, attachFiles, attachText, chooseMemory, client, dataUrl, detachFile, engineName, guard,
+  isLive, isLongPaste, memoryChoiceFor, memoryLabel, openDraftFiles, placedHandles, saveComposer, state, switchMode,
 } from '../../core/store.js'
 import {
   AGENT_COMMANDS, ANCHOR_PAD, CLAUDE_MODELS, COMMAND_ENGINES, anchorOf, anchorWritten, splitPrompt,
 } from '@cockpit/shared'
-import type { AgentCommand, Conversation, PermissionMode } from '@cockpit/shared'
+import type { AgentCommand, AgentScope, Conversation, PermissionMode } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
@@ -62,8 +62,48 @@ const props = defineProps<{
    * not be hunting for anything.
    */
   busy?: boolean
+  /** §6 — what the conversation is aimed at, for the Memory chip. */
+  scope?: AgentScope | null
 }>()
 const emit = defineEmits<{ send: []; stop: []; 'update:engine': [string] }>()
+
+/* ── §6 — which memory ─────────────────────────────────────────────────
+ *
+ * Decided before the first turn, in one click: a new memory (it starts with
+ * the agent's first note), one that already exists, or none. Once the
+ * conversation exists the answer is a fact about it, shown and not asked.
+ */
+const projectId = computed(() => {
+  const sc = props.scope
+  if (!sc) return null
+  if (sc.kind === 'project') return sc.projectId
+  if (sc.kind === 'topic') return state.topics.find((t) => t.id === sc.topicId)?.projectId ?? null
+  return state.workspaces.find((w) => w.id === sc.workspaceId)?.projectId ?? null
+})
+const memoryValue = computed(() => (props.scope ? memoryChoiceFor(props.scope) : 'new'))
+const memoryOptions = computed<Option[]>(() => {
+  const sc = props.scope
+  const out: Option[] = []
+  if (sc?.kind === 'topic') out.push({ id: 'topic:' + sc.topicId, label: memoryLabel(projectId.value, 'topic:' + sc.topicId), hint: 'this topic' })
+  out.push({ id: 'new', label: 'New memory', hint: 'starts with its first note' })
+  out.push({ id: 'off', label: 'No memory' })
+  for (const m of state.memories[projectId.value ?? ''] ?? []) {
+    if (out.some((o) => o.id === m.id)) continue
+    out.push({ id: m.id, label: m.name, hint: m.entries + (m.entries === 1 ? ' note' : ' notes') })
+  }
+  // The one chosen, even when the list has not caught up with it yet.
+  if (!out.some((o) => o.id === memoryValue.value)) {
+    out.push({ id: memoryValue.value, label: memoryLabel(projectId.value, memoryValue.value) })
+  }
+  return out
+})
+function pickMemory(id: string): void {
+  if (props.scope) chooseMemory(props.scope, id)
+}
+/** The conversation's own, once it has one. */
+const sessionMemory = computed(() =>
+  props.session ? memoryLabel(projectId.value, props.session.memory) : null,
+)
 
 const box = ref<HTMLTextAreaElement | null>(null)
 
@@ -870,6 +910,19 @@ defineExpose({ focus: () => box.value?.focus(), take })
         :model-value="engine"
         @update:model-value="emit('update:engine', $event)"
       />
+      <!-- §6 — which memory it reads and writes, beside the engine: both say
+           what the conversation *is*, where the rest say how it answers.
+           Chosen before it starts; after that, said. -->
+      <span v-if="session && mode !== 'start'" class="opt mem" :title="'This conversation\'s memory: ' + sessionMemory">
+        <BookMarked class="xs" />{{ sessionMemory }}
+      </span>
+      <Picker
+        v-else-if="scope"
+        label="Memory"
+        :options="memoryOptions"
+        :model-value="memoryValue"
+        @update:model-value="pickMemory"
+      />
       <ModelPicker :models="models" :model-value="state.engineOptions.model" @update:model-value="pickModel" />
       <EffortSlider
         :options="EFFORTS"
@@ -881,6 +934,7 @@ defineExpose({ focus: () => box.value?.focus(), take })
            before the change, applied to the agent itself — and still lights
            the whole box, because it changes what pressing Start does. -->
       <Picker :options="PERMISSIONS" :model-value="state.engineOptions.permissionMode" @update:model-value="pickPermission" />
+
 
       <!-- §6 + §16 — how full the window is and what this has cost, at the far
            end of the row. It was in the conversation's bar at the top of the
@@ -1040,6 +1094,17 @@ defineExpose({ focus: () => box.value?.focus(), take })
   white-space: nowrap;
 }
 .opt:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+/* Said, not asked: the conversation's memory, fixed once it has started. */
+.opt.mem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.opt.mem:hover { background: var(--inset, var(--bg)); color: var(--text-muted); }
+.opt.mem .xs { flex: none; width: 11px; height: 11px; color: var(--text-dim); }
 .opt.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 .opt.clip { display: inline-flex; align-items: center; justify-content: center; padding: 0 7px; }
 .xs { width: 11px; height: 11px; }

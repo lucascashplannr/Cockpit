@@ -7,6 +7,7 @@ import * as agents from './agents.js'
 import { defaultBranch } from './git.js'
 import { isInside } from './config.js'
 import * as memory from './memory.js'
+import { topicMemoryId } from '@cockpit/shared'
 
 /**
  * §7 — the scope table, resolved.
@@ -165,7 +166,11 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
     paths,
     blocked: [...blocked.values()],
     preamble: {
-      memory: !!memory.preamble(memory.homeOf({ topicId: r.topicId, workspaceIds: r.workspaces.map((w) => w.id) })),
+      // A topic's memory is known before the prompt is written; any other
+      // memory is chosen in the composer, which says so itself.
+      memory:
+        !!r.topicId &&
+        !!memory.preamble(memory.homeOf({ memory: topicMemoryId(r.topicId), workspaceIds: r.workspaces.map((w) => w.id) })),
       context: !!topics.contextBlock(r.topicId, r.paths),
     },
   }

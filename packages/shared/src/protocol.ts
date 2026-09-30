@@ -11,7 +11,7 @@ import type {
   DeclaredServer,
   DatabasePlan,
   DiffFile, Topic,
-  DocsInfo, DocsProposalSet, FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
+  DocsInfo, DocsProposalSet, FileDiff, GitOperation, MemoryDoc, MemorySummary, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
   ProjectSettings, SearchHit, SeedProposal, StashEntry,
   Workspace,
 } from './model.js'
@@ -780,6 +780,11 @@ export interface Rpc {
       options?: EngineOptions
       /** Screenshots and files put into the box with the prompt. */
       attachments?: AttachmentInput[]
+      /**
+       * §6 — `off`, `new`, or a memory's id. Absent: the topic's memory in a
+       * topic, a new one anywhere else.
+       */
+      memory?: string
     }
     result: AgentStartResult
   }
@@ -940,9 +945,20 @@ export interface Rpc {
     result: { ok: boolean; detail: string }
   }
 
-  'memory.read': { params: { workspaceId: string }; result: MemoryDoc | null }
-  'memory.write': { params: { workspaceId: string; content: string }; result: { ok: true } }
-  'memory.promote': { params: { workspaceId: string; section: string; text: string }; result: { ok: true } }
+  /**
+   * §6 — the memories a conversation in this project can be pointed at, most
+   * recently written first. `memoryId` on the calls below picks one of them;
+   * without it, a checkout's own (its topic's, else the project's).
+   */
+  'memory.list': { params: { projectId: string }; result: MemorySummary[] }
+  'memory.read': { params: { workspaceId: string; memoryId?: string }; result: MemoryDoc | null }
+  'memory.write': { params: { workspaceId: string; content: string; memoryId?: string }; result: { ok: true } }
+  /** The memory to the Trash. A topic's is re-created empty; a named one is gone. */
+  'memory.erase': { params: { workspaceId: string; memoryId?: string }; result: { ok: true; erased: boolean } }
+  'memory.promote': {
+    params: { workspaceId: string; section: string; text: string; memoryId?: string }
+    result: { ok: true }
+  }
 
   'journal.tail': {
     params: { workspaceId?: string; projectId?: string; limit?: number; types?: string[] }

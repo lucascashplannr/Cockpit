@@ -1,13 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
-  MEMORY_SECTIONS, RULED_OUT_SECTION, STATE_SECTION, canonicalSection, englishMemory, hasMemoryEntries,
-  memoryTemplate, shapedMemory,
+  MEMORY_NEW, MEMORY_OFF, MEMORY_SECTIONS, PROJECT_MEMORY, RULED_OUT_SECTION, STATE_SECTION, canonicalSection,
+  englishMemory, hasMemoryEntries, memoryTemplate, shapedMemory, slugify, topicMemoryId,
 } from '@cockpit/shared'
 import type { MemoryKind } from '@cockpit/shared'
-import type { Actor, Conversation, MemoryDoc } from '@cockpit/shared'
-import { getProject, getTopic, getWorkspace, memoryFileOf, requireWorkspace, topicMemoryFile } from './registry.js'
+import type { Actor, Conversation, MemoryDoc, MemorySummary } from '@cockpit/shared'
+import { allTopics, getProject, getTopic, getWorkspace, requireWorkspace, topicMemoryFile } from './registry.js'
 import { append } from './journal.js'
+import { moveToTrash } from './files.js'
 
 /**
  * §6 — three distinct layers, and conflating them is the mistake to avoid:
@@ -23,44 +24,130 @@ import { append } from './journal.js'
 export const SECTIONS = MEMORY_SECTIONS
 
 /**
- * §6 is titled "la mémoire **de topic**", and that is the whole point: the
- * understanding belongs to the work, not to one of the checkouts the work
- * happens to span. So a workspace inside a topic reads and writes the
- * topic's memory — the same file the preamble prepends to every run. Outside
- * a topic it is the project's (§21.2): see `memoryFileOf`, which the probe's
- * `hasMemory` reads too.
- */
-function memoryFile(workspaceId: string): string {
-  return memoryFileOf(requireWorkspace(workspaceId))
-}
-
-/**
- * The memory a conversation shares, and what it is the memory *of*.
+ * §6 — where the memories live, and which one a conversation uses.
  *
- * The same resolution as a checkout's, from the conversation's side: its
- * topic if it has one, otherwise the project its first checkout belongs to.
+ * A project has as many memories as the work in it: one per piece of work,
+ * named after the conversation that started writing it, kept until a person
+ * erases it or it empties into the docs. A conversation is pointed at one of
+ * them when it starts — a new one, an existing one, or none — and a `/clear`
+ * hands the next conversation the same one. A topic keeps its own, as ever.
+ *
+ * Ids, as stored on the conversation:
+ *   `topic:<id>`  the topic's memory (registry.topicMemoryFile)
+ *   `project`     the project's single memory from before there were several
+ *   anything else a named memory: `<project>/.cockpit/memories/<id>.md`
+ *   `new` / `off` no file — yet, or at all
  */
 export interface MemoryHome {
+  id: string
   file: string
-  /** What the preamble calls it: the topic's name, or the project's. */
+  /** Its name: the topic's, the project's, or the one it was given. */
   label: string
   kind: MemoryKind
   /** The checkout whose id the journal files the writes under. */
   workspaceId: string | null
 }
 
-export function homeOf(c: Pick<Conversation, 'topicId' | 'workspaceIds'>): MemoryHome | null {
-  const ws = c.workspaceIds.map((id) => getWorkspace(id)).find((w) => !!w) ?? null
-  const topic = c.topicId ? getTopic(c.topicId) : null
-  if (topic) return { file: topicMemoryFile(topic), label: topic.name, kind: 'topic', workspaceId: ws?.id ?? null }
-  const project = ws ? getProject(ws.projectId) : null
-  if (!project) return null
-  return {
-    file: join(project.root, '.cockpit', 'memory.md'),
-    label: project.name,
-    kind: 'project',
-    workspaceId: ws?.id ?? null,
+function memoriesDir(projectRoot: string): string {
+  return join(projectRoot, '.cockpit', 'memories')
+}
+
+export function homeFor(projectId: string, memoryId: string, workspaceId: string | null = null): MemoryHome | null {
+  if (memoryId === MEMORY_OFF || memoryId === MEMORY_NEW) return null
+  const project = getProject(projectId)
+  if (memoryId.startsWith('topic:')) {
+    const topic = getTopic(memoryId.slice(6))
+    if (!topic) return null
+    return { id: memoryId, file: topicMemoryFile(topic), label: topic.name, kind: 'topic', workspaceId }
   }
+  if (!project) return null
+  if (memoryId === PROJECT_MEMORY) {
+    return { id: memoryId, file: join(project.root, '.cockpit', 'memory.md'), label: project.name, kind: 'project', workspaceId }
+  }
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(memoryId)) return null
+  const file = join(memoriesDir(project.root), memoryId + '.md')
+  return { id: memoryId, file, label: nameIn(file) ?? memoryId, kind: 'named', workspaceId }
+}
+
+/** A conversation's memory, or null when it has none — off, or not yet written. */
+export function homeOf(c: Pick<Conversation, 'memory' | 'workspaceIds'>): MemoryHome | null {
+  const ws = c.workspaceIds.map((id) => getWorkspace(id)).find((w) => !!w) ?? null
+  if (!ws) return null
+  return homeFor(ws.projectId, c.memory, ws.id)
+}
+
+/** The first `# ` line: a named memory is called what its file says. */
+function nameIn(file: string): string | null {
+  try {
+    const first = readFileSync(file, 'utf8').split('\n').find((l) => /^#\s+/.test(l))
+    return first ? first.replace(/^#\s+/, '').trim() || null : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A new memory, named after the work it is for — the conversation's title —
+ * and created the moment something is first written into it: until then there
+ * is nothing to keep.
+ */
+export function createNamed(projectId: string, name: string): string {
+  const project = getProject(projectId)
+  if (!project) throw new Error('unknown project: ' + projectId)
+  const dir = memoriesDir(project.root)
+  mkdirSync(dir, { recursive: true })
+  const base = slugify(name).slice(0, 48).replace(/-+$/, '') || 'memory'
+  let id = base
+  for (let n = 2; existsSync(join(dir, id + '.md')); n++) id = base + '-' + n
+  writeFileSync(join(dir, id + '.md'), memoryTemplate('named', name.trim().slice(0, 80) || id), 'utf8')
+  append({ type: 'memory.written', projectId, payload: { created: id, name } })
+  return id
+}
+
+/**
+ * A named memory's heading swapped, only while it still reads `from` — the
+ * name it was given when it had nothing better. A name a person typed stays.
+ */
+export function retitle(projectId: string, memoryId: string, from: string, to: string): void {
+  const home = homeFor(projectId, memoryId)
+  if (!home || home.kind !== 'named' || !existsSync(home.file)) return
+  const was = from.trim().slice(0, 80)
+  const content = readFileSync(home.file, 'utf8')
+  const lines = content.split('\n')
+  const i = lines.findIndex((l) => /^#\s+/.test(l))
+  if (i === -1 || lines[i]!.replace(/^#\s+/, '').trim() !== was) return
+  lines[i] = '# ' + to.trim()
+  writeFileSync(home.file, lines.join('\n'), 'utf8')
+  append({ type: 'memory.written', projectId, payload: { renamed: memoryId, name: to } })
+}
+
+/**
+ * Every memory a conversation in this project can be pointed at, most recently
+ * written first: the named ones, the project's old single one while it has
+ * anything in it, and the topics' — a topic's memory is where its work was
+ * written down, and continuing it from the main checkout is ordinary.
+ */
+export function list(projectId: string): MemorySummary[] {
+  const project = getProject(projectId)
+  if (!project) return []
+  const out: MemorySummary[] = []
+  const add = (home: MemoryHome | null) => {
+    if (!home || !existsSync(home.file)) return
+    const content = contentAt(home.file, home.kind) ?? ''
+    const entries = content.split('\n').filter((l) => /^\s*[-*+]\s+/.test(l)).length
+    if (home.kind !== 'named' && !entries) return
+    out.push({ id: home.id, name: home.label, kind: home.kind, entries, updatedAt: statSync(home.file).mtimeMs })
+  }
+  try {
+    for (const f of readdirSync(memoriesDir(project.root))) {
+      if (f.endsWith('.md')) add(homeFor(projectId, f.slice(0, -3)))
+    }
+  } catch {
+    /* no named memory yet */
+  }
+  add(homeFor(projectId, PROJECT_MEMORY))
+  for (const t of allTopics(projectId)) add(homeFor(projectId, topicMemoryId(t.id)))
+  return out.sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
 /**
@@ -73,11 +160,11 @@ export function preamble(home: MemoryHome | null): string {
   const content = contentAt(home.file, home.kind)?.trim()
   if (!content || !hasMemoryEntries(content)) return ''
   return [
-    '# ' + (home.kind === 'topic' ? 'Topic' : 'Project') + ' memory — ' + home.label,
-    'Shared by every conversation on this ' + home.kind + ', in every repository, and by the one',
-    'that picks up after this one is cleared. "' + RULED_OUT_SECTION + '" lists approaches already',
-    'rejected for a reason: do not re-propose them. "Contracts" is what other code relies on.',
-    '"Open questions" are waiting on the person: ask them rather than guessing.',
+    '# Memory — ' + home.label,
+    'Shared with every conversation pointed at this memory, in any repository, and with the one that',
+    'picks up after this one is cleared. "' + RULED_OUT_SECTION + '" lists approaches already rejected',
+    'for a reason: do not re-propose them. "Contracts" is what other code relies on. "Open questions"',
+    'are waiting on the person: ask them rather than guessing.',
     '',
     content,
   ].join('\n')
@@ -101,7 +188,6 @@ export function contentAt(file: string, kind: MemoryKind): string | null {
   }
 }
 
-
 function parseSections(content: string): { title: string; body: string }[] {
   const out: { title: string; body: string }[] = []
   let current: { title: string; body: string } | null = null
@@ -119,48 +205,69 @@ function parseSections(content: string): { title: string; body: string }[] {
 }
 
 /**
- * The memory, as the Memory tool shows it. Never "no memory": a topic or a
- * project that has nothing written yet has the empty form, which is also what
- * says where things go. The file itself is only written when something is.
+ * Which memory a request from the window means: the one it names, or, for a
+ * checkout, the one it had before there were several — its topic's, else the
+ * project's.
  */
-export function read(workspaceId: string): MemoryDoc {
-  const p = memoryFile(workspaceId)
-  const kind = kindOf(workspaceId)
-  const content = contentAt(p, kind) ?? memoryTemplate(kind, titleFor(workspaceId))
+function homeAt(workspaceId: string, memoryId?: string): MemoryHome {
+  const ws = requireWorkspace(workspaceId)
+  const id = memoryId ?? (ws.topicId ? topicMemoryId(ws.topicId) : PROJECT_MEMORY)
+  const home = homeFor(ws.projectId, id, ws.id)
+  if (!home) throw new Error('no such memory: ' + id)
+  return home
+}
+
+/**
+ * The memory, as the Memory tool shows it. Never blank: one with nothing
+ * written yet shows the empty form, which is also what says where things go.
+ * The file itself is only written when something is.
+ */
+export function read(workspaceId: string, memoryId?: string): MemoryDoc {
+  const home = homeAt(workspaceId, memoryId)
+  const content =
+    contentAt(home.file, home.kind) ?? memoryTemplate(home.kind, home.kind === 'project' ? undefined : home.label)
   return {
-    path: p,
+    id: home.id,
+    name: home.label,
+    kind: home.kind,
+    path: home.file,
     content,
     sections: parseSections(content),
-    updatedAt: existsSync(p) ? statSync(p).mtimeMs : null,
+    updatedAt: existsSync(home.file) ? statSync(home.file).mtimeMs : null,
   }
 }
 
-function kindOf(workspaceId: string): MemoryKind {
-  return requireWorkspace(workspaceId).topicId ? 'topic' : 'project'
+/**
+ * Erased by hand: to the Trash — recoverable from there, like everything else
+ * Cockpit removes (§16). A topic's is re-created empty at once, so every topic
+ * keeps a memory; a named one is simply gone, and a conversation still pointed
+ * at it starts it again with its next note.
+ */
+export async function erase(workspaceId: string, memoryId?: string): Promise<{ ok: true; erased: boolean }> {
+  const home = homeAt(workspaceId, memoryId)
+  if (!existsSync(home.file)) return { ok: true, erased: false }
+  await moveToTrash(home.file)
+  if (home.kind === 'topic') writeFileSync(home.file, memoryTemplate('topic', home.label), 'utf8')
+  const ws = requireWorkspace(workspaceId)
+  if (ws.topicId && home.kind === 'topic') ws.hasMemory = false
+  append({ type: 'memory.written', workspaceId, payload: { erased: true, memory: home.id } })
+  return { ok: true, erased: true }
 }
 
-/** A topic's memory opens with its name; the project's needs none. */
-function titleFor(workspaceId: string): string | undefined {
-  const ws = requireWorkspace(workspaceId)
-  return ws.topicId ? (getTopic(ws.topicId)?.name ?? undefined) : undefined
-}
-
-export function write(workspaceId: string, content: string): void {
-  const ws = requireWorkspace(workspaceId)
-  const p = memoryFile(workspaceId)
-  mkdirSync(dirname(p), { recursive: true })
-  writeFileSync(p, content, 'utf8')
-  ws.hasMemory = hasMemoryEntries(content)
-  append({ type: 'memory.written', workspaceId, payload: { bytes: content.length } })
+export function write(workspaceId: string, content: string, memoryId?: string): void {
+  const home = homeAt(workspaceId, memoryId)
+  mkdirSync(dirname(home.file), { recursive: true })
+  writeFileSync(home.file, content, 'utf8')
+  append({ type: 'memory.written', workspaceId, payload: { bytes: content.length, memory: home.id } })
 }
 
 /**
  * §6 — "Promotion." Selecting a passage in a session and pushing it into the
  * memory. If writing the memory is a separate effort, it never gets written.
  */
-export function promote(workspaceId: string, section: string, text: string): void {
-  const doc = read(workspaceId)
-  write(workspaceId, withEntry(doc.content, canonicalSection(section), '- ' + oneLine(text)))
+export function promote(workspaceId: string, section: string, text: string, memoryId?: string): void {
+  const doc = read(workspaceId, memoryId)
+  write(workspaceId, withEntry(doc.content, canonicalSection(section), '- ' + oneLine(text)), memoryId)
   append({ type: 'memory.promoted', workspaceId, payload: { section, text: text.slice(0, 500) } })
 }
 

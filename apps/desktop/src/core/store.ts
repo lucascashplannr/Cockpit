@@ -3,7 +3,7 @@ import type {
   AddRepoSource, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
-  DatabasePlan, DocsInfo, DocsProposalSet, Topic,
+  DatabasePlan, DocsInfo, DocsProposalSet, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
@@ -234,6 +234,9 @@ export const state = reactive({
    */
   view: 'agent' as ShellView,
   reviewTool: 'diff' as ReviewTool,
+  /** §6 — each project's memories, and which one the next conversation on a scope uses. */
+  memories: {} as Record<string, MemorySummary[]>,
+  memoryChoice: {} as Record<string, string>,
   /** §9 — each project's linked docs, and the proposals still waiting on someone. */
   docsInfo: {} as Record<string, DocsInfo | null>,
   docsPending: {} as Record<string, DocsProposalSet[]>,
@@ -458,6 +461,10 @@ export const client = new CoreClient(CORE_URL, {
   onEvent(e) {
     state.events.push(e)
     if (e.type.startsWith('docs.') && e.projectId) void refreshDocs(e.projectId)
+    if (e.type.startsWith('memory.')) {
+      const pid = e.projectId ?? state.workspaces.find((w) => w.id === e.workspaceId)?.projectId
+      if (pid) refreshMemoriesSoon(pid)
+    }
     if (state.events.length > 800) state.events.splice(0, state.events.length - 800)
     if (e.type === 'process.exited') {
       const p = e.payload as { id?: string; code?: number | null }
@@ -966,9 +973,13 @@ export async function startAgentIn(
       prompt,
       options: engineOptions(),
       attachments: wire(files),
+      memory: memoryChoiceFor(scope),
     }),
   )
   if (!res) return false
+  // Said once, for the conversation it was said for: the next one on this
+  // scope starts from the default again, unless a `/clear` says otherwise.
+  delete state.memoryChoice[scopeKey(scope)]
   if ('denied' in res) {
     // §7 — a refusal explains itself; a silent no is worse than a blocked run.
     toast('error', res.reason)
@@ -2960,7 +2971,10 @@ async function refreshProjects(): Promise<void> {
   ensureSelection()
   // A settings change is how docs get linked, and a reconnect is how a fresh
   // window first learns of them: both come through here.
-  if (state.activeProjectId) void refreshDocs(state.activeProjectId)
+  if (state.activeProjectId) {
+    void refreshDocs(state.activeProjectId)
+    void refreshMemories(state.activeProjectId)
+  }
 }
 
 export function selectWorkspace(id: string): void {
@@ -3146,6 +3160,27 @@ export async function saveDeclaration(
  * rewrites `runs:` lists that name it and `start:` if it was a server — so
  * the question can say it before rather than the file showing it after.
  */
+/**
+ * §6 — starting a memory over. Asked, because it is everything every
+ * conversation here has written down; to the Trash rather than gone.
+ */
+export function askEraseMemory(workspaceId: string, doc: { id: string; name: string; kind: string }): void {
+  state.pendingConfirm = {
+    title: 'Erase "' + doc.name + '"?',
+    body: [
+      doc.kind === 'topic'
+        ? "Every note in it goes — the topic's agents start from nothing next time."
+        : 'Every note in it goes, and it leaves the list of memories.',
+      'The file goes to the Trash, so it can still be brought back from there.',
+    ],
+    verb: 'Erase',
+    done: 'memory erased',
+    danger: true,
+    run: async () =>
+      !!(await guard(() => client.call('memory.erase', { workspaceId, memoryId: doc.id }))),
+  }
+}
+
 export function askDeleteDeclaration(decl: Declaration): void {
   // Taken now: the answer comes after a question, and the sheet it was asked
   // from is the project it means.
@@ -3290,8 +3325,52 @@ export async function refreshDocs(projectId: string): Promise<void> {
 }
 
 watch(() => state.activeProjectId, (id) => {
-  if (id) void refreshDocs(id)
+  if (id) {
+    void refreshDocs(id)
+    void refreshMemories(id)
+  }
 }, { immediate: true })
+
+/* ── §6 — the memories ────────────────────────────────────────────────
+ *
+ * A project has one memory per piece of work. A conversation is pointed at
+ * one when it starts — a new one (created with its first note), an existing
+ * one, or none — and the composer's Memory chip is where that is said. A topic
+ * defaults to its own; anywhere else defaults to a new one; after a `/clear`
+ * the next conversation defaults to the one the last was using.
+ */
+export async function refreshMemories(projectId: string): Promise<void> {
+  const list = await client.call('memory.list', { projectId }).catch(() => null)
+  if (list) state.memories[projectId] = list
+}
+
+let memoriesTimer: ReturnType<typeof setTimeout> | null = null
+/** An agent writes several notes in a row; the list is asked for once. */
+function refreshMemoriesSoon(projectId: string): void {
+  if (memoriesTimer) clearTimeout(memoriesTimer)
+  memoriesTimer = setTimeout(() => void refreshMemories(projectId), 300)
+}
+
+export function memoryChoiceFor(scope: AgentScope): string {
+  return (
+    state.memoryChoice[scopeKey(scope)] ??
+    (scope.kind === 'topic' ? 'topic:' + scope.topicId : 'new')
+  )
+}
+
+export function chooseMemory(scope: AgentScope, memoryId: string): void {
+  state.memoryChoice[scopeKey(scope)] = memoryId
+}
+
+/** What to call a memory choice anywhere it is shown. */
+export function memoryLabel(projectId: string | null, memoryId: string): string {
+  if (memoryId === 'new') return 'New memory'
+  if (memoryId === 'off') return 'No memory'
+  const known = projectId ? state.memories[projectId]?.find((m) => m.id === memoryId) : undefined
+  if (known) return known.name
+  if (memoryId.startsWith('topic:')) return state.topics.find((t) => t.id === memoryId.slice(6))?.name ?? 'Topic memory'
+  return memoryId
+}
 
 /**
  * `/document` — this conversation drafts proposals to the docs. The Docs tool

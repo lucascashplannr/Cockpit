@@ -17,7 +17,7 @@ export type Db = Database.Database
  * indexes, which is exactly the kind of opaque breakage §13 rule 3 exists to
  * avoid.
  */
-const SCHEMA_VERSION = 5
+const SCHEMA_VERSION = 6
 
 export type SchemaOutcome =
   | { kind: 'fresh' }
@@ -267,6 +267,14 @@ function migrate(d: Db): void {
   // that stopped because the allow-list said no looks exactly like one that
   // finished, and the window has no way to tell them apart without this.
   addColumn(d, 'agent_sessions', 'denials', "TEXT NOT NULL DEFAULT '[]'")
+
+  // Added in v6 — §6, which memory the conversation uses: `off`, `new`, or a
+  // memory's id. Every conversation before this used its topic's memory, or
+  // the project's one: said so, rather than left to read as `off`.
+  addColumn(d, 'agent_sessions', 'memory', 'TEXT')
+  d.prepare(
+    "UPDATE agent_sessions SET memory = CASE WHEN topic_id IS NOT NULL THEN 'topic:' || topic_id ELSE 'project' END WHERE memory IS NULL",
+  ).run()
 
   d.exec(`
     -- §6 — the conversation. Append-only: a resume adds a row, it never
