@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { OPEN_QUESTIONS_SECTION, RULED_OUT_SECTION, sectionsFor, signatureAlone, splitSignature } from '@cockpit/shared'
 import type { MemoryDoc, MemorySigned, Workspace } from '@cockpit/shared'
 import {
-  Check, ChevronDown, ChevronRight, Copy, CornerDownLeft, Info, MessageSquare, Pencil, Save, Trash2, X,
+  BookDashed, BookX, Check, ChevronDown, ChevronRight, Copy, CornerDownLeft, Info, MessageSquare, Pencil, Save, Trash2,
+  X,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import {
@@ -392,7 +393,9 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
     :style="{ '--side-w': sideW + 'px', '--side-h': sideH === null ? 'auto' : sideH + 'px' }"
   >
     <div class="main">
-      <div ref="head" class="ehead">
+      <!-- Only over a memory there is: with none, a name and a menu of other
+           memories is a question the empty screen below already answers. -->
+      <div v-if="real" ref="head" class="ehead">
         <div ref="switcherRoot" class="switcher">
           <button
             class="mname"
@@ -477,9 +480,16 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
       <!-- A conversation with no memory yet, or none at all: said plainly,
            with the way to another one right above it. -->
       <div v-if="!real" class="nomem">
-        <strong>{{ shownId === 'off' ? 'No memory for this conversation' : 'No memory yet' }}</strong>
-        <span v-if="shownId === 'off'">It reads nothing and writes nothing down. Pick one in the composer's Memory chip next time.</span>
-        <span v-else>It starts with the first note the agent writes, named after the conversation.</span>
+        <template v-if="shownId === 'off'">
+          <BookX />
+          <strong>No memory</strong>
+          <span>This conversation reads none and writes none. Pick one from the Memory chip when you start the next.</span>
+        </template>
+        <template v-else>
+          <BookDashed />
+          <strong>No memory yet</strong>
+          <span>It begins with the agent's first note, named after this conversation.</span>
+        </template>
       </div>
       <template v-else-if="!editing">
         <div class="doc">
@@ -630,18 +640,19 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
 }
 .ename { position: relative; min-width: 0; display: flex; align-items: center; gap: 2px; }
 
-/* The memory's name, and every other one behind it. */
-.switcher { position: relative; min-width: 0; }
+/* The memory's name, and every other one behind it. The pull to the left is
+   the wrapper's: on the button, it made the button 4px wider than the box
+   that sizes it, and `max-width: 100%` clipped the name by exactly that. */
+.switcher { position: relative; min-width: 0; margin-left: -6px; }
 .mname {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   max-width: 100%;
-  height: 26px;
-  padding: 0 6px 0 4px;
-  margin-left: -4px;
+  height: 30px;
+  padding: 0 8px 0 6px;
   border-radius: var(--radius-sm);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text);
 }
@@ -649,10 +660,10 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
 /* Reading another memory than the conversation's: said by the name itself. */
 .mname.other .mn { color: var(--accent); }
 .mn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mchev { flex: none; width: 12px; height: 12px; color: var(--text-dim); }
+.mchev { flex: none; width: 14px; height: 14px; color: var(--text-dim); }
 .mmenu {
   top: calc(100% + 6px);
-  left: -6px;
+  left: 0;
   width: 320px;
   max-width: calc(100cqw - 16px);
   max-height: 340px;
@@ -668,18 +679,26 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
 .mhint { flex: none; margin-left: auto; padding-left: 14px; font-size: 10px; color: var(--text-dim); white-space: nowrap; }
 .mnone { padding: 6px 9px; font-size: var(--fs-xs); color: var(--text-dim); }
 
+/* The Docs and Diff tabs' empty screen: the thing that is missing, drawn
+   quietly, what it is, and one sentence on how it comes to be. */
 .nomem {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-width: 340px;
-  margin: 48px auto 0;
-  padding: 0 20px;
+  align-items: center;
+  gap: 8px;
+  /* A short measure: two or three lines of a sentence, not one line of the
+     panel's width. */
+  max-width: 300px;
+  /* Auto on every side, in a column that is the panel's full height: the
+     middle of the panel, however tall it is. */
+  margin: auto;
+  padding: 0 40px 24px;
   text-align: center;
   font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--text-muted);
 }
+.nomem .lucide { width: 22px; height: 22px; margin-bottom: 8px; color: var(--text-dim); }
 .nomem strong { color: var(--text); }
 .ep {
   font-size: var(--fs-xs);
@@ -814,26 +833,26 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
 .by {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   margin-left: 4px;
-  padding: 0 5px;
-  border-radius: 4px;
+  padding: 1px 6px;
+  border-radius: 5px;
   font: inherit;
-  font-size: 10px;
-  line-height: 16px;
+  font-size: 11.5px;
+  line-height: 18px;
   color: var(--text-dim);
   white-space: nowrap;
   vertical-align: 1px;
 }
 .bwho { font-weight: 550; }
 /* A conversation's title is a sentence: it gets a measure, not the line. */
-.by.link .bwho { max-width: 26ch; overflow: hidden; text-overflow: ellipsis; }
-.bic { flex: none; width: 10px; height: 10px; }
+.by.link .bwho { max-width: 30ch; overflow: hidden; text-overflow: ellipsis; }
+.bic { flex: none; width: 12px; height: 12px; }
 .by.link { cursor: pointer; transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft); }
 .by.link:hover { background: var(--hover); color: var(--text-muted); }
 .by.link:hover .bwho { color: var(--text); }
 .signed { padding-top: 6px; }
-.signed .by { margin-left: -5px; }
+.signed .by { margin-left: -6px; }
 .none { margin: 0; color: var(--text-dim); font-size: var(--fs-sm); }
 
 .editor {

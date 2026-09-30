@@ -314,7 +314,7 @@ function dotClass(c: Conversation): string {
   gap: 8px;
   height: 40px;
   padding: 0 8px 0 14px;
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line);
 }
 .ttl { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .dhead .n {
@@ -411,7 +411,7 @@ function dotClass(c: Conversation): string {
 
 /* The way in, at the foot: a line of text with its count, not a button bar. */
 .dfoot { flex: none; padding: 0 5px 5px; }
-.list + .dfoot { border-top: 1px solid var(--line-soft); padding-top: 5px; }
+.list + .dfoot { border-top: 1px solid var(--line); padding-top: 5px; }
 .more {
   display: flex;
   align-items: center;
