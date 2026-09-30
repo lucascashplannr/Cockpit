@@ -15,6 +15,7 @@ import { run, which } from './exec.js'
 import * as leases from './leases.js'
 import * as checkpoints from './checkpoints.js'
 import * as attachments from './attachments.js'
+import { ranUnasked } from './unasked.js'
 
 /**
  * §7 — a session is a list of PATHS + an engine + a mode + a lease.
@@ -142,6 +143,11 @@ export interface NormalizedEvent {
     | 'permission'
     /** A control request this driver does not handle, to be refused so the engine is not left waiting. */
     | 'control'
+    /** The mode the engine says it is in, as `mode`. */
+    | 'mode'
+    /** The engine's answer to a control request this driver sent; `text` says why it refused. */
+    | 'control_done'
+    | 'control_error'
     /**
      * The engine summarised its conversation — `/compact`, or on its own when
      * the window filled. `contextTokens` is where the window stands after,
@@ -164,7 +170,9 @@ export interface NormalizedEvent {
   stderr?: string
   isError?: boolean
   interrupted?: boolean
-  /** `permission` / `control`: the engine's id for the request. */
+  /** `mode` only: what the engine is actually running under. */
+  mode?: PermissionMode
+  /** `permission` / `control` / `control_done` / `control_error`: the id of the request. */
   requestId?: string
   /** `permission` only: the engine's account of the call, and why it asked. */
   description?: string
@@ -261,7 +269,7 @@ export interface EngineSpec {
   control?: {
     open(): string
     answer(requestId: string, allow: boolean, input: Record<string, unknown>): string
-    setMode(mode: PermissionMode): string
+    setMode(requestId: string, mode: PermissionMode): string
     unsupported(requestId: string): string
   }
 }
@@ -347,6 +355,10 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // nowhere to come from and was then refused, which is most of why a turn
     // in Cockpit ran longer than the same turn anywhere else.
     '--permission-mode', ctx.permissionMode ?? 'acceptEdits',
+    // Without it the engine refuses a switch *into* bypassPermissions on a
+    // running process, and the composer offers that switch mid-turn. It makes
+    // the mode reachable, not active: what runs is still `--permission-mode`.
+    '--allow-dangerously-skip-permissions',
     '--permission-prompt-tool', 'stdio',
     // What the two flags above actually forbid, in words the engine reads
     // before it writes its first command rather than after.
@@ -486,7 +498,11 @@ const claudeEngine: EngineSpec = {
     if (!o) return []
     const type = String(o.type ?? '')
 
-    if (type === 'system' && o.subtype === 'init') return [{ kind: 'ready' }]
+    // Its own word for the mode, which is not always the one it was given: an
+    // Auto the model cannot run falls back to asking, and says so only here.
+    const said = type === 'system' && (o.subtype === 'init' || o.subtype === 'status') ? engineMode(o.permissionMode) : null
+    if (type === 'system' && o.subtype === 'init') return said ? [{ kind: 'ready' }, { kind: 'mode', mode: said }] : [{ kind: 'ready' }]
+    if (said) return [{ kind: 'mode', mode: said }]
 
     // No assistant message follows a compaction, so without this the meter
     // would go on reading the last call before it — a window at 80% that is
@@ -495,6 +511,13 @@ const claudeEngine: EngineSpec = {
       const m = (o.compact_metadata ?? {}) as { pre_tokens?: unknown; post_tokens?: unknown }
       const n = (v: unknown): number => (typeof v === 'number' && isFinite(v) ? v : 0)
       return [{ kind: 'compacted', preTokens: n(m.pre_tokens), contextTokens: n(m.post_tokens) }]
+    }
+
+    if (type === 'control_response') {
+      const r = (o.response ?? {}) as Record<string, unknown>
+      const requestId = String(r.request_id ?? '')
+      if (r.subtype !== 'error') return [{ kind: 'control_done', requestId }]
+      return [{ kind: 'control_error', requestId, text: String(r.error ?? 'refused') }]
     }
 
     if (type === 'control_request') {
@@ -638,10 +661,10 @@ const claudeEngine: EngineSpec = {
             : { behavior: 'deny', message: 'The person reviewing this refused it. Do not retry it as is.' },
         },
       }),
-    setMode: (mode) =>
+    setMode: (requestId, mode) =>
       JSON.stringify({
         type: 'control_request',
-        request_id: newId('mode_'),
+        request_id: requestId,
         request: { subtype: 'set_permission_mode', mode },
       }),
     unsupported: (requestId) =>
@@ -650,6 +673,13 @@ const claudeEngine: EngineSpec = {
         response: { subtype: 'error', request_id: requestId, error: 'not supported by this host' },
       }),
   },
+}
+
+/** The engine calls Manual `default`; everything else is spelled as we spell it. */
+function engineMode(v: unknown): PermissionMode | null {
+  if (v === 'default') return 'manual'
+  const known: PermissionMode[] = ['auto', 'manual', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions']
+  return known.includes(v as PermissionMode) ? (v as PermissionMode) : null
 }
 
 /** A command's own failure, arriving HTML-escaped inside the engine's tags. */
@@ -830,11 +860,25 @@ interface Live {
   /** A turn is in flight: the next one queues instead of being written. */
   busy: boolean
   /** What a tool was called with, kept until its result comes back. */
-  calls: Map<string, { tool: string; input: Record<string, unknown> }>
+  calls: Map<string, { tool: string; input: Record<string, unknown>; mode: PermissionMode }>
+  /** Calls the engine asked a person about, by tool use id — see `ranUnasked`. */
+  asked: Set<string>
+  /**
+   * The mode as the engine last reported it. What `mode` asked for and what
+   * runs can differ — an Auto the model cannot do falls back to asking — and
+   * whether a call was waved through is a question about what ran.
+   */
+  engineMode: PermissionMode | null
   /** Calls waiting on a person, by request id, in the order they were asked. */
   pending: Map<string, PermissionRequest>
   /** The mode the process is in now, so a change is sent once and only once. */
   mode: PermissionMode
+  /**
+   * Mode changes the engine has not answered yet, by request id, each with
+   * the mode it replaced. A refusal puts that one back: believing a switch the
+   * engine turned down is how a conversation reads as Manual and runs as Auto.
+   */
+  modeAsked: Map<string, PermissionMode>
   /** §6 — the countdown to letting the process go. See `armIdleTimer`. */
   idle: NodeJS.Timeout | null
   /** §16 — what the turn in flight has reported, until its row is written. */
@@ -1730,8 +1774,11 @@ async function launch(
     anchor: null,
     busy: true,
     calls: new Map(),
+    asked: new Set(),
+    engineMode: null,
     pending: new Map(),
     mode: ctx.permissionMode ?? 'acceptEdits',
+    modeAsked: new Map(),
     idle: null,
   }
   live.set(session.id, l)
@@ -1819,7 +1866,7 @@ async function launch(
         case 'tool': {
           const id = ev.toolUseId ?? ''
           const input = ev.input ?? {}
-          l.calls.set(id, { tool: ev.tool ?? 'tool', input })
+          l.calls.set(id, { tool: ev.tool ?? 'tool', input, mode: l.engineMode ?? l.mode })
           append({
             type: 'agent.tool_use',
             actor,
@@ -1844,6 +1891,10 @@ async function launch(
           const id = ev.toolUseId ?? ''
           const call = l.calls.get(id)
           l.calls.delete(id)
+          const asked = l.asked.delete(id)
+          // A refusal did not run, so nothing went through unasked.
+          const refused = !!ev.isError && /has been denied/i.test(ev.stdout ?? '')
+          const unasked = call && !refused ? ranUnasked(call.tool, call.input, call.mode, asked) : null
           append({
             type: 'agent.tool_result',
             level: ev.isError ? 'warn' : 'info',
@@ -1858,6 +1909,8 @@ async function launch(
               stderr: (ev.stderr ?? '').slice(0, 2000),
               isError: !!ev.isError,
               interrupted: !!ev.interrupted,
+              // Absent rather than null when it was not: most calls are not.
+              ...(unasked ? { unasked } : {}),
             },
           })
           changed = true
@@ -1868,6 +1921,7 @@ async function launch(
         case 'permission': {
           const id = ev.requestId ?? ''
           if (!id || !spec.control) break
+          if (ev.toolUseId) l.asked.add(ev.toolUseId)
           l.pending.set(id, {
             id,
             tool: ev.tool ?? 'tool',
@@ -1889,6 +1943,32 @@ async function launch(
         case 'control':
           if (ev.requestId && spec.control) child.stdin?.write(spec.control.unsupported(ev.requestId) + '\n')
           break
+
+        case 'mode':
+          if (ev.mode) l.engineMode = ev.mode
+          break
+
+        case 'control_done':
+          l.modeAsked.delete(ev.requestId ?? '')
+          break
+
+        case 'control_error': {
+          const was = l.modeAsked.get(ev.requestId ?? '')
+          if (was === undefined) break
+          l.modeAsked.delete(ev.requestId!)
+          // Only when nothing newer has been asked since: a later switch that
+          // succeeded is the mode now, whatever became of this one.
+          if (!l.modeAsked.size) l.mode = was
+          append({
+            type: 'agent.output',
+            level: 'warn',
+            actor,
+            workspaceId,
+            payload: { text: 'The mode did not change — ' + (ev.text || 'the engine refused it') + '. Still in ' + l.mode + '.' },
+          })
+          changed = true
+          break
+        }
 
         // §16 — kept on the live conversation until `end` writes the row: the
         // turn is not over, and a half-finished turn has no cost to record.
@@ -2268,13 +2348,7 @@ export async function send(
   }
 
   const ultracode = opts ? opts.effort === ULTRACODE : l.ultracode
-  // The mode is the one launch setting a running process can take: said now,
-  // it applies from this turn on rather than waiting for the next launch.
-  const mode = opts ? modeOf(opts) : l.mode
-  if (mode !== l.mode && l.spec.control) {
-    l.child.stdin?.write(l.spec.control.setMode(mode) + '\n')
-    l.mode = mode
-  }
+  if (opts) switchMode(l, modeOf(opts))
   if (l.busy) {
     l.queue.push({ prompt: text, files, ultracode })
     agentBus.emit('changed')
@@ -2284,6 +2358,31 @@ export async function send(
   l.queue.push({ prompt: text, files, ultracode })
   await flushQueue(l)
   return { ok: true, queued: false }
+}
+
+/**
+ * The mode is the one launch setting a running process can take: said, it
+ * applies from the engine's next decision on — the rest of a turn in flight
+ * included — rather than waiting for the next launch.
+ */
+function switchMode(l: Live, mode: PermissionMode): void {
+  if (mode === l.mode || !l.spec.control) return
+  const requestId = newId('mode_')
+  l.modeAsked.set(requestId, l.mode)
+  l.child.stdin?.write(l.spec.control.setMode(requestId, mode) + '\n')
+  l.mode = mode
+  // What was asked for stands until the engine says otherwise.
+  l.engineMode = null
+}
+
+/**
+ * The composer's mode, picked while a conversation is open. Nothing to do for
+ * a conversation with no process: its next launch reads the composer.
+ */
+export function setMode(sessionId: string, mode: PermissionMode): { ok: true } {
+  const l = live.get(sessionId)
+  if (l) switchMode(l, mode)
+  return { ok: true }
 }
 
 /** The calls waiting on a person, oldest first. */

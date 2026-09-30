@@ -1415,7 +1415,12 @@ function loadComposer(): void {
     // been paying for it; anything else they picked is theirs and is restored.
     if (raw.effort && !(raw.defaults === undefined && raw.effort === 'high'))
       state.engineOptions.effort = raw.effort
-    if (raw.permissionMode === 'auto' || raw.permissionMode === 'manual' || raw.permissionMode === 'acceptEdits')
+    // Plan is a decision about one question and bypassPermissions one about
+    // one sitting; neither is restored into a window opened tomorrow.
+    if (
+      raw.permissionMode === 'auto' || raw.permissionMode === 'manual' ||
+      raw.permissionMode === 'acceptEdits' || raw.permissionMode === 'dontAsk'
+    )
       state.engineOptions.permissionMode = raw.permissionMode
     if (Array.isArray(raw.history)) state.promptHistory = raw.history.filter((x) => typeof x === 'string')
   } catch {
@@ -4682,6 +4687,21 @@ export async function sendTurn(
     return true
   }
   return resumeSession(sessionId, prompt, files)
+}
+
+/**
+ * The composer's mode, picked with a conversation open.
+ *
+ * Said to its engine at once rather than with the next turn: switching Auto to
+ * Manual while the agent is working means the rest of *this* turn. A refusal —
+ * leaving Plan on a protected branch — puts the composer back where it was.
+ */
+export async function switchMode(sessionId: string, mode: PermissionMode, was: PermissionMode): Promise<void> {
+  const res = await guard(() => client.call('agent.mode', { sessionId, mode }))
+  if (!res || res.ok) return
+  state.engineOptions.permissionMode = was
+  saveComposer()
+  toast('error', res.reason)
 }
 
 /* ── §16, the undo ──────────────────────────────────────────────────────── */

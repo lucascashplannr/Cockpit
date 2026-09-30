@@ -4,7 +4,7 @@ import type {
   // Aliased: the component that draws one is `Attachment` too, and the file
   // needs both in the same scope.
   Attachment as AttachedFile,
-  AgentScopePreview, Conversation, AgentTurn, Workspace,
+  AgentScopePreview, Conversation, AgentTurn, PermissionMode, Workspace,
 } from '@cockpit/shared'
 import {
   ArrowDown, Asterisk, Check, Clock, Copy, FoldVertical, Gauge, Hand, Lock, Paperclip,
@@ -144,6 +144,8 @@ type Item =
       input: Record<string, unknown>
       result: { stdout: string; stderr: string; isError: boolean; interrupted: boolean } | null
       denied: boolean
+      /** The mode that let it run without the question Manual would have asked. */
+      unasked: PermissionMode | null
     }
   /** §16 — a turn's work put back. It happened to the code, so it is in the
    *  thread rather than only in a toast that has since gone. */
@@ -277,6 +279,7 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
         input: p?.input ?? {},
         result: null,
         denied: false,
+        unasked: null,
       }
       if (p?.toolUseId) byCall.set(p.toolUseId, item)
       into.push(item)
@@ -289,6 +292,7 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
         stderr?: string
         isError?: boolean
         interrupted?: boolean
+        unasked?: PermissionMode
       }
       const call = p?.toolUseId ? byCall.get(p.toolUseId) : undefined
       // A result whose call fell off the end of the kept journal is dropped
@@ -303,6 +307,7 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
         interrupted: !!p?.interrupted,
       }
       call.denied = !!p?.isError && DENIED.test(stdout)
+      call.unasked = p?.unasked ?? null
     }
   }
   return buckets
@@ -1385,6 +1390,7 @@ function ago(ts: number): string {
                 :input="r.call.input"
                 :result="r.call.result"
                 :denied="r.call.denied"
+                :unasked="r.call.unasked"
                 :live="x.turn.status === 'running'"
               />
               <ToolGroup

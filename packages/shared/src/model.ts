@@ -863,10 +863,13 @@ export interface AgentTurn {
  * `auto` lets the engine's own classifier approve what is safe and asks about
  * the rest; `manual` asks about anything that writes or runs; `acceptEdits`
  * takes file edits without asking and asks about commands; `plan` reads and
- * proposes, and writes nothing (§3.7). `git push` and `git commit` are refused
- * in every one of them — that is `DEFAULT_DENY`, not the mode.
+ * proposes, and writes nothing (§3.7); `dontAsk` never asks, and refuses
+ * whatever it would have asked about; `bypassPermissions` never asks, and runs
+ * everything. `git push` and `git commit` are refused in every one of them —
+ * that is `DEFAULT_DENY`, not the mode, and deny rules are read before the
+ * mode is.
  */
-export type PermissionMode = 'auto' | 'manual' | 'acceptEdits' | 'plan'
+export type PermissionMode = 'auto' | 'manual' | 'acceptEdits' | 'plan' | 'dontAsk' | 'bypassPermissions'
 
 /**
  * A tool call the engine will not make until a person says yes.

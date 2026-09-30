@@ -2,8 +2,10 @@
 import { computed, ref } from 'vue'
 import {
   ChevronRight, CircleAlert, FileCode, FilePen, FilePlus, Hand, ListChecks, Search,
-  SquareTerminal, Terminal,
+  SquareTerminal, Terminal, Zap,
 } from '@lucide/vue'
+import type { PermissionMode } from '@cockpit/shared'
+import { unaskedTitle } from './unasked.js'
 
 /**
  * One thing the agent did, in the terms of the thing it did.
@@ -23,6 +25,12 @@ const props = defineProps<{
   /** Absent while the call is still running — or never journalled: see `live`. */
   result: { stdout: string; stderr: string; isError: boolean; interrupted: boolean } | null
   denied: boolean
+  /**
+   * The mode that let this run without the question Manual would have asked.
+   * Findable, not announced: a mark at the weight of the dimmest thing on the
+   * line, which says what it means on hover.
+   */
+  unasked?: PermissionMode | null
   /**
    * Whether the turn this belongs to is still going.
    *
@@ -164,6 +172,7 @@ const expandable = computed(
       <span v-else-if="pending" class="tag run">running</span>
       <span v-else-if="orphan" class="tag none">no outcome recorded</span>
       <span v-else-if="failed" class="tag bad"><CircleAlert class="xs" /> failed</span>
+      <span v-if="unasked && !denied" class="unasked" :title="unaskedTitle(unasked)"><Zap class="xs" /></span>
       <ChevronRight v-if="expandable" class="xs chev" :class="{ turned: open }" />
     </button>
 
@@ -265,6 +274,9 @@ const expandable = computed(
 .tag.bad { color: var(--danger); }
 .tag.run { color: var(--text-dim); }
 .tag.none { color: var(--text-dim); font-style: italic; }
+/* The quietest thing on the line: there to be found, not to be noticed. */
+.unasked { flex: none; display: inline-flex; align-items: center; color: var(--text-dim); opacity: 0.8; }
+.unasked:hover { opacity: 1; }
 .xs { width: 11px; height: 11px; }
 .chev { flex: none; color: var(--text-dim); transition: transform var(--dur-1) var(--ease-soft); }
 .chev.turned { transform: rotate(90deg); }

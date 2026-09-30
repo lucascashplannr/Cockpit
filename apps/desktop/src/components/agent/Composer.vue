@@ -3,12 +3,12 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { CornerDownLeft, FileCode, FileText, Paperclip, Square, SquareSlash, UnfoldVertical, X } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachFiles, attachText, client, dataUrl, detachFile, engineName, guard,
-  isLongPaste, openDraftFiles, placedHandles, saveComposer, state,
+  isLive, isLongPaste, openDraftFiles, placedHandles, saveComposer, state, switchMode,
 } from '../../core/store.js'
 import {
   AGENT_COMMANDS, ANCHOR_PAD, CLAUDE_MODELS, COMMAND_ENGINES, anchorOf, anchorWritten, splitPrompt,
 } from '@cockpit/shared'
-import type { AgentCommand, Conversation } from '@cockpit/shared'
+import type { AgentCommand, Conversation, PermissionMode } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
@@ -482,11 +482,21 @@ const PERMISSIONS: Option[] = [
   { id: 'manual', label: 'Manual', hint: 'Always ask before making changes' },
   { id: 'acceptEdits', label: 'Accept edits', hint: 'Automatically accept all file edits' },
   { id: 'plan', label: 'Plan', hint: 'Create a plan before making changes' },
+  { id: 'dontAsk', label: 'Don’t ask', hint: 'Refuse anything that would need asking' },
+  { id: 'bypassPermissions', label: 'Bypass', hint: 'Run everything without asking' },
 ]
 const plan = computed(() => state.engineOptions.permissionMode === 'plan')
+/**
+ * Applies to the open conversation straight away, turn in flight included —
+ * not with the next question. The box is global; the process is not, so a
+ * conversation opened later picks the mode up on its next turn.
+ */
 function pickPermission(id: string): void {
-  state.engineOptions.permissionMode = id as typeof state.engineOptions.permissionMode
+  const was = state.engineOptions.permissionMode
+  const mode = id as PermissionMode
+  state.engineOptions.permissionMode = mode
   saveComposer()
+  if (props.session && isLive(props.session) && mode !== was) void switchMode(props.session.id, mode, was)
 }
 
 /* ── what comes in with the question ──────────────────────────────────────

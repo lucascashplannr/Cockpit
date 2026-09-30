@@ -4,7 +4,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { PROTOCOL_VERSION } from '@cockpit/shared'
 import type {
   AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
-  ProjectSettings, ServerBoardRow, ServerPush, Workspace,
+  PermissionMode, ProjectSettings, ServerBoardRow, ServerPush, Workspace,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, forSession, tail } from './journal.js'
@@ -755,6 +755,12 @@ const handlers: Record<string, Handler> = {
     const r = await agents.send(p.sessionId, p.prompt, p.attachments, p.options)
     if (r.ok) pushAgentActivity()
     return r
+  },
+  'agent.mode': (p: { sessionId: string; mode: PermissionMode }) => {
+    const c = agents.get(p.sessionId)
+    const refusal = c && agentRefusal(sessionWorkspaces(c.workspaceIds), p.mode)
+    if (refusal) return { ok: false as const, reason: refusal }
+    return agents.setMode(p.sessionId, p.mode)
   },
   'agent.permission': (p: { sessionId: string; requestId: string; allow: boolean }) => {
     const r = agents.answerPermission(p.sessionId, p.requestId, p.allow)

@@ -845,10 +845,23 @@ export interface Rpc {
       sessionId: string
       prompt: string
       attachments?: AttachmentInput[]
-      /** The composer as it is now; only Ultracode takes effect mid-conversation. */
+      /** The composer as it is now; Ultracode and the mode take effect mid-conversation. */
       options?: EngineOptions
     }
     result: { ok: true; queued: boolean } | { ok: false; reason: string }
+  }
+  /**
+   * The composer's mode, said to a conversation whose engine is running.
+   *
+   * Applied the moment it is picked, turn in flight or not: a person who
+   * switches Auto to Manual halfway through a turn means the rest of that
+   * turn. Refused on a protected branch for anything but Plan, as a turn
+   * would be. A conversation with no process has nothing to tell; its next
+   * launch reads the composer anyway, so that is `{ ok: true }` too.
+   */
+  'agent.mode': {
+    params: { sessionId: string; mode: PermissionMode }
+    result: { ok: true } | { ok: false; reason: string }
   }
   /**
    * The answer to one of `Conversation.pending`. A refusal goes back to the

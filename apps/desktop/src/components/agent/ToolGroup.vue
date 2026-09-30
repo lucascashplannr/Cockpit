@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ChevronRight, CircleAlert, Hand } from '@lucide/vue'
+import { ChevronRight, CircleAlert, Hand, Zap } from '@lucide/vue'
+import type { PermissionMode } from '@cockpit/shared'
 import ToolCall from './ToolCall.vue'
+import { unaskedTitle } from './unasked.js'
 
 /**
  * A run of calls, as one sentence — however few of them there are.
@@ -29,6 +31,7 @@ export interface Call {
   input: Record<string, unknown>
   result: { stdout: string; stderr: string; isError: boolean; interrupted: boolean } | null
   denied: boolean
+  unasked?: PermissionMode | null
 }
 
 const props = defineProps<{
@@ -40,6 +43,17 @@ const props = defineProps<{
 
 const failed = computed(() => props.calls.filter((c) => c.denied || c.result?.isError))
 const pending = computed(() => (props.live === false ? [] : props.calls.filter((c) => !c.result)))
+
+/**
+ * What went through that Manual would have stopped, counted on the folded line
+ * — the calls are folded, so a mark only on each of them would be a mark
+ * nobody unfolds to find.
+ */
+const unasked = computed(() => props.calls.filter((c) => c.unasked && !c.denied))
+const unaskedHint = computed(() => {
+  const modes = [...new Set(unasked.value.map((c) => c.unasked!))]
+  return unaskedTitle(modes.length === 1 ? modes[0]! : null, unasked.value.length)
+})
 
 const open = ref(false)
 const shown = computed(() => (open.value ? props.calls : []))
@@ -160,6 +174,7 @@ const stat = computed(() => {
         <i class="add">+{{ stat.add }}</i><i class="del">−{{ stat.del }}</i>
       </span>
       <span class="grow" />
+      <span v-if="unasked.length" class="unasked" :title="unaskedHint"><Zap class="xs" />{{ unasked.length }}</span>
       <span v-if="failed.some((c) => c.denied)" class="tag warn"><Hand class="xs" /> refused</span>
       <span v-else-if="failed.length" class="tag bad"><CircleAlert class="xs" /> failed</span>
       <span v-else-if="pending.length" class="dots"><i /><i /><i /></span>
@@ -173,6 +188,7 @@ const stat = computed(() => {
         :input="c.input"
         :result="c.result"
         :denied="c.denied"
+        :unasked="c.unasked"
         :live="live"
       />
     </div>
@@ -225,6 +241,18 @@ const stat = computed(() => {
 .tag.warn { color: var(--warn); }
 .tag.bad { color: var(--danger); }
 .xs { width: 11px; height: 11px; }
+/* See ToolCall's: findable on hover, never louder than the summary. */
+.unasked {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+.line:hover .unasked { opacity: 1; }
 
 .dots { display: inline-flex; gap: 3px; }
 .dots i {
@@ -242,6 +270,9 @@ const stat = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* A breath under the header, a touch less than between the calls: the calls
+     are its detail, not its siblings. */
+  margin-top: 4px;
   margin-left: 14px;
   padding-left: 8px;
   border-left: 1px solid var(--line-soft);
