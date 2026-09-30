@@ -5,12 +5,12 @@ import type { Component } from 'vue'
 import {
   Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, Code, Columns2, Eye, FileCode, Rows2, GitBranch, LoaderCircle,
   ChevronUp, GitCommitHorizontal, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
-  Copy, FolderOpen, Info, Undo2, User, UsersRound,
+  Copy, FilePen, FolderOpen, Info, Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, openFileAt, resetPlaceWidth,
   resetCommitHeight, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
@@ -867,6 +867,32 @@ async function openInIde() {
   )
 }
 
+/**
+ * §12 — a review that finds a typo should not need an IDE to fix it. The Code
+ * tool opens on the file, at the line asked for, or at the first thing that
+ * changed: that is the line the reader was about to look at anyway.
+ */
+const editable = computed(() => !!selected.value && selectedFile.value?.status !== 'D')
+function editInCode(line: number | null = null) {
+  if (!editable.value) return
+  const lines = current.value?.lines ?? []
+  const at = line ?? lines.find((l) => l.kind === 'add')?.newLine ?? lines.find((l) => l.newLine)?.newLine ?? null
+  openFileAt(props.workspace.id, selected.value!, at)
+}
+
+/**
+ * A removed line has no number in the new file, so it lands on the line that
+ * took its place — the next one that does, or the last one before it at the
+ * end of the file.
+ */
+function nearestNew(nums: (number | null)[], i: number): number | null {
+  for (let k = i; k < nums.length; k++) if (nums[k] != null) return nums[k]!
+  for (let k = i - 1; k >= 0; k--) if (nums[k] != null) return nums[k]!
+  return null
+}
+const unifiedNew = computed(() => (current.value?.lines ?? []).map((l) => (l.kind === 'meta' ? null : l.newLine)))
+const splitNew = computed(() => splitRows.value.map((r) => ('meta' in r ? null : r.right.num)))
+
 watch(() => props.workspace.id, load, { immediate: true })
 // The core re-pushes workspaces whenever the watcher fires; refresh with it.
 watch(
@@ -1349,6 +1375,15 @@ const mark: Record<string, Component> = {
         <!-- Each carries its icon and its word; when the column cannot spare
              the room, the words go and the path keeps it. The title and the
              aria-label still say what the icon means. -->
+        <button
+          v-if="editable"
+          class="btn ghost vbtn"
+          title="Edit here, in Code"
+          aria-label="Edit in Code"
+          @click="editInCode()"
+        >
+          <FilePen /><span class="vlabel">Edit</span>
+        </button>
         <button class="btn ghost vbtn" title="Open in IDE" aria-label="Open in IDE" @click="openInIde">
           <SquareArrowOutUpRight /><span class="vlabel">Open in IDE</span>
         </button>
@@ -1393,12 +1428,22 @@ const mark: Record<string, Component> = {
           </div>
           <div v-else class="sxs">
             <div class="line" :class="r.left.kind">
-              <span class="gutter num">{{ r.left.num ?? '' }}</span>
+              <span
+                class="gutter num"
+                :class="{ jump: editable }"
+                :title="editable ? 'Edit from here' : undefined"
+                @click="editable && editInCode(nearestNew(splitNew, i))"
+              >{{ r.left.num ?? '' }}</span>
               <span class="sign">{{ r.left.kind === 'del' ? '−' : ' ' }}</span>
               <span class="txt">{{ r.left.text }}</span>
             </div>
             <div class="line" :class="r.right.kind">
-              <span class="gutter num">{{ r.right.num ?? '' }}</span>
+              <span
+                class="gutter num"
+                :class="{ jump: editable }"
+                :title="editable ? 'Edit from here' : undefined"
+                @click="editable && editInCode(nearestNew(splitNew, i))"
+              >{{ r.right.num ?? '' }}</span>
               <span class="sign">{{ r.right.kind === 'add' ? '+' : ' ' }}</span>
               <span class="txt">{{ r.right.text }}</span>
             </div>
@@ -1408,8 +1453,24 @@ const mark: Record<string, Component> = {
 
       <div class="hunks mono" v-else-if="current && current.lines.length">
         <div v-for="(l, i) in current.lines" :key="i" class="line" :class="l.kind">
-          <span class="gutter num">{{ l.oldLine ?? '' }}</span>
-          <span class="gutter num">{{ l.newLine ?? '' }}</span>
+          <template v-if="l.kind === 'meta'">
+            <span class="gutter num" />
+            <span class="gutter num" />
+          </template>
+          <template v-else>
+            <span
+              class="gutter num"
+              :class="{ jump: editable }"
+              :title="editable ? 'Edit from here' : undefined"
+              @click="editable && editInCode(nearestNew(unifiedNew, i))"
+            >{{ l.oldLine ?? '' }}</span>
+            <span
+              class="gutter num"
+              :class="{ jump: editable }"
+              :title="editable ? 'Edit from here' : undefined"
+              @click="editable && editInCode(nearestNew(unifiedNew, i))"
+            >{{ l.newLine ?? '' }}</span>
+          </template>
           <span class="sign">{{ l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' ' }}</span>
           <span class="txt">{{ l.text }}</span>
           <button
@@ -1938,6 +1999,10 @@ const mark: Record<string, Component> = {
   transition: width var(--dur-1) var(--ease-soft);
 }
 .gutter + .gutter { width: 34px; }
+/* A number is also the way into the editor at that line; it says so only
+   when the pointer is on it. */
+.gutter.jump { cursor: pointer; }
+.gutter.jump:hover { color: var(--accent); opacity: 1; }
 /* Narrow, the hunk has the whole panel and the numbers should not take a
    quarter of it back. */
 .diff.narrow .gutter { width: 30px; padding-right: 6px; }

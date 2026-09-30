@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
@@ -11,8 +11,14 @@ import { css } from '@codemirror/lang-css'
 import { html } from '@codemirror/lang-html'
 import { php } from '@codemirror/lang-php'
 import type { FileEntry, Workspace } from '@cockpit/shared'
-import { ChevronDown, ChevronRight, File, FileCode, Folder, Save, Search } from '@lucide/vue'
-import { client, guard, state, stopSaveOnProtected, toast } from '../../core/store.js'
+import {
+  ChevronDown, ChevronRight, Copy, File, FileCode, Folder, FolderOpen, Info, Save, Search,
+} from '@lucide/vue'
+import Splitter from '../Splitter.vue'
+import {
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, client, guard, layout, resetPlaceWidth, savePlaceWidth, setColumnWidth, state,
+  stopSaveOnProtected, toast,
+} from '../../core/store.js'
 
 /**
  * §12 — "Périmètre assumé : voir, naviguer, éditer manuellement. Pas de
@@ -22,6 +28,43 @@ import { client, guard, state, stopSaveOnProtected, toast } from '../../core/sto
  */
 
 const props = defineProps<{ workspace: Workspace }>()
+
+/* ── the tree against the editor ──────────────────────────────────────────
+ *
+ * Beside it when there is room, above it when there is not — under 620px a
+ * tree column would leave the editor too little to be worth opening. Either
+ * way the line between them is a handle, and where it was left belongs to the
+ * place (see `savePlaceWidth`): the width and the height are kept apart, since
+ * the one says nothing about the other.
+ *
+ * Measured here rather than by the container query in ReviewTools that used
+ * to stack it: the handle has to know which of the two it is moving.
+ */
+const root = ref<HTMLElement | null>(null)
+const stacked = ref(false)
+const panelW = ref(0)
+const panelH = ref(0)
+const treeMax = computed(() => Math.max(LAYOUT_LIMITS.tree.min, Math.min(LAYOUT_LIMITS.tree.max, panelW.value - 320)))
+const treeHMax = computed(() =>
+  Math.max(LAYOUT_LIMITS.treeHeight.min, Math.min(LAYOUT_LIMITS.treeHeight.max, panelH.value - 140)),
+)
+const treeW = computed(() => Math.min(layout.tree, treeMax.value))
+const treeH = computed(() => Math.min(layout.treeHeight, treeHMax.value))
+/** Where the line holds on the way past: half, and the default. */
+const treeSnaps = computed(() => [Math.round(panelW.value / 2), LAYOUT_DEFAULTS.tree])
+const treeHSnaps = computed(() => [Math.round(panelH.value / 2), LAYOUT_DEFAULTS.treeHeight])
+
+let ro: ResizeObserver | null = null
+onMounted(() => {
+  ro = new ResizeObserver(([e]) => {
+    if (!e) return
+    stacked.value = e.contentRect.width < 620
+    panelW.value = e.contentRect.width
+    panelH.value = e.contentRect.height
+  })
+  if (root.value) ro.observe(root.value)
+})
+onBeforeUnmount(() => ro?.disconnect())
 
 interface Node {
   entry: FileEntry
@@ -193,6 +236,85 @@ async function save() {
 watch(() => props.workspace.id, loadRoot, { immediate: true })
 watch(() => state.codeRequest, takeRequest)
 
+/* ── about the file ───────────────────────────────────────────────────────
+ *
+ * As in the Diff: the header carries the name, and the rest — where it lives,
+ * how long it is, when it last moved — is one click away. The numbers are
+ * read off the editor when the panel opens, so they count what is on screen,
+ * unsaved edits included.
+ */
+const detailRoot = ref<HTMLElement | null>(null)
+const detailOpen = ref(false)
+const detail = ref<{ lines: number; bytes: number } | null>(null)
+
+function baseName(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1)
+}
+
+function toggleDetail() {
+  detailOpen.value = !detailOpen.value
+  const doc = view.value?.state.doc
+  detail.value = detailOpen.value && doc
+    ? { lines: doc.lines, bytes: new TextEncoder().encode(doc.toString()).length }
+    : null
+}
+
+function bytes(n: number): string {
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  return (n / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+function since(ts: number): string {
+  const m = Math.max(0, Math.round((Date.now() - ts) / 60_000))
+  if (m < 1) return 'just now'
+  if (m < 60) return m + 'm ago'
+  const h = Math.round(m / 60)
+  if (h < 24) return h + 'h ago'
+  return Math.round(h / 24) + 'd ago'
+}
+
+async function copyPath() {
+  if (!openPath.value) return
+  await navigator.clipboard.writeText(openPath.value)
+  detailOpen.value = false
+  toast('info', 'Path copied')
+}
+
+async function revealFolder() {
+  const path = openPath.value
+  if (!path) return
+  detailOpen.value = false
+  const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : undefined
+  await guard(() =>
+    client.call('workspace.openIn', {
+      workspaceId: props.workspace.id,
+      target: 'finder',
+      ...(dir ? { path: dir } : {}),
+    }),
+  )
+}
+
+watch(openPath, () => {
+  detailOpen.value = false
+  detail.value = null
+})
+
+function onDocDown(e: MouseEvent) {
+  if (detailRoot.value && !detailRoot.value.contains(e.target as globalThis.Node)) detailOpen.value = false
+}
+function onDocKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') detailOpen.value = false
+}
+onMounted(() => {
+  document.addEventListener('mousedown', onDocDown)
+  document.addEventListener('keydown', onDocKey)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocDown)
+  document.removeEventListener('keydown', onDocKey)
+})
+
 /** The palette, opened on files — the button says what ⌘P does. */
 function openFinder() {
   state.paletteSeed = '/'
@@ -202,7 +324,12 @@ onBeforeUnmount(() => view.value?.destroy())
 </script>
 
 <template>
-  <div class="code">
+  <div
+    ref="root"
+    class="code"
+    :class="{ stacked }"
+    :style="{ '--tree-w': treeW + 'px', '--tree-h': treeH + 'px' }"
+  >
     <aside class="tree">
       <div class="ttop">
         <span class="section-label">files</span>
@@ -236,13 +363,80 @@ onBeforeUnmount(() => view.value?.destroy())
       </div>
     </aside>
 
+    <Splitter
+      v-if="!stacked"
+      :style="{ left: treeW - 3 + 'px' }"
+      :size="treeW"
+      :min="LAYOUT_LIMITS.tree.min"
+      :max="treeMax"
+      grows="right"
+      :snap="treeSnaps"
+      label="Width of the file tree"
+      @resize="setColumnWidth('tree', $event)"
+      @done="savePlaceWidth('tree')"
+      @reset="resetPlaceWidth('tree')"
+    />
+    <Splitter
+      v-else
+      :size="treeH"
+      :min="LAYOUT_LIMITS.treeHeight.min"
+      :max="treeHMax"
+      grows="down"
+      :snap="treeHSnaps"
+      label="Height of the file tree"
+      @resize="setColumnWidth('treeHeight', $event)"
+      @done="savePlaceWidth('treeHeight')"
+      @reset="resetPlaceWidth('treeHeight')"
+    />
+
     <div class="editor">
       <div class="ehead" v-if="openPath">
-        <span class="mono ep">{{ openPath }}</span>
-        <span v-if="dirty" class="chip warn">unsaved</span>
+        <!-- The name alone, as in the Diff: the folders are in the tree beside
+             it, and the rest is one click away. -->
+        <div ref="detailRoot" class="ename">
+          <span class="mono ep" :title="openPath">{{ baseName(openPath) }}</span>
+          <!-- Unsaved is a mark on the name it is about, as every editor tab
+               has it — not a badge floating somewhere in the header. -->
+          <span v-if="dirty" class="edirty" title="Unsaved changes" aria-label="Unsaved changes" />
+          <button
+            class="icon-btn einfo"
+            :class="{ on: detailOpen }"
+            title="About this file"
+            aria-label="About this file"
+            :aria-expanded="detailOpen"
+            @click="toggleDetail"
+          >
+            <Info />
+          </button>
+          <div v-if="detailOpen" class="menu edetail" role="dialog" aria-label="About this file">
+            <div class="dpath mono selectable">{{ openPath }}</div>
+            <dl class="dfacts">
+              <template v-if="detail">
+                <dt>Lines</dt>
+                <dd class="num">{{ detail.lines }}</dd>
+                <dt>Size</dt>
+                <dd class="num">{{ bytes(detail.bytes) }}</dd>
+              </template>
+              <template v-if="openMtime">
+                <dt>Modified</dt>
+                <dd>{{ since(openMtime) }}</dd>
+              </template>
+            </dl>
+            <div class="rule" />
+            <button @click="copyPath"><Copy />Copy path</button>
+            <button @click="revealFolder"><FolderOpen />Open folder</button>
+          </div>
+        </div>
         <span class="grow" />
-        <button class="btn ghost" @click="save" :disabled="!dirty">
-          <Save />Save <span class="kbd">⌘S</span>
+        <button
+          class="icon-btn esave"
+          :class="{ due: dirty }"
+          :disabled="!dirty"
+          title="Save (⌘S)"
+          aria-label="Save"
+          @click="save"
+        >
+          <Save />
         </button>
       </div>
       <div v-show="openPath" ref="host" class="cm" />
@@ -256,14 +450,25 @@ onBeforeUnmount(() => view.value?.destroy())
 </template>
 
 <style scoped>
-.code { display: grid; grid-template-columns: 272px minmax(0, 1fr); height: 100%; }
+.code { position: relative; display: flex; height: 100%; }
+/* Stacked, the tree is a band across the top and the line under it is the
+   boundary — a border the eye can find, with the handle over it. */
+.code.stacked { flex-direction: column; }
 
 .tree {
+  flex: none;
+  width: var(--tree-w, 272px);
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--line);
   background: var(--surface-review);
   min-height: 0;
+}
+.code.stacked .tree {
+  width: auto;
+  height: var(--tree-h, 240px);
+  border-right: none;
+  border-bottom: 1px solid var(--line);
 }
 .ttop {
   display: flex;
@@ -306,14 +511,16 @@ onBeforeUnmount(() => view.value?.destroy())
 .gs { flex: none; font-size: 11px; font-weight: 700; color: var(--warn); }
 .gs\?\? { color: var(--text-dim); }
 
-.editor { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.editor { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; container: editor / inline-size; }
 .ehead {
   flex: none;
   display: flex;
   align-items: center;
   gap: 10px;
   height: 40px;
-  padding: 0 14px;
+  /* The right edge matches the tree's header, so Save and the file search
+     line up when the two are stacked. */
+  padding: 0 8px 0 14px;
   border-bottom: 1px solid var(--line);
 }
 .ep {
@@ -323,8 +530,45 @@ onBeforeUnmount(() => view.value?.destroy())
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ename { position: relative; min-width: 0; display: flex; align-items: center; gap: 2px; }
+.einfo { width: 24px; height: 24px; }
+.einfo .lucide { width: 13px; height: 13px; }
+.einfo.on { background: var(--active); color: var(--text); }
+.edetail {
+  top: calc(100% + 6px);
+  left: -6px;
+  width: 300px;
+  max-width: calc(100cqw - 16px);
+  padding: 10px 5px 5px;
+}
+.dpath {
+  padding: 0 9px;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.dfacts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 14px;
+  margin: 10px 0 4px;
+  padding: 0 9px;
+  font-size: var(--fs-xs);
+}
+.dfacts dt { color: var(--text-dim); }
+.dfacts dd { margin: 0; color: var(--text-muted); }
 .grow { flex: 1; }
-.ehead .btn { height: 26px; padding: 0 9px; font-size: var(--fs-xs); }
-.ehead .kbd { height: 17px; min-width: 17px; font-size: 10px; }
+.edirty {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 3px 0 5px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.esave { width: 26px; height: 26px; }
+.esave .lucide { width: 14px; height: 14px; }
+/* Only worth pressing when there is something to write; then it says so. */
+.esave.due { color: var(--accent); }
 .cm { flex: 1; min-height: 0; overflow: hidden; }
 </style>

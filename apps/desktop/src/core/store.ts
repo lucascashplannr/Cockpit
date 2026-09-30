@@ -1095,6 +1095,20 @@ export const LAYOUT_LIMITS = {
    */
   files: { min: 220, max: 4000 },
   /**
+   * The file tree against the editor, inside the Code tab — the same boundary
+   * as `files` in the Diff, and kept apart from it: a tree wants its depth, a
+   * change list wants its paths, and one width would be wrong for both. The
+   * tab sets the ceiling, keeping the editor its 320.
+   */
+  tree: { min: 160, max: 4000 },
+  /**
+   * The same tree when the panel is too narrow to lay it beside the editor and
+   * stacks it above instead. A height, so a number of its own: the width a
+   * tree was dragged to says nothing about how many rows it should show. The
+   * floor is a few rows; the tab keeps the editor its 140.
+   */
+  treeHeight: { min: 84, max: 4000 },
+  /**
    * The commit box under the file list in the Diff tab.
    *
    * A boundary one level down from the columns, and it earned a handle for the
@@ -1113,7 +1127,7 @@ export const LAYOUT_LIMITS = {
 }
 
 /** What a fresh install starts from, and what a double-click goes back to. */
-export const LAYOUT_DEFAULTS = { list: 340, review: 360, files: 300 }
+export const LAYOUT_DEFAULTS = { list: 340, review: 360, files: 300, tree: 272, treeHeight: 240 }
 
 export const layout = reactive(readLayout())
 
@@ -1127,6 +1141,8 @@ function readLayout(): {
   list: number
   review: number
   files: number
+  tree: number
+  treeHeight: number
   commit: number | null
   running: number | null
 } {
@@ -1138,6 +1154,8 @@ function readLayout(): {
       list: clampTo(raw.list ?? fallback.list, LAYOUT_LIMITS.list),
       review: clampTo(raw.review ?? fallback.review, LAYOUT_LIMITS.review),
       files: clampTo(raw.files ?? fallback.files, LAYOUT_LIMITS.files),
+      tree: clampTo(raw.tree ?? fallback.tree, LAYOUT_LIMITS.tree),
+      treeHeight: clampTo(raw.treeHeight ?? fallback.treeHeight, LAYOUT_LIMITS.treeHeight),
       commit:
         typeof raw.commit === 'number' ? clampTo(raw.commit, LAYOUT_LIMITS.commit) : null,
       running:
@@ -1153,7 +1171,7 @@ function clampTo(n: number, l: { min: number; max: number }): number {
 }
 
 /** Live during a drag; only written to disk when the pointer is let go. */
-export function setColumnWidth(which: 'list' | 'review' | 'files', px: number): void {
+export function setColumnWidth(which: keyof typeof LAYOUT_DEFAULTS, px: number): void {
   layout[which] = clampTo(px, LAYOUT_LIMITS[which])
 }
 
@@ -1181,15 +1199,16 @@ export function saveLayout(): void {
 }
 
 /** Double-clicking a divider: back to the width the app shipped with. */
-export function resetColumnWidth(which: 'list' | 'review' | 'files'): void {
+export function resetColumnWidth(which: keyof typeof LAYOUT_DEFAULTS): void {
   layout[which] = LAYOUT_DEFAULTS[which]
   saveLayout()
 }
 
 /**
  * §12 — the widths you drag belong to the place, like the view does (see
- * `viewByPlace`): the review against the conversation, and inside the Diff the
- * file list against the diff. How much room a repository's changes deserve is
+ * `viewByPlace`): the review against the conversation, inside the Diff the
+ * file list against the diff, and inside the Code tab the tree against the
+ * editor — beside it or, stacked, above it. How much room a repository's changes deserve is
  * a fact about that repository, so dragging a line here must not move it
  * anywhere else, and a place you have never sized opens at the width the app
  * ships with — not at whatever the last place was left at.
@@ -1197,11 +1216,11 @@ export function resetColumnWidth(which: 'list' | 'review' | 'files'): void {
  * Unlike the view they are kept across launches: a width you dragged is
  * configuration, the same as the rest of `layout`.
  */
-export type PlaceWidth = 'review' | 'files'
-const PLACE_WIDTHS: PlaceWidth[] = ['review', 'files']
+export type PlaceWidth = 'review' | 'files' | 'tree' | 'treeHeight'
+const PLACE_WIDTHS: PlaceWidth[] = ['review', 'files', 'tree', 'treeHeight']
 const PLACE_WIDTHS_KEY = 'cockpit.placeWidths'
 const placeWidths: Record<PlaceWidth, Record<string, number>> = (() => {
-  const out: Record<PlaceWidth, Record<string, number>> = { review: {}, files: {} }
+  const out: Record<PlaceWidth, Record<string, number>> = { review: {}, files: {}, tree: {}, treeHeight: {} }
   try {
     const raw = JSON.parse(localStorage.getItem(PLACE_WIDTHS_KEY) ?? '{}') as Record<string, unknown>
     // The review's widths were kept on their own before the file list joined
