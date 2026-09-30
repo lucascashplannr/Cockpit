@@ -132,6 +132,10 @@ export type EventType =
   // memory
   | 'memory.written'
   | 'memory.promoted'
+  // §9 — the Document step
+  | 'docs.proposed'
+  | 'docs.accepted'
+  | 'docs.rejected'
   // terminal
   | 'terminal.opened'
   | 'terminal.closed'

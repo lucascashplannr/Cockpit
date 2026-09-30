@@ -2,9 +2,10 @@
 import { computed } from 'vue'
 import type { Component } from 'vue'
 import type { Workspace } from '@cockpit/shared'
-import { BookMarked, FileCode, GitCompareArrows, Logs, ScrollText, SquareTerminal } from '@lucide/vue'
+import { BookMarked, BookOpen, FileCode, GitCompareArrows, Logs, ScrollText, SquareTerminal } from '@lucide/vue'
 import CodeTab from './tabs/CodeTab.vue'
 import MemoryTab from './tabs/MemoryTab.vue'
+import DocsTab from './tabs/DocsTab.vue'
 import DiffTab from './tabs/DiffTab.vue'
 import JournalTab from './tabs/JournalTab.vue'
 import OutputTab from './tabs/OutputTab.vue'
@@ -39,6 +40,7 @@ const META: Record<ReviewTool, { label: string; icon: Component }> = {
   journal: { label: 'Journal', icon: ScrollText },
   terminal: { label: 'Terminal', icon: SquareTerminal },
   memory: { label: 'Memory', icon: BookMarked },
+  docs: { label: 'Docs', icon: BookOpen },
 }
 
 const changed = computed(() => {
@@ -46,11 +48,19 @@ const changed = computed(() => {
   return g ? g.staged + g.unstaged + g.untracked : 0
 })
 
+const docsWaiting = computed(() =>
+  (state.docsPending[props.workspace.projectId] ?? []).reduce(
+    (n, s) => n + s.files.filter((f) => f.state === 'pending').length,
+    0,
+  ),
+)
+
 const tools = computed(() =>
   reviewTools.value.map((id) => ({
     id,
     ...META[id],
-    badge: id === 'diff' ? changed.value || undefined : undefined,
+    // §9 — pages waiting on a decision: the one number that asks for you.
+    badge: id === 'diff' ? changed.value || undefined : id === 'docs' ? docsWaiting.value || undefined : undefined,
     // The memory has no number worth printing — either something is written
     // down for this scope or nothing is. One dot says that.
     pip: id === 'memory' && props.workspace.hasMemory,
@@ -78,6 +88,7 @@ const tools = computed(() =>
     <div class="body">
       <DiffTab v-if="state.reviewTool === 'diff'" :workspace="workspace" />
       <MemoryTab v-else-if="state.reviewTool === 'memory'" :workspace="workspace" />
+      <DocsTab v-else-if="state.reviewTool === 'docs'" :workspace="workspace" />
       <CodeTab v-else-if="state.reviewTool === 'code'" :workspace="workspace" />
       <OutputTab v-else-if="state.reviewTool === 'output'" :workspace="workspace" />
       <JournalTab v-else-if="state.reviewTool === 'journal'" :workspace="workspace" />

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { MEMORY_SECTIONS, RULED_OUT_SECTION } from '@cockpit/shared'
 import type { TranscriptFile, MemoryDoc, Workspace } from '@cockpit/shared'
-import { BookMarked, Pencil, Plus } from '@lucide/vue'
+import { Pencil, Plus } from '@lucide/vue'
 import { client, guard, toast } from '../../core/store.js'
 
 /**
@@ -17,9 +18,9 @@ const sessions = ref<TranscriptFile[]>([])
 const draft = ref('')
 const editing = ref(false)
 const promoteText = ref('')
-const promoteSection = ref('Décisions')
+const promoteSection = ref<string>('Decisions')
 
-const SECTIONS = ['Objectif', 'Décisions', 'Contraintes', 'Écarté', 'État']
+const SECTIONS = MEMORY_SECTIONS
 
 const sections = computed(() => doc.value?.sections ?? [])
 
@@ -82,22 +83,15 @@ watch(() => props.workspace.id, load, { immediate: true })
 <template>
   <div class="mem">
     <div class="main">
-      <div v-if="!doc && !editing" class="empty">
-        <BookMarked />
-        <strong>No memory yet</strong>
-        <span>
-          The memory outlives every conversation — that is what makes clearing one free.
-        </span>
-        <button class="btn primary" @click="editing = true; draft = ''">Start a memory</button>
-      </div>
-
-      <template v-else-if="!editing">
+      <!-- Never "no memory": every topic and project has one from the start,
+           and the empty form is what says where things go. -->
+      <template v-if="!editing">
         <div class="doc">
-          <section v-for="s in sections" :key="s.title" class="sec" :class="{ discarded: s.title === 'Écarté' }">
+          <section v-for="s in sections" :key="s.title" class="sec" :class="{ discarded: s.title === RULED_OUT_SECTION }">
             <h3>
               {{ s.title }}
               <!-- §6 — "la section la plus précieuse". Say so in the interface. -->
-              <span v-if="s.title === 'Écarté'" class="hint">the one that stops a new conversation
+              <span v-if="s.title === RULED_OUT_SECTION" class="hint">the one that stops a new conversation
                 re-proposing what you already rejected</span>
             </h3>
             <pre v-if="bodyPreview(s.body)" class="body selectable">{{ bodyPreview(s.body) }}</pre>

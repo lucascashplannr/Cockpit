@@ -11,7 +11,7 @@ import type {
   DeclaredServer,
   DatabasePlan,
   DiffFile, Topic,
-  FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
+  DocsInfo, DocsProposalSet, FileDiff, GitOperation, MemoryDoc, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
   ProjectSettings, SearchHit, SeedProposal, StashEntry,
   Workspace,
 } from './model.js'
@@ -389,7 +389,12 @@ export interface Rpc {
     params: {
       projectId: string
       name: string
-      setup: 'branch' | 'isolated' | 'full'
+      /**
+       * Every topic has its memory whatever it is set up as (§6), so there is
+       * no third level that adds one — `full` survives only in stored records
+       * and old manifests, where it reads as `isolated`.
+       */
+      setup: 'branch' | 'isolated'
       /** Workspace ids of the main checkouts to span. Empty means all of them. */
       repoWorkspaceIds?: string[]
       /** Branch to fork from; defaults to each repo's own default branch. */
@@ -816,6 +821,28 @@ export interface Rpc {
   'agent.attachment': { params: { path: string }; result: string | null }
   'agent.list': { params: void; result: Conversation[] }
   'agent.stop': { params: { sessionId: string }; result: { ok: true } }
+  /**
+   * §6 — before `/clear`: one turn in which the agent brings the shared memory
+   * up to date. Answers once that turn has landed. `skipped` when there was
+   * nothing to hand off — no turn yet, or the last one already was a handoff.
+   */
+  'agent.handoff': {
+    params: { sessionId: string }
+    result: { ok: true; skipped: boolean; docsSetId?: string | null } | { ok: false; reason: string }
+  }
+  /** Waits (at most ~90s) for the conversation's turns to land; call again if not `settled`. */
+  'agent.settled': { params: { sessionId: string }; result: { settled: boolean } }
+  /** §9 — draft documentation proposals in this conversation. Answers once sent. */
+  'docs.document': { params: { sessionId: string }; result: { ok: true; setId: string } | { ok: false; reason: string } }
+  'docs.info': { params: { projectId: string }; result: DocsInfo | null }
+  /** Proposal sets still waiting on a person, newest first. */
+  'docs.pending': { params: { projectId: string }; result: DocsProposalSet[] }
+  /** One page accepted (written into the docs, `content` if edited) or rejected. */
+  'docs.resolve': {
+    params: { setId: string; path: string; accept: boolean; content?: string }
+    result: DocsProposalSet
+  }
+  'docs.dismiss': { params: { setId: string }; result: { ok: true } }
   /**
    * §6 — the conversation removed, and only the conversation.
    *

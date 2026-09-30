@@ -13,7 +13,7 @@ import { openTopic, previewDatabase, previewSeed, state } from '../core/store.js
 
 const name = ref('')
 const base = ref('')
-const setup = ref<'branch' | 'isolated' | 'full'>('full')
+const setup = ref<'branch' | 'isolated'>('isolated')
 const selected = ref<string[]>([])
 const busy = ref(false)
 const nameInput = ref<HTMLInputElement | null>(null)
@@ -133,7 +133,7 @@ watch(
     if (!open) return
     name.value = ''
     base.value = ''
-    setup.value = repos.value.length > 1 ? 'full' : 'isolated'
+    setup.value = 'isolated'
     selected.value = repos.value.map((r) => r.id)
     busy.value = false
     seed.value = []
@@ -215,9 +215,6 @@ async function submit() {
             </button>
             <button class="seg" :class="{ on: setup === 'isolated' }" @click="setup = 'isolated'">
               <strong>Separate</strong><span>each branch in its own folder</span>
-            </button>
-            <button class="seg" :class="{ on: setup === 'full' }" @click="setup = 'full'">
-              <strong>Separate + memory</strong><span>and a memory of its own</span>
             </button>
           </div>
           <span class="hint">

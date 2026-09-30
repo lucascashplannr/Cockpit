@@ -33,6 +33,7 @@ export const AGENT_COMMANDS: AgentCommand[] = [
   { name: 'clear', hint: 'New conversation on this scope', run: 'window' },
   { name: 'compact', args: 'what to keep', hint: 'Summarise the conversation to free up context', run: 'engine', thread: true },
   { name: 'init', hint: 'Write a CLAUDE.md that describes this repository', run: 'engine' },
+  { name: 'document', hint: 'Propose documentation updates from this conversation', run: 'window', thread: true },
 ]
 
 /** The engines that read `/word` as a command rather than as prose. */
@@ -48,4 +49,60 @@ export function commandIn(prompt: string): { command: AgentCommand; args: string
   if (!m) return null
   const command = AGENT_COMMANDS.find((c) => c.name === m[1])
   return command ? { command, args: (m[2] ?? '').trim() } : null
+}
+
+/**
+ * §6 — what `/clear` asks of a conversation before letting it go: the memory
+ * brought up to date, so the fresh one that starts on the same scope — or an
+ * agent in another repository — knows what this one knew.
+ *
+ * A turn of its own rather than a hidden call: it is the agent's work, it
+ * costs what a turn costs, and the thread it lands in should say it happened.
+ * The window draws it as a line, not as something the person typed.
+ */
+const HANDOFF_WORDS = [
+  'Handoff: this conversation is about to be cleared, and the next one starts from the memory alone.',
+  'Bring the memory up to date for whoever picks this up — the next conversation here, or an agent in',
+  'another repository: note every decision, contract, constraint or dropped approach from this',
+  'conversation that is not in it yet, then set the state (done, half-done, next, and the files that',
+  'matter). Do not change any code. Reply with one short line.',
+].join(' ')
+
+export const HANDOFF_PROMPT = HANDOFF_WORDS
+
+export function isHandoff(prompt: string | null | undefined): boolean {
+  return !!prompt && prompt.startsWith(HANDOFF_PROMPT.slice(0, 40))
+}
+
+/**
+ * §9 — the Document step, as the turn the agent reads. `dir` is a working copy
+ * of the docs: what it writes there is compared with the docs themselves and
+ * becomes proposals, and nothing reaches the docs until a person accepts it.
+ *
+ * Lasting knowledge only. The state of the work is the memory's, and a page
+ * that says "in progress" is wrong the day after it is accepted.
+ */
+const DOCUMENT_WORDS = 'Documentation step: propose updates to this project\'s documentation'
+
+export function documentPrompt(dir: string): string {
+  return [
+    DOCUMENT_WORDS + ' from what this conversation and the memory established.',
+    'A working copy of the documentation is at ' + dir + ' — read its guide or index first, and follow',
+    'its structure, language and conventions. Edit pages there, or add pages there; write nowhere else,',
+    'and do not change any code. Only lasting knowledge belongs: how things work, contracts, decisions',
+    'and their reasons, constraints. Not progress, not state, not what git already shows. If nothing',
+    'deserves documenting, change nothing. Finish with one line per changed page: its path relative to',
+    'the copy, an em dash, and why.',
+  ].join(' ')
+}
+
+/** `/clear` with docs linked: the handoff and the proposals in one turn. */
+export function handoffPrompt(docsDir: string | null): string {
+  if (!docsDir) return HANDOFF_PROMPT
+  return HANDOFF_PROMPT.replace(/ Reply with one short line\.$/, '') +
+    ' Then, as a second step — ' + documentPrompt(docsDir).replace(DOCUMENT_WORDS, 'propose updates to the documentation')
+}
+
+export function isDocument(prompt: string | null | undefined): boolean {
+  return !!prompt && prompt.startsWith(DOCUMENT_WORDS)
 }

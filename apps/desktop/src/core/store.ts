@@ -3,7 +3,7 @@ import type {
   AddRepoSource, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
-  DatabasePlan, Topic,
+  DatabasePlan, DocsInfo, DocsProposalSet, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
@@ -94,7 +94,7 @@ export const revealLabel =
 const PORT = host?.corePort ?? 7717
 const CORE_URL = 'ws://127.0.0.1:' + PORT
 
-export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'output' | 'journal' | 'terminal' | 'ticket'
+export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'docs' | 'output' | 'journal' | 'terminal' | 'ticket'
 
 /**
  * The four roles, in the order they are used.
@@ -106,7 +106,7 @@ export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'output' | 'journal' 
  *
  * The Agent owns the panel permanently; these are what open beside it.
  */
-export type ReviewTool = 'diff' | 'code' | 'output' | 'journal' | 'terminal' | 'memory'
+export type ReviewTool = 'diff' | 'code' | 'output' | 'journal' | 'terminal' | 'memory' | 'docs'
 
 /**
  * §12 — how the window is divided between the two things it can show on the
@@ -234,6 +234,9 @@ export const state = reactive({
    */
   view: 'agent' as ShellView,
   reviewTool: 'diff' as ReviewTool,
+  /** §9 — each project's linked docs, and the proposals still waiting on someone. */
+  docsInfo: {} as Record<string, DocsInfo | null>,
+  docsPending: {} as Record<string, DocsProposalSet[]>,
   /** Every conversation on this scope, over the chat rather than beside it. */
   historyOpen: false,
 
@@ -454,6 +457,7 @@ export const client = new CoreClient(CORE_URL, {
   },
   onEvent(e) {
     state.events.push(e)
+    if (e.type.startsWith('docs.') && e.projectId) void refreshDocs(e.projectId)
     if (state.events.length > 800) state.events.splice(0, state.events.length - 800)
     if (e.type === 'process.exited') {
       const p = e.payload as { id?: string; code?: number | null }
@@ -658,6 +662,8 @@ export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
   // Appended rather than led with so that ⌘2 is still the Diff. Its place in
   // the strip is one line, here, if that turns out to be wrong.
   ids.push('memory')
+  // §9 — only once docs are linked: absent is invisible (§5).
+  if (state.docsInfo[w.projectId]) ids.push('docs')
   return ids
 }
 
@@ -2918,6 +2924,9 @@ async function refreshProjects(): Promise<void> {
   state.projects = projects
   state.workspaces = workspaces
   ensureSelection()
+  // A settings change is how docs get linked, and a reconnect is how a fresh
+  // window first learns of them: both come through here.
+  if (state.activeProjectId) void refreshDocs(state.activeProjectId)
 }
 
 export function selectWorkspace(id: string): void {
@@ -3230,6 +3239,60 @@ export async function refreshCommands(): Promise<void> {
  * One watcher cannot be forgotten by the next place that selects something.
  */
 watch(() => state.activeWorkspaceId, () => void refreshCommands())
+
+/* ── §9 — the docs ────────────────────────────────────────────────────
+ *
+ * Where a project's docs are, and what the Document step has proposed to
+ * them. Per project, fetched when the project comes into view and whenever a
+ * `docs.*` event says a set was drafted or a page decided.
+ */
+export async function refreshDocs(projectId: string): Promise<void> {
+  const [info, pending] = await Promise.all([
+    client.call('docs.info', { projectId }).catch(() => null),
+    client.call('docs.pending', { projectId }).catch(() => [] as DocsProposalSet[]),
+  ])
+  state.docsInfo[projectId] = info
+  state.docsPending[projectId] = pending
+}
+
+watch(() => state.activeProjectId, (id) => {
+  if (id) void refreshDocs(id)
+}, { immediate: true })
+
+/**
+ * `/document` — this conversation drafts proposals to the docs. The Docs tool
+ * opens beside the thread at once: the set is there as "drafting" while the
+ * turn runs, and fills in when it lands.
+ */
+export async function documentConversation(sessionId: string): Promise<boolean> {
+  const r = await guard(() => client.call('docs.document', { sessionId }))
+  if (!r) return false
+  if (!r.ok) {
+    toast('info', r.reason)
+    return false
+  }
+  const pid = state.agents.find((c) => c.id === sessionId)?.workspaceIds
+    .map((id) => state.workspaces.find((w) => w.id === id)?.projectId)
+    .find(Boolean)
+  if (pid) await refreshDocs(pid)
+  goTo('docs')
+  return true
+}
+
+export async function resolveDocsPage(
+  set: DocsProposalSet,
+  path: string,
+  accept: boolean,
+  content?: string,
+): Promise<void> {
+  const r = await guard(() => client.call('docs.resolve', { setId: set.id, path, accept, content }))
+  if (r) await refreshDocs(set.projectId)
+}
+
+export async function dismissDocsSet(set: DocsProposalSet): Promise<void> {
+  const r = await guard(() => client.call('docs.dismiss', { setId: set.id }))
+  if (r) await refreshDocs(set.projectId)
+}
 
 /* ── which command the Run button presses ────────────────────────────
  *
@@ -4334,7 +4397,7 @@ export async function previewDatabase(
 /** §3.7 — opening a topic is a plan like any other: previewed, then applied. */
 export async function openTopic(input: {
   name: string
-  setup: 'branch' | 'isolated' | 'full'
+  setup: 'branch' | 'isolated'
   repoWorkspaceIds?: string[]
   base?: string
   seed?: SeedProposal[]

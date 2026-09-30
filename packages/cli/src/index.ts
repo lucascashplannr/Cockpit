@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
-import { MANIFEST_TEMPLATE, parseRemote, slugify } from '@cockpit/shared'
+import { MANIFEST_TEMPLATE, MEMORY_SECTIONS, parseRemote, slugify } from '@cockpit/shared'
 import type { AddRepoSource, NewProjectSource, SeedProposal, Workspace } from '@cockpit/shared'
 import { CoreClient } from './client.js'
 
@@ -869,7 +869,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     if (sub === 'open') {
       const name = args[1]
       if (!name) {
-        out('usage: cockpit topic open "<name>" [--repos a,b] [--base main] [--setup isolated|full]')
+        out('usage: cockpit topic open "<name>" [--repos a,b] [--base main] [--setup branch|isolated]')
         process.exit(1)
       }
       const flags = parseFlags(args.slice(2))
@@ -886,7 +886,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
         ? workspaces.filter((w) => w.kind === 'main' && wanted.includes(w.name)).map((w) => w.id)
         : undefined
 
-      const setup = (flags.setup as 'branch' | 'isolated' | 'full') ?? 'full'
+      const setup = flags.setup === 'branch' ? 'branch' : 'isolated'
 
       // §7 — what git will not check out. Shown with the plan so the whole of
       // what is about to happen is on one screen, and passed only when the
@@ -1058,7 +1058,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
 
     out('usage: cockpit topic <command>')
     out('  ls [--all]                    every topic; --all includes closed ones')
-    out('  open "<name>"                 [--repos a,b --base main --setup full --yes]')
+    out('  open "<name>"                 [--repos a,b --base main --setup isolated --yes]')
     out('  merge [name]                  merge it onto the base branch in every repository')
     out('  start [name] [--force]        bring its servers up')
     out('  stop [name]                   servers down; the branches stay')
@@ -1156,7 +1156,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       const text = args.slice(2).join(' ')
       if (!section || !text) {
         out('usage: cockpit memory promote <section> <text…>')
-        out(C.dim('  sections: Objectif · Décisions · Contraintes · Écarté · État'))
+        out(C.dim('  sections: ' + MEMORY_SECTIONS.join(' · ')))
         c.close()
         process.exit(1)
       }
@@ -1170,12 +1170,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     // memory show [workspace]
     const w = await pickWorkspace(c, args[1])
     const doc = await c.call('memory.read', { workspaceId: w.id })
-    if (!doc) {
-      out(C.dim('no memory for ' + w.name + '. Create one with:'))
-      out(C.dim('  cockpit memory promote Objectif "what this work is for"'))
-    } else {
-      out(doc.content)
-    }
+    out(doc?.content ?? '')
     c.close()
   },
 

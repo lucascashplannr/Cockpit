@@ -7,7 +7,7 @@ import type {
   AgentScopePreview, Conversation, AgentTurn, PermissionMode, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, Check, Clock, Copy, FoldVertical, Gauge, Hand, Lock, Paperclip,
+  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, FoldVertical, Gauge, Hand, Lock, Paperclip,
   Redo2, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -20,10 +20,12 @@ import Wordmark from '../brand/Wordmark.vue'
 import {
   activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
-  saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation,
+  saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   threadScrollOf, toast, transcriptOf, type ThreadScroll,
 } from '../../core/store.js'
-import { COMMAND_ENGINES, anchorOf, anchorsIn, commandIn, readPrompt } from '@cockpit/shared'
+import {
+  COMMAND_ENGINES, anchorOf, anchorsIn, canonicalSection, commandIn, isDocument, isHandoff, readPrompt,
+} from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
 
 /**
@@ -152,6 +154,8 @@ type Item =
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
   /** `/compact` — the window before and after the engine summarised it. */
   | { kind: 'compact'; id: string; before: number; after: number }
+  /** §6 — a line the agent put in the shared memory, or the state it set. */
+  | { kind: 'memory'; id: string; section: string; text: string }
 
 /**
  * What a turn is actually drawn as.
@@ -166,6 +170,7 @@ type Row =
   | { kind: 'group'; id: string; calls: Extract<Item, { kind: 'tool' }>[] }
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
   | { kind: 'compact'; id: string; before: number; after: number }
+  | { kind: 'memory'; id: string; section: string; text: string }
 
 /**
  * Every run of calls folds, down to a run of one.
@@ -199,7 +204,7 @@ function rowsOf(items: Item[]): Row[] {
     // what follows is different from what came before. So does an undo, which
     // is the loudest possible break in what a turn did.
     flush()
-    if (it.kind === 'revert' || it.kind === 'compact') rows.push({ ...it })
+    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'memory') rows.push({ ...it })
     else rows.push({ kind: 'text', id: it.id, text: it.text })
   }
   flush()
@@ -272,6 +277,14 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
     }
     if (e.type === 'agent.tool_use') {
       const p = e.payload as { toolUseId?: string; tool?: string; input?: Record<string, unknown> }
+      // §6 — the memory tools are not work on the code, and a card for each
+      // would bury the note in chrome. The note *is* the event: one quiet
+      // line saying what the next agent will now know. Reading it is nothing.
+      const memo = memoryLine(p?.tool, p?.input)
+      if (memo) {
+        if (memo !== 'read') into.push({ kind: 'memory', id: e.id, ...memo })
+        continue
+      }
       const item: Extract<Item, { kind: 'tool' }> = {
         kind: 'tool',
         id: e.id,
@@ -311,6 +324,22 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
     }
   }
   return buckets
+}
+
+const MEMORY_TOOL = /^mcp__cockpit__memory_(note|state|read)$/
+
+function memoryLine(
+  tool: string | undefined,
+  input: Record<string, unknown> | undefined,
+): { section: string; text: string } | 'read' | null {
+  const m = MEMORY_TOOL.exec(tool ?? '')
+  if (!m) return null
+  if (m[1] === 'read') return 'read'
+  const text = typeof input?.text === 'string' ? input.text.trim() : ''
+  if (m[1] === 'state') return { section: 'State', text: text.split('\n').filter(Boolean).length + ' lines — where the work stands' }
+  // Through the shared spelling: a conversation from before the headings were
+  // English still says "Décisions" in its journal.
+  return { section: canonicalSection(typeof input?.section === 'string' ? input.section : 'Decisions'), text }
 }
 
 /**
@@ -497,15 +526,69 @@ const queueing = computed(() => !!selected.value && isBusy(selected.value))
  */
 async function clearThread(): Promise<void> {
   const s = selected.value
+  // A second `/clear` during the handoff is "skip it": the person has decided
+  // the memory is good enough, and waiting on the agent to agree is friction.
+  if (s && isBusy(s) && handingOff.value === s.id) {
+    handingOff.value = null
+    agentDraft.value = ''
+    await guard(() => client.call('agent.stop', { sessionId: s.id }))
+    if (scope.value) startFresh(scope.value)
+    return
+  }
   if (s && isBusy(s)) {
     toast('info', 'it is still on a turn — stop it first, or let it finish')
     return
   }
   agentDraft.value = ''
   agentFiles.value = []
-  if (s && isLive(s)) await guard(() => client.call('agent.stop', { sessionId: s.id }))
-  if (scope.value) startFresh(scope.value)
+  const on = scope.value
+  // §6 — "vider devient gratuit" only if what the conversation understood is
+  // somewhere the next one reads. One turn, in this thread, before it goes —
+  // and with docs linked, the same turn drafts proposals to them (§9).
+  if (s) {
+    handingOff.value = s.id
+    const r = await guard(() => client.call('agent.handoff', { sessionId: s.id }))
+    if (r && !r.ok) toast('info', 'no handoff — ' + r.reason)
+    // Answered once the turn is sent, not once it lands: a long conversation's
+    // handoff outlasts any request. Its landing is the conversation going idle.
+    if (r?.ok && !r.skipped) {
+      for (let settled = false; !settled && handingOff.value === s.id; ) {
+        const w = await guard(() => client.call('agent.settled', { sessionId: s.id }))
+        settled = !w || w.settled
+      }
+    }
+    const skipped = handingOff.value !== s.id
+    handingOff.value = null
+    if (skipped) return
+    if (r?.ok && r.docsSetId) toast('ok', 'docs proposals are waiting in the Docs tool')
+  }
+  // Asked of the store as it is now: `s` is the row as it was before the
+  // handoff, and a conversation let go meanwhile has nothing to stop.
+  const now = state.agents.find((c) => c.id === s?.id)
+  if (now && isLive(now)) await guard(() => client.call('agent.stop', { sessionId: now.id }))
+  if (on) startFresh(on)
 }
+
+/**
+ * `/document` — §9. This conversation drafts proposals to the project's docs,
+ * into a working copy; they wait in the Docs tool for a decision on each.
+ */
+async function documentThread(): Promise<void> {
+  const s = selected.value
+  if (!s || !continuing.value) {
+    toast('info', 'there is no conversation to document yet')
+    return
+  }
+  if (isBusy(s)) {
+    toast('info', 'it is still on a turn — let it finish first')
+    return
+  }
+  agentDraft.value = ''
+  await documentConversation(s.id)
+}
+
+/** The conversation `/clear` is waiting on, while it writes its handoff. */
+const handingOff = ref<string | null>(null)
 
 /**
  * What a command needs before it can go. Answers the reason it cannot, or
@@ -527,6 +610,7 @@ async function send(): Promise<void> {
   const cmd = commandIn(text)
   if (cmd) {
     if (cmd.command.name === 'clear') return clearThread()
+    if (cmd.command.name === 'document') return documentThread()
     const no = refuseCommand(cmd.command.name, cmd.command.run, !!cmd.command.thread)
     if (no) {
       toast('info', no)
@@ -797,6 +881,8 @@ const doing = computed(() => {
   const last = exchanges.value[exchanges.value.length - 1]
   // No calls and no words: without this a two-minute summary reads "Thinking".
   if (last && commandIn(last.turn.prompt)?.command.name === 'compact') return 'Compacting the conversation'
+  if (last && isHandoff(last.turn.prompt)) return 'Handing off to memory'
+  if (last && isDocument(last.turn.prompt)) return 'Drafting documentation proposals'
   for (let i = (last?.items.length ?? 0) - 1; i >= 0; i--) {
     const it = last!.items[i]!
     if (it.kind === 'tool' && !it.result) return verbFor(it.tool, it.input)
@@ -1271,7 +1357,17 @@ function ago(ts: number): string {
                  hover over the whole turn lit both — so reaching for the copy
                  under an answer also offered an Undo belonging to the question
                  three lines up. -->
-            <div class="ask">
+            <!-- §6 — `/clear`'s handoff is a turn the window sent, not one the
+                 person typed: a line, never a bubble in their name. -->
+            <p v-if="isHandoff(x.turn.prompt)" class="undone compacted handoff">
+              <BookMarked class="sm" />
+              Handoff — bringing the memory up to date before a fresh conversation
+            </p>
+            <p v-else-if="isDocument(x.turn.prompt)" class="undone compacted handoff">
+              <BookOpen class="sm" />
+              Documentation step — drafting proposals to the docs, for you to accept in the Docs tool
+            </p>
+            <div v-else class="ask">
               <!-- What was attached, above the words: the screenshot is the
                    question and the sentence is the caption, not the other way
                    round. Turns from before attachments existed carry none. -->
@@ -1402,6 +1498,17 @@ function ago(ts: number): string {
               />
               <!-- Where the window stands now, beside where it stood: the
                    whole of what a compaction did, and why it was worth it. -->
+              <!-- §6 — what the next agent will know that it would not have. -->
+              <p
+                v-else-if="r.kind === 'memory'"
+                class="undone compacted memo"
+                :data-anchor="r.id"
+                :title="'Written into the shared memory, under ' + r.section"
+              >
+                <BookMarked class="sm" />
+                <span class="memo-sec">{{ r.section }}</span>
+                <span class="memo-tx">{{ r.text }}</span>
+              </p>
               <p v-else-if="r.kind === 'compact'" class="undone compacted" :data-anchor="r.id">
                 <FoldVertical class="sm" />
                 Compacted — {{ k(r.before) }} → {{ k(r.after) }} tokens in context
@@ -2091,6 +2198,13 @@ function ago(ts: number): string {
 /* Nothing to watch out for: amber is for "something needs you". */
 .undone.compacted { border-left-color: var(--line-strong); }
 .undone.compacted .lucide { color: var(--text-dim); }
+/* A memory note: the section as a quiet label, the line itself one row that
+   ellipsises — the whole of it is in the Memory tool, a click away. */
+.undone.memo { margin: 6px 0; min-width: 0; }
+/* Nothing here needs you, so none of the amber ground either. */
+.undone.memo, .undone.handoff { background: transparent; border-left-color: var(--line); }
+.memo-sec { flex: none; color: var(--text-dim); font-weight: 600; }
+.memo-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Queued: the same bubble, at the weight of something that has not happened.
    Its ✕ only appears on hover — it is an escape hatch, not a decoration. */

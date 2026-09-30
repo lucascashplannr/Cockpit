@@ -644,6 +644,14 @@ export interface ProjectSettings {
    * family.
    */
   protectedBranches: Record<string, string[]>
+  /**
+   * §9 — where this project's lasting documentation lives: a folder inside one
+   * of its repositories, or a repository of its own (a wiki, a vault). Absolute.
+   * Null falls back to the manifest's `docs:`, then to a `docs/` folder at the
+   * root. Agents read it; they never write it during work — changes to it are
+   * proposed by the Document step and accepted one by one.
+   */
+  docsPath: string | null
 }
 
 export interface Project {
@@ -999,6 +1007,53 @@ export interface MemoryDoc {
   content: string
   sections: { title: string; body: string }[]
   updatedAt: number | null
+}
+
+/**
+ * §9 — the documentation a project is linked to, as the window shows it.
+ * `source` says who decided: this machine's settings, the manifest, or a
+ * `docs/` folder found at the root.
+ */
+export interface DocsInfo {
+  path: string
+  source: 'settings' | 'manifest' | 'detected'
+  /** The checkout the path is in, when it is in one — where its Diff lives. */
+  workspaceId: string | null
+  /** The page that says how the docs are organised, when there is one. */
+  guide: string | null
+}
+
+/**
+ * §9 — one change the Document step proposes to one page. Nothing reaches the
+ * docs until a person accepts it: the memory is disposable and written freely,
+ * the docs are forever and gated.
+ */
+export interface DocsProposal {
+  /** Relative to the docs folder. */
+  path: string
+  kind: 'new' | 'changed' | 'deleted'
+  /** The page as the docs have it now; null for a new one. */
+  before: string | null
+  /** The page as proposed; null when it is proposed for deletion. */
+  after: string | null
+  /** The agent's one line on why, when it gave one. */
+  why: string | null
+  state: 'pending' | 'accepted' | 'rejected'
+  /** The page changed in the docs after the proposal was drafted from it. */
+  drifted: boolean
+}
+
+export interface DocsProposalSet {
+  id: string
+  projectId: string
+  docsPath: string
+  /** The conversation the proposals were drafted in. */
+  sessionId: string
+  title: string
+  createdAt: number
+  status: 'drafting' | 'ready' | 'failed' | 'dismissed'
+  detail: string | null
+  files: DocsProposal[]
 }
 
 export interface TranscriptFile {

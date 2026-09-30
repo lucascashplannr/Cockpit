@@ -6,6 +6,7 @@ import * as leases from './leases.js'
 import * as agents from './agents.js'
 import { defaultBranch } from './git.js'
 import { isInside } from './config.js'
+import * as memory from './memory.js'
 
 /**
  * §7 — the scope table, resolved.
@@ -163,8 +164,9 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
     label: r.label,
     paths,
     blocked: [...blocked.values()],
-    preamble: r.topicId
-      ? topics.preambleParts(r.topicId, r.paths)
-      : { memory: false, context: false },
+    preamble: {
+      memory: !!memory.preamble(memory.homeOf({ topicId: r.topicId, workspaceIds: r.workspaces.map((w) => w.id) })),
+      context: !!topics.contextBlock(r.topicId, r.paths),
+    },
   }
 }

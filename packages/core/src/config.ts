@@ -17,6 +17,7 @@ export const PROJECT_DEFAULTS: ProjectSettings = {
   // mistake. A new project asks instead (see `project.defaultBranches`).
   defaultBranch: null,
   protectedBranches: {},
+  docsPath: null,
 }
 
 /**
@@ -142,6 +143,7 @@ export function projectSettings(root: string): ProjectSettings {
   return {
     defaultBranch: row?.settings?.defaultBranch ?? PROJECT_DEFAULTS.defaultBranch,
     protectedBranches: row?.settings?.protectedBranches ?? PROJECT_DEFAULTS.protectedBranches,
+    docsPath: row?.settings?.docsPath ?? PROJECT_DEFAULTS.docsPath,
   }
 }
 
@@ -162,6 +164,7 @@ export function setProjectSettings(root: string, patch: Partial<ProjectSettings>
     row.settings = {
       ...(next.defaultBranch ? { defaultBranch: next.defaultBranch } : {}),
       ...(Object.keys(guarded).length ? { protectedBranches: guarded } : {}),
+      ...(next.docsPath ? { docsPath: next.docsPath } : {}),
     }
     if (!Object.keys(row.settings!).length) delete row.settings
     out = next

@@ -1,10 +1,10 @@
 import { join, resolve } from 'node:path'
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
-import { PROTOCOL_VERSION } from '@cockpit/shared'
+import { PROTOCOL_VERSION, documentPrompt, handoffPrompt, isHandoff } from '@cockpit/shared'
 import type {
   AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
-  PermissionMode, ProjectSettings, ServerBoardRow, ServerPush, Workspace,
+  Conversation, PermissionMode, ProjectSettings, ServerBoardRow, ServerPush, Workspace,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { bus, countEvents, forSession, tail } from './journal.js'
@@ -17,6 +17,7 @@ import * as search from './search.js'
 import * as diff from './diff.js'
 import * as plans from './plans.js'
 import * as memory from './memory.js'
+import * as docs from './docs.js'
 import * as leases from './leases.js'
 import * as agents from './agents.js'
 import * as attachments from './attachments.js'
@@ -238,6 +239,63 @@ type Handler = (params: never) => unknown | Promise<unknown>
 /** The checkouts a conversation was started on, those that still exist. */
 function sessionWorkspaces(ids: string[]): Workspace[] {
   return ids.map((id) => registry.getWorkspace(id)).filter((w): w is Workspace => !!w)
+}
+
+/** The project a conversation belongs to: its first checkout's. */
+function projectOfConversation(c: { workspaceIds: string[] }): string | null {
+  for (const id of c.workspaceIds) {
+    const w = registry.getWorkspace(id)
+    if (w) return w.projectId
+  }
+  return null
+}
+
+/** A working copy of the docs for this conversation's project, when it has docs. */
+function stageDocsFor(c: Conversation): ReturnType<typeof docs.stage> | null {
+  const projectId = projectOfConversation(c)
+  if (!projectId || !docs.docsOf(projectId)) return null
+  try {
+    return docs.stage(projectId, c.id, c.title ?? c.prompt.slice(0, 60))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A turn the window asks for rather than one the person typed: into the live
+ * process when there is one, through a resume when it has been let go.
+ */
+async function sendOnBehalf(sessionId: string, prompt: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const r = agents.isLive(sessionId)
+    ? await agents.send(sessionId, prompt)
+    : ((await (handlers['agent.resume'] as (q: { sessionId: string; prompt: string }) => Promise<unknown>)({
+        sessionId,
+        prompt,
+      })) as { denied?: true; reason?: string; ok?: boolean })
+  if (!r || ('denied' in r && r.denied) || ('ok' in r && r.ok === false)) {
+    return { ok: false, reason: (r as { reason?: string } | null)?.reason ?? 'could not reach the conversation' }
+  }
+  pushAgentActivity()
+  return { ok: true }
+}
+
+/** The proposals, read off the copy once the turn that drafted them lands. */
+function collectWhenSettled(sessionId: string, setId: string): void {
+  void agents.whenSettled(sessionId, 20 * 60_000).then(() => {
+    try {
+      const said = forSession(sessionId, 400)
+        .filter((e) => e.type === 'agent.output' && e.level === 'info')
+        .at(-1)
+      const engine = agents.get(sessionId)?.engine ?? 'claude'
+      docs.collect(setId, String((said?.payload as { text?: string } | undefined)?.text ?? ''), {
+        kind: 'agent',
+        engine,
+        sessionId,
+      })
+    } catch (e) {
+      docs.fail(setId, (e as Error).message)
+    }
+  })
 }
 
 const handlers: Record<string, Handler> = {
@@ -698,7 +756,9 @@ const handlers: Record<string, Handler> = {
       paths: r.paths,
       prompt: p.prompt,
       topicId: r.topicId,
-      preamble: r.topicId ? topics.promptPreamble(r.topicId, r.paths) : '',
+      // The memory is read by the launch itself (it has to know what it
+      // handed over); what is passed here is the cross-repo map beside it.
+      preamble: topics.contextBlock(r.topicId, r.paths),
       // §5 + §16 — the manifest already has a place to widen the allow-list;
       // absent, the built-in one applies.
       allow: allowFor(r.workspaces[0]?.projectId),
@@ -723,7 +783,7 @@ const handlers: Record<string, Handler> = {
       p.prompt,
       // The memory has moved on since; the conversation has not. Re-reading it
       // is what keeps a resumed session from acting on a stale understanding.
-      prev.topicId ? topics.promptPreamble(prev.topicId, prev.paths) : '',
+      topics.contextBlock(prev.topicId, prev.paths),
       allowFor(registry.getWorkspace(prev.workspaceIds[0] ?? '')?.projectId),
       p.options,
       p.attachments,
@@ -733,6 +793,64 @@ const handlers: Record<string, Handler> = {
   },
   'agent.attachment': (p: { path: string }) => attachments.readAttachment(p.path),
   'agent.list': () => agents.list(),
+  'agent.handoff': async (p: { sessionId: string }) => {
+    const c = agents.get(p.sessionId)
+    if (!c) throw new Error('unknown session: ' + p.sessionId)
+    // Only an engine holding the memory tools can do it, and a conversation
+    // that has said nothing — or whose last turn already was this — has
+    // nothing to hand over.
+    const last = agents.turnsOf(p.sessionId).at(-1)
+    if (c.engine !== 'claude' || !last || isHandoff(last.prompt)) return { ok: true as const, skipped: true }
+    // §9 — with docs linked, the same turn drafts the proposals: one turn, not
+    // two, on the one moment the whole conversation is still in front of it.
+    const set = stageDocsFor(c)
+    const sent = await sendOnBehalf(p.sessionId, handoffPrompt(set ? docs.copyDir(set.id) : null))
+    if (!sent.ok) {
+      if (set) docs.fail(set.id, sent.reason)
+      return sent
+    }
+    if (set) collectWhenSettled(p.sessionId, set.id)
+    return { ok: true as const, skipped: false, docsSetId: set?.id ?? null }
+  },
+  /**
+   * §9 — the Document step, on its own: this conversation drafts proposals to
+   * the docs into a working copy, and they wait for a person in the Docs tool.
+   * Answers once the turn is sent; the set fills in when it lands.
+   */
+  'docs.document': async (p: { sessionId: string }) => {
+    const c = agents.get(p.sessionId)
+    if (!c) throw new Error('unknown session: ' + p.sessionId)
+    if (c.engine !== 'claude') return { ok: false as const, reason: 'the Document step needs a Claude conversation' }
+    const projectId = projectOfConversation(c)
+    if (!projectId || !docs.docsOf(projectId)) {
+      return { ok: false as const, reason: 'this project has no documentation linked — set it in the project settings' }
+    }
+    const set = docs.stage(projectId, c.id, c.title ?? c.prompt.slice(0, 60))
+    const sent = await sendOnBehalf(p.sessionId, documentPrompt(docs.copyDir(set.id)))
+    if (!sent.ok) {
+      docs.fail(set.id, sent.reason)
+      return sent
+    }
+    collectWhenSettled(p.sessionId, set.id)
+    return { ok: true as const, setId: set.id }
+  },
+  'docs.info': (p: { projectId: string }) => docs.docsOf(p.projectId),
+  'docs.pending': (p: { projectId: string }) => docs.pending(p.projectId),
+  'docs.resolve': (p: { setId: string; path: string; accept: boolean; content?: string }) =>
+    docs.resolvePage(p.setId, p.path, p.accept, p.content),
+  'docs.dismiss': (p: { setId: string }) => {
+    docs.dismiss(p.setId)
+    return { ok: true }
+  },
+  /**
+   * Waits — up to a slice shorter than any request's timeout — for a turn sent
+   * on the person's behalf to land. The window's own copy of "busy" arrives by
+   * push and can lag the send it follows, so it is asked here, where it is known.
+   */
+  'agent.settled': async (p: { sessionId: string }) => {
+    await agents.whenSettled(p.sessionId, 90_000)
+    return { settled: !agents.isBusy(p.sessionId) }
+  },
   'agent.stop': (p: { sessionId: string }) => {
     agents.stop(p.sessionId)
     pushAgentActivity()

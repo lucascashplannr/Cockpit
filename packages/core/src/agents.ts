@@ -16,6 +16,11 @@ import * as leases from './leases.js'
 import * as checkpoints from './checkpoints.js'
 import * as attachments from './attachments.js'
 import { ranUnasked } from './unasked.js'
+import * as memory from './memory.js'
+import * as memoryTools from './memoryTools.js'
+import * as docs from './docs.js'
+import { getWorkspace } from './registry.js'
+import { isInside } from './config.js'
 
 /**
  * §7 — a session is a list of PATHS + an engine + a mode + a lease.
@@ -143,6 +148,11 @@ export interface NormalizedEvent {
     | 'permission'
     /** A control request this driver does not handle, to be refused so the engine is not left waiting. */
     | 'control'
+    /**
+     * A call to an MCP server this process hosts (`type: 'sdk'`): `server` and
+     * the JSON-RPC `message`, answered on the control channel. See memoryTools.
+     */
+    | 'mcp'
     /** The mode the engine says it is in, as `mode`. */
     | 'mode'
     /** The engine's answer to a control request this driver sent; `text` says why it refused. */
@@ -174,6 +184,9 @@ export interface NormalizedEvent {
   mode?: PermissionMode
   /** `permission` / `control` / `control_done` / `control_error`: the id of the request. */
   requestId?: string
+  /** `mcp` only: which hosted server, and the JSON-RPC message for it. */
+  server?: string
+  message?: Record<string, unknown>
   /** `permission` only: the engine's account of the call, and why it asked. */
   description?: string
   reason?: string
@@ -271,6 +284,8 @@ export interface EngineSpec {
     answer(requestId: string, allow: boolean, input: Record<string, unknown>): string
     setMode(requestId: string, mode: PermissionMode): string
     unsupported(requestId: string): string
+    /** The answer to an `mcp` request: the server's JSON-RPC reply. */
+    mcp?(requestId: string, response: Record<string, unknown> | null): string
   }
 }
 
@@ -347,7 +362,7 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // §16 — the tool set, replaced rather than added to. Comma-joined into one
     // argument on purpose: the flag is variadic, so space-separated values
     // would swallow the flag that follows them.
-    '--tools', ctx.tools.join(','),
+    '--tools', [...ctx.tools, ...memoryTools.TOOL_NAMES].join(','),
     ...(ctx.deny.length ? ['--disallowedTools', ctx.deny.join(',')] : []),
     // Chosen in the composer. What the mode does not approve by itself comes
     // back over stdio as a `can_use_tool` request and waits for the window.
@@ -360,9 +375,15 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // the mode reachable, not active: what runs is still `--permission-mode`.
     '--allow-dangerously-skip-permissions',
     '--permission-prompt-tool', 'stdio',
+    // §6 — the memory, hosted by this process over the control channel. Not
+    // behind a question: a gate on the memory is the separate effort that
+    // stops it being written (memoryTools.ts).
+    '--mcp-config', memoryTools.MCP_CONFIG,
+    '--allowedTools', memoryTools.TOOL_NAMES.join(','),
     // What the two flags above actually forbid, in words the engine reads
-    // before it writes its first command rather than after.
-    '--append-system-prompt', SHELL_RULES,
+    // before it writes its first command rather than after — and when to
+    // write the memory, which nothing else would tell it.
+    '--append-system-prompt', SHELL_RULES + '\n\n' + memoryTools.MEMORY_RULES,
     ...(ctx.model ? ['--model', ctx.model] : []),
     ...(ctx.effort ? ['--effort', ctx.effort] : []),
     ...ctx.extraDirs.flatMap((d) => ['--add-dir', d]),
@@ -523,6 +544,8 @@ const claudeEngine: EngineSpec = {
     if (type === 'control_request') {
       const requestId = String(o.request_id ?? '')
       const r = (o.request ?? {}) as Record<string, unknown>
+      if (r.subtype === 'mcp_message' && r.message && typeof r.message === 'object')
+        return [{ kind: 'mcp', requestId, server: String(r.server_name ?? ''), message: r.message as Record<string, unknown> }]
       if (r.subtype !== 'can_use_tool') return [{ kind: 'control', requestId }]
       const input = (r.input ?? {}) as Record<string, unknown>
       return [
@@ -648,8 +671,26 @@ const claudeEngine: EngineSpec = {
   control: {
     // Before the first turn: until it is initialised, the engine has no host
     // to ask and falls back to refusing after a timeout.
+    // `sdkMcpServers` is what makes the `sdk` server in `--mcp-config` this
+    // process: without it the engine lists the memory tools and has nobody to
+    // send their calls to.
     open: () =>
-      JSON.stringify({ type: 'control_request', request_id: 'init', request: { subtype: 'initialize' } }),
+      JSON.stringify({
+        type: 'control_request',
+        request_id: 'init',
+        request: { subtype: 'initialize', sdkMcpServers: [memoryTools.SERVER] },
+      }),
+    mcp: (requestId, response) =>
+      JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          // A notification has no id and wants no answer, but the control
+          // request carrying it still does — an empty result closes it.
+          response: { mcp_response: response ?? { jsonrpc: '2.0', id: 0, result: {} } },
+        },
+      }),
     answer: (requestId, allow, input) =>
       JSON.stringify({
         type: 'control_response',
@@ -881,6 +922,15 @@ interface Live {
   modeAsked: Map<string, PermissionMode>
   /** §6 — the countdown to letting the process go. See `armIdleTimer`. */
   idle: NodeJS.Timeout | null
+  /**
+   * §6 — the memory as this conversation last saw it, and the lines it wrote
+   * itself. What another conversation adds in between is passed on at the
+   * start of the next turn (`memoryNews`): a process reads its preamble once,
+   * and an agent on the backend that started before the frontend's note would
+   * otherwise never learn of it.
+   */
+  memorySeen: string | null
+  memoryOwn: Set<string>
   /** §16 — what the turn in flight has reported, until its row is written. */
   usage: NormalizedEvent['usage'] | null
   /** The window as the most recent call left it. See `contextTokens`. */
@@ -1381,6 +1431,42 @@ export function listForTopic(topicId: string): Conversation[] {
 }
 
 /** Every conversation whose process is still up — the ones a badge is about. */
+export function isLive(sessionId: string): boolean {
+  return live.has(sessionId)
+}
+
+/** A turn in flight or waiting in the queue. */
+export function isBusy(sessionId: string): boolean {
+  const l = live.get(sessionId)
+  return !!l && (l.busy || l.queue.length > 0)
+}
+
+/**
+ * Resolves once the conversation has nothing in flight and nothing queued —
+ * or its process has gone. For a caller that sent a turn on the person's
+ * behalf and has to wait for it to land before going on (`agent.handoff`).
+ */
+export function whenSettled(sessionId: string, timeoutMs = 5 * 60_000): Promise<void> {
+  const settled = (): boolean => {
+    const l = live.get(sessionId)
+    return !l || (!l.busy && !l.queue.length)
+  }
+  if (settled()) return Promise.resolve()
+  return new Promise((done) => {
+    const check = (): void => {
+      if (!settled()) return
+      finish()
+    }
+    const finish = (): void => {
+      clearTimeout(timer)
+      agentBus.off('changed', check)
+      done()
+    }
+    const timer = setTimeout(finish, timeoutMs)
+    agentBus.on('changed', check)
+  })
+}
+
 export function liveSessions(): Conversation[] {
   return list().filter((s) => s.status !== 'ended' && s.status !== 'failed')
 }
@@ -1724,10 +1810,15 @@ async function launch(
   await checkpointTurn(session, turnId, session.prompt)
 
   const cwd = session.paths[0]!
+  // §9 — the project's docs, when it has them: named in the opening, and
+  // readable even when they are a repository of their own outside the scope.
+  const projectId = session.workspaceIds.map((id) => getWorkspace(id)?.projectId).find(Boolean)
+  const docsInfo = projectId ? docs.docsOf(projectId) : null
+  const docsOutside = !!docsInfo && !session.paths.some((p) => isInside(p, docsInfo.path))
   // §7 — the engine runs in the first path; the rest have to be handed over
   // explicitly, or a two-repo scope reaches exactly one repository.
   const ctx: LaunchContext = {
-    extraDirs: session.paths.slice(1),
+    extraDirs: [...session.paths.slice(1), ...(docsOutside ? [docsInfo!.path] : [])],
     tools: allow?.length ? allow : DEFAULT_TOOLS,
     deny: DEFAULT_DENY,
     model: opts?.model,
@@ -1742,9 +1833,18 @@ async function launch(
   // is a sentence about compacting, answered in prose.
   const command = commandIn(session.prompt)?.command.run === 'engine'
   const ultracode = opts?.effort === ULTRACODE
+  // §6 — the memory, read here rather than by the caller: this launch has to
+  // know exactly what it handed over, so that what changes after is what the
+  // next turn is told. Only an engine that holds the memory tools is told
+  // about the memory's rules; the preamble itself is for any engine.
+  const home = memory.homeOf(session)
+  const memorySeen = home ? memory.contentAt(home.file) : null
+  const opening = [memory.preamble(home), docs.preambleBlock(docsInfo), preamble.trim()]
+    .filter(Boolean)
+    .join('\n\n')
   const segs = withUltracode(
     spec,
-    attachments.turnSegments(command ? '' : preamble, session.prompt, files),
+    attachments.turnSegments(command || !opening ? '' : opening + '\n\n---\n\n', session.prompt, files),
     ultracode && !command,
   )
   const withFiles = attachments.flatten(segs)
@@ -1780,6 +1880,8 @@ async function launch(
     mode: ctx.permissionMode ?? 'acceptEdits',
     modeAsked: new Map(),
     idle: null,
+    memorySeen,
+    memoryOwn: new Set(),
   }
   live.set(session.id, l)
 
@@ -1943,6 +2045,25 @@ async function launch(
         case 'control':
           if (ev.requestId && spec.control) child.stdin?.write(spec.control.unsupported(ev.requestId) + '\n')
           break
+
+        // §6 — the memory tools. Answered in this process, which is the point:
+        // it is the one that knows which conversation is writing.
+        case 'mcp': {
+          if (!ev.requestId || !spec.control?.mcp) break
+          if (ev.server !== memoryTools.SERVER) {
+            child.stdin?.write(spec.control.unsupported(ev.requestId) + '\n')
+            break
+          }
+          let reply: Record<string, unknown> | null
+          try {
+            reply = memoryTools.handle(l.session, l.memoryOwn, ev.message as never)
+          } catch (e) {
+            const id = (ev.message as { id?: unknown } | undefined)?.id
+            reply = { jsonrpc: '2.0', id, error: { code: -32603, message: (e as Error).message } }
+          }
+          child.stdin?.write(spec.control.mcp(ev.requestId, reply) + '\n')
+          break
+        }
 
         case 'mode':
           if (ev.mode) l.engineMode = ev.mode
@@ -2139,9 +2260,37 @@ async function flushQueue(l: Live): Promise<void> {
   agentBus.emit('changed')
   await checkpointTurn(l.session, turnId, prompt || attachments.summarise(files))
   const command = commandIn(prompt)?.command.run === 'engine'
-  const segs = withUltracode(l.spec, attachments.turnSegments('', prompt, files), ultracode && !command)
+  const news = command ? '' : memoryNews(l)
+  const segs = withUltracode(l.spec, attachments.turnSegments(news, prompt, files), ultracode && !command)
   l.child.stdin?.write(encode(attachments.flatten(segs), segs) + '\n')
   agentBus.emit('changed')
+}
+
+/**
+ * §6 — what other conversations wrote into the shared memory since this one
+ * last looked, as the opening of its next turn. Only the new lines: the whole
+ * file again would be the preamble twice in one context, every turn.
+ *
+ * Marked as read on the way out, so it is said once.
+ */
+function memoryNews(l: Live): string {
+  const home = memory.homeOf(l.session)
+  if (!home) return ''
+  const now = memory.contentAt(home.file)
+  if (now === l.memorySeen) return ''
+  const added = memory.newSince(l.memorySeen, now, l.memoryOwn)
+  l.memorySeen = now
+  if (!added.length) return ''
+  return [
+    '# Memory — new since your last turn',
+    'Written by other conversations on this ' + home.kind + ':',
+    '',
+    ...added.map((a) => '- ' + a),
+    '',
+    '---',
+    '',
+    '',
+  ].join('\n')
 }
 
 function relativeTo(root: string, p: string): string {

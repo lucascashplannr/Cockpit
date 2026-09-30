@@ -32,6 +32,8 @@ const baseBranch = ref('')
 /** §16 — per repository, keyed by its name. */
 const guarded = ref<Record<string, string[]>>({})
 const drafts = reactive<Record<string, string>>({})
+/** §9 — where the docs are, when this machine says so. */
+const docsPath = ref('')
 
 watch(
   p,
@@ -43,6 +45,7 @@ watch(
     name.value = proj?.name ?? ''
     root.value = proj?.root ?? ''
     baseBranch.value = proj?.settings.defaultBranch ?? ''
+    docsPath.value = proj?.settings.docsPath ?? ''
     guarded.value = Object.fromEntries(
       Object.entries(proj?.settings.protectedBranches ?? {}).map(([k, v]) => [k, [...v]]),
     )
@@ -93,7 +96,8 @@ const settingsChanged = computed(() => {
   if (!s) return false
   return (
     (baseBranch.value.trim() || null) !== s.defaultBranch ||
-    normal(guarded.value) !== normal(s.protectedBranches ?? {})
+    normal(guarded.value) !== normal(s.protectedBranches ?? {}) ||
+    (docsPath.value.trim() || null) !== (s.docsPath ?? null)
   )
 })
 
@@ -170,6 +174,7 @@ async function save() {
         !(await setProjectSettings(proj.id, {
           defaultBranch: baseBranch.value.trim() || null,
           protectedBranches: guarded.value,
+          docsPath: docsPath.value.trim() || null,
         }))
       ) {
         return
@@ -181,6 +186,22 @@ async function save() {
   } finally {
     busy.value = false
   }
+}
+
+/** What the docs resolve to without a setting: the manifest's, or a `docs/` found. */
+const docsFallback = computed(() => {
+  const info = p.value ? state.docsInfo[p.value.id] : null
+  return info && info.source !== 'settings' ? info : null
+})
+
+async function browseDocs() {
+  const picked = await pickFolder({
+    title: 'Documentation for ' + (p.value?.name ?? 'the project'),
+    message: 'A folder inside one of its repositories, or a repository of its own',
+    buttonLabel: 'Use this folder',
+    defaultPath: docsPath.value || p.value?.root || '',
+  })
+  if (picked) docsPath.value = picked
 }
 
 async function browse() {
@@ -268,6 +289,26 @@ async function browse() {
         />
         <span class="help">What topics fork from and Send lands on. Empty asks git.</span>
       </label>
+
+      <!-- §9 — the lasting layer. Agents read it; they only ever propose to it. -->
+      <div class="field">
+        <span class="lbl">Documentation</span>
+        <div class="row">
+          <input
+            v-model="docsPath"
+            class="input mono"
+            type="text"
+            spellcheck="false"
+            :placeholder="docsFallback ? docsFallback.path + ' (' + docsFallback.source + ')' : 'a docs folder, or a repository'"
+          />
+          <button class="btn" title="Choose a folder" @click="browseDocs">
+            <FolderOpen />Browse
+          </button>
+        </div>
+        <span class="help">
+          Agents read it. Changes to it are only proposed — on /clear and /document — and you accept each one.
+        </span>
+      </div>
 
       <!-- §16 — the rule that used to be hardcoded, handed back, one
            repository at a time. -->

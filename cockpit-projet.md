@@ -95,6 +95,8 @@ Les codes C0–C3 du premier jet ont été remplacés par les noms que l'interfa
 | **isolated** | séparé | chaque branche dans son propre dossier |
 | **full** | topic | dossiers séparés + environnement + base + ticket + mémoire |
 
+*2026-09-30 — `full` n'est plus proposé : toute topic a sa mémoire dès sa création, quel que soit son niveau, et `full` ne faisait rien d'autre qu'`isolated`. Il reste lisible dans les anciens manifests et enregistrements, où il vaut `isolated`.*
+
 Un mono-repo simple tournera en `none`/`branch` en permanence. Un projet multi-repo en `full` pour le travail planifié, en `none` pour « je regarde ce bug vite fait ».
 
 **Le cockpit doit rendre `none` aussi rapide qu'un terminal**, sinon il ne sera pas utilisé dans l'urgence — et c'est précisément là qu'un filet de sécurité sert le plus.
@@ -295,7 +297,29 @@ Son intérêt réel est le **couplage avec la mémoire** :
 - **En entrée** — les agents lisent la documentation pertinente. Contexte réutilisable au lieu d'être réexpliqué à chaque session.
 - **En sortie** — à la clôture d'une topic, promotion de la mémoire vers la documentation.
 
-C'est ce qui fait qu'un wiki reste vivant. Un wiki alimenté séparément meurt en trois mois, toujours. Un wiki alimenté par le résidu naturel du travail survit.
+C'est ce qui fait qu'un wiki reste vivant.
+
+### Ce qui est construit (2026-09-30)
+
+**La mémoire est automatique, la documentation est gardée.** La mémoire est jetable : les agents
+l'écrivent eux-mêmes, en travaillant, sans validation (outils `memory_note` / `memory_state`, servis
+par le noyau sur le canal de contrôle, donc signés et journalisés comme ceux de l'agent). La
+documentation est éternelle : rien n'y entre sans qu'une personne l'accepte.
+
+| Moment | Ce qui se passe |
+|---|---|
+| lancement | la mémoire (topic ou projet) + le guide de la doc ouvrent le premier message |
+| chaque tour | ce que les *autres* conversations ont ajouté à la mémoire depuis le dernier tour |
+| `/clear` | un tour de **handoff** : la mémoire mise à jour, et — si une doc est liée — des propositions |
+| `/document` | des propositions à la doc, depuis cette conversation |
+
+Les propositions sont écrites dans une copie de travail de la doc ; l'écart devient une liste, page
+par page, dans l'outil **Docs** : une carte par page, son diff et sa raison, *Accept* / *Edit* /
+*Reject*. (Une seconde façon — tout écrire d'un coup et relire hunk par hunk dans le Diff — a été
+essayée à côté et écartée le 2026-09-30 : les cartes suffisent.)
+
+Mots de l'interface : **Docs** (l'outil), **Document** (le verbe), **Handoff** (le tour avant un
+`/clear`). Un wiki alimenté séparément meurt en trois mois, toujours. Un wiki alimenté par le résidu naturel du travail survit.
 
 ## 10. Portabilité
 
@@ -637,7 +661,10 @@ Le critère d'abandon se décide **maintenant**, à froid, pour un soi futur tro
 ## 21. Décisions ouvertes
 
 1. **Nom du projet.**
-2. **Où vit la mémoire quand il n'y a pas de topic ?** Un workspace sans branche a-t-il droit à une mémoire persistante, ou seulement à un journal ?
+2. ~~**Où vit la mémoire quand il n'y a pas de topic ?**~~
+   **Tranchée (2026-09-30) : au projet.** `<projet>/.cockpit/memory.md`, chaque entrée signée du dépôt
+   qui l'a écrite. C'est ce qui permet à l'agent du front de laisser un contrat à celui du back sans
+   qu'aucun des deux soit dans une topic. Un dépôt seul n'est jamais l'unité.
 3. **Le manifest est-il unique par projet, ou peut-il être composé** (un fichier racine + des fichiers par repo) ?
 4. ~~**Stratégie d'arborescence par défaut** pour un nouveau projet multi-repo : groupée par topic, ou plate par repo ?~~
    **Tranchée : groupée pour `full`, plate disponible pour un `isolated` ponctuel.** `worktrees/<topic>/<repo>` —

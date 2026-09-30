@@ -1,6 +1,6 @@
 import { basename, dirname, join, resolve } from 'node:path'
-import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
-import { protectedPatterns, stableId } from '@cockpit/shared'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
+import { hasMemoryEntries, protectedPatterns, stableId } from '@cockpit/shared'
 import type {
   Capability, ManifestV1, ProjectSettings, Setup, Topic, Project, Workspace, WorkspaceDetails,
 } from '@cockpit/shared'
@@ -139,6 +139,45 @@ export async function workspaceDetails(id: string): Promise<WorkspaceDetails | n
     createdAt,
     remoteUrl: remote.ok ? remote.stdout.trim() || null : null,
     head: sha ? { sha, subject: subject ?? '', author: author ?? '', at: Number(ct) * 1000 } : null,
+  }
+}
+
+/**
+ * §6 + §21.2 — whose memory a checkout's work reads and writes.
+ *
+ * The topic's, when it is in one: the understanding belongs to the work, not
+ * to one of the checkouts it spans. Otherwise the **project's**, at its root —
+ * which is what lets an agent on the frontend leave the backend's agent a
+ * note without either of them being in a topic. A repository on its own is
+ * never the unit: two repositories of one project doing one thing is exactly
+ * the case a memory is for.
+ */
+export function memoryFileOf(ws: Workspace): string {
+  const topic = ws.topicId ? getTopic(ws.topicId) : null
+  if (topic) return topicMemoryFile(topic)
+  return join(getProject(ws.projectId)?.root ?? ws.path, '.cockpit', 'memory.md')
+}
+
+/**
+ * Every topic has its own memory, whatever its setup. One laid out in its own
+ * folder keeps it there, beside CONTEXT.md. A topic that is only a branch in
+ * the existing checkout has no folder of its own, so its memory lives with the
+ * project's, one file per topic — it used to fall through to the project's
+ * memory itself, and a topic's understanding mixed into everything else is
+ * exactly what a topic is for keeping apart.
+ */
+export function topicMemoryFile(topic: Pick<Topic, 'rootPath' | 'projectId' | 'slug'>): string {
+  if (topic.rootPath) return join(topic.rootPath, '.cockpit', 'memory.md')
+  const project = getProject(topic.projectId)
+  return join(project?.root ?? '.', '.cockpit', 'topics', topic.slug + '.md')
+}
+
+/** Whether a memory file has anything in it beyond the template. */
+function memoryWritten(file: string): boolean {
+  try {
+    return existsSync(file) && hasMemoryEntries(readFileSync(file, 'utf8'))
+  } catch {
+    return false
   }
 }
 
@@ -596,7 +635,7 @@ function deriveTopics(project: Project): void {
       state: 'stopped',
       ticket: existing?.ticket ?? null,
       review: existing?.review ?? null,
-      setup: rest.length > 1 ? 'full' : 'isolated',
+      setup: 'isolated',
       derived: true,
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now(),
@@ -682,10 +721,10 @@ export async function probeWorkspace(id: string): Promise<Workspace> {
   ws.runtime = await runtimeStateFor(ws)
   ws.lease = leaseCovering(ws.path)
   ws.agentSessions = sessionsTouching(ws.path).map((s) => s.id)
-  // §6 — the topic's memory when there is one, so this agrees with what
-  // `memory.read` returns and what the agent is actually handed.
-  const memRoot = ws.topicId ? (getTopic(ws.topicId)?.rootPath ?? ws.path) : ws.path
-  ws.hasMemory = existsSync(join(memRoot, '.cockpit', 'memory.md'))
+  // §6 — the memory this checkout's work reads, so this agrees with what
+  // `memory.read` returns and what the agent is actually handed. Something
+  // written in it, not the file: every topic has the file from the start.
+  ws.hasMemory = memoryWritten(memoryFileOf(ws))
   ws.lastProbedAt = Date.now()
   workspaces.set(id, ws)
   return ws

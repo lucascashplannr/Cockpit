@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
-import { newId, stableId } from '@cockpit/shared'
+import { basename, dirname, join, resolve } from 'node:path'
+import { memoryTemplate, newId, stableId } from '@cockpit/shared'
 import type {
   Setup, DatabasePlan, Topic, PlanPreview, PlanStep, SeedProposal, Workspace,
 } from '@cockpit/shared'
@@ -244,6 +244,7 @@ export async function openPlan(
         createdAt: Date.now(),
         updatedAt: Date.now(),
       })
+      createMemory(topicId)
       if (rootPath) scaffold(rootPath, name, slug, repos)
 
       // §7 — only now do the worktrees exist to be seeded. Before this point
@@ -319,38 +320,27 @@ async function hasBranch(repoPath: string, branch: string): Promise<boolean> {
 }
 
 /**
- * §6 + §7 — the two files that make a multi-day, multi-repo topic workable:
- * a memory that survives clearing every session, and the instruction file
- * without which "un agent multi-repo est plus dangereux qu'utile".
+ * §6 — every topic has a memory from the moment it exists, whatever its setup:
+ * the empty form, with a line under each heading saying what goes there. A
+ * topic that is only a branch has no folder, so its memory lives with the
+ * project's (`registry.topicMemoryFile`). Never overwrites one already there.
+ */
+function createMemory(topicId: string): void {
+  const f = store.get(topicId)
+  if (!f) return
+  const file = registry.topicMemoryFile(f)
+  if (existsSync(file)) return
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, memoryTemplate(f.name), 'utf8')
+}
+
+/**
+ * §7 — the instruction file without which "un agent multi-repo est plus
+ * dangereux qu'utile", in the topic's own folder. (The memory beside it is
+ * `createMemory`'s, for every topic.)
  */
 function scaffold(rootPath: string, name: string, slug: string, repos: Workspace[]): void {
   mkdirSync(join(rootPath, '.cockpit'), { recursive: true })
-
-  const memoryFile = join(rootPath, '.cockpit', 'memory.md')
-  if (!existsSync(memoryFile)) {
-    writeFileSync(
-      memoryFile,
-      [
-        '# ' + name,
-        '',
-        '## Objectif',
-        '',
-        '## Décisions',
-        "_(ce qui a été tranché, et pourquoi)_",
-        '',
-        '## Contraintes',
-        "_(ce qu'il ne faut pas casser)_",
-        '',
-        '## Écarté',
-        '_(la section la plus précieuse : sans elle, chaque session fraîche',
-        'repropose la solution déjà rejetée pour une bonne raison)_',
-        '',
-        '## État',
-        '',
-      ].join('\n'),
-      'utf8',
-    )
-  }
 
   const contextFile = join(rootPath, 'CONTEXT.md')
   if (!existsSync(contextFile)) {
@@ -985,6 +975,7 @@ export async function adopt(topicId: string): Promise<{ ok: boolean; detail: str
 
   // Only when the folder is genuinely the topic's own. Idempotent, and it adds
   // the two files §7 asks for without touching anything already there.
+  createMemory(topicId)
   if (rootPath) scaffold(rootPath, f.name, f.slug, wss)
 
   append({
@@ -1080,7 +1071,7 @@ export async function closePlan(
       unpushed.length
         ? unpushed.join(', ') + ': commits no remote has stay on the branch, reachable after the checkout goes.'
         : '',
-      f.rootPath ? 'The memory at ' + f.rootPath + '/.cockpit/memory.md is NOT removed — promote it to the docs first (§9).' : '',
+      'The memory at ' + registry.topicMemoryFile(f) + ' stays until the topic is deleted — /document what is worth keeping (§9).',
     ].filter(Boolean),
     capturesRestorePoint: false,
     repos: wss.map((w) => w.name),
@@ -1102,53 +1093,20 @@ export async function closePlan(
 
 /**
  * §7 — "Un agent qui embrasse plusieurs repos a besoin d'un fichier
- * d'instructions à la racine du groupe." This is how it gets there: the
- * memory and the cross-repo context are handed to the engine as the opening
- * of the prompt, so clearing a session costs nothing (§6) — the next one
- * starts by reading the same two files.
+ * d'instructions à la racine du groupe." This is how it gets there: handed to
+ * the engine at the opening of the prompt, beside the memory (see
+ * `memory.preamble`), so clearing a session costs nothing (§6).
+ *
+ * Only when the session actually spans more than one repository — a
+ * single-repo session does not need the map, and padding the prompt with it
+ * buys nothing.
  */
-/**
- * What `promptPreamble` would find, without building it — so the composer can
- * say "this run carries the topic memory" before the run starts (§7).
- */
-export function preambleParts(
-  topicId: string,
-  scopePaths: string[],
-): { memory: boolean; context: boolean } {
-  const f = store.get(topicId)
-  if (!f?.rootPath) return { memory: false, context: false }
-  return {
-    memory: !!readIfPresent(join(f.rootPath, '.cockpit', 'memory.md')),
-    context: !!readIfPresent(join(f.rootPath, 'CONTEXT.md')) && scopePaths.length > 1,
-  }
-}
-
-export function promptPreamble(topicId: string, scopePaths: string[]): string {
+export function contextBlock(topicId: string | null, scopePaths: string[]): string {
+  if (!topicId || scopePaths.length < 2) return ''
   const f = store.get(topicId)
   if (!f?.rootPath) return ''
-
-  const parts: string[] = []
-  const memory = readIfPresent(join(f.rootPath, '.cockpit', 'memory.md'))
   const context = readIfPresent(join(f.rootPath, 'CONTEXT.md'))
-
-  if (memory) {
-    parts.push(
-      '# Topic memory — ' + f.name,
-      'Durable understanding of this work. The "Écarté" section lists solutions',
-      'already rejected for a reason: do not re-propose them.',
-      '',
-      memory,
-    )
-  }
-  // Only when the session actually spans more than one repository — a
-  // single-repo session does not need the map, and padding the prompt with it
-  // buys nothing (§7).
-  if (context && scopePaths.length > 1) {
-    parts.push('', '# Cross-repository context', '', context)
-  }
-  if (!parts.length) return ''
-
-  return parts.join('\n') + '\n\n---\n\n'
+  return context ? '# Cross-repository context\n\n' + context : ''
 }
 
 function readIfPresent(path: string): string | null {
@@ -1403,11 +1361,10 @@ export async function deletePlan(
     }
   }
 
-  if (input.removeWorktrees && f.rootPath) {
-    warnings.push(
-      'The topic folder goes to the Trash, including its memory at .cockpit/memory.md — ' +
-        'promote what is worth keeping to the docs first (§9).',
-    )
+  // §6 — the memory lives the topic's life, and this is the end of it — unless
+  // the topic's folder is being kept, and the memory in it with it.
+  if (!f.rootPath || input.removeWorktrees) {
+    warnings.push('The topic memory goes to the Trash with it — /document what is worth keeping first (§9).')
   }
   if (!input.deleteBranches) {
     warnings.push('The branches stay. Only the record and the checkouts go.')
@@ -1460,6 +1417,11 @@ export async function deletePlan(
 
   const finish = async () => {
     if (input.removeWorktrees && f.rootPath) await moveToTrash(f.rootPath)
+    // A branch-only topic's memory is not in a folder of its own, so it goes
+    // on its own. Inside a topic folder it went with the folder above — or
+    // stays with it, when the checkouts are kept.
+    const memoryFile = registry.topicMemoryFile(f)
+    if (!f.rootPath && existsSync(memoryFile)) await moveToTrash(memoryFile)
     store.remove(input.topicId)
     append({
       type: 'topic.deleted',
