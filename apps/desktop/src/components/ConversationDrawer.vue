@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { attentionIcon } from './agent/attention.js'
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { Conversation } from '@cockpit/shared'
-import { CircleStop, Plus, Sparkles, Trash2, X } from '@lucide/vue'
+import { ChevronDown, CircleStop, EyeOff, Plus, RotateCcw, Sparkles, Trash2, X } from '@lucide/vue'
 import {
-  activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive,
-  openThreadFor, pinThread, sessionsForScope, startFresh, state, stopConversation,
+  activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive, keptOnRemove,
+  openConversation, openThreadFor, pinThread, removedOn, restoreConversation, sessionsForScope, startFresh, state,
+  stopConversation,
 } from '../core/store.js'
 import type { Attention } from '../core/store.js'
 
@@ -45,6 +46,31 @@ function open(c: Conversation): void {
   state.historyOpen = false
 }
 
+/* ── removed, but kept ────────────────────────────────────────────────────
+ *
+ * A conversation with a memory is hidden rather than deleted when it is
+ * removed: the memory's notes name it. They are out of the list on purpose,
+ * so they stay folded under it — asked for, not shown — and each can be
+ * opened to read, or put back.
+ */
+const removed = ref<Conversation[]>([])
+const showRemoved = ref(false)
+async function loadRemoved(): Promise<void> {
+  removed.value = await removedOn(scope.value)
+}
+// Asked again whenever the list changes: a removal adds one, a restore takes one.
+watch([scope, () => state.agents.length], loadRemoved, { immediate: true })
+
+function openRemoved(c: Conversation): void {
+  openConversation(c)
+  state.historyOpen = false
+}
+
+async function restore(c: Conversation): Promise<void> {
+  await restoreConversation(c.id)
+  await loadRemoved()
+}
+
 function fresh(): void {
   if (!scope.value) return
   startFresh(scope.value)
@@ -74,8 +100,12 @@ function ask(c: Conversation): void {
     // sentence, not two. The clause after the full stop is the whole point:
     // people expect Delete to take the work with it, and here it does not.
     body: [
-      'Its turns go with it. What the agent did to the code stays — the journal,'
-        + ' the restore points, and which lines it wrote.',
+      // A memory's notes name the conversation they came from: while that
+      // memory is there, the conversation is kept out of sight rather than gone.
+      keptOnRemove(c)
+        ? 'It leaves the list but is kept while its memory is, so the notes it wrote still lead back to it.'
+        : 'Its turns go with it. What the agent did to the code stays — the journal,'
+          + ' the restore points, and which lines it wrote.',
     ],
     verb: 'Remove',
     done: 'conversation removed',
@@ -194,7 +224,44 @@ function dotClass(c: Conversation): string {
           </button>
         </span>
       </div>
+
+      <template v-if="showRemoved">
+        <!-- The thread's own divider for what was taken out of it (an undo's
+             fold): a rule, and the fact, set into it. -->
+        <div class="rhead" title="Their memory's notes name them. They go for good when that memory is erased.">
+          Removed · kept for their memory
+        </div>
+        <div v-for="c in removed" :key="c.id" class="conv gone" :class="{ on: selected?.id === c.id }">
+          <button class="pick" @click="openRemoved(c)">
+            <span class="crow">
+              <EyeOff class="gic" />
+              <span class="ctitle">{{ c.title || 'untitled' }}</span>
+            </span>
+            <span class="crow meta">
+              <span class="ceng">{{ engineName(c.engine) }}</span>
+              <span class="sep">·</span>
+              <span>{{ c.history.length }} turn{{ c.history.length === 1 ? '' : 's' }}</span>
+              <span class="sep">·</span>
+              <span>removed {{ ago(c.hiddenAt ?? c.startedAt) }}</span>
+            </span>
+          </button>
+          <span class="acts">
+            <button class="icon-btn small" title="Put it back in the list" @click="restore(c)">
+              <RotateCcw class="sm" />
+            </button>
+          </span>
+        </div>
+      </template>
     </div>
+
+    <!-- Only when there is something behind it: a way into nothing is noise. -->
+    <footer v-if="removed.length" class="dfoot">
+      <button class="more" :aria-expanded="showRemoved" @click="showRemoved = !showRemoved">
+        <span>{{ showRemoved ? 'Hide' : 'Show' }} removed conversations</span>
+        <span class="rn num">{{ removed.length }}</span>
+        <ChevronDown class="chev" :class="{ open: showRemoved }" />
+      </button>
+    </footer>
   </section>
 </template>
 
@@ -324,4 +391,47 @@ function dotClass(c: Conversation): string {
 .acts:focus-within { opacity: 1; }
 .acts .icon-btn.small { width: 24px; height: 24px; }
 .del:hover { color: var(--danger); background: var(--danger-soft); }
+
+/* Removed, and only kept: the same row, a step quieter, under a rule with
+   the fact set into it — the thread's divider for an undo, in small. */
+.rhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 4px 4px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  cursor: default;
+}
+.rhead::before, .rhead::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.conv.gone .ctitle { color: var(--text-muted); }
+/* In the dot's place: not a state, the reason it is here. */
+.gic { flex: none; width: 11px; height: 11px; margin: 0 -2px; color: var(--text-dim); }
+
+/* The way in, at the foot: a line of text with its count, not a button bar. */
+.dfoot { flex: none; padding: 0 5px 5px; }
+.list + .dfoot { border-top: 1px solid var(--line-soft); padding-top: 5px; }
+.more {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px 0 9px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
+}
+.more:hover { background: var(--hover); color: var(--text-muted); }
+.rn { font-size: 11px; color: var(--text-dim); }
+.more .chev {
+  width: 13px;
+  height: 13px;
+  margin-left: auto;
+  color: var(--text-dim);
+  transition: transform var(--dur-1) var(--ease-soft);
+}
+.more .chev.open { transform: rotate(180deg); }
 </style>

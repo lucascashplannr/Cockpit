@@ -152,6 +152,11 @@ export const state = reactive({
   workspaces: [] as Workspace[],
   topics: [] as Topic[],
   agents: [] as Conversation[],
+  /**
+   * §6 — removed conversations opened from a memory note that names them.
+   * Never in `agents`, which is the list: only here, so the thread can show.
+   */
+  keptAgents: [] as Conversation[],
   events: [] as CockpitEvent[],
 
   /**
@@ -446,6 +451,8 @@ export const client = new CoreClient(CORE_URL, {
   },
   onAgents(s) {
     state.agents = s
+    // One picked back up is in the list again, and the list is the live copy.
+    if (state.keptAgents.length) state.keptAgents = state.keptAgents.filter((k) => !s.some((c) => c.id === k.id))
   },
   onAgentProgress(sessionId, outputTokens) {
     state.progress[sessionId] = outputTokens
@@ -1641,7 +1648,9 @@ export function openThreadFor(scope: AgentScope | null): Conversation | null {
   // The ✕, and §6's "start fresh": an empty box here, whatever is pinned.
   if (threads.fresh[scopeKey(scope)]) return null
   const all = [...sessionsForScope(scope)].sort((a, b) => b.startedAt - a.startedAt)
-  const pinned = all.find((c) => c.id === threads.pinned[scopeKey(scope)])
+  const pin = threads.pinned[scopeKey(scope)]
+  // A removed one is only ever on screen because a memory note led to it.
+  const pinned = all.find((c) => c.id === pin) ?? state.keptAgents.find((c) => c.id === pin)
   if (pinned) return pinned
   // Never chosen on this scope: the busy one first — that is the one there is
   // news about — then any whose process is still up, which is the one a turn
@@ -1725,8 +1734,8 @@ export async function stopConversation(sessionId: string): Promise<void> {
   await guard(() => client.call('agent.stop', { sessionId }), 'conversation stopped')
 }
 
-export async function deleteConversation(sessionId: string): Promise<boolean> {
-  const r = await guard(() => client.call('agent.delete', { sessionId }))
+export async function deleteConversation(sessionId: string, opts: { letGo?: boolean } = {}): Promise<boolean> {
+  const r = await guard(() => client.call('agent.delete', { sessionId, letGo: opts.letGo }))
   if (!r) return false
   if (!r.ok) {
     toast('error', r.reason)
@@ -1741,9 +1750,63 @@ export async function deleteConversation(sessionId: string): Promise<boolean> {
   delete state.deltas[sessionId]
   // The list is pushed by the service, but not before this returns — dropping
   // it here is what keeps the row from staying under the cursor for a beat
-  // after the click that removed it.
+  // after the click that removed it. A kept one leaves the list all the same.
   state.agents = state.agents.filter((c) => c.id !== sessionId)
+  state.keptAgents = state.keptAgents.filter((c) => c.id !== sessionId)
   return true
+}
+
+/**
+ * §6 — whether removing this conversation only hides it: it uses a memory
+ * that is there, whose notes may name it. The service decides the same way.
+ */
+export function keptOnRemove(c: Conversation): boolean {
+  const projectId =
+    c.workspaceIds.map((id) => state.workspaces.find((w) => w.id === id)?.projectId).find(Boolean) ??
+    (c.scope.kind === 'project' ? c.scope.projectId : null)
+  return !!projectId && !!state.memories[projectId]?.some((m) => m.id === c.memory)
+}
+
+/**
+ * §6 — the conversation a memory note came from, on screen: the note is
+ * signed with it (`conversationRef`), and following it back is how a note is
+ * checked. A removed one is still there to open while its memory is.
+ */
+export async function openConversationByRef(projectId: string, ref: string): Promise<void> {
+  let c: Conversation | null
+  try {
+    c = await client.call('agent.find', { projectId, ref })
+  } catch (e) {
+    toast('error', e instanceof Error ? e.message : String(e))
+    return
+  }
+  if (!c) {
+    toast('info', 'that conversation is no longer there')
+    return
+  }
+  openConversation(c)
+}
+
+/** Any conversation on screen — a removed one included, which is never in the list. */
+export function openConversation(c: Conversation): void {
+  if (c.hiddenAt !== null && !state.agents.some((a) => a.id === c.id)) {
+    state.keptAgents = [...state.keptAgents.filter((k) => k.id !== c.id), c]
+  }
+  openAgentOn(c.scope)
+  pinThread(c.scope, c.id)
+}
+
+/** Removed but kept, on this scope, most recently removed first. */
+export async function removedOn(scope: AgentScope | null): Promise<Conversation[]> {
+  if (!scope) return []
+  const all = await client.call('agent.removed', undefined).catch(() => [] as Conversation[])
+  const key = scopeKey(scope)
+  return all.filter((c) => scopeKey(c.scope) === key)
+}
+
+/** A removed conversation back in the list. */
+export async function restoreConversation(sessionId: string): Promise<void> {
+  await guard(() => client.call('agent.restore', { sessionId }), 'back in the list')
 }
 
 /* ── the transcript, and what is being written into it ─────────────────── */
@@ -3171,6 +3234,7 @@ export function askEraseMemory(workspaceId: string, doc: { id: string; name: str
       doc.kind === 'topic'
         ? "Every note in it goes — the topic's agents start from nothing next time."
         : 'Every note in it goes, and it leaves the list of memories.',
+      'Conversations you removed that were kept for its notes are deleted with it.',
       'The file goes to the Trash, so it can still be brought back from there.',
     ],
     verb: 'Erase',

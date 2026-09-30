@@ -974,6 +974,12 @@ export interface Conversation {
    * rather than a session to leave sitting in a list looking done.
    */
   denials: string[]
+  /**
+   * §6 — removed from the list, but kept: its memory's notes point at it, and
+   * a reference that leads nowhere is a memory that cannot be checked. It goes
+   * for good with that memory. Null for every conversation still in the list.
+   */
+  hiddenAt: number | null
 }
 
 export interface DiffFile {
@@ -1027,6 +1033,18 @@ export interface MemoryDoc {
   content: string
   sections: { title: string; body: string }[]
   updatedAt: number | null
+  /**
+   * The conversations its notes are signed with, by `conversationRef` — what
+   * a signature is shown as, since a repository and a date say nothing about
+   * which conversation it was. A ref missing here is one that is gone.
+   */
+  sources: Record<string, MemorySource>
+}
+
+export interface MemorySource {
+  title: string
+  /** Removed from the list, and kept because this memory names it. */
+  removed: boolean
 }
 
 /**

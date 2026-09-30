@@ -57,6 +57,48 @@ export const STATE_SECTION: MemorySection = 'State'
  */
 export const RULED_OUT_SECTION: MemorySection = 'Ruled out'
 
+/**
+ * How an agent's note is signed: `_(front, 30 Sep, 7QX2M4KD)_` — the
+ * repositories it came from, the day, and the conversation that wrote it.
+ *
+ * The last part is the tail of the conversation's id: enough to find it again
+ * among one project's conversations, short enough to sit on every line an
+ * agent reads. A note written before there was one ends at the date.
+ */
+export function conversationRef(sessionId: string): string {
+  return sessionId.slice(-8)
+}
+
+export function memorySignature(by: string, date: string, ref?: string): string {
+  return '_(' + by + ', ' + date + (ref ? ', ' + ref : '') + ')_'
+}
+
+/** Who, when, and — on a note written since there was one — which conversation. */
+export interface MemorySigned {
+  by: string
+  date: string
+  ref: string | null
+}
+
+const SIGNED = String.raw`_\(([^()]{1,60}?),\s*(\d{1,2}\s+[A-Za-z]{3,5})(?:,\s*([0-9A-Z]{8}))?\)_`
+/** A signature at the end of an entry. */
+const SIGNED_AT_END = new RegExp(String.raw`\s*` + SIGNED + String.raw`\s*$`)
+/** A signature on a line of its own — the state's, which signs the whole section. */
+const SIGNED_ALONE = new RegExp('^' + SIGNED + '$')
+
+/** The entry's text and its signature, when it ends in one. */
+export function splitSignature(line: string): { text: string; signed: MemorySigned | null } {
+  const m = SIGNED_AT_END.exec(line)
+  if (!m) return { text: line, signed: null }
+  return { text: line.slice(0, m.index), signed: { by: m[1]!.trim(), date: m[2]!, ref: m[3] ?? null } }
+}
+
+/** The signature, when the line is nothing else. */
+export function signatureAlone(line: string): MemorySigned | null {
+  const m = SIGNED_ALONE.exec(line.trim())
+  return m ? { by: m[1]!.trim(), date: m[2]!, ref: m[3] ?? null } : null
+}
+
 const GUIDANCE: Partial<Record<MemorySection, string>> = {
   Goal: '_(what this work is for)_',
   State: '_(done, in progress, next)_',

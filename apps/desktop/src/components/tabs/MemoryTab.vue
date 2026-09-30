@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { OPEN_QUESTIONS_SECTION, RULED_OUT_SECTION, sectionsFor } from '@cockpit/shared'
-import type { MemoryDoc, Workspace } from '@cockpit/shared'
-import { Check, ChevronDown, ChevronRight, Copy, CornerDownLeft, Info, Pencil, Save, Trash2, X } from '@lucide/vue'
+import { OPEN_QUESTIONS_SECTION, RULED_OUT_SECTION, sectionsFor, signatureAlone, splitSignature } from '@cockpit/shared'
+import type { MemoryDoc, MemorySigned, Workspace } from '@cockpit/shared'
+import {
+  Check, ChevronDown, ChevronRight, Copy, CornerDownLeft, Info, MessageSquare, Pencil, Save, Trash2, X,
+} from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import {
   LAYOUT_DEFAULTS, LAYOUT_LIMITS, activeAgentScope, askEraseMemory, client, guard, layout, memoryChoiceFor, memoryLabel,
-  openThreadFor, resetColumnWidth, resetMemorySideHeight, saveLayout,
+  openConversationByRef, openThreadFor, resetColumnWidth, resetMemorySideHeight, saveLayout,
   setColumnWidth, setMemorySideHeight, state, toast,
 } from '../../core/store.js'
 import { createMarked } from '../../core/markdown.js'
@@ -65,16 +67,17 @@ const SECTIONS = computed(() => sectionsFor(props.workspace.topicId ? 'topic' : 
  * opens it as it is. What changes is only how it is drawn: each heading a fold
  * with how much is under it, each `- ` line an entry with a real dot, the
  * template's `_(guidance)_` as a hint beside its heading rather than as body,
- * and the `_(front, 30 Sep)_` an agent's note is signed with as a quiet tag
- * instead of underscores in the middle of the sentence.
+ * and the `_(front, 30 Sep, 7QX2M4KD)_` an agent's note is signed with as a
+ * quiet tag instead of underscores in the middle of the sentence — one that
+ * opens the conversation that wrote it, when the note says which.
  */
 const md = createMarked({ breaks: false })
 
 interface Entry {
   /** Rendered, escaped inline markdown — see core/markdown.ts. */
   html: string
-  /** "front · 30 Sep", when the note was signed. */
-  by: string | null
+  /** Who and when, when the note was signed — and which conversation, since notes say. */
+  by: MemorySigned | null
   /** A line that is not a list item — prose, or part of a state written as text. */
   prose: boolean
 }
@@ -83,20 +86,14 @@ interface Section {
   hint: string | null
   entries: Entry[]
   /** The state is signed once, at its foot, rather than per line. */
-  by: string | null
+  by: MemorySigned | null
 }
 
-const SIGNATURE = /\s*_\(([^()]{1,60}),\s*(\d{1,2}\s+[A-Za-z]{3,5})\)_\s*$/
 const GUIDANCE = /^_\(([\s\S]*?)\)_$/
 
 function entry(raw: string, prose: boolean): Entry {
-  const sig = SIGNATURE.exec(raw)
-  const text = sig ? raw.slice(0, sig.index) : raw
-  return {
-    html: md.parseInline(text.trim()) as string,
-    by: sig ? sig[1]!.trim() + ' · ' + sig[2] : null,
-    prose,
-  }
+  const { text, signed } = splitSignature(raw)
+  return { html: md.parseInline(text.trim()) as string, by: signed, prose }
 }
 
 function readSection(title: string, body: string): Section {
@@ -107,7 +104,7 @@ function readSection(title: string, body: string): Section {
   if (rest.startsWith('_(')) {
     const end = rest.search(/\)_[ \t]*(\n|$)/)
     const g = end > 0 ? GUIDANCE.exec(rest.slice(0, end + 2)) : null
-    if (g && !SIGNATURE.test(g[0])) {
+    if (g && !signatureAlone(g[0])) {
       out.hint = g[1]!.replace(/\s+/g, ' ').trim()
       rest = rest.slice(end + 2).trim()
     }
@@ -129,10 +126,10 @@ function readSection(title: string, body: string): Section {
       continue
     }
     // A signature on a line of its own signs the whole section (the state).
-    const alone = /^_\(([^()]{1,60}),\s*(\d{1,2}\s+[A-Za-z]{3,5})\)_$/.exec(line.trim())
+    const alone = signatureAlone(line)
     if (alone) {
       flush(false)
-      out.by = alone[1]!.trim() + ' · ' + alone[2]
+      out.by = alone
       continue
     }
     // An indented line carries on the entry above; anything else is prose.
@@ -144,6 +141,25 @@ function readSection(title: string, body: string): Section {
   }
   flush(false)
   return out
+}
+
+/**
+ * A signature says which conversation wrote the note, by its title: the
+ * repository and the date alone said nothing about which one it was. One that
+ * is gone for good falls back to the repository, and leads nowhere.
+ */
+function source(ref: string) {
+  return doc.value?.sources?.[ref] ?? null
+}
+function about(s: MemorySigned): string {
+  const c = s.ref ? source(s.ref) : null
+  if (!c) return s.by + ', ' + s.date
+  return '"' + c.title + '" — ' + s.by + ', ' + s.date + (c.removed ? ' · removed, kept for this memory' : '') + '. Open it'
+}
+
+/** The note's signature, followed back to the conversation that wrote it. */
+function follow(ref: string): void {
+  void openConversationByRef(props.workspace.projectId, ref)
 }
 
 const sections = computed<Section[]>(() => (doc.value?.sections ?? []).map((x) => readSection(x.title, x.body)))
@@ -232,7 +248,24 @@ onBeforeUnmount(() => {
  * a way back out once it is open.
  */
 const detailRoot = ref<HTMLElement | null>(null)
+const head = ref<HTMLElement | null>(null)
 const detailOpen = ref(false)
+/**
+ * Where the card opens, against ⓘ. ⓘ sits after the memory's name, so it is
+ * wherever the name ends — and a card hung from it at a fixed offset ran past
+ * the panel's edge and cut the path off mid-word. Under ⓘ when it fits;
+ * pulled back inside the header when it does not.
+ */
+const detailBox = ref<{ left: string; width: string }>({ left: '-6px', width: '300px' })
+function toggleDetail(): void {
+  detailOpen.value = !detailOpen.value
+  if (!detailOpen.value || !head.value || !detailRoot.value) return
+  const h = head.value.getBoundingClientRect()
+  const at = detailRoot.value.getBoundingClientRect()
+  const width = Math.min(340, h.width - 16)
+  const left = Math.max(h.left + 8, Math.min(at.left - 6, h.right - 8 - width))
+  detailBox.value = { left: left - at.left + 'px', width: width + 'px' }
+}
 const dirty = computed(() => editing.value && draft.value !== (doc.value?.content ?? ''))
 
 function since(ts: number): string {
@@ -359,7 +392,7 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
     :style="{ '--side-w': sideW + 'px', '--side-h': sideH === null ? 'auto' : sideH + 'px' }"
   >
     <div class="main">
-      <div class="ehead">
+      <div ref="head" class="ehead">
         <div ref="switcherRoot" class="switcher">
           <button
             class="mname"
@@ -392,11 +425,11 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
             title="About this file"
             aria-label="About this file"
             :aria-expanded="detailOpen"
-            @click="detailOpen = !detailOpen"
+            @click="toggleDetail"
           >
             <Info />
           </button>
-          <div v-if="detailOpen" class="menu edetail" role="dialog" aria-label="About this file">
+          <div v-if="detailOpen" class="menu edetail" :style="detailBox" role="dialog" aria-label="About this file">
             <div class="dpath mono selectable">{{ doc.path }}</div>
             <dl class="dfacts">
               <dt>Modified</dt>
@@ -475,9 +508,29 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
               <li v-for="(e, i) in x.entries" :key="i" :class="{ prose: e.prose }">
                 <!-- Escaped by the renderer: raw HTML in the file comes out as text. -->
                 <span class="etext" v-html="e.html" />
-                <span v-if="e.by" class="by">{{ e.by }}</span>
+                <button
+                  v-if="e.by?.ref && source(e.by.ref)"
+                  class="by link"
+                  :title="about(e.by)"
+                  @click="follow(e.by.ref)"
+                >
+                  <MessageSquare class="bic" /><span class="bwho">{{ source(e.by.ref)!.title }}</span><span class="bwhen">{{ e.by.date }}</span>
+                </button>
+                <span v-else-if="e.by" class="by">
+                  <span class="bwho">{{ e.by.by }}</span><span class="bwhen">{{ e.by.date }}</span>
+                </span>
               </li>
-              <li v-if="x.by" class="signed"><span class="by">{{ x.by }}</span></li>
+              <li v-if="x.by" class="signed">
+                <button
+                  v-if="x.by.ref && source(x.by.ref)"
+                  class="by link"
+                  :title="about(x.by)"
+                  @click="follow(x.by.ref)"
+                >
+                  <MessageSquare class="bic" /><span class="bwho">{{ source(x.by.ref)!.title }}</span><span class="bwhen">{{ x.by.date }}</span>
+                </button>
+                <span v-else class="by"><span class="bwho">{{ x.by.by }}</span><span class="bwhen">{{ x.by.date }}</span></span>
+              </li>
             </ul>
           </section>
 
@@ -648,9 +701,7 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
 .einfo.on { background: var(--active); color: var(--text); }
 .edetail {
   top: calc(100% + 6px);
-  left: -6px;
-  width: 300px;
-  max-width: calc(100cqw - 16px);
+  min-width: 0;
   padding: 10px 5px 5px;
 }
 .dpath {
@@ -756,20 +807,33 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
   color: var(--text);
 }
 .etext :deep(strong) { color: var(--text); }
+/* Who wrote it and when, at the weight of a footnote: no box, the name a
+   touch firmer than the date. One that says which conversation wrote it
+   carries a speech mark and opens that conversation — the box only comes
+   up under the pointer, where it says "this can be pressed". */
 .by {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  padding: 0 5px;
   border-radius: 4px;
-  border: 1px solid var(--line);
+  font: inherit;
   font-size: 10px;
   line-height: 16px;
   color: var(--text-dim);
   white-space: nowrap;
   vertical-align: 1px;
 }
+.bwho { font-weight: 550; }
+/* A conversation's title is a sentence: it gets a measure, not the line. */
+.by.link .bwho { max-width: 26ch; overflow: hidden; text-overflow: ellipsis; }
+.bic { flex: none; width: 10px; height: 10px; }
+.by.link { cursor: pointer; transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft); }
+.by.link:hover { background: var(--hover); color: var(--text-muted); }
+.by.link:hover .bwho { color: var(--text); }
 .signed { padding-top: 6px; }
-.signed .by { margin-left: 0; }
+.signed .by { margin-left: -5px; }
 .none { margin: 0; color: var(--text-dim); font-size: var(--fs-sm); }
 
 .editor {
@@ -823,12 +887,13 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
 }
 .note:focus { box-shadow: none; border-color: transparent; background: transparent; }
 .wfoot { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-/* The section, worn like the composer's option chips. */
+/* The section, worn like the composer's option chips — a size up, to stand
+   the same height as the button beside it. */
 .pick {
   position: relative;
   display: inline-flex;
   align-items: center;
-  height: 24px;
+  height: 28px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--bg);
@@ -837,16 +902,16 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
 .pick select {
   appearance: none;
   height: 100%;
-  padding: 0 22px 0 9px;
+  padding: 0 28px 0 11px;
   border: none;
   background: transparent;
   font: inherit;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--text-muted);
   cursor: pointer;
 }
 .pick select:focus { outline: none; }
-.pchev { position: absolute; right: 6px; transform: rotate(90deg); color: var(--text-dim); pointer-events: none; }
+.pchev { position: absolute; right: 9px; transform: rotate(90deg); color: var(--text-dim); pointer-events: none; }
 .go { width: 32px; height: 28px; padding: 0; }
 .go .ic { width: 15px; height: 15px; }
 

@@ -276,6 +276,11 @@ function migrate(d: Db): void {
     "UPDATE agent_sessions SET memory = CASE WHEN topic_id IS NOT NULL THEN 'topic:' || topic_id ELSE 'project' END WHERE memory IS NULL",
   ).run()
 
+  // §6 — a conversation removed while its memory's notes still name it: out
+  // of the list, kept until that memory is erased. A nullable column, which an
+  // older core simply never reads, so no version bump.
+  addColumn(d, 'agent_sessions', 'hidden_at', 'INTEGER')
+
   d.exec(`
     -- §6 — the conversation. Append-only: a resume adds a row, it never
     -- overwrites the question that opened the thread.

@@ -31,8 +31,14 @@
  *
  * 2.10 — `fs.readImage`, so the Code tab can show an image rather than open
  * it as an empty text file.
+ *
+ * 2.11 — `agent.find`, `agent.restore`, and `agent.delete` answering `kept`: a
+ * conversation with a memory is hidden rather than deleted. An older core
+ * deletes it, and the notes that name it lead nowhere.
+ *
+ * 2.12 — `agent.removed`, so the drawer can show what was removed but kept.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 10 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 12 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

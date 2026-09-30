@@ -1,13 +1,15 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
   MEMORY_NEW, MEMORY_OFF, MEMORY_SECTIONS, PROJECT_MEMORY, RULED_OUT_SECTION, STATE_SECTION, canonicalSection,
-  englishMemory, hasMemoryEntries, memoryTemplate, shapedMemory, slugify, topicMemoryId,
+  conversationRef, englishMemory, hasMemoryEntries, memorySignature, memoryTemplate, shapedMemory, signatureAlone,
+  slugify, splitSignature, topicMemoryId,
 } from '@cockpit/shared'
 import type { MemoryKind } from '@cockpit/shared'
 import type { Actor, Conversation, MemoryDoc, MemorySummary } from '@cockpit/shared'
 import { allTopics, getProject, getTopic, getWorkspace, requireWorkspace, topicMemoryFile } from './registry.js'
 import { append } from './journal.js'
+import { getDb } from './db.js'
 import { moveToTrash } from './files.js'
 
 /**
@@ -222,8 +224,9 @@ function homeAt(workspaceId: string, memoryId?: string): MemoryHome {
  * written yet shows the empty form, which is also what says where things go.
  * The file itself is only written when something is.
  */
-export function read(workspaceId: string, memoryId?: string): MemoryDoc {
+export function read(workspaceId: string, memoryId?: string): Omit<MemoryDoc, 'sources'> {
   const home = homeAt(workspaceId, memoryId)
+  backfillRefs(home)
   const content =
     contentAt(home.file, home.kind) ?? memoryTemplate(home.kind, home.kind === 'project' ? undefined : home.label)
   return {
@@ -235,6 +238,85 @@ export function read(workspaceId: string, memoryId?: string): MemoryDoc {
     sections: parseSections(content),
     updatedAt: existsSync(home.file) ? statSync(home.file).mtimeMs : null,
   }
+}
+
+/**
+ * Notes signed before a signature named its conversation — `_(front, 30 Sep)_`
+ * — given the name back, from the journal, which has always recorded which
+ * conversation wrote each one. Written into the file, once: the reference
+ * belongs in the memory, not in a lookup beside it. A note the journal cannot
+ * place (written by hand, edited since, rotated out) is left as it is.
+ *
+ * The file keeps its modified time: nothing anyone wrote has changed.
+ */
+function backfillRefs(home: MemoryHome): void {
+  let raw: string
+  try {
+    raw = readFileSync(home.file, 'utf8')
+  } catch {
+    return
+  }
+  const lines = raw.split('\n')
+  const bare = (l: string): boolean => {
+    const s = splitSignature(l).signed ?? signatureAlone(l)
+    return !!s && !s.ref
+  }
+  if (!lines.some(bare)) return
+
+  const rows = getDb()
+    .prepare(
+      `SELECT ts, actor, payload FROM events
+        WHERE type IN ('memory.promoted', 'memory.written') AND actor LIKE '%"kind":"agent"%'
+        ORDER BY ts DESC LIMIT 5000`,
+    )
+    .all() as { ts: number; actor: string; payload: string }[]
+  const events = rows.flatMap((r) => {
+    try {
+      const actor = JSON.parse(r.actor) as { sessionId?: string }
+      const p = JSON.parse(r.payload) as { text?: string; section?: string; by?: string }
+      return actor.sessionId ? [{ ts: r.ts, sessionId: actor.sessionId, ...p }] : []
+    } catch {
+      return []
+    }
+  })
+  const key = (t: string): string => unsigned(oneLine(t)).toLowerCase().replace(/\s+/g, ' ').trim()
+  const day = (ts: number): string => {
+    const d = new Date(ts)
+    return d.getDate() + ' ' + MONTHS[d.getMonth()]
+  }
+
+  let changed = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const alone = signatureAlone(line)
+    if (alone && !alone.ref) {
+      // The state is signed on a line of its own: the last state its signer set that day.
+      const e = events.find((x) => x.section === STATE_SECTION && !x.text && x.by === alone.by && day(x.ts) === alone.date)
+      if (e) {
+        lines[i] = memorySignature(alone.by, alone.date, conversationRef(e.sessionId))
+        changed = true
+      }
+      continue
+    }
+    const bullet = /^(\s*[-*+]\s+)(.*)$/.exec(line)
+    if (!bullet) continue
+    const { text, signed } = splitSignature(bullet[2]!)
+    if (!signed || signed.ref) continue
+    const want = key(text)
+    // The journal keeps the first 500 characters of what was noted.
+    const e = events.find((x) => {
+      if (!x.text) return false
+      const k = key(x.text)
+      return k === want || (x.text.length >= 500 && want.startsWith(k))
+    })
+    if (!e) continue
+    lines[i] = bullet[1] + text.trimEnd() + ' ' + memorySignature(signed.by, signed.date, conversationRef(e.sessionId))
+    changed = true
+  }
+  if (!changed) return
+  const { atime, mtime } = statSync(home.file)
+  writeFileSync(home.file, lines.join('\n'), 'utf8')
+  utimesSync(home.file, atime, mtime)
 }
 
 /**
@@ -286,6 +368,8 @@ export function note(
   text: string,
   by: string,
   actor: Actor,
+  /** The conversation it came from, as `conversationRef` spells it — so the note can lead back. */
+  ref: string | undefined,
   /**
    * An entry this one supersedes — an open question now answered, a contract
    * that changed. Matched on its words, signature aside; it goes, this comes.
@@ -300,7 +384,7 @@ export function note(
     content = r.content
     replaced = r.removed
   }
-  const entry = '- ' + unsigned(oneLine(text)) + ' _(' + by + ', ' + shortDate() + ')_'
+  const entry = '- ' + unsigned(oneLine(text)) + ' ' + memorySignature(by, shortDate(), ref)
   writeAt(home, withEntry(content, canonicalSection(section), entry))
   append({
     type: 'memory.promoted',
@@ -344,9 +428,9 @@ function withoutEntry(content: string, words: string): { content: string; remove
  * a state is true once, and a list of every state it has been in is a log —
  * which is the journal's job, and would grow the preamble without end.
  */
-export function setState(home: MemoryHome, text: string, by: string, actor: Actor): string[] {
+export function setState(home: MemoryHome, text: string, by: string, actor: Actor, ref?: string): string[] {
   const content = ensureAt(home)
-  const body = unsigned(text.trim()) + '\n\n_(' + by + ', ' + shortDate() + ')_'
+  const body = unsigned(text.trim()) + '\n\n' + memorySignature(by, shortDate(), ref)
   writeAt(home, withSection(content, STATE_SECTION, body))
   append({ type: 'memory.written', actor, workspaceId: home.workspaceId, payload: { section: STATE_SECTION, by } })
   return body.split('\n').filter((l) => l.trim())
@@ -392,7 +476,8 @@ export function newSince(then: string | null, now: string | null, own: Set<strin
  * two of them on one line is noise in every preamble after.
  */
 function unsigned(text: string): string {
-  const sig = /\s*_?\(\s*[^()]{1,60},\s*\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s*\)_?\s*$/i
+  const sig =
+    /\s*_?\(\s*[^()]{1,60},\s*\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?(?:,\s*[0-9a-z]{8})?\s*\)_?\s*$/i
   let t = text
   while (sig.test(t)) t = t.replace(sig, '')
   return t.trimEnd()

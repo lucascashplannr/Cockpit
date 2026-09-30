@@ -857,11 +857,26 @@ export interface Rpc {
    * per-path attribution stay, because those record what happened to the code
    * rather than what was said about it. Refuses while the engine is still
    * running: stopping is its own decision.
+   *
+   * A conversation with a memory is *hidden* instead (`kept`): the memory's
+   * notes name it, and it goes for good when that memory is erased.
+   *
+   * `letGo` is `/clear`'s: an open conversation between turns is let go first
+   * rather than refused — clearing is the decision to let it go.
    */
   'agent.delete': {
-    params: { sessionId: string }
-    result: { ok: true } | { ok: false; reason: string }
+    params: { sessionId: string; letGo?: boolean }
+    result: { ok: true; kept: boolean } | { ok: false; reason: string }
   }
+  /**
+   * §6 — the conversation a memory note is signed with (`conversationRef`),
+   * hidden or not, so the note can lead back to it. Null once it is gone.
+   */
+  'agent.find': { params: { projectId: string; ref: string }; result: Conversation | null }
+  /** Every hidden conversation, most recently removed first — the drawer's "Show removed". */
+  'agent.removed': { params: void; result: Conversation[] }
+  /** A hidden conversation back in the list. Sending a turn into one does the same. */
+  'agent.restore': { params: { sessionId: string }; result: { ok: true } }
   /**
    * §6 — a turn written into a conversation that is already open.
    *

@@ -7,7 +7,7 @@ import type {
   AgentScopePreview, Conversation, AgentTurn, PermissionMode, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, FoldVertical, Gauge, Hand, Lock, Paperclip,
+  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, Hand, Lock, Paperclip,
   Redo2, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -21,7 +21,7 @@ import {
   activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
-  chooseMemory,
+  chooseMemory, deleteConversation, restoreConversation,
   threadScrollOf, toast, transcriptOf, type ThreadScroll,
 } from '../../core/store.js'
 import {
@@ -516,11 +516,11 @@ const canSend = computed(() => {
 const queueing = computed(() => !!selected.value && isBusy(selected.value))
 
 /**
- * `/clear` — the same scope, an empty thread.
+ * `/clear` — the same scope, an empty thread, and this one removed.
  *
- * A new conversation rather than this one wiped: a conversation is a record,
- * and its journal never goes. This one stays in the list, resumable, exactly
- * as `claude`'s own `/clear` leaves the last session behind for `--resume`.
+ * Removed the way the drawer's Remove removes it: gone when it has no memory,
+ * out of the list but kept when it has one — the memory's notes name it — and
+ * gone with that memory. Its journal never goes either way.
  *
  * Its engine is let go first, if it is sitting open: an open conversation
  * holds the lock on the scope, and the new one would be refused by the old.
@@ -535,6 +535,7 @@ async function clearThread(): Promise<void> {
     await guard(() => client.call('agent.stop', { sessionId: s.id }))
     const now = state.agents.find((c) => c.id === s.id)
     if (scope.value && now) chooseMemory(scope.value, now.memory)
+    if (now) await deleteConversation(now.id, { letGo: true })
     if (scope.value) startFresh(scope.value)
     return
   }
@@ -568,10 +569,12 @@ async function clearThread(): Promise<void> {
   // Asked of the store as it is now: `s` is the row as it was before the
   // handoff, and a conversation let go meanwhile has nothing to stop.
   const now = state.agents.find((c) => c.id === s?.id)
-  if (now && isLive(now)) await guard(() => client.call('agent.stop', { sessionId: now.id }))
   // §6 — the next conversation carries on with the same memory: that is what
   // clearing *is*. The chip shows it, and one click changes it.
   if (on && now) chooseMemory(on, now.memory)
+  // Let go and removed in one call: the service waits for the process to go
+  // before it takes the row, so the new conversation is not refused by the old.
+  if (now) await deleteConversation(now.id, { letGo: true })
   if (on) startFresh(on)
 }
 
@@ -1298,6 +1301,12 @@ function ago(ts: number): string {
           class="alive"
           title="The engine is still here between turns: the next thing you say goes straight in, and it holds this scope until it is let go"
         >open</span>
+        <!-- §6 — only ever on screen because a memory note led here. -->
+        <span
+          v-else-if="selected.hiddenAt !== null"
+          class="alive"
+          title="Removed from the list, and kept because its memory's notes name it — it goes when that memory is erased"
+        >removed</span>
 
         <!-- How full the window is and what the thread has cost went down to
              the end of the settings row under the box (ContextMeter): both are
@@ -1324,6 +1333,14 @@ function ago(ts: number): string {
            background came off. -->
       <div class="scroller">
         <div ref="scrollEl" class="thread" @scroll.passive="onScroll">
+
+          <!-- §6 — opened from a memory note: removed, and kept only because
+               the note names it. Saying something into it brings it back too. -->
+          <div v-if="selected.hiddenAt !== null" class="fold kept">
+            <EyeOff class="sm" />
+            <span>Removed — kept while its memory is</span>
+            <button class="lnk" @click="restoreConversation(selected.id)">Restore</button>
+          </div>
 
           <!-- §3.4 — what is missing, and why, rather than a thread that looks
                like it was never answered. -->

@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { CLAUDE_MODELS, MEMORY_OFF, commandIn, newId } from '@cockpit/shared'
 import type {
-  AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, PermissionMode,
+  AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, MemorySource, PermissionMode,
   PermissionRequest, TurnUsage,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
@@ -19,7 +19,7 @@ import { ranUnasked } from './unasked.js'
 import * as memory from './memory.js'
 import * as memoryTools from './memoryTools.js'
 import * as docs from './docs.js'
-import { getWorkspace } from './registry.js'
+import { getTopic, getWorkspace } from './registry.js'
 import { isInside } from './config.js'
 
 /**
@@ -1390,6 +1390,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     queued: queuedIn(String(r.id)),
     pending: pendingIn(String(r.id)),
     naming: namingIds.has(String(r.id)),
+    hiddenAt: r.hidden_at == null ? null : Number(r.hidden_at),
   }
 }
 
@@ -1424,7 +1425,7 @@ function rollUp(sessionId: string): Conversation['usage'] {
 
 export function list(): Conversation[] {
   const rows = getDb()
-    .prepare('SELECT * FROM agent_sessions ORDER BY started_at DESC LIMIT 100')
+    .prepare('SELECT * FROM agent_sessions WHERE hidden_at IS NULL ORDER BY started_at DESC LIMIT 100')
     .all() as Record<string, unknown>[]
   return rows.map(hydrate)
 }
@@ -1570,6 +1571,7 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     pending: [],
     naming: false,
     usage: null,
+    hiddenAt: null,
   }
 
   // Marked before the row exists, so the window never gets a frame of the
@@ -1729,7 +1731,10 @@ export async function resumeAgent(
     // last one's forward would leave the thread flagged for help it has
     // already been given.
     denials: [],
+    // Picked back up: a conversation someone is talking to again belongs in the list.
+    hiddenAt: null,
   }
+  restore(sessionId)
   // Every turn undone: nothing is left to resume, so the engine starts afresh
   // and the id it announces becomes the conversation's.
   if (at === null) {
@@ -2327,7 +2332,7 @@ function relativeTo(root: string, p: string): string {
 }
 
 /**
- * §6 — a conversation taken off the bench, for good.
+ * §6 — a conversation taken off the bench — for good, unless a memory names it.
  *
  * The line this draws is deliberate, and it is the one §16 needs: what leaves
  * is the **conversation** — the row in the list, its turns, its title. What
@@ -2342,7 +2347,14 @@ function relativeTo(root: string, p: string): string {
  * separate decision with a separate button, and doing both behind one word is
  * how a mis-click ends a turn mid-write.
  */
-export function remove(sessionId: string): { ok: true } | { ok: false; reason: string } {
+export async function remove(
+  sessionId: string,
+  opts: { letGo?: boolean } = {},
+): Promise<{ ok: true; kept: boolean } | { ok: false; reason: string }> {
+  const l = live.get(sessionId)
+  // `/clear` is the decision to let it go: an open conversation between turns
+  // is released first. One mid-turn is still refused — that is a Stop.
+  if (l && opts.letGo && l.session.status === 'idle') await release(l)
   if (live.has(sessionId)) {
     return { ok: false, reason: 'it is still running — stop it first' }
   }
@@ -2353,6 +2365,23 @@ export function remove(sessionId: string): { ok: true } | { ok: false; reason: s
   // now that nothing points at the holder any more.
   if (s.leaseId) leases.release(s.leaseId)
 
+  // §6 — a conversation with a memory is out of the list, not gone: the
+  // memory's notes name the conversation they came from, and a note whose
+  // source can no longer be opened is one nobody can check. It goes for good
+  // with that memory (`purgeHidden`).
+  if (hasMemory(s)) {
+    if (s.hiddenAt === null) {
+      getDb().prepare('UPDATE agent_sessions SET hidden_at = ? WHERE id = ?').run(Date.now(), sessionId)
+    }
+    agentBus.emit('changed')
+    return { ok: true, kept: true }
+  }
+  erase(sessionId)
+  return { ok: true, kept: false }
+}
+
+/** Gone for good: the row and its turns — never the journal, checkpoints or touches (see `remove`). */
+function erase(sessionId: string): void {
   const d = getDb()
   d.transaction(() => {
     d.prepare('DELETE FROM agent_turns WHERE session_id = ?').run(sessionId)
@@ -2363,7 +2392,77 @@ export function remove(sessionId: string): { ok: true } | { ok: false; reason: s
   // leaves is the conversation, and a screenshot is part of what was said.
   attachments.forgetSession(sessionId)
   agentBus.emit('changed')
-  return { ok: true }
+}
+
+/** The project a conversation belongs to, from where it ran — or, its checkouts gone, its scope. */
+function projectOf(c: Conversation): string | null {
+  const ws = c.workspaceIds.map((id) => getWorkspace(id)).find((w) => !!w)
+  if (ws) return ws.projectId
+  if (c.scope.kind === 'project') return c.scope.projectId
+  if (c.scope.kind === 'topic') return getTopic(c.scope.topicId)?.projectId ?? null
+  return null
+}
+
+/** Pointed at a memory that is there to be read — the ones the Memory tool lists. */
+function hasMemory(c: Conversation): boolean {
+  const projectId = projectOf(c)
+  return !!projectId && memory.list(projectId).some((m) => m.id === c.memory)
+}
+
+/** What each of a memory's refs is shown as: the conversation's title, and whether it was removed. */
+export function sourcesFor(projectId: string, content: string): Record<string, MemorySource> {
+  const out: Record<string, MemorySource> = {}
+  for (const m of content.matchAll(/,\s*([0-9A-Z]{8})\)_/g)) {
+    const ref = m[1]!
+    if (ref in out) continue
+    const c = findByRef(projectId, ref)
+    if (c) out[ref] = { title: c.title || 'untitled', removed: c.hiddenAt !== null }
+  }
+  return out
+}
+
+/** Removed but kept, most recently removed first. */
+export function listHidden(): Conversation[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM agent_sessions WHERE hidden_at IS NOT NULL ORDER BY hidden_at DESC LIMIT 200')
+    .all() as Record<string, unknown>[]
+  return rows.map(hydrate)
+}
+
+/** Back in the list: restored by hand, or picked up again with a new turn. */
+export function restore(sessionId: string): void {
+  const r = getDb().prepare('UPDATE agent_sessions SET hidden_at = NULL WHERE id = ? AND hidden_at IS NOT NULL').run(sessionId)
+  if (r.changes) agentBus.emit('changed')
+}
+
+/**
+ * The conversation a memory note is signed with — `conversationRef`, the tail
+ * of its id — in this project, hidden or not. Null once it is gone for good.
+ */
+export function findByRef(projectId: string, ref: string): Conversation | null {
+  if (!/^[0-9A-Z]{8}$/.test(ref)) return null
+  const rows = getDb()
+    .prepare("SELECT * FROM agent_sessions WHERE id LIKE '%' || ? ORDER BY started_at DESC")
+    .all(ref) as Record<string, unknown>[]
+  return rows.map(hydrate).find((c) => projectOf(c) === projectId) ?? null
+}
+
+/**
+ * §6 — a memory erased takes the hidden conversations it was keeping with it:
+ * nothing names them any more. The ones still in the list stay; a person can
+ * see those and decide for themselves.
+ */
+export function purgeHidden(projectId: string, memoryId: string): number {
+  const rows = getDb()
+    .prepare('SELECT * FROM agent_sessions WHERE hidden_at IS NOT NULL AND memory = ?')
+    .all(memoryId) as Record<string, unknown>[]
+  let n = 0
+  for (const c of rows.map(hydrate)) {
+    if (projectOf(c) !== projectId || live.has(c.id)) continue
+    erase(c.id)
+    n++
+  }
+  return n
 }
 
 export function stop(sessionId: string): void {

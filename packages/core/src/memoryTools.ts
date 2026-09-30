@@ -1,4 +1,4 @@
-import { MEMORY_NEW, STATE_SECTION } from '@cockpit/shared'
+import { MEMORY_NEW, STATE_SECTION, conversationRef } from '@cockpit/shared'
 import type { Actor, Conversation } from '@cockpit/shared'
 import * as memory from './memory.js'
 import { getWorkspace } from './registry.js'
@@ -191,7 +191,9 @@ function call(
     case NOTE: {
       const line = str('text')
       if (!line) return text('Nothing to note: `text` is empty.', true)
-      const r = memory.note(home, str('section') || 'Decisions', line, signature(c), actor, str('replaces') || undefined)
+      const r = memory.note(
+        home, str('section') || 'Decisions', line, signature(c), actor, conversationRef(c.id), str('replaces') || undefined,
+      )
       own.add(r.entry)
       if (str('replaces') && !r.replaced) return text('Noted — but no entry matched `replaces`, so nothing was removed.')
       return text('Noted in the ' + home.kind + ' memory' + (r.replaced ? ', replacing the old entry.' : '.'))
@@ -199,7 +201,7 @@ function call(
     case STATE: {
       const body = str('text')
       if (!body) return text('Nothing to set: `text` is empty.', true)
-      for (const l of memory.setState(home, body, signature(c), actor)) own.add(l)
+      for (const l of memory.setState(home, body, signature(c), actor, conversationRef(c.id))) own.add(l)
       return text('State replaced in the ' + home.kind + ' memory.')
     }
     case READ:

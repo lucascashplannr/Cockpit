@@ -2,7 +2,7 @@ import { join, resolve } from 'node:path'
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
-  MEMORY_NEW, MEMORY_OFF, PROTOCOL_VERSION, documentPrompt, handoffPrompt, isHandoff, topicMemoryId,
+  MEMORY_NEW, MEMORY_OFF, PROJECT_MEMORY, PROTOCOL_VERSION, documentPrompt, handoffPrompt, isHandoff, topicMemoryId,
 } from '@cockpit/shared'
 import type {
   AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
@@ -873,10 +873,17 @@ const handlers: Record<string, Handler> = {
     pushAgentActivity()
     return { ok: true }
   },
-  'agent.delete': (p: { sessionId: string }) => {
-    const r = agents.remove(p.sessionId)
+  'agent.delete': async (p: { sessionId: string; letGo?: boolean }) => {
+    const r = await agents.remove(p.sessionId, { letGo: p.letGo })
     if (r.ok) pushAgentActivity()
     return r
+  },
+  'agent.find': (p: { projectId: string; ref: string }) => agents.findByRef(p.projectId, p.ref),
+  'agent.removed': () => agents.listHidden(),
+  'agent.restore': (p: { sessionId: string }) => {
+    agents.restore(p.sessionId)
+    pushAgentActivity()
+    return { ok: true as const }
   },
   'agent.send': async (p: {
     sessionId: string
@@ -941,8 +948,18 @@ const handlers: Record<string, Handler> = {
   },
 
   'memory.list': (p: { projectId: string }) => memory.list(p.projectId),
-  'memory.read': (p: { workspaceId: string; memoryId?: string }) => memory.read(p.workspaceId, p.memoryId),
-  'memory.erase': (p: { workspaceId: string; memoryId?: string }) => memory.erase(p.workspaceId, p.memoryId),
+  'memory.read': (p: { workspaceId: string; memoryId?: string }) => {
+    const doc = memory.read(p.workspaceId, p.memoryId)
+    return { ...doc, sources: agents.sourcesFor(registry.requireWorkspace(p.workspaceId).projectId, doc.content) }
+  },
+  'memory.erase': async (p: { workspaceId: string; memoryId?: string }) => {
+    const r = await memory.erase(p.workspaceId, p.memoryId)
+    // The conversations it was keeping out of sight go with it: nothing names them now.
+    const ws = registry.requireWorkspace(p.workspaceId)
+    const id = p.memoryId ?? (ws.topicId ? topicMemoryId(ws.topicId) : PROJECT_MEMORY)
+    if (agents.purgeHidden(ws.projectId, id)) pushAgentActivity()
+    return r
+  },
   'memory.write': (p: { workspaceId: string; content: string; memoryId?: string }) => {
     memory.write(p.workspaceId, p.content, p.memoryId)
     pushWorkspaces()
