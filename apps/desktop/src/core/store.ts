@@ -1279,6 +1279,84 @@ export function resetPlaceWidth(which: PlaceWidth): void {
   }
 }
 
+/* ── where you were in a conversation ─────────────────────────────────── */
+
+const THREAD_SCROLL_KEY = 'cockpit.threadScroll'
+
+/** Enough for every conversation anyone goes back to; the oldest fall off. */
+const THREAD_SCROLL_CAP = 300
+
+/**
+ * The place you had read a conversation to, kept per conversation — the same
+ * way the widths are kept per place (`placeWidths`). Stepping to another
+ * repository and back used to open the thread at its end, whatever you had
+ * scrolled up to re-read.
+ *
+ * Not a pixel offset: a folded group opens again closed, a picture above loads
+ * a moment late, and a scrollTop that was exact becomes a few hundred pixels
+ * off. So it is the row at the top of the view, by id, and how far down into
+ * it the view was — which lands on the same line however the rows above it
+ * came out this time. `bottom` is the one other answer: at the end, and
+ * following it, which is what a thread you have never scrolled does anyway.
+ *
+ * Kept across launches like the widths, and for the same reason: it is where
+ * you left something, not a preference you would expect to have to repeat.
+ */
+export type ThreadScroll = { bottom: true } | { anchor: string; offset: number }
+
+const threadScroll: Record<string, ThreadScroll> = (() => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(THREAD_SCROLL_KEY) ?? '{}') as Record<string, unknown>
+    const out: Record<string, ThreadScroll> = {}
+    for (const [id, v] of Object.entries(raw ?? {})) {
+      const s = v as Partial<{ bottom: boolean; anchor: string; offset: number }>
+      if (s?.bottom === true) out[id] = { bottom: true }
+      else if (typeof s?.anchor === 'string' && typeof s.offset === 'number') {
+        out[id] = { anchor: s.anchor, offset: s.offset }
+      }
+    }
+    return out
+  } catch {
+    // A bad save costs the positions, not the window: every thread opens at its end.
+    return {}
+  }
+})()
+
+let threadScrollWrite: number | null = null
+
+/**
+ * Written on a short delay: this is called from a scroll handler, and a
+ * localStorage write per scroll event is a write per frame.
+ */
+function writeThreadScroll(): void {
+  if (threadScrollWrite !== null) return
+  threadScrollWrite = window.setTimeout(() => {
+    threadScrollWrite = null
+    localStorage.setItem(THREAD_SCROLL_KEY, JSON.stringify(threadScroll))
+  }, 500)
+}
+
+/** Where this conversation was left, if it was ever left anywhere but its end. */
+export function threadScrollOf(sessionId: string): ThreadScroll {
+  return threadScroll[sessionId] ?? { bottom: true }
+}
+
+export function saveThreadScroll(sessionId: string, at: ThreadScroll): void {
+  // Re-inserted, so the object's own order is the order they were last read in
+  // and the cap drops the ones nobody has opened for longest.
+  delete threadScroll[sessionId]
+  if (!('bottom' in at)) threadScroll[sessionId] = at
+  const ids = Object.keys(threadScroll)
+  for (let i = 0; i < ids.length - THREAD_SCROLL_CAP; i++) delete threadScroll[ids[i]!]
+  writeThreadScroll()
+}
+
+window.addEventListener('beforeunload', () => {
+  if (threadScrollWrite === null) return
+  clearTimeout(threadScrollWrite)
+  localStorage.setItem(THREAD_SCROLL_KEY, JSON.stringify(threadScroll))
+})
+
 /* ── which topics are folded away ─────────────────────────────────────── */
 
 const COLLAPSED_KEY = 'cockpit.collapsed'

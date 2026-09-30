@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
   // Aliased: the component that draws one is `Attachment` too, and the file
   // needs both in the same scope.
@@ -20,8 +20,8 @@ import Wordmark from '../brand/Wordmark.vue'
 import {
   activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
-  sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, toast,
-  transcriptOf,
+  saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation,
+  threadScrollOf, toast, transcriptOf, type ThreadScroll,
 } from '../../core/store.js'
 import { COMMAND_ENGINES, anchorOf, anchorsIn, commandIn, readPrompt } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
@@ -854,12 +854,98 @@ watch(
  */
 const stuck = ref(true)
 
+/** How close to the end still counts as at it. */
+const SLACK = 48
+
+function atEnd(el: HTMLElement): boolean {
+  // A hair of slack: a fractional scrollHeight is normal and would otherwise
+  // read as "scrolled up" for the whole of a turn.
+  return el.scrollHeight - el.scrollTop - el.clientHeight < SLACK
+}
+
+/* ── coming back to where you were ───────────────────────────────────────
+ *
+ * Each conversation remembers the line you had it scrolled to (see
+ * `threadScrollOf`), so stepping to another repository and back lands on it
+ * rather than at the end. The row at the top of the view is the landmark:
+ * every exchange and every row of an answer carries `data-anchor`.
+ */
+
+/** The deepest row the top of the view is inside, and how far into it. */
+function whereAt(el: HTMLElement): ThreadScroll {
+  if (atEnd(el)) return { bottom: true }
+  const top = el.getBoundingClientRect().top
+  let hit: HTMLElement | null = null
+  // Document order is top-to-bottom, parents before their rows: the last one
+  // that starts above the line and ends below it is the most exact.
+  for (const a of el.querySelectorAll<HTMLElement>('[data-anchor]')) {
+    const r = a.getBoundingClientRect()
+    if (r.top > top) break
+    if (r.bottom > top) hit = a
+  }
+  if (!hit) return { anchor: '', offset: el.scrollTop }
+  return { anchor: hit.dataset.anchor!, offset: top - hit.getBoundingClientRect().top }
+}
+
+/** False while the row it is looking for has not been drawn yet. */
+function land(el: HTMLElement, at: ThreadScroll): boolean {
+  if ('bottom' in at) {
+    el.scrollTop = el.scrollHeight
+  } else if (!at.anchor) {
+    el.scrollTop = at.offset
+  } else {
+    const a = el.querySelector<HTMLElement>(`[data-anchor="${CSS.escape(at.anchor)}"]`)
+    if (!a) return false
+    el.scrollTop += a.getBoundingClientRect().top - el.getBoundingClientRect().top + at.offset
+  }
+  stuck.value = atEnd(el)
+  return true
+}
+
+/**
+ * A landing still owed: the thread is on screen but the row it was left at
+ * may not be — the transcript is fetched on first open. Until it is paid,
+ * nothing is saved, or the empty thread would be remembered as "at the end".
+ */
+let owed: { id: string; at: ThreadScroll } | null = null
+let saveTimer: number | null = null
+
+function settle(): void {
+  if (!owed) return
+  const el = scrollEl.value
+  if (!el) return
+  if (land(el, owed.at)) {
+    owed = null
+    return
+  }
+  // Loaded, drawn, and the row is not there — undone and folded away, or the
+  // journal rotated. The end is the honest place to open it.
+  if (state.transcripts[owed.id]) {
+    land(el, { bottom: true })
+    owed = null
+  }
+}
+
+function remember(id: string | undefined): void {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+  }
+  const el = scrollEl.value
+  if (!id || !el || owed) return
+  saveThreadScroll(id, whereAt(el))
+}
+
 function onScroll(): void {
   const el = scrollEl.value
   if (!el) return
-  // A hair of slack: a fractional scrollHeight is normal and would otherwise
-  // read as "scrolled up" for the whole of a turn.
-  stuck.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+  stuck.value = atEnd(el)
+  if (owed) return
+  if (saveTimer !== null) clearTimeout(saveTimer)
+  saveTimer = window.setTimeout(() => {
+    saveTimer = null
+    remember(selected.value?.id)
+  }, 150)
 }
 
 async function toBottom(): Promise<void> {
@@ -872,16 +958,31 @@ async function toBottom(): Promise<void> {
 watch(
   [exchanges, typed, queued],
   async () => {
-    if (!stuck.value) return
     await nextTick()
+    if (owed) return settle()
+    if (!stuck.value) return
     const el = scrollEl.value
     if (el) el.scrollTop = el.scrollHeight
   },
   { deep: true },
 )
 
-// Another thread opens at its end, whatever the last one was scrolled to.
-watch(() => selected.value?.id, () => void toBottom())
+// Another thread opens where it was left — at its end if it never was. The
+// default `pre` flush runs this before the new thread is drawn, so the one
+// being left is still on screen to be measured.
+watch(
+  () => selected.value?.id,
+  (id, was) => {
+    if (was) remember(was)
+    owed = id ? { id, at: threadScrollOf(id) } : null
+    stuck.value = !owed || 'bottom' in owed.at
+    void nextTick(settle)
+  },
+  { immediate: true },
+)
+
+onMounted(() => void nextTick(settle))
+onBeforeUnmount(() => remember(selected.value?.id))
 
 onMounted(async () => {
   const r = await guard(() => client.call('agent.engines', undefined))
@@ -1156,6 +1257,7 @@ function ago(ts: number): string {
             v-if="!x.turn.undoneBy || unfolded.has(foldOf[i]!)"
             class="ex"
             :class="{ gone: x.turn.undoneBy }"
+            :data-anchor="x.turn.id"
           >
             <!-- The half a person wrote, and its own footer.
                  
@@ -1271,12 +1373,13 @@ function ago(ts: number): string {
                    right, so everything at the left margin is the agent by
                    elimination. A glyph per paragraph was a column of purple down
                    a page whose whole job is to be read. -->
-              <div v-if="r.kind === 'text'" class="ln">
+              <div v-if="r.kind === 'text'" class="ln" :data-anchor="r.id">
                 <AgentMarkdown class="txt" :text="r.text" />
               </div>
               <!-- A card is a thing the agent did, not a thing it said. -->
               <ToolCall
                 v-else-if="r.kind === 'call'"
+                :data-anchor="r.id"
                 class="call"
                 :tool="r.call.tool"
                 :input="r.call.input"
@@ -1286,19 +1389,20 @@ function ago(ts: number): string {
               />
               <ToolGroup
                 v-else-if="r.kind === 'group'"
+                :data-anchor="r.id"
                 class="call"
                 :calls="r.calls"
                 :live="x.turn.status === 'running'"
               />
               <!-- Where the window stands now, beside where it stood: the
                    whole of what a compaction did, and why it was worth it. -->
-              <p v-else-if="r.kind === 'compact'" class="undone compacted">
+              <p v-else-if="r.kind === 'compact'" class="undone compacted" :data-anchor="r.id">
                 <FoldVertical class="sm" />
                 Compacted — {{ k(r.before) }} → {{ k(r.after) }} tokens in context
               </p>
               <!-- It happened to the code, so it is a line in the thread rather
                    than a toast that has since gone. -->
-              <p v-else class="undone">
+              <p v-else class="undone" :data-anchor="r.id">
                 <component :is="r.redo ? Redo2 : Undo2" class="sm" />
                 {{ r.files }} file{{ r.files === 1 ? '' : 's' }}
                 {{ r.redo ? 'brought back to after this turn' : 'put back to before this turn' }}<template
