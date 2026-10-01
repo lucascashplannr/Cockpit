@@ -416,6 +416,8 @@ Hypothèse posée : le mobile signifiera **Expo / React Native**, pas du Swift o
 
 La liste centrale liste des **workspaces**, groupés par topic *quand* une topic existe. Un workspace nu et un groupe de trois cohabitent naturellement.
 
+La liste se range et revient : `⌘B`, le bouton en tête de la barre du haut — juste avant le mot qui dit sur quoi on est (`REPO`, `TOPIC`…), dans les deux états —, ou un clic sur la tuile du projet déjà actif. Sa largeur n'est pas touchée, et l'état est gardé d'un lancement à l'autre. Sans checkout sélectionné elle reste affichée quoi qu'on ait rangé : c'est la seule chose à faire ensuite, et la barre qui porterait le chemin du retour n'est pas là.
+
 ### Les trois vues — comment la fenêtre se partage
 
 À droite de la liste il y a deux choses possibles : l'**Agent** et la **revue** (Diff, Code, Servers, Journal, Terminal). Trois états, dans l'ordre de ce que la revue prend de la fenêtre :

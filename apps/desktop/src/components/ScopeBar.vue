@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { GitBranch, Layers, ShieldCheck } from '@lucide/vue'
 import BranchMenu from './BranchMenu.vue'
+import ListToggle from './ListToggle.vue'
 import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
@@ -99,6 +100,13 @@ const label = computed(() => scopeLabel(scope.value))
 
 <template>
   <header v-if="w" class="head">
+    <!-- §12 — the list, put away and brought back. It leads this bar in both
+         states, before the word that says what you are on, because this bar
+         is the one thing that is there either way: a button in the list's own
+         header goes away with the list, and then has to turn up somewhere
+         else to bring it back (ListToggle). -->
+    <ListToggle />
+
     <!-- What this is, and where it stands: one line, in reading order.
          It was stacked for a while, which put two type sizes on top of
          each other in a 52px bar and read as cramped whatever the gap was.
@@ -217,7 +225,9 @@ const label = computed(() => scopeLabel(scope.value))
      list's own header ends, so the two columns start their content on one
      line. */
   height: 52px;
-  padding: 0 10px 0 18px;
+  /* 8 on the left, not the 18 the name used to start at: the bar opens with a
+     26px button now, and a button's box carries its own air around the glyph. */
+  padding: 0 10px 0 8px;
   min-width: 0;
   /* The bar belongs to no column, so it has a role of its own (tokens.css,
      "surfaces by role"). */

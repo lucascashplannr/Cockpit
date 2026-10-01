@@ -1192,6 +1192,7 @@ export const layout = reactive(readLayout())
  */
 function readLayout(): {
   list: number
+  listOpen: boolean
   review: number
   files: number
   tree: number
@@ -1203,6 +1204,7 @@ function readLayout(): {
 } {
   const fallback = {
     ...LAYOUT_DEFAULTS,
+    listOpen: true,
     commit: null as number | null,
     running: null as number | null,
     memorySideHeight: null as number | null,
@@ -1212,6 +1214,9 @@ function readLayout(): {
     if (!raw) return fallback
     return {
       list: clampTo(raw.list ?? fallback.list, LAYOUT_LIMITS.list),
+      // Anything but a stated `false` is open: a save from before the list
+      // could be put away has no opinion, and must not come back as one.
+      listOpen: raw.listOpen !== false,
       review: clampTo(raw.review ?? fallback.review, LAYOUT_LIMITS.review),
       files: clampTo(raw.files ?? fallback.files, LAYOUT_LIMITS.files),
       tree: clampTo(raw.tree ?? fallback.tree, LAYOUT_LIMITS.tree),
@@ -1274,6 +1279,31 @@ export function resetRunningHeight(): void {
 export function saveLayout(): void {
   localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout))
 }
+
+/**
+ * §12 — the list, put away and brought back.
+ *
+ * Its width was already yours; whether it is on screen at all is the same
+ * question asked harder. The list is how you aim, and once you have aimed it
+ * is 340px of a narrow window saying where you already are — which the bar
+ * says too, in one line. Kept in `layout` and so across launches: a column you
+ * put away is configuration, like one you dragged.
+ *
+ * Its width is untouched, so it comes back as wide as it was left.
+ */
+export function toggleList(): void {
+  layout.listOpen = !layout.listOpen
+  saveLayout()
+}
+
+/**
+ * Whether the list is actually drawn — which is not quite `layout.listOpen`.
+ * With no checkout selected the list is the only next thing to do: the right
+ * of the window is a welcome with nothing to press, and the bar that would
+ * carry the way back is not there (§3.9). So it stands, whatever was saved,
+ * until there is something on the right worth giving its width to.
+ */
+export const listShown = computed(() => layout.listOpen || !activeWorkspace.value)
 
 /** Double-clicking a divider: back to the width the app shipped with. */
 export function resetColumnWidth(which: keyof typeof LAYOUT_DEFAULTS): void {

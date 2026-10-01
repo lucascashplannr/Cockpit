@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { attentionIcon } from './agent/attention.js'
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
   ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, Plus, Sparkles,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import {
-  activeProject, activityFor, addRepoTo, collapsedTopics, openAgentOn, openContextMenu,
+  activeProject, activityFor, addRepoTo, collapsedTopics, listShown, openAgentOn, openContextMenu,
   selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 
@@ -22,6 +22,22 @@ import {
 const groups = computed(() => workspaceGroups.value)
 
 const hasProjects = computed(() => state.projects.length > 0)
+
+/**
+ * §12 — put away and brought back, the list is where you left it.
+ *
+ * It is hidden, not unmounted (App.vue), but a box that is `display: none`
+ * has no scroll offset to keep: it comes back at the top, and twenty branches
+ * down a long project that is the row you were on, gone. So the offset is
+ * read on the way out — `pre`, while the box still has one — and put back
+ * once it is drawn again.
+ */
+const scroller = ref<HTMLElement | null>(null)
+let keptScroll = 0
+watch(listShown, (shown) => {
+  if (!shown) keptScroll = scroller.value?.scrollTop ?? 0
+  else void nextTick(() => { if (scroller.value) scroller.value.scrollTop = keptScroll })
+})
 
 /**
  * The one number a folded topic still owes you: how much of its work is not
@@ -107,7 +123,7 @@ const ATTENTION_TEXT: Record<string, string> = {
       </button>
     </header>
 
-    <div class="scroll">
+    <div ref="scroller" class="scroll">
       <div v-if="!hasProjects" class="empty">
         <FolderPlus />
         <strong>No project yet</strong>

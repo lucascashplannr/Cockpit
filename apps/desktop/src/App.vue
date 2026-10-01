@@ -25,9 +25,9 @@ import ReviewTools from './components/ReviewTools.vue'
 import TrafficLights from './components/TrafficLights.vue'
 import Splitter from './components/Splitter.vue'
 import {
-  LAYOUT_LIMITS, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout,
+  LAYOUT_LIMITS, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout, listShown,
   requestPlan, resetColumnWidth, resetPlaceWidth, saveLayout, savePlaceWidth, setColumnWidth, showsAgent, showsReview, stepAttachment,
-  stepView,
+  stepView, toggleList,
 } from './core/store.js'
 
 /**
@@ -173,6 +173,15 @@ function onKey(e: KeyboardEvent) {
     return
   }
 
+  // §12 — the list, put away and brought back. The chord every editor already
+  // gives to its side column, and above the `typing` line with the other two:
+  // the moment you want the width is the moment you are writing a prompt.
+  if (meta && !e.altKey && !e.shiftKey && e.code === 'KeyB') {
+    e.preventDefault()
+    toggleList()
+    return
+  }
+
   if (typing) return
 
   const w = activeWorkspace.value
@@ -209,8 +218,14 @@ function onKey(e: KeyboardEvent) {
  * to keep true than two rules that must agree.
  */
 const shellStyle = computed(() => ({
-  gridTemplateColumns: `var(--rail-w) ${layout.list}px minmax(0, 1fr)`,
+  // Put away, the list's track goes with it rather than staying at zero: the
+  // column is `display: none`, and a track with nothing in it would be taken
+  // by the next thing in the grid — the whole right of the window, at 0px.
+  gridTemplateColumns: `var(--rail-w)${listShown.value ? ` ${layout.list}px` : ''} minmax(0, 1fr)`,
 }))
+
+/** What the list takes of the window: its width, or nothing when put away. */
+const listW = computed(() => (listShown.value ? layout.list : 0))
 
 /** And the split inside it, which is the only part the ladder moves. */
 const panesStyle = computed(() => ({
@@ -228,7 +243,7 @@ const winW = ref(window.innerWidth)
 const onResize = () => { winW.value = window.innerWidth }
 
 /** What is left for the review once the rail, the list and the floor are paid. */
-const room = computed(() => winW.value - RAIL_W - layout.list - AGENT_MIN)
+const room = computed(() => winW.value - RAIL_W - listW.value - AGENT_MIN)
 
 /** The same ceiling, for the divider — it must not be draggable past it. */
 const reviewMax = computed(() =>
@@ -241,7 +256,7 @@ const reviewMax = computed(() =>
  * you go on your way to narrower, and a catch there was felt as the divider
  * sticking rather than as a place to land. Double-click still goes back to it.
  */
-const reviewSnaps = computed(() => [Math.round((winW.value - RAIL_W - layout.list) / 2)])
+const reviewSnaps = computed(() => [Math.round((winW.value - RAIL_W - listW.value) / 2)])
 
 /**
  * The review column's width in the one view that has to share it — 0 when it
@@ -285,7 +300,10 @@ onUnmounted(() => {
          over whatever is beneath them (TrafficLights) — so the columns run to
          the top of the window and the rail simply keeps its head down. -->
     <ProjectRail />
-    <WorkspaceList />
+    <!-- Hidden rather than unmounted when it is put away (⌘B): unlike a diff
+         or a terminal it subscribes to nothing, so there is nothing to stop,
+         and it comes back without being built again. -->
+    <WorkspaceList v-show="listShown" />
 
     <!-- The right of the window: one bar, then whatever the ladder says is
          under it. The bar is outside the split on purpose — what it carries
@@ -337,6 +355,7 @@ onUnmounted(() => {
          here rather than inside each column because a splitter belongs to the
          boundary, not to either side of it. -->
     <Splitter
+      v-if="listShown"
       class="sp"
       :style="{ left: `calc(var(--rail-w) + ${layout.list}px - 3px)` }"
       :size="layout.list"

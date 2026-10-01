@@ -2,7 +2,8 @@
 import { computed, ref } from 'vue'
 import { Activity, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
 import {
-  activityFor, client, guard, newProject, selectProject, serviceStale, state,
+  activeWorkspace, activityFor, client, guard, layout, newProject, selectProject, serviceStale, state,
+  toggleList,
 } from '../core/store.js'
 
 /**
@@ -17,6 +18,20 @@ function monogram(name: string): string {
   const parts = name.split(/[\s\-_.]+/).filter(Boolean)
   if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase()
   return name.slice(0, 2).toUpperCase()
+}
+
+/**
+ * A tile takes you to its project; the tile of the project you are already in
+ * has nowhere to take you, so pressing it puts the list away or brings it
+ * back (§12, ⌘B). The lit tile is the one thing still standing for the list
+ * once it is gone, which makes it the obvious place to ask for it again.
+ *
+ * Not without a checkout selected: the list stands regardless then
+ * (`listShown`), and the press would change a setting with nothing to show.
+ */
+function pick(projectId: string): void {
+  if (projectId !== state.activeProjectId) selectProject(projectId)
+  else if (activeWorkspace.value) toggleList()
 }
 
 /**
@@ -81,6 +96,9 @@ function tileTitle(name: string, root: string, projectId: string): string {
   if (c.agents) lines.push('● ' + c.agents + ' agent conversation(s) running')
   if (c.dirty) lines.push('● ' + c.dirty + ' checkout(s) with uncommitted changes')
   if (c.attention !== 'none') lines.push(ATTENTION_TEXT[c.attention] ?? '')
+  if (projectId === state.activeProjectId && activeWorkspace.value) {
+    lines.push(layout.listOpen ? 'Click to hide the list' : 'Click to show the list')
+  }
   lines.push('Right-click for settings')
   return lines.filter(Boolean).join('\n')
 }
@@ -95,7 +113,7 @@ function tileTitle(name: string, root: string, projectId: string): string {
         class="tile"
         :class="{ active: p.id === state.activeProjectId }"
         :title="tileTitle(p.name, p.root, p.id)"
-        @click="selectProject(p.id)"
+        @click="pick(p.id)"
         @contextmenu.prevent="state.editingProjectId = p.id"
       >
         <span class="gram">{{ monogram(p.name) }}</span>

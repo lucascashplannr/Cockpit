@@ -6,7 +6,7 @@ import {
   AppWindow, ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookMarked, Box, Check, CloudDownload,
   Columns2, FileCode,
   FolderOpen,
-  FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitGraph, GitMerge, Globe, History, Layers, Pause, Play, RefreshCw,
+  FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitGraph, GitMerge, Globe, History, Layers, PanelLeftClose, PanelLeftOpen, Pause, Play, RefreshCw,
   ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, Stamp, TextSearch,
   Terminal, Trash2, Undo2,
@@ -15,7 +15,7 @@ import {
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import type { Scored } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, viewKey, openCommits, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, mergeTopic, markResolved, newProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state,
+  SHELL_VIEWS, setView, viewKey, openCommits, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, layout, mergeTopic, markResolved, newProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state, toggleList,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -469,6 +469,22 @@ function buildCommands(lvl: Level): Item[] {
         run: act(() => setView(v)),
       })
     }
+  }
+
+  // §12 — and the list beside all of that. Outside the block above because it
+  // is not one of the three views; inside the same group because it is the
+  // same kind of question: how much of the window, to what.
+  if (w) {
+    out.push({
+      id: 'view:list',
+      label: layout.listOpen ? 'Hide the list' : 'Show the list',
+      hint: layout.listOpen ? 'the width goes to the conversation' : 'repositories, branches and topics',
+      group: 'View',
+      icon: layout.listOpen ? PanelLeftClose : PanelLeftOpen,
+      keywords: 'layout sidebar collapse column navigation',
+      keys: '⌘B',
+      run: act(toggleList),
+    })
   }
 
   if (repo) {
