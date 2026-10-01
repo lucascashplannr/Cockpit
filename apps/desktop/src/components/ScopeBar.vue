@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { GitBranch, Layers, ShieldCheck } from '@lucide/vue'
 import BranchMenu from './BranchMenu.vue'
+import LockChip from './LockChip.vue'
 import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
@@ -140,6 +141,11 @@ const label = computed(() => scopeLabel(scope.value))
       </span>
     </span>
 
+    <!-- §7 — an agent's claim on what is named to the left. Outside the dim
+         run below, though it was the last word of it: that run clips, and a
+         popover cannot hang from inside a box that clips. -->
+    <LockChip :workspaces="covered" />
+
     <!-- Everything that is merely true, in one dim run that clips rather
          than wraps: the bar keeps its line whatever the window does, and
          what falls off the end is by construction the least of it. Each
@@ -166,8 +172,6 @@ const label = computed(() => scopeLabel(scope.value))
       >
         local only
       </span>
-
-      <span v-if="w.lease" class="stat warn" :title="w.lease.reason">locked</span>
     </span>
 
     <!-- The only thing here that wants to be wide. It used to be `.stats`
@@ -344,7 +348,6 @@ const label = computed(() => scopeLabel(scope.value))
   min-width: 0;
 }
 .stat.quiet { color: var(--text-dim); opacity: 0.75; }
-.stat.warn { color: var(--warn); }
 .si { color: var(--text-dim); opacity: 0.8; }
 .stat .k { color: var(--text-dim); }
 .stat .v {

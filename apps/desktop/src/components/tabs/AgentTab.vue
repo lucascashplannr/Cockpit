@@ -7,7 +7,7 @@ import type {
   AgentScopePreview, Conversation, AgentTurn, PermissionMode, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, Hand, Lock, Paperclip,
+  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, Hand, Paperclip,
   Redo2, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -19,7 +19,7 @@ import PermissionAsk from '../agent/PermissionAsk.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
   activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFiles,
-  askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, pinThread, previewScope, scopeLabel,
+  askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, restoreConversation,
   threadScrollOf, toast, transcriptOf, type ThreadScroll,
@@ -102,6 +102,10 @@ const blocked = computed(() =>
   (preview.value?.blocked ?? []).filter((b) => b.sessionId !== selected.value?.id),
 )
 const paths = computed(() => preview.value?.paths ?? [])
+/** Said on the send button, which is otherwise disabled without a word. */
+const lockedWhy = computed(() =>
+  blocked.value.length ? 'Locked — the lock in the bar above says by what' : undefined,
+)
 
 /**
  * Which thread is open is the scope's business, not this component's: it used
@@ -749,36 +753,6 @@ function showImage(turn: AgentTurn, file: AttachedFile): void {
   openSentFiles(turn.attachments, file)
 }
 
-/** "Init and Init-Backend" — a list, read the way it would be said. */
-function names(list: string[]): string {
-  if (list.length <= 1) return list[0] ?? 'this scope'
-  return list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1]
-}
-
-/**
- * §7 — clearing a lease nothing is holding.
- *
- * Offered only when no session is behind it, which is the one case where this
- * cannot interrupt work: the process that took it is gone, and the lock is
- * simply outliving it.
- */
-async function release(leaseId: string): Promise<void> {
-  const r = await guard(() => client.call('lease.release', { leaseId }), 'the lock is cleared')
-  if (r && scope.value) preview.value = await previewScope(scope.value)
-}
-
-/**
- * The conversation in the way, brought back on screen.
- *
- * "Something else is working here" with no way to go and look at it is half an
- * answer; the lease knows which session it belongs to, so the banner can hand
- * it over rather than describe it.
- */
-function reveal(sessionId: string): void {
-  if (scope.value) pinThread(scope.value, sessionId)
-  state.historyOpen = false
-}
-
 /* ── what has been said and not yet asked (§6) ───────────────────────────
  *
  * A queued turn used to be a toast and then nothing: the box emptied, the
@@ -1196,32 +1170,14 @@ function ago(ts: number): string {
          (ContextPanel): it is a fact about what you are standing on, and it was
          costing a whole row of the conversation to say a number. -->
 
-    <!-- §7 — why this scope cannot be started on, in terms of the thing in the
-         way rather than of the lease that represents it. -->
-    <div v-if="blocked.length" class="note held">
-      <Lock class="sm" />
-      <div class="bls">
-        <p v-for="b in blocked" :key="b.leaseId" class="bl">
-          <template v-if="b.live">
-            Another conversation is working in {{ names(b.names) }}, started
-            {{ ago(b.acquiredAt) }}<template v-if="b.reason">: “{{ b.reason }}”</template> — two
-            agents never share a folder.
-            <button v-if="b.sessionId" class="link" @click="reveal(b.sessionId)">Open it</button>
-          </template>
-          <template v-else>
-            {{ names(b.names) }} {{ b.names.length > 1 ? 'are' : 'is' }} still marked in use by a
-            conversation that is no longer running — nothing is working here.
-            <button class="link" @click="release(b.leaseId)">Clear the lock</button>
-          </template>
-        </p>
-      </div>
-    </div>
+    <!-- §7 — a lock in the way used to be a banner here too. It is the lock
+         on the bar now (LockChip), which says the same thing on the line that
+         names what is locked, and the send button says why it will not go. -->
     <!-- Standing on a default branch used to be a full-width banner here,
          over every conversation, saying an unchanging sentence nobody had
          asked twice. It is a fact about where you are standing rather than
          about the conversation, and it is one glyph on the line that says
-         where you are standing now (ContextPanel). What stays a banner is
-         what is above it: a lock is the one thing here you have to act on. -->
+         where you are standing now (ContextPanel). -->
 
     <!-- The memory was an overlay here, over the conversation, on the rule
          that the chat gets the width. It is a document you read *while*
@@ -1254,6 +1210,7 @@ function ago(ts: number): string {
           big
           mode="start"
           :disabled="!canSend"
+          :why="lockedWhy"
           :sources="sources"
           :engines="engines"
           :engine="engine"
@@ -1670,6 +1627,7 @@ function ago(ts: number): string {
           ref="composer"
           :mode="queueing ? 'queue' : continuing ? 'continue' : 'start'"
           :disabled="!canSend"
+          :why="lockedWhy"
           :busy="queueing"
           :sources="sources"
           :session="selected"
@@ -1715,33 +1673,6 @@ function ago(ts: number): string {
 .veil-enter-active, .veil-leave-active { transition: opacity var(--dur-1) var(--ease-soft); }
 .veil-enter-from, .veil-leave-to { opacity: 0; }
 .grow { flex: 1; }
-
-.note {
-  flex: none;
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  margin: 0;
-  padding: 8px 18px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--line-soft);
-}
-.note .lucide { flex: none; margin-top: 1px; }
-/* A lock is a state, not a failure. It used to be painted in the colour this
-   app reserves for something having gone wrong, which is why it read as an
-   error nobody could explain. */
-.note.held { color: var(--warn); background: var(--warn-soft); align-items: flex-start; }
-.bls { display: flex; flex-direction: column; gap: 4px; }
-.bl { margin: 0; }
-.bl .link {
-  color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  font-size: inherit;
-}
-.bl .link:hover { color: var(--text); }
 
 /* ── memory / history, over the conversation ─────────────────────────── */
 .obody.convos { overflow-y: auto; padding: 10px 12px 20px; display: flex; flex-direction: column; gap: 4px; }

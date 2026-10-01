@@ -30,6 +30,8 @@ const props = defineProps<{
   /** The big centred one on an empty conversation, or the one in the footer. */
   big?: boolean
   disabled?: boolean
+  /** Why it cannot be sent, when the reason is not simply an empty box. */
+  why?: string
   /**
    * Every repository the conversation is scoped to, in the order the engine
    * receives them: the first is its working directory, the rest are handed
@@ -886,7 +888,7 @@ defineExpose({ focus: () => box.value?.focus(), take })
         <button
           class="btn primary go"
           :disabled="disabled"
-          :title="sendLabel + ' (⏎)'"
+          :title="disabled && why ? why : sendLabel + ' (⏎)'"
           :aria-label="sendLabel"
           @click="submit"
         >
