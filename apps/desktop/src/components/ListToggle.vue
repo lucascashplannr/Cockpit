@@ -3,14 +3,15 @@ import { PanelLeftClose, PanelLeftOpen } from '@lucide/vue'
 import { layout, toggleList } from '../core/store.js'
 
 /**
- * §12 — the list, put away and brought back, as one button in one place: the
- * head of the bar, before the word that says what you are standing on.
+ * §12 — the list, narrowed to its strip and widened again, as one button in
+ * one place: the list's own header, at its end when the list is wide and
+ * alone in it on the strip.
  *
- * It was drawn in the list's own header while the list was there, and by the
- * bar once it was not — the same pixel on screen, and two different places to
- * anyone reading the window: a control that belongs to the column it removes
- * leaves with it. The bar is there in both states, so the button is too, and
- * "before REPO" is where it is whether the list is beside it or not.
+ * It led the bar for a while, before the word that says what you are standing
+ * on. That was the right answer while narrowing *hid* the list — a control in
+ * a column that disappears has to live somewhere that does not. The strip
+ * never goes away, so the control can sit on the thing it changes, and the
+ * bar is back to being about the checkout and nothing else.
  *
  * The chevron is not decoration. The plain panel glyph — a box cut near its
  * left wall — is the picture the view control at the other end of the bar
@@ -23,8 +24,8 @@ import { layout, toggleList } from '../core/store.js'
 <template>
   <button
     class="icon-btn list-toggle"
-    :title="(layout.listOpen ? 'Hide the list' : 'Show the list') + '   ⌘B'"
-    :aria-label="layout.listOpen ? 'Hide the list' : 'Show the list'"
+    :title="(layout.listOpen ? 'Narrow the list to a strip' : 'Widen the list') + '   ⌘B'"
+    :aria-label="layout.listOpen ? 'Narrow the list' : 'Widen the list'"
     :aria-pressed="layout.listOpen"
     @click="toggleList"
   >

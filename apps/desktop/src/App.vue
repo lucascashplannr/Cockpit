@@ -25,7 +25,7 @@ import ReviewTools from './components/ReviewTools.vue'
 import TrafficLights from './components/TrafficLights.vue'
 import Splitter from './components/Splitter.vue'
 import {
-  LAYOUT_LIMITS, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout, listShown,
+  LAYOUT_LIMITS, LIST_NARROW, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout, listWide,
   requestPlan, resetColumnWidth, resetPlaceWidth, saveLayout, savePlaceWidth, setColumnWidth, showsAgent, showsReview, stepAttachment,
   stepView, toggleList,
 } from './core/store.js'
@@ -173,7 +173,7 @@ function onKey(e: KeyboardEvent) {
     return
   }
 
-  // §12 — the list, put away and brought back. The chord every editor already
+  // §12 — the list, narrowed and widened again. The chord every editor already
   // gives to its side column, and above the `typing` line with the other two:
   // the moment you want the width is the moment you are writing a prompt.
   if (meta && !e.altKey && !e.shiftKey && e.code === 'KeyB') {
@@ -217,15 +217,12 @@ function onKey(e: KeyboardEvent) {
  * appears and disappears, and one expression that knows both facts is easier
  * to keep true than two rules that must agree.
  */
-const shellStyle = computed(() => ({
-  // Put away, the list's track goes with it rather than staying at zero: the
-  // column is `display: none`, and a track with nothing in it would be taken
-  // by the next thing in the grid — the whole right of the window, at 0px.
-  gridTemplateColumns: `var(--rail-w)${listShown.value ? ` ${layout.list}px` : ''} minmax(0, 1fr)`,
-}))
+/** What the list takes of the window: the width you dragged, or the strip (⌘B). */
+const listW = computed(() => (listWide.value ? layout.list : LIST_NARROW))
 
-/** What the list takes of the window: its width, or nothing when put away. */
-const listW = computed(() => (listShown.value ? layout.list : 0))
+const shellStyle = computed(() => ({
+  gridTemplateColumns: `var(--rail-w) ${listW.value}px minmax(0, 1fr)`,
+}))
 
 /** And the split inside it, which is the only part the ladder moves. */
 const panesStyle = computed(() => ({
@@ -300,10 +297,7 @@ onUnmounted(() => {
          over whatever is beneath them (TrafficLights) — so the columns run to
          the top of the window and the rail simply keeps its head down. -->
     <ProjectRail />
-    <!-- Hidden rather than unmounted when it is put away (⌘B): unlike a diff
-         or a terminal it subscribes to nothing, so there is nothing to stop,
-         and it comes back without being built again. -->
-    <WorkspaceList v-show="listShown" />
+    <WorkspaceList />
 
     <!-- The right of the window: one bar, then whatever the ladder says is
          under it. The bar is outside the split on purpose — what it carries
@@ -354,8 +348,9 @@ onUnmounted(() => {
     <!-- The lines between the columns, over the borders they thicken. Placed
          here rather than inside each column because a splitter belongs to the
          boundary, not to either side of it. -->
+    <!-- Not on the strip: it has one width, like the rail. -->
     <Splitter
-      v-if="listShown"
+      v-if="listWide"
       class="sp"
       :style="{ left: `calc(var(--rail-w) + ${layout.list}px - 3px)` }"
       :size="layout.list"

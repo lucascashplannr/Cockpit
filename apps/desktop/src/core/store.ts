@@ -1281,29 +1281,39 @@ export function saveLayout(): void {
 }
 
 /**
- * §12 — the list, put away and brought back.
+ * §12 — the list, narrowed and widened again.
  *
- * Its width was already yours; whether it is on screen at all is the same
- * question asked harder. The list is how you aim, and once you have aimed it
- * is 340px of a narrow window saying where you already are — which the bar
- * says too, in one line. Kept in `layout` and so across launches: a column you
- * put away is configuration, like one you dragged.
+ * Its width was already yours; this is the same question asked harder. The
+ * list is how you aim, and once you have aimed it is 340px of a narrow window
+ * saying where you already are. So it folds down to a strip, not to nothing:
+ * the first pass hid it outright, and a window with no list is one where
+ * moving to the repository next door means bringing the list back first. The
+ * strip keeps every row as a tile you can still press (WorkspaceRow), and
+ * gives the rest of the width away.
  *
- * Its width is untouched, so it comes back as wide as it was left.
+ * Kept in `layout` and so across launches: a column you narrowed is
+ * configuration, like one you dragged. Its dragged width is untouched, so it
+ * widens back to what it was.
  */
 export function toggleList(): void {
   layout.listOpen = !layout.listOpen
   saveLayout()
 }
 
+/** The strip: a glyph over a short name, with air either side of the name and no more. */
+export const LIST_NARROW = 68
+
 /**
- * Whether the list is actually drawn — which is not quite `layout.listOpen`.
- * With no checkout selected the list is the only next thing to do: the right
- * of the window is a welcome with nothing to press, and the bar that would
- * carry the way back is not there (§3.9). So it stands, whatever was saved,
- * until there is something on the right worth giving its width to.
+ * Whether the list is drawn at its full width — which is `layout.listOpen`,
+ * except with no project at all: the column is then one sentence saying how
+ * to add the first one, and a sentence does not fit in 68px.
+ *
+ * It used to stand wide whenever no checkout was selected, because the button
+ * that widened it was on a bar that is not there then. The button is in the
+ * list's own header now, and the strip is as good a place to pick a row from
+ * as the list is.
  */
-export const listShown = computed(() => layout.listOpen || !activeWorkspace.value)
+export const listWide = computed(() => layout.listOpen || !activeProject.value)
 
 /** Double-clicking a divider: back to the width the app shipped with. */
 export function resetColumnWidth(which: keyof typeof LAYOUT_DEFAULTS): void {
@@ -2412,6 +2422,23 @@ export const workspaceGroups = computed<ListGroup[]>(() => {
   return groups
 })
 
+/**
+ * A row's name with the project's own name taken off the front: in a project
+ * called Cashplannr, `cashplannr-frontend` is `frontend`. For the places with
+ * room for one word (the list's strip), where the shared prefix is exactly the
+ * part that says nothing.
+ *
+ * Only a whole leading word goes, and only when something is left: `vault`
+ * stays `vault`, and a repository named for its project keeps its name.
+ */
+export function shortName(name: string, projectName: string | undefined): string {
+  const prefix = (projectName ?? '').trim().toLowerCase().replace(/\s+/g, '-')
+  if (!prefix) return name
+  const rest = name.slice(prefix.length)
+  if (name.toLowerCase().startsWith(prefix) && /^[-_. ]+./.test(rest)) return rest.replace(/^[-_. ]+/, '')
+  return name
+}
+
 /** The topic standing selected, with the rows it spans — null unless one is. */
 export const selectedTopicGroup = computed<ListGroup | null>(() => {
   const id = selectedTopicId.value
@@ -2733,8 +2760,8 @@ export async function createProject(input: {
 /**
  * §7 — a repository joining a project that already exists, which is the half
  * of the layout that keeps being true after the project is created. Addressed
- * by project id rather than a boolean: the list, the palette and the project
- * sheet all open it, and each of them already knows which project it means.
+ * by project id rather than a boolean: the palette and the project sheet both
+ * open it, and each of them already knows which project it means.
  */
 export function addRepoTo(projectId: string | null = state.activeProjectId): void {
   if (projectId) state.addRepoProjectId = projectId

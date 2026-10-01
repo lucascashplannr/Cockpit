@@ -3,7 +3,7 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { FolderOpen, Plus, ShieldCheck, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
 import DialogShell from './DialogShell.vue'
 import {
-  askTrashProject, askUntrackProject, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
+  addRepoTo, askTrashProject, askUntrackProject, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
   renameProject, setProjectSettings, state,
 } from '../core/store.js'
 
@@ -34,6 +34,8 @@ const guarded = ref<Record<string, string[]>>({})
 const drafts = reactive<Record<string, string>>({})
 /** §9 — where the docs are, when this machine says so. */
 const docsPath = ref('')
+/** Stepped out to add a repository — see `addRepository`. Up here because the watch below runs at once. */
+let addingRepo = false
 
 watch(
   p,
@@ -41,7 +43,8 @@ watch(
     // The same project re-sent while the sheet stepped into from here is on
     // top — writing `cockpit.yaml` does that — is not a reason to throw away
     // what was typed before stepping in.
-    if (state.declareOpen && proj && proj.id === prev?.id) return
+    if ((state.declareOpen || addingRepo) && proj && proj.id === prev?.id) return
+    addingRepo = false
     name.value = proj?.name ?? ''
     root.value = proj?.root ?? ''
     baseBranch.value = proj?.settings.defaultBranch ?? ''
@@ -147,10 +150,29 @@ function editDeclarations(): void {
   if (p.value) openProjectDeclarations(p.value.id)
 }
 
+/**
+ * §7 — a repository joining the project, from the place that says what the
+ * project is. It was a button at the foot of the list, and before that in the
+ * list's header: both put a thing you do once a month among the things you do
+ * all day.
+ *
+ * Its own sheet opens in this one's place and hands back to it, the way the
+ * commands sheet does. The flag is for the hand-back: adding a repository
+ * re-sends this same project, and that must not throw away a name or a path
+ * typed here before stepping out.
+ */
+function addRepository(): void {
+  if (!p.value) return
+  addingRepo = true
+  addRepoTo(p.value.id)
+}
+const steppedIntoAddRepo = computed(() => !!p.value && state.addRepoProjectId === p.value.id)
+const repoNames = computed(() => repos.value.map((r) => r.repoName).join(', ') || 'None yet.')
+
 // Back from the sheet: the dialog is drawn again, and focus goes with it so
 // Escape still has somewhere to land.
 watch(
-  () => state.declareOpen,
+  () => state.declareOpen || steppedIntoAddRepo.value,
   (open) => {
     if (!open && p.value) void nextTick(() => nameInput.value?.focus())
   },
@@ -218,7 +240,7 @@ async function browse() {
 
 <template>
   <DialogShell
-    v-if="p && !(state.declareOpen && state.declareFromProject)"
+    v-if="p && !(state.declareOpen && state.declareFromProject) && !steppedIntoAddRepo"
     :title="p.name"
     :dismissible="!busy"
     @close="close"
@@ -264,6 +286,18 @@ async function browse() {
           <TriangleAlert class="sm" />
           Stop the {{ running.length === 1 ? 'server' : running.length + ' servers' }} still up first.
         </p>
+      </div>
+
+      <!-- §7 — what the project holds, and the one place a repository is
+           added to it. -->
+      <div class="field">
+        <span class="lbl">Repositories</span>
+        <div class="row">
+          <span class="summary grow names" :title="repoNames">{{ repoNames }}</span>
+          <button class="btn" title="Add a repository — a new one, a clone, or a folder moved in" @click="addRepository">
+            <Plus />Add
+          </button>
+        </div>
       </div>
 
       <!-- §8 — what this project runs, written into cockpit.yaml. The only
@@ -403,6 +437,8 @@ async function browse() {
 }
 .help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.5; }
 .summary { font-size: var(--fs-sm); color: var(--text-muted); }
+/* Ten repositories are one line here and a hover, not a paragraph. */
+.names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* One repository's list: its name, when there is more than one to tell
    apart, then the branches, then the way to add one. */

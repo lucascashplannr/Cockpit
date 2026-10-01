@@ -7,10 +7,14 @@ import {
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import {
-  activityFor, openContextMenu, selectedTopicId, selectWorkspace, state,
+  activeProject, activityFor, openContextMenu, selectedTopicId, selectWorkspace, shortName, state,
 } from '../core/store.js'
 
-const props = defineProps<{ workspace: Workspace; compact?: boolean }>()
+/**
+ * `narrow` is the list folded down to its strip (§12, ⌘B): the same row, as a
+ * tile — its glyph over its name, and one dot where the counters were.
+ */
+const props = defineProps<{ workspace: Workspace; compact?: boolean; narrow?: boolean }>()
 
 const w = computed(() => props.workspace)
 // Selecting a topic anchors the panel on one of its rows, so the row id
@@ -75,6 +79,31 @@ const ATTENTION_TEXT: Record<string, string> = {
 }
 
 /**
+ * On the strip there is room for one word, so it had better be the one that
+ * tells this row from the next — which, in a project whose repositories are
+ * all `cashplannr-something`, is the something.
+ */
+const short = computed(() => shortName(w.value.name, activeProject.value?.name))
+
+/**
+ * The counters, in words: the strip has a dot where the wide row has numbers,
+ * and what the dot stands for should be one hover away rather than one ⌘B.
+ */
+const tip = computed(() => {
+  const g = w.value.git
+  const facts: string[] = []
+  if (g) {
+    if (g.ahead) facts.push(g.ahead + ' ahead')
+    if (behindBase.value) facts.push(behindBase.value + ' behind ' + (g.base ?? 'the base'))
+    if (toPull.value) facts.push(toPull.value + ' to pull')
+    if (dirty.value) facts.push(dirty.value + ' uncommitted')
+    if (g.conflicted) facts.push(g.conflicted + ' conflicted')
+    if (g.headState !== 'attached') facts.push(g.headState)
+  }
+  return [w.value.name + ' — ' + lead.value.title, facts.join(' · ')].filter(Boolean).join('\n')
+})
+
+/**
  * Two things live in this list and the icon is what tells them apart: a
  * repository sitting on its default branch, and a branch checked out in a
  * folder of its own. "Worktree" is how git does the second one; it is not
@@ -106,7 +135,8 @@ const lead = computed(() => {
 <template>
   <button
     class="row"
-    :class="{ selected, compact, menued }"
+    :class="{ selected, compact, menued, narrow }"
+    :title="narrow ? tip : undefined"
     @click="selectWorkspace(w.id)"
     @contextmenu.prevent="openContextMenu($event, { kind: 'workspace', id: w.id })"
   >
@@ -114,14 +144,20 @@ const lead = computed(() => {
          while an agent waits on you, the turning mark while one works, why it
          wants you once it has stopped — and only then what kind of row this
          is. The kind is on hover and in the tree; it is never news. -->
-    <span class="kind" :class="lead.cls" :title="lead.title">
+    <span class="kind" :class="lead.cls" :title="narrow ? undefined : lead.title">
       <component :is="lead.icon" class="sm" :class="{ 'agent-star': lead.cls === 'working' }" />
     </span>
 
     <!-- §12 — the branch is the identity; the repository name is context. -->
-    <span class="name">{{ w.name }}</span>
+    <span class="name">{{ narrow ? short : w.name }}</span>
 
-    <span class="meta num">
+    <!-- The strip's one counter: something here is not committed. It is the
+         fact the wide row's amber number states and the same colour the
+         project tile uses for it one column to the left; how much, and
+         everything else, is in the hover. -->
+    <i v-if="narrow && (dirty || w.git?.conflicted)" class="pip" :class="{ conflict: w.git?.conflicted }" />
+
+    <span v-if="!narrow" class="meta num">
       <!-- Absent capability, absent indicator (§3.9): no git means no counters. -->
       <template v-if="w.git">
         <span v-if="w.git.ahead" class="c ahead" :title="w.git.ahead + ' commit(s) ahead'">
@@ -232,6 +268,45 @@ const lead = computed(() => {
   gap: 2px;
 }
 .c .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
+/* ── the strip ────────────────────────────────────────────────────────── */
+/* The row stood on end: glyph over name. The name is what makes it a tile
+   you can read rather than one you have to hover — a column of identical
+   squares would say "five repositories" and nothing about which is which. */
+/* The numbers are the list's (`.list.narrow` in WorkspaceList), so a row and
+   a topic's tile cannot drift apart; the fallbacks are those same values, for
+   a row drawn anywhere else. */
+.row.narrow {
+  position: relative;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--tile-stack, 5px);
+  height: var(--tile-h, 48px);
+  padding: 0 4px;
+}
+.row.narrow .kind .lucide { width: var(--tile-ic, 15px); height: var(--tile-ic, 15px); }
+.row.narrow .name {
+  flex: none;
+  max-width: 100%;
+  text-align: center;
+  font-size: var(--tile-lbl, 10px);
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+/* On the glyph's shoulder rather than in the tile's corner: placed from the
+   centre, so it stays with the icon whatever the strip's width is. */
+.pip {
+  position: absolute;
+  top: 7px;
+  left: calc(50% + 8px);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--surface-nav);
+}
+.row.narrow.selected .pip { box-shadow: none; }
+.pip.conflict { background: var(--danger); }
+
 .ahead { color: var(--ok); }
 .behind { color: var(--warn); }
 .dirty { color: var(--warn); }

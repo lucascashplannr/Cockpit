@@ -477,11 +477,11 @@ function buildCommands(lvl: Level): Item[] {
   if (w) {
     out.push({
       id: 'view:list',
-      label: layout.listOpen ? 'Hide the list' : 'Show the list',
-      hint: layout.listOpen ? 'the width goes to the conversation' : 'repositories, branches and topics',
+      label: layout.listOpen ? 'Narrow the list' : 'Widen the list',
+      hint: layout.listOpen ? 'a strip of tiles — the width goes to the conversation' : 'names and counters back',
       group: 'View',
       icon: layout.listOpen ? PanelLeftClose : PanelLeftOpen,
-      keywords: 'layout sidebar collapse column navigation',
+      keywords: 'layout sidebar collapse hide show strip column navigation',
       keys: '⌘B',
       run: act(toggleList),
     })

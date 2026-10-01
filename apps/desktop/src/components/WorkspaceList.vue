@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { attentionIcon } from './agent/attention.js'
 import { computed, nextTick, ref, watch } from 'vue'
+import type { Component } from 'vue'
 import {
   ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, Plus, Sparkles,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
+import ListToggle from './ListToggle.vue'
 import {
-  activeProject, activityFor, addRepoTo, collapsedTopics, listShown, openAgentOn, openContextMenu,
+  activeProject, activityFor, collapsedTopics, listWide, openAgentOn, openContextMenu,
   selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 
@@ -24,20 +26,61 @@ const groups = computed(() => workspaceGroups.value)
 const hasProjects = computed(() => state.projects.length > 0)
 
 /**
- * §12 — put away and brought back, the list is where you left it.
- *
- * It is hidden, not unmounted (App.vue), but a box that is `display: none`
- * has no scroll offset to keep: it comes back at the top, and twenty branches
- * down a long project that is the row you were on, gone. So the offset is
- * read on the way out — `pre`, while the box still has one — and put back
- * once it is drawn again.
+ * §12 — the list folded down to its strip (⌘B). Same groups, same rows, same
+ * order; each one stood on end, and the header and foot keep their acts as
+ * glyphs. Nothing is a different component, so nothing can be on the strip
+ * and missing from the list, or the other way round.
+ */
+const narrow = computed(() => !listWide.value)
+
+/**
+ * The strip is taller per row than the list, so where the scroll was means
+ * nothing after the switch. What does mean something is the row you are on.
  */
 const scroller = ref<HTMLElement | null>(null)
-let keptScroll = 0
-watch(listShown, (shown) => {
-  if (!shown) keptScroll = scroller.value?.scrollTop ?? 0
-  else void nextTick(() => { if (scroller.value) scroller.value.scrollTop = keptScroll })
+watch(narrow, () => {
+  void nextTick(() => {
+    scroller.value?.querySelector('.selected, .holding')?.scrollIntoView({ block: 'nearest' })
+  })
 })
+
+/**
+ * A topic's header on the strip is one tile, and a tile is one button — but
+ * the header does two things, stand-on and fold. So: press it to stand on the
+ * topic, press it again to fold or open it. The same rule the rail has for
+ * the project you are already in, for the same reason: the lit thing has
+ * nowhere left to take you.
+ */
+function pressTopic(topicId: string): void {
+  if (topicId === selectedTopicId.value) toggleTopicCollapsed(topicId)
+  else selectTopic(topicId)
+}
+
+/** What the strip's topic tile leads with: the most urgent true thing, as a row does. */
+function topicLead(topicId: string): { icon: Component; cls: string } {
+  const a = activityFor('topic', topicId)
+  if (a.attention !== 'none') return { icon: attentionIcon(a.attention), cls: a.attention }
+  if (a.running) return { icon: Asterisk, cls: 'working' }
+  // The topic's own mark, the one it has in the palette, the dialog and the
+  // bar. A chevron stood here first — it is what the wide header leads with —
+  // but there it is a control beside a name, and here it was the only picture
+  // the tile had: a column of dropdown arrows, saying "this opens" about a
+  // thing whose first job is to say what it is.
+  return { icon: Layers, cls: '' }
+}
+
+function topicTip(g: { title: string | null; topicId: string | null; workspaces: { git: { ahead: number } | null }[] }): string {
+  const id = g.topicId!
+  const a = activityFor('topic', id)
+  const facts: string[] = []
+  if (a.attention !== 'none') facts.push(ATTENTION_TEXT[a.attention] ?? '')
+  else if (a.running) facts.push(a.running + ' conversation(s) running on this topic')
+  if (unpushed(g.workspaces)) facts.push(unpushed(g.workspaces) + ' commit(s) not pushed')
+  facts.push(id === selectedTopicId.value
+    ? (collapsedTopics[id] ? 'Click to show its branches' : 'Click to fold it away')
+    : 'Click to aim the agent at the whole topic')
+  return [g.title + ' — topic', ...facts].filter(Boolean).join('\n')
+}
 
 /**
  * The one number a folded topic still owes you: how much of its work is not
@@ -84,43 +127,24 @@ const ATTENTION_TEXT: Record<string, string> = {
 </script>
 
 <template>
-  <section class="list">
+  <section class="list" :class="{ narrow }">
     <!-- The column's own header, on the height every other one uses. It names
          the project the column is of — the one thing the rail could only say
-         with two letters — and carries the three acts that add to that project.
-         Those were all at the foot beside the path, where a row of four icons
-         made "where this is" and "what you can add to it" read as one thing. -->
+         with two letters — and the one control that is about the column
+         itself: how wide it is (ListToggle). On the strip the name goes (the
+         lit tile beside it is saying it) and the control stays, centred, so
+         the top of the column is where you narrow it and where you widen it.
+
+         Everything that *acts on the project* is at the foot. Three glyphs
+         lived up here once, then two; a header that names a thing and a
+         toolbar that does things to it are two jobs, and 68px has room for
+         one. -->
     <header v-if="activeProject" class="top">
-      <span class="pname" :title="activeProject.name + '\n' + activeProject.root">
+      <span v-if="!narrow" class="pname" :title="activeProject.name + '\n' + activeProject.root">
         {{ activeProject.name }}
       </span>
-      <span class="grow" />
-      <!-- §7 — the widest scope, from the thing it is scoped to: every
-           repository in the project, at its main checkout. -->
-      <button
-        class="icon-btn go"
-        title="Ask the agent across the whole project — every repository, on its default branch"
-        @click="openAgentOn({ kind: 'project', projectId: activeProject.id })"
-      >
-        <Sparkles class="sm" />
-      </button>
-      <button
-        class="icon-btn"
-        title="Open a topic — one named branch across every repository it touches"
-        @click="state.topicDialogOpen = true"
-      >
-        <Plus class="sm" />
-      </button>
-      <!-- §7 — one folder per repository, inside the project folder. Beside the
-           topic button because it is the same kind of act: adding something to
-           the project rather than looking at what is in it. -->
-      <button
-        class="icon-btn"
-        title="Add a repository — a new one, a clone, or a folder moved in"
-        @click="addRepoTo(activeProject.id)"
-      >
-        <FolderPlus class="sm" />
-      </button>
+      <span v-if="!narrow" class="grow" />
+      <ListToggle />
     </header>
 
     <div ref="scroller" class="scroll">
@@ -137,8 +161,27 @@ const ATTENTION_TEXT: Record<string, string> = {
         <div v-for="(g, i) in groups" :key="g.topicId ?? 'loose-' + i" class="group">
           <!-- A topic is a decoration (§4): no topic, no header. And a
                header you can stand on: selecting it is selecting its scope. -->
+          <!-- On the strip the header is one tile: what it leads with, and
+               its name under it. Its counters are in the hover. -->
+          <button
+            v-if="g.title && narrow && g.topicId"
+            class="group-tile"
+            :class="{
+              selected: g.topicId === selectedTopicId,
+              holding: collapsedTopics[g.topicId] && holdsSelection(g.workspaces),
+              menued: state.contextMenu?.target.kind === 'topic' && state.contextMenu.target.id === g.topicId,
+            }"
+            :title="topicTip(g)"
+            @click="pressTopic(g.topicId)"
+            @contextmenu.prevent="openContextMenu($event, { kind: 'topic', id: g.topicId })"
+          >
+            <span class="lead" :class="topicLead(g.topicId).cls">
+              <component :is="topicLead(g.topicId).icon" class="sm" />
+            </span>
+            <span class="title">{{ g.title }}</span>
+          </button>
           <div
-            v-if="g.title"
+            v-else-if="g.title"
             class="group-head"
             :class="{
               running: g.topic?.state === 'running',
@@ -222,7 +265,7 @@ const ATTENTION_TEXT: Record<string, string> = {
             </span>
           </div>
           <div v-else-if="groups.length > 1 && i > 0" class="divider">
-            <span class="section-label">not in a topic</span>
+            <span v-if="!narrow" class="section-label">not in a topic</span>
           </div>
 
           <WorkspaceRow
@@ -230,17 +273,47 @@ const ATTENTION_TEXT: Record<string, string> = {
             :key="w.id"
             :workspace="w"
             :compact="!!g.title"
+            :narrow="narrow"
           />
         </div>
       </template>
     </div>
+
+    <!-- The foot: the two acts that are about the project as a whole, under
+         everything the project holds. Always here, wide or narrow, so neither
+         has to be looked for after ⌘B.
+
+         §4 — a new topic: one named branch across every repository it
+         touches. §7 — and the widest scope, from the thing it is scoped to:
+         every repository in the project, at its main checkout. Last, because
+         it is the one of the two you reach for most.
+
+         Adding a repository was here too, and before that in the header. It
+         is in the project's settings now (ProjectDialog): it changes what the
+         project *is*, once a month, and this column is for moving around in
+         what it holds, all day. -->
+    <footer v-if="activeProject && hasProjects" class="foot">
+      <button
+        class="add"
+        title="Open a topic — one named branch across every repository it touches"
+        @click="state.topicDialogOpen = true"
+      >
+        <Plus class="sm" />
+        <span v-if="!narrow" class="lbl">Open a topic</span>
+      </button>
+      <button
+        class="add go"
+        title="Ask the agent across the whole project — every repository, on its default branch"
+        @click="openAgentOn({ kind: 'project', projectId: activeProject.id })"
+      >
+        <Sparkles class="sm" />
+        <span v-if="!narrow" class="lbl">Ask across the project</span>
+      </button>
+    </footer>
   </section>
 </template>
 
 <style scoped>
-/* The one verb that is not git: it gets the accent that means agent. */
-.go:hover { color: var(--agent); background: var(--agent-soft); }
-
 .list {
   display: flex;
   flex-direction: column;
@@ -276,19 +349,115 @@ const ATTENTION_TEXT: Record<string, string> = {
   white-space: nowrap;
 }
 .top .grow { flex: 1; }
-/* Three acts on one project, so they read as one cluster rather than as three
-   separate controls that happen to share a corner: the buttons are the size of
+/* An act on the project, the size of its hit area — as it was when there were
+   three and they had to read as one cluster: the buttons are the size of
    their hit area and nothing is added between them. The glyphs sit 10px apart,
    which is close enough to group them and far enough to aim at. */
 .top .icon-btn { width: 26px; height: 26px; }
-/* The agent is the one act here that is not administrative. */
-.top .go:hover { color: var(--agent); background: var(--agent-soft); }
 
 .scroll {
   flex: 1;
   overflow-y: auto;
   padding: 8px 10px 12px;
 }
+
+/* Under the rows, not ruled off from them: the list's own last lines, in the
+   row's box and the row's inset, a step dimmer because they are offers rather
+   than places. */
+.foot { flex: none; padding: 4px 10px 10px; }
+.add {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: var(--row-h);
+  padding: 0 10px 0 11px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  transition:
+    background var(--dur-1) var(--ease-soft),
+    color var(--dur-1) var(--ease-soft);
+}
+.add:hover { background: var(--hover); color: var(--text); }
+/* The one verb here that is not git: it gets the accent that means agent. */
+.add.go:hover { color: var(--agent); background: var(--agent-soft); }
+.add .lucide { flex: none; margin: 0 1px; }
+
+/* ── the strip (§12, ⌘B) ─────────────────────────────────────────────── */
+/* The numbers every tile on it is built from, here because the rows are
+   another component and have to agree with the topic tiles to the pixel
+   (WorkspaceRow reads the same five).
+
+   It was 64 wide with 44px tiles and a name reaching both walls of its tile:
+   everything fitted and nothing had room. 72 and 54 were tried and were too
+   much the other way — a strip is there to give width back. This is the step
+   between: a little air on every side of what a tile holds, and no more. */
+.list.narrow {
+  --tile-h: 48px;
+  --tile-gap: 0px;
+  --tile-stack: 5px;
+  --tile-lbl: 10px;
+  --tile-ic: 15px;
+}
+.list.narrow .top { justify-content: center; padding: 0; }
+.list.narrow .scroll { padding: 10px 8px 12px; scrollbar-width: none; }
+.list.narrow .scroll::-webkit-scrollbar { display: none; }
+.list.narrow .group { display: flex; flex-direction: column; gap: var(--tile-gap); }
+.list.narrow .foot { padding: 4px 8px 12px; }
+.list.narrow .add { justify-content: center; padding: 0; height: 36px; }
+.list.narrow .add .lucide { width: var(--tile-ic); height: var(--tile-ic); }
+/* What the indent and the header's weight say in the list, a rule says here:
+   there is no width left to step anything in by. Short of the walls, so it
+   separates two groups without boxing either. */
+.list.narrow .group + .group {
+  margin-top: 10px;
+  padding-top: 10px;
+  position: relative;
+}
+.list.narrow .group + .group::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 12px;
+  right: 12px;
+  border-top: 1px solid var(--line);
+}
+.list.narrow .divider { display: none; }
+
+/* The topic's header as a tile: the row's own box on end, in the header's
+   weight, so a topic and the branches under it are told apart by the same
+   thing that tells them apart in the list. */
+.group-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--tile-stack);
+  width: 100%;
+  height: var(--tile-h);
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  transition: background var(--dur-1) var(--ease-soft);
+}
+.group-tile:hover, .group-tile.menued { background: var(--hover); }
+.group-tile.selected, .group-tile.holding { background: var(--selected); }
+.group-tile .title {
+  flex: none;
+  max-width: 100%;
+  font-size: var(--tile-lbl);
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-align: center;
+}
+.group-tile .lead { display: flex; color: var(--text-muted); }
+.group-tile .lead .lucide { width: var(--tile-ic); height: var(--tile-ic); }
+.group-tile.selected .lead, .group-tile.holding .lead { color: var(--accent); }
+.group-tile .lead.working, .group-tile .lead.reply { color: var(--agent); }
+.group-tile .lead.approval, .group-tile .lead.blocked { color: var(--warn); }
+.group-tile .lead.failed { color: var(--danger); }
 
 /* One rhythm down the whole column. This was 14px, which is a paragraph
    break — right between two paragraphs, wrong between two rows of the same
