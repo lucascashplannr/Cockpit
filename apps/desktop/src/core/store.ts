@@ -94,7 +94,7 @@ export const revealLabel =
 const PORT = host?.corePort ?? 7717
 const CORE_URL = 'ws://127.0.0.1:' + PORT
 
-export type TabId = 'code' | 'diff' | 'commits' | 'agent' | 'memory' | 'docs' | 'output' | 'journal' | 'terminal' | 'ticket'
+export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'docs' | 'output' | 'journal' | 'terminal' | 'ticket'
 
 /**
  * The four roles, in the order they are used.
@@ -106,7 +106,7 @@ export type TabId = 'code' | 'diff' | 'commits' | 'agent' | 'memory' | 'docs' | 
  *
  * The Agent owns the panel permanently; these are what open beside it.
  */
-export type ReviewTool = 'diff' | 'commits' | 'code' | 'output' | 'journal' | 'terminal' | 'memory' | 'docs'
+export type ReviewTool = 'diff' | 'code' | 'output' | 'journal' | 'terminal' | 'memory' | 'docs'
 
 /**
  * §12 — how the window is divided between the two things it can show on the
@@ -239,6 +239,15 @@ export const state = reactive({
    */
   view: 'agent' as ShellView,
   reviewTool: 'diff' as ReviewTool,
+  /**
+   * §2 — the Diff is two readings of one repository: what is not committed
+   * yet, and what was committed and pushed. The second is reached from the
+   * last commit at the foot of the first, not from a tab of its own — it is
+   * the history *behind* the commit box, and that is where you look for it.
+   */
+  diffMode: 'changes' as 'changes' | 'commits',
+  /** The commit Commits opens on, once, then forgets. */
+  commitsFocus: null as string | null,
   /** §6 — each project's memories, and which one the next conversation on a scope uses. */
   memories: {} as Record<string, MemorySummary[]>,
   memoryChoice: {} as Record<string, string>,
@@ -658,9 +667,6 @@ export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
   if (!w) return []
   const ids: ReviewTool[] = []
   if (w.git) ids.push('diff')
-  // §2 — what was committed and pushed, beside what is not committed yet: the
-  // two halves of "where is my work", and both absent without a repository.
-  if (w.git) ids.push('commits')
   ids.push('code')
   // Always, even with nothing declared: it is also where the rest of the
   // project's running servers are listed, and where the first one is set up.
@@ -708,12 +714,22 @@ export function goTo(id: TabId): void {
   }
   if (id === 'ticket') return
   state.reviewTool = id
+  // ⌘2 is the Diff, and the Diff is the changes: the graph behind it is
+  // reached on purpose, from its last commit, and left by asking again.
+  if (id === 'diff') state.diffMode = 'changes'
   // Beside the conversation, never instead of it: asking for the Diff is
   // asking to *see* the diff, and if it is already filling the window that is
   // the view you meant to stay in. Only the control and the two keystrokes
   // take the conversation off the screen, because only they are about the
   // window rather than about a tool.
   if (state.view === 'agent') state.view = 'split'
+}
+
+/** The commit graph, in the Diff's place — open on `focus` when given. */
+export function openCommits(focus: string | null = null): void {
+  goTo('diff')
+  state.diffMode = 'commits'
+  state.commitsFocus = focus
 }
 
 /** Which of the two right-hand columns is on screen, for the shell to draw. */

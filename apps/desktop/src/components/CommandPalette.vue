@@ -15,7 +15,7 @@ import {
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import type { Scored } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, viewKey, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, mergeTopic, markResolved, newProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state,
+  SHELL_VIEWS, setView, viewKey, openCommits, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, mergeTopic, markResolved, newProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -438,7 +438,16 @@ function buildCommands(lvl: Level): Item[] {
   if (w) {
     tab('code', 'Code', FileCode)
     if (w.git) tab('diff', 'Diff', GitCompareArrows)
-    if (w.git) tab('commits', 'Commits', GitGraph)
+    if (w.git) {
+      out.push({
+        id: 'tab:commits',
+        label: 'Go to Commits',
+        group: 'View',
+        icon: GitGraph,
+        keywords: 'history log graph push',
+        run: act(() => openCommits()),
+      })
+    }
     tab('agent', 'Agent', Sparkles)
     tab('memory', 'Memory', BookMarked)
     tab('journal', 'Journal', ScrollText)

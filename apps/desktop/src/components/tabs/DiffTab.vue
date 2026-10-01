@@ -5,12 +5,12 @@ import type { Component } from 'vue'
 import {
   Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, Code, Columns2, Eye, FileCode, Rows2, GitBranch, LoaderCircle,
   ChevronUp, GitCommitHorizontal, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
-  Copy, FilePen, FolderOpen, Info, Undo2, User, UsersRound,
+  Copy, FilePen, FolderOpen, GitGraph, Info, Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, openFileAt, resetPlaceWidth,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, openFileAt, resetPlaceWidth,
   resetCommitHeight, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
@@ -1297,15 +1297,22 @@ const mark: Record<string, Component> = {
           </div>
 
           <!-- The last commit, as context: what this one follows, and what
-               Amend would rewrite. -->
+               Amend would rewrite. And the way into every commit before it:
+               the history is behind the commit box, so it opens from the
+               commit the box would follow, already open on it. -->
           <div v-if="git?.lastCommit && !amending" class="cafter">
-            <span
+            <!-- No tooltip: this sits on the window's bottom edge, where a
+                 native one is drawn half off the screen. -->
+            <button
               class="clast"
-              :title="git.lastCommit.hash.slice(0, 7) + ' · ' + git.lastCommit.author"
+              :aria-label="'Last commit: ' + git.lastCommit.subject + ' — see every commit'"
+              @click="openCommits(git.lastCommit.hash)"
             >
+              <GitGraph class="clasticon" />
               <span class="clastsub">{{ git.lastCommit.subject }}</span>
               <span class="clastago">{{ since(git.lastCommit.ts) }}</span>
-            </span>
+              <ChevronRight class="clastgo" />
+            </button>
           </div>
         </template>
       </div>
@@ -1678,19 +1685,38 @@ const mark: Record<string, Component> = {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 24px;
-  margin-top: 10px;
+  margin-top: 8px;
 }
+/* A line of context that is also a way in, drawn as a row of the box it is
+   in: the same edges and corners as the button above it, at rest and on
+   hover alike. It used to borrow six pixels either side so its text lined up
+   with the box while resting, and its hover then stood out past everything
+   else in it; and at 11px in the dimmest grey it was the faintest thing on
+   the panel, which is the opposite of what a way in should be. */
 .clast {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
   min-width: 0;
-  font-size: 11px;
-  color: var(--text-dim);
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-soft);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-align: left;
+  transition:
+    background var(--dur-1) var(--ease-soft),
+    border-color var(--dur-1) var(--ease-soft),
+    color var(--dur-1) var(--ease-soft);
 }
+.clast:hover { background: var(--hover); border-color: var(--line); color: var(--text); }
+.clasticon { flex: none; width: 13px; height: 13px; color: var(--text-dim); }
 .clastsub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.clastago { flex: none; opacity: 0.8; }
+.clastago { flex: none; margin-left: auto; color: var(--text-dim); }
+.clastgo { flex: none; width: 13px; height: 13px; color: var(--text-dim); transition: color var(--dur-1) var(--ease-soft); }
+.clast:hover .clastgo { color: var(--text-muted); }
 
 .tiny { height: 24px; padding: 0 8px; font-size: var(--fs-xs); }
 .tiny .lucide { width: 12px; height: 12px; }

@@ -120,6 +120,10 @@ function onKey(e: KeyboardEvent) {
     else if (state.paletteOpen) state.paletteOpen = false
     // Layer by layer back to the conversation, which is the ground state.
     else if (state.historyOpen) state.historyOpen = false
+    // The commit graph stands in the Diff's place, so it is one layer above it.
+    else if (state.view !== 'agent' && state.reviewTool === 'diff' && state.diffMode === 'commits') {
+      state.diffMode = 'changes'
+    }
     // The ground state is the conversation with the whole width, so this is
     // one step and not two: Escape out of a diff you are done reading and the
     // thread is there, not a narrower diff.

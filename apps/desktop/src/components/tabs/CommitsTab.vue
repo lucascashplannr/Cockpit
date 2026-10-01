@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import type { CommitDetail, CommitGraph, FileDiff, GraphCommit, GraphRef, Workspace } from '@cockpit/shared'
-import { ArrowUpFromLine, ChevronRight, Cloud, Copy, GitBranch, GitGraph, Search, Sparkles, Tag, X } from '@lucide/vue'
-import { client, guard, toast } from '../../core/store.js'
+import {
+  ArrowLeft, ArrowUpFromLine, ChevronRight, Cloud, Copy, GitBranch, GitCommitVertical, GitGraph, Search, Sparkles, Tag, X,
+} from '@lucide/vue'
+import { client, guard, state, toast } from '../../core/store.js'
 import { layout } from '../../core/graph.js'
 import type { LaidRow } from '../../core/graph.js'
 
@@ -32,7 +34,15 @@ const props = defineProps<{ workspace: Workspace }>()
 
 const PAGE = 300
 const LANE = 14
-const PAD = 17
+/**
+ * Where the first lane runs: the centre of the icon column the tab strip and
+ * the ← above it share (10px strip + 10px tab padding + half a 14px icon), so
+ * HEAD's line falls straight down from them. `.bar`'s left padding is set to
+ * put the ← on the same 27px.
+ */
+const LEFT = 27
+/** Between the last lane and the subject. */
+const RIGHT = 13
 const ROW = 30
 const MID = ROW / 2
 /** Past this, lanes are clipped rather than pushing the subjects off the row. */
@@ -97,12 +107,31 @@ watch(
 )
 
 const commits = computed<GraphCommit[]>(() => data.value?.commits ?? [])
-const laid = computed(() => layout(commits.value, head.value))
+
+/**
+ * Work not committed yet, drawn as the row it would become: above HEAD, on
+ * HEAD's line, joined to it by a dashed edge — a commit that does not exist.
+ * The same count the Diff's badge carries, so the two never disagree.
+ */
+const WORKTREE = '\u0000worktree'
+const uncommitted = computed(() => {
+  const g = props.workspace.git
+  return g ? g.staged + g.unstaged + g.untracked : 0
+})
+const showWorktree = computed(
+  () => uncommitted.value > 0 && !!head.value && commits.value.some((c) => c.hash === head.value),
+)
+const laid = computed(() =>
+  showWorktree.value
+    ? layout([{ hash: WORKTREE, parents: [head.value!], virtual: true }, ...commits.value], WORKTREE)
+    : layout(commits.value, head.value),
+)
+const worktreeRow = computed(() => (showWorktree.value ? laid.value.rows[0]! : null))
 const lanes = computed(() => Math.min(Math.max(laid.value.width, 1), MAX_LANES))
-const gutter = computed(() => PAD * 2 + (lanes.value - 1) * LANE)
+const gutter = computed(() => LEFT + RIGHT + (lanes.value - 1) * LANE)
 
 const rows = computed(() =>
-  commits.value.map((c, i) => ({ c, g: laid.value.rows[i]! })),
+  commits.value.map((c, i) => ({ c, g: laid.value.rows[i + (showWorktree.value ? 1 : 0)]! })),
 )
 
 const index = computed(() => new Map(commits.value.map((c, i) => [c.hash, i])))
@@ -130,7 +159,7 @@ const matchCount = computed(() => (needle.value ? commits.value.filter(matches).
 
 // ── drawing ───────────────────────────────────────────────────────────
 
-const x = (lane: number) => PAD + lane * LANE
+const x = (lane: number) => LEFT + lane * LANE
 
 /** A line from one lane to another over half a row, as one S-curve. */
 function curve(x1: number, y1: number, x2: number, y2: number): string {
@@ -142,9 +171,9 @@ function curve(x1: number, y1: number, x2: number, y2: number): string {
 function strokes(g: LaidRow) {
   const xl = x(g.lane)
   return [
-    ...g.through.map((s) => ({ d: `M${x(s.lane)} 0V${ROW}`, color: s.color })),
-    ...g.into.map((s) => ({ d: curve(x(s.lane), 0, xl, MID), color: s.color })),
-    ...g.out.map((s) => ({ d: curve(xl, MID, x(s.lane), ROW), color: s.color })),
+    ...g.through.map((s) => ({ d: `M${x(s.lane)} 0V${ROW}`, color: s.color, dashed: s.dashed })),
+    ...g.into.map((s) => ({ d: curve(x(s.lane), 0, xl, MID), color: s.color, dashed: s.dashed })),
+    ...g.out.map((s) => ({ d: curve(xl, MID, x(s.lane), ROW), color: s.color, dashed: s.dashed })),
   ]
 }
 
@@ -154,13 +183,15 @@ function isLocal(c: GraphCommit): boolean {
 
 // ── words ─────────────────────────────────────────────────────────────
 
+/** Rounded the way the Diff's last-commit line rounds, so the commit it
+ *  opens on says the same age in both places. */
 function ago(ts: number): string {
-  const m = Math.floor((Date.now() - ts) / 60000)
+  const m = Math.max(0, Math.round((Date.now() - ts) / 60000))
   if (m < 1) return 'now'
   if (m < 60) return m + 'm'
-  const h = Math.floor(m / 60)
+  const h = Math.round(m / 60)
   if (h < 24) return h + 'h'
-  const d = Math.floor(h / 24)
+  const d = Math.round(h / 24)
   if (d < 30) return d + 'd'
   const at = new Date(ts)
   return at.toLocaleDateString([], {
@@ -176,9 +207,11 @@ function when(ts: number): string {
   })
 }
 
+/** The ring around a dot is HEAD; the dot itself says pushed or not. */
 function nodeTip(c: GraphCommit): string {
-  if (!data.value?.hasRemote) return 'This repository has no remote'
-  return c.pushed ? 'Pushed' : 'Not pushed — on this machine only'
+  const here = c.hash === head.value ? 'HEAD — the commit you are on · ' : ''
+  if (!data.value?.hasRemote) return here + 'this repository has no remote'
+  return here + (c.pushed ? 'pushed' : 'not pushed — on this machine only')
 }
 
 function pushTip(c: GraphCommit): string {
@@ -298,24 +331,66 @@ function onKey(e: KeyboardEvent) {
   if (e.key === 'ArrowDown' || e.key === 'j') move(at + 1)
   else if (e.key === 'ArrowUp' || e.key === 'k') move(at <= 0 ? 0 : at - 1)
   else if ((e.key === 'Enter' || e.key === ' ') && cursor.value) toggle(cursor.value)
+  // Esc closes the open commit here; with none open it goes on to the
+  // window's own ladder, whose next rung is back to the changes.
   else if (e.key === 'Escape' && opened.value) opened.value = null
   else return
   e.preventDefault()
+  e.stopPropagation()
 }
 
 function more() {
   limit.value += PAGE
 }
+
+function back() {
+  state.diffMode = 'changes'
+}
+
+// Opened from the last commit at the foot of the Diff: open on it, once the
+// page that holds it has arrived, and then forget it — a later reload must
+// not snap back to a commit you have since walked away from.
+watch(
+  () => [state.commitsFocus, data.value] as const,
+  ([focus, d]) => {
+    if (!focus || !d) return
+    state.commitsFocus = null
+    if (d.commits.some((c) => c.hash === focus)) {
+      void open(focus)
+      void reveal(focus)
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
   <div class="commits" :style="{ '--gutter': gutter + 'px' }">
     <div class="bar">
-      <div class="seg">
-        <button :class="{ on: scope === 'branch' }" title="This branch, its upstream and the base" @click="scope = 'branch'">
-          this branch
+      <button class="icon-btn" title="Back to the changes" aria-label="Back to the changes" @click="back">
+        <ArrowLeft class="sm" />
+      </button>
+      <!-- Two icons, one line against several: the same drawing as the graph
+           below, so the switch reads as what it will show. -->
+      <div class="seg icons" role="group" aria-label="Which commits">
+        <button
+          :class="{ on: scope === 'branch' }"
+          title="This branch — with its upstream and the base"
+          aria-label="This branch"
+          :aria-pressed="scope === 'branch'"
+          @click="scope = 'branch'"
+        >
+          <GitCommitVertical />
         </button>
-        <button :class="{ on: scope === 'all' }" title="Every branch and tag" @click="scope = 'all'">all branches</button>
+        <button
+          :class="{ on: scope === 'all' }"
+          title="All branches and tags"
+          aria-label="All branches"
+          :aria-pressed="scope === 'all'"
+          @click="scope = 'all'"
+        >
+          <GitGraph />
+        </button>
       </div>
       <label class="find">
         <Search class="sm" />
@@ -323,10 +398,6 @@ function more() {
         <span v-if="needle" class="hits num">{{ matchCount }}</span>
         <button v-if="q" class="wipe" title="Clear" @click="q = ''"><X /></button>
       </label>
-      <span v-if="data && !data.hasRemote" class="sum" title="Nothing here has anywhere to be pushed to">no remote</span>
-      <span v-else-if="unpushed" class="sum local num" :title="unpushed + ' commits exist on this machine only'">
-        <span class="ring" />{{ unpushed }} not pushed
-      </span>
     </div>
 
     <div
@@ -336,6 +407,29 @@ function more() {
       tabindex="0"
       @keydown="onKey"
     >
+      <div v-if="worktreeRow" class="entry">
+        <div
+          class="r wt"
+          :class="{ dim: !!needle }"
+          role="button"
+          title="Not committed yet — open the changes"
+          @click="state.diffMode = 'changes'"
+        >
+          <svg class="g" :width="gutter" :height="ROW" :viewBox="`0 0 ${gutter} ${ROW}`" aria-hidden="true">
+            <path
+              v-for="(s, i) in strokes(worktreeRow)"
+              :key="i"
+              :d="s.d"
+              class="ln"
+              :class="['s' + s.color, { dash: s.dashed }]"
+            />
+            <circle :cx="x(worktreeRow.lane)" :cy="MID" r="4" class="dot hollow pending" :class="'s' + worktreeRow.color" />
+          </svg>
+          <span class="subj">Uncommitted changes</span>
+          <span class="wtcount num">{{ uncommitted }} {{ uncommitted === 1 ? 'file' : 'files' }}</span>
+        </div>
+      </div>
+
       <div v-for="{ c, g } in rows" :key="c.hash" class="entry" :data-hash="c.hash">
         <div
           class="r"
@@ -345,7 +439,7 @@ function more() {
           @click="toggle(c.hash)"
         >
           <svg class="g" :width="gutter" :height="ROW" :viewBox="`0 0 ${gutter} ${ROW}`" aria-hidden="true">
-            <path v-for="(s, i) in strokes(g)" :key="i" :d="s.d" class="ln" :class="'s' + s.color" />
+            <path v-for="(s, i) in strokes(g)" :key="i" :d="s.d" class="ln" :class="['s' + s.color, { dash: s.dashed }]" />
             <circle v-if="c.hash === head" :cx="x(g.lane)" :cy="MID" r="7" class="halo" :class="'s' + g.color" />
             <circle
               :cx="x(g.lane)"
@@ -396,7 +490,7 @@ function more() {
               v-for="s in g.below.filter((s) => s.lane < MAX_LANES)"
               :key="s.lane"
               class="bar-l"
-              :class="'b' + s.color"
+              :class="['b' + s.color, { dash: s.dashed }]"
               :style="{ left: x(s.lane) - 0.75 + 'px' }"
             />
           </div>
@@ -429,7 +523,7 @@ function more() {
                   </span>
                 </div>
                 <div v-else-if="isLocal(c)" class="meta">
-                  <span class="pushline local"><span class="ring" /><span>Not pushed — this commit is on this machine only</span></span>
+                  <span class="pushline local"><svg class="mark" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /></svg><span>Not pushed — this commit is on this machine only</span></span>
                 </div>
 
                 <div class="files">
@@ -497,6 +591,23 @@ function more() {
       <span>Git did not answer for this repository.</span>
       <button class="btn" @click="load">Try again</button>
     </div>
+
+    <!-- The legend: the two marks that are not plain dots, each beside its
+       count. Pinned under the list rather than in the bar, so it is there
+       at whatever depth you are reading, and the bar keeps one line. -->
+    <footer v-if="rows.length && (!data!.hasRemote || unpushed || showWorktree)" class="legend">
+      <span v-if="!data!.hasRemote" class="sum" title="Nothing here has anywhere to be pushed to">no remote</span>
+      <span v-else-if="unpushed" class="sum local num" :title="unpushed + ' commits exist on this machine only'">
+        <span class="slot"><svg class="mark" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /></svg></span>{{ unpushed }} not pushed
+      </span>
+      <span
+        v-if="showWorktree"
+        class="sum local num"
+        :title="uncommitted + (uncommitted === 1 ? ' file' : ' files') + ' changed and not committed yet — the dashed row at the top'"
+      >
+        <span class="slot"><svg class="mark pending" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /></svg></span>{{ uncommitted }} uncommitted
+      </span>
+    </footer>
   </div>
 </template>
 
@@ -523,9 +634,15 @@ function more() {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px 10px;
-  padding: 9px 14px;
+  /* 13 + half of the 28px ← = 27, the column the tabs' icons and the first
+     lane share (see LEFT). */
+  padding: 9px 14px 9px 13px;
   border-bottom: 1px solid var(--line);
 }
+
+/* Square cells: an icon in a cell shaped for a word is a word missing. */
+.seg.icons > button { width: 28px; padding: 0; justify-content: center; }
+.seg.icons .lucide { width: 14px; height: 14px; }
 
 .find {
   display: flex;
@@ -581,16 +698,33 @@ function more() {
   color: var(--text-dim);
   white-space: nowrap;
 }
-.sum.local { color: var(--text-muted); }
-/* The hollow dot, as a legend: the same mark the graph uses, so the words
-   beside it teach the drawing. */
-.ring {
+.sum.local { color: var(--text-muted); gap: 0; }
+/* The ← button's own footprint, so that when the legend wraps to a line of
+   its own its ring falls on the same 27px the ←, the tabs' icons and the
+   first lane share, and its words start where the ← ends. */
+.slot { flex: none; display: grid; place-items: center; width: 28px; height: 16px; }
+/* The graph's own two marks, drawn the same way at the same size — a circle
+   of radius 4 with a 1.6 stroke, solid for not pushed and dashed for not
+   committed — so the words beside them teach the drawing. */
+/* Pinned like the Diff's commit box: the column's footer surface and rule.
+   13px + half the 28px slot puts the first ring on the 27px column the ←,
+   the tabs' icons and the first lane share. */
+.legend {
   flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1.6px solid var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  padding: 0 14px 0 13px;
+  overflow: hidden;
+  white-space: nowrap;
+  border-top: 1px solid var(--line);
+  background: var(--surface-dock);
 }
+.legend > .sum:not(.local) { padding-left: 14px; }
+.mark { width: 10px; height: 10px; overflow: visible; }
+.mark circle { fill: none; stroke: var(--accent); stroke-width: 1.6; }
+.mark.pending circle { stroke-dasharray: 2.09 2.09; }
 
 .rows { flex: 1; overflow-y: auto; padding-bottom: 24px; outline: none; }
 
@@ -613,6 +747,14 @@ function more() {
 .ln { fill: none; stroke-width: 1.6; stroke-linecap: round; }
 .dot { stroke-width: 1.6; }
 .dot.hollow { fill: var(--surface-review); }
+/* Not a commit yet: the edge to HEAD and the dot are dashed, the one drawing
+   in the graph that is a promise rather than a record. 6px divides the 30px
+   row, so a dashed line crossing several rows keeps one rhythm; 2.09 is a
+   twelfth of the dot's circumference, so its dashes close evenly. */
+.ln.dash { stroke-dasharray: 3 3; stroke-linecap: butt; }
+.dot.pending { stroke-dasharray: 2.09 2.09; }
+.r.wt .subj { color: var(--text-muted); }
+.wtcount { flex: none; margin-left: auto; font-size: var(--fs-xs); color: var(--text-dim); }
 .halo { fill: none; stroke-width: 1.2; opacity: 0.4; }
 .s0 { stroke: var(--lane-0); } .f0 { fill: var(--lane-0); }
 .s1 { stroke: var(--lane-1); } .f1 { fill: var(--lane-1); }
@@ -691,6 +833,8 @@ function more() {
 .detail { display: flex; align-items: stretch; }
 .gut { position: relative; flex: none; width: var(--gutter); }
 .bar-l { position: absolute; top: 0; bottom: 0; width: 1.6px; border-radius: 1px; }
+/* The same 3-on-3 rhythm as the dashed edge, cut out of the lane's colour. */
+.bar-l.dash { -webkit-mask: repeating-linear-gradient(to bottom, #000 0 3px, transparent 3px 6px); border-radius: 0; }
 .b0 { background: var(--lane-0); } .b1 { background: var(--lane-1); } .b2 { background: var(--lane-2); }
 .b3 { background: var(--lane-3); } .b4 { background: var(--lane-4); } .b5 { background: var(--lane-5); }
 
@@ -742,7 +886,7 @@ function more() {
 /* One sentence beside its glyph, wrapping as a sentence: the glyph stays on
    the first line rather than centring against a two-line date. */
 .pushline { display: inline-flex; align-items: baseline; gap: 6px; color: var(--text-muted); }
-.pushline > .lucide, .pushline > .ring { flex: none; align-self: flex-start; margin-top: 2px; }
+.pushline > .lucide, .pushline > .mark { flex: none; align-self: flex-start; margin-top: 2px; }
 .pushline b { font-weight: 600; color: var(--text); }
 .pushline .lucide { width: 12px; height: 12px; }
 .pushline.local { color: var(--text-muted); }
