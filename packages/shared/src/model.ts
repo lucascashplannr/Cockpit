@@ -800,7 +800,23 @@ export interface Attachment {
    * later turns, the same as every other attachment.
    */
   pasted?: boolean
+  /**
+   * Folded text that was not brought in from outside but picked out of this
+   * very conversation: a passage selected in the thread and referred to.
+   *
+   * Always beside `pasted` — it travels and is drawn the same way, a tag in
+   * the sentence and the words written back in where the tag stands. What
+   * differs is what the engine is told it is: not new material to read, but
+   * the part of what was already said that the sentence around it is about.
+   */
+  quoted?: QuoteSource
 }
+
+/**
+ * Who said the passage a reference points at: the agent, in an answer; the
+ * person, in a question; or `thread`, when the selection ran across both.
+ */
+export type QuoteSource = 'agent' | 'user' | 'thread'
 
 /** The same file on its way in, before the core has anywhere to put it. */
 export interface AttachmentInput {
@@ -812,6 +828,8 @@ export interface AttachmentInput {
   data: string
   /** Folded text rather than a file — see `Attachment.pasted`. */
   pasted?: boolean
+  /** A passage of this conversation, referred to — see `Attachment.quoted`. */
+  quoted?: QuoteSource
 }
 
 export interface AgentTurn {

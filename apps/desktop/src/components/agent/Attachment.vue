@@ -45,7 +45,7 @@ watch(
 </script>
 
 <template>
-  <li class="tile" :class="{ pic: file.image && src, text: file.pasted && text }" :title="tip">
+  <li class="tile" :class="{ pic: file.image && src, text: file.pasted && text, quote: file.quoted }" :title="tip">
     <img v-if="file.image && src" :src="src" :alt="file.name" />
     <pre v-else-if="file.pasted && text" class="snip">{{ text.slice(0, 400) }}</pre>
     <template v-else>
@@ -111,6 +111,9 @@ watch(
   -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
   mask-image: linear-gradient(to bottom, #000 60%, transparent);
 }
+/* A reference is prose out of the thread, so it is set as prose: the face it
+   was read in, broken between words rather than through them. */
+.tile.quote .snip { font-family: inherit; font-size: 8px; word-break: normal; overflow-wrap: anywhere; }
 .tile.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 /* The same label the composer puts on a tile, for the same reason. */

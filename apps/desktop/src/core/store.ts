@@ -5,7 +5,7 @@ import type {
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, DocsInfo, DocsProposalSet, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
-  ProjectSettings, ServerBoardRow, StashEntry, Workspace,
+  ProjectSettings, QuoteSource, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
 import { anchorsIn, handleFor, matchesBranch, protectedPatterns, splitPrompt } from '@cockpit/shared'
 import { CoreClient } from './client.js'
@@ -2009,7 +2009,15 @@ export function openDraftFiles(at: DraftFile): void {
     files.map((f): ViewItem => {
       if (f.mediaType.startsWith('image/')) return { kind: 'image', name: f.name, src: dataUrl(f) }
       if (f.pasted) {
-        return { kind: 'text', name: f.name, meta: linesOf(f.text ?? ''), text: f.text ?? '', draftId: f.id }
+        return {
+          kind: 'text',
+          name: f.name,
+          meta: linesOf(f.text ?? ''),
+          text: f.text ?? '',
+          // A paste can be trimmed before it goes; a reference cannot. It is
+          // sent as "what you said", and an edited one would say so falsely.
+          ...(f.quoted ? {} : { draftId: f.id }),
+        }
       }
       const text = asText(f.data, f.bytes)
       return {
@@ -2118,6 +2126,8 @@ export interface DraftFile {
   pasted?: boolean
   /** The pasted text itself, kept decoded so the tile can quote it. */
   text?: string
+  /** A passage of the thread, referred to; see `attachText`. Beside `pasted`. */
+  quoted?: QuoteSource
 }
 
 /** What the thumbnail's `src` is. Built here so nothing has to be revoked. */
@@ -2281,13 +2291,18 @@ export function isLongPaste(text: string): boolean {
  * The same door as a screenshot: a handle (`paste`, `paste-2`), a tile over
  * the box, a chip at the caret. Only the delivery differs — the core expands
  * it into the message rather than inlining an image or naming a path.
+ *
+ * With `quoted` it is a reference instead: a passage selected in the thread,
+ * however short — three words picked out of an answer are still "this, here",
+ * and the chip is what lets the sentence point at them. It answers to `ref`,
+ * and the engine is told whose words they were rather than handed them as new.
  */
-export function attachText(text: string): DraftFile | null {
+export function attachText(text: string, quoted?: QuoteSource): DraftFile | null {
   if (agentFiles.value.length >= MAX_FILES) {
     toast('error', MAX_FILES + ' files is the limit for one turn')
     return null
   }
-  const handle = handleFor('paste', agentFiles.value.map((f) => f.handle))
+  const handle = handleFor(quoted ? 'ref' : 'paste', agentFiles.value.map((f) => f.handle))
   const bytes = new TextEncoder().encode(text)
   const f: DraftFile = {
     id: 'df_' + Math.random().toString(36).slice(2, 10),
@@ -2298,6 +2313,7 @@ export function attachText(text: string): DraftFile | null {
     data: base64(bytes.buffer),
     pasted: true,
     text,
+    ...(quoted ? { quoted } : {}),
   }
   agentFiles.value = [...agentFiles.value, f]
   return f
@@ -2371,6 +2387,7 @@ function wire(files: DraftFile[]): AttachmentInput[] {
     mediaType: f.mediaType,
     data: f.data,
     ...(f.pasted ? { pasted: true } : {}),
+    ...(f.pasted && f.quoted ? { quoted: f.quoted } : {}),
   }))
 }
 
@@ -5069,6 +5086,7 @@ async function restoreFiles(key: string, sent: Attachment[]): Promise<void> {
       bytes: a.bytes,
       data,
       ...(a.pasted ? { pasted: true, text: fromBase64(data) } : {}),
+      ...(a.pasted && a.quoted ? { quoted: a.quoted } : {}),
     })
   }
   // Only into a box that is still as it was left: something typed or dropped

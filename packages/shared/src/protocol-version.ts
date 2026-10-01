@@ -39,8 +39,12 @@
  * 2.12 — `agent.removed`, so the drawer can show what was removed but kept.
  *
  * 2.13 — `git.graph`, `git.show` and `git.showFile`, for the Commits tool.
+ *
+ * 2.14 — `AttachmentInput.quoted`, a passage of the thread referred to. An
+ * older core drops the field and hands the engine the passage as a paste:
+ * its own words, presented as new material, with nothing to say which.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 13 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 14 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

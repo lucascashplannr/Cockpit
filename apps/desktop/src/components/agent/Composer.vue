@@ -8,7 +8,7 @@ import {
 import {
   AGENT_COMMANDS, ANCHOR_PAD, CLAUDE_MODELS, COMMAND_ENGINES, anchorOf, anchorWritten, splitPrompt,
 } from '@cockpit/shared'
-import type { AgentCommand, AgentScope, Conversation, PermissionMode } from '@cockpit/shared'
+import type { AgentCommand, AgentScope, Conversation, PermissionMode, QuoteSource } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
@@ -610,6 +610,20 @@ function onPaste(ev: ClipboardEvent): void {
 }
 
 /**
+ * A passage selected in the thread, referred to at the caret.
+ *
+ * The fourth door, and the same room behind it: a tile over the box and a
+ * `#ref` chip where the sentence had got to — because "this part" is said
+ * about a place in the answer the way "this screenshot" is said about a
+ * picture, and retyping the passage to point at it is the thing a chip is for.
+ * Never folded by length like a paste: two words picked out are a reference.
+ */
+function quote(text: string, from: QuoteSource): void {
+  const f = attachText(text.replace(/\r\n?/g, '\n'), from)
+  if (f) insertAtCaret(anchorWritten(f.handle))
+}
+
+/**
  * The folded text, back into the box as text — where its chip stood, or at
  * the caret if nothing pointed at it.
  *
@@ -618,6 +632,9 @@ function onPaste(ev: ClipboardEvent): void {
  */
 function unfold(f: DraftFile): void {
   if (f.text === undefined) return
+  // A reference unfolds as a quotation, so that it still reads as someone
+  // else's words once the tag that said so is gone.
+  const body = f.quoted ? '\n' + f.text.replace(/^/gm, '> ') + '\n' : f.text
   const draft = agentDraft.value
   let i = 0
   let out = ''
@@ -633,7 +650,7 @@ function unfold(f: DraftFile): void {
     }
     if (!done && part.kind === 'anchor' && part.handle === f.handle) {
       // The chip's own room goes with it; the text brings its own spacing.
-      out = out.replace(/\u00a0+$/, '') + f.text
+      out = out.replace(/\u00a0+$/, '') + body
       done = true
       trim = true
       continue
@@ -645,7 +662,7 @@ function unfold(f: DraftFile): void {
     agentDraft.value = out
     nextTick(() => box.value?.focus())
   } else {
-    insertAtCaret(f.text)
+    insertAtCaret(body)
   }
 }
 
@@ -760,7 +777,7 @@ function size(n: number): string {
   return (n / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
-defineExpose({ focus: () => box.value?.focus(), take })
+defineExpose({ focus: () => box.value?.focus(), take, quote })
 </script>
 
 <template>
@@ -802,6 +819,7 @@ defineExpose({ focus: () => box.value?.focus(), take })
           :class="{
             pic: f.mediaType.startsWith('image/'),
             text: f.pasted,
+            quote: f.quoted,
             loose: !placedHandles.has(f.handle),
           }"
           :title="
@@ -820,7 +838,7 @@ defineExpose({ focus: () => box.value?.focus(), take })
                `paste.txt` would tell two pastes apart by number and nothing else. -->
           <template v-else-if="f.pasted">
             <pre class="snip">{{ head(f.text) }}</pre>
-            <span class="fsize">{{ lineCount(f.text) }} lines</span>
+            <span class="fsize">{{ lineCount(f.text) }} {{ lineCount(f.text) === 1 ? 'line' : 'lines' }}</span>
             <button class="drop unfold" title="Unfold back into the message as text" @click.stop="unfold(f)">
               <UnfoldVertical class="xs" />
             </button>
@@ -1218,6 +1236,9 @@ defineExpose({ focus: () => box.value?.focus(), take })
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 .files li.text .fsize { text-align: right; }
+/* A reference is prose out of the thread, not a page of code: it wraps, in the
+   face it was read in, where a paste keeps its lines and its indentation. */
+.files li.quote .snip { font-family: inherit; font-size: 7.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Present on every tile, and only legible on the one under the cursor: a strip
    of five ✕ is a row of buttons where a list of files should be. */

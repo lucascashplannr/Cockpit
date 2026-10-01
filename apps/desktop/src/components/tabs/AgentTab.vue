@@ -4,7 +4,7 @@ import type {
   // Aliased: the component that draws one is `Attachment` too, and the file
   // needs both in the same scope.
   Attachment as AttachedFile,
-  AgentScopePreview, Conversation, AgentTurn, PermissionMode, Workspace,
+  AgentScopePreview, Conversation, AgentTurn, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
   ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, Hand, Paperclip,
@@ -15,10 +15,11 @@ import ToolCall from '../agent/ToolCall.vue'
 import ToolGroup from '../agent/ToolGroup.vue'
 import Attachment from '../agent/Attachment.vue'
 import Composer from '../agent/Composer.vue'
+import ReferenceSelection from '../agent/ReferenceSelection.vue'
 import PermissionAsk from '../agent/PermissionAsk.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, agentDraft, agentFiles, attachmentSrc, client, guard, isBusy, isLive, openSentFiles,
+  activeAgentScope, agentDraft, agentFiles, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, restoreConversation,
@@ -485,6 +486,16 @@ function onDrop(ev: DragEvent): void {
   if (files.length) void composer.value?.take(files)
 }
 
+/**
+ * A passage selected in the thread goes into the box as a reference.
+ *
+ * Through the composer, like a dropped file: the chip that names it has to
+ * land at the caret, and the caret is the box's to know.
+ */
+function refer(text: string, from: QuoteSource): void {
+  composer.value?.quote(text, from)
+}
+
 /** With a thread open it adds a turn; with none it opens one. The label says. */
 const continuing = computed(() => {
   const s = selected.value
@@ -747,6 +758,15 @@ function labels(turn: AgentTurn): Record<string, string> {
   return Object.fromEntries(
     files.map((f) => [f.id, placed.has(f.handle) ? anchorOf(f.handle) : 'all']),
   )
+}
+
+/**
+ * What resting on a tag says: the opening of the passage or the paste it
+ * stands for, once the tile above has fetched it — and its name until then.
+ */
+function tagTip(file: AttachedFile): string {
+  const text = file.pasted ? attachmentText(file.path) : ''
+  return text ? text.slice(0, 600) + (text.length > 600 ? '\n…' : '') : file.name
 }
 
 function showImage(turn: AgentTurn, file: AttachedFile): void {
@@ -1348,7 +1368,7 @@ function ago(ts: number): string {
               <BookOpen class="sm" />
               Documentation step — drafting proposals to the docs, for you to accept in the Docs tool
             </p>
-            <div v-else class="ask">
+            <div v-else class="ask" data-said="user">
               <!-- What was attached, above the words: the screenshot is the
                    question and the sentence is the caption, not the other way
                    round. Turns from before attachments existed carry none. -->
@@ -1376,7 +1396,7 @@ function ago(ts: number): string {
                     v-else
                     class="tag"
                     :class="{ pic: part.file.image }"
-                    :title="part.file.name"
+                    :title="tagTip(part.file)"
                     @click="showImage(x.turn, part.file)"
                   >{{ anchorOf(part.file.handle) }}</span>
                 </template>
@@ -1449,7 +1469,7 @@ function ago(ts: number): string {
             </div>
 
             <!-- The half it answered, with its own footer and its own hover. -->
-            <div class="reply">
+            <div class="reply" data-said="agent">
             <template v-for="r in x.rows" :key="r.id">
               <!-- No avatar, no badge: what a person wrote is a bubble on the
                    right, so everything at the left margin is the agent by
@@ -1589,7 +1609,7 @@ function ago(ts: number): string {
           <!-- Said, and not yet asked. In the shape of a question because that
                is what it is, and dimmed because the engine has not seen it. -->
           <div v-for="(q, i) in queued" :key="'q' + i" class="ex">
-            <div class="said pending selectable">
+            <div class="said pending selectable" data-said="user">
               {{ q }}
               <button class="drop" title="Take this back before it goes in" @click="unqueue(q)">
                 <X class="sm" />
@@ -1604,6 +1624,10 @@ function ago(ts: number): string {
         <button v-if="!stuck" class="jump" @click="toBottom">
           <ArrowDown class="sm" /> Latest
         </button>
+
+        <!-- Over whatever is selected in the thread: the passage goes into the
+             box below as a `#ref` chip, the way a screenshot goes in as one. -->
+        <ReferenceSelection :root="scrollEl" @reference="refer" />
       </div>
 
       <footer class="foot">

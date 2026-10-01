@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
-import type { Attachment, AttachmentInput } from '@cockpit/shared'
+import type { Attachment, AttachmentInput, QuoteSource } from '@cockpit/shared'
 import { newId, splitPrompt } from '@cockpit/shared'
 import { COCKPIT_HOME, ensureHome } from './config.js'
 
@@ -101,6 +101,9 @@ export function saveAttachments(sessionId: string, inputs: AttachmentInput[]): A
       bytes: bytes.length,
       image: !a.pasted && INLINE_IMAGE.has(a.mediaType),
       ...(a.pasted ? { pasted: true } : {}),
+      // Checked rather than passed through: it ends up inside the message the
+      // engine reads, and it arrives from whoever is on the socket.
+      ...(a.pasted && a.quoted && a.quoted in QUOTED_FROM ? { quoted: a.quoted } : {}),
     })
   }
   return out
@@ -184,6 +187,13 @@ export function turnSegments(
   return out
 }
 
+/** Whose words a reference points at, in the words the engine is told. */
+const QUOTED_FROM: Record<QuoteSource, string> = {
+  agent: 'your earlier answer in this conversation',
+  user: "the user's earlier message in this conversation",
+  thread: 'earlier in this conversation',
+}
+
 /**
  * Pasted text, fenced so where it starts and stops is never a guess.
  *
@@ -200,6 +210,17 @@ function pastedBlock(file: Attachment): string {
     return '[pasted text, no longer readable — `' + file.path + '`]'
   }
   body = body.replace(/\n$/, '')
+  // A reference is not something to read for the first time: it is the part of
+  // what was already said that the sentence around it is about. So it says
+  // whose words they are, and carries no path — the passage is in the
+  // conversation already, which is the one place it cannot be lost from.
+  if (file.quoted) {
+    return (
+      '<quoted-text name="' + file.handle + '" from="' + QUOTED_FROM[file.quoted] + '">\n' +
+      body +
+      '\n</quoted-text>'
+    )
+  }
   const lines = body.split('\n').length
   return (
     '<pasted-text name="' + file.handle + '" lines="' + lines + '" path="' + file.path + '">\n' +
