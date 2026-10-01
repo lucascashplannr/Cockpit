@@ -4,9 +4,10 @@ import {
   Archive, CirclePlay, CircleStop, Copy, FileCode, FolderOpen, Info, MessageSquarePlus, Pause, Play,
   SlidersHorizontal, Stamp, Trash2,
 } from '@lucide/vue'
+import { attentionIcon } from './agent/attention.js'
 import {
-  adoptTopic, askDeleteTopic, client, closeTopic, guard, newConversationOn, openDeclarations,
-  revealLabel, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
+  adoptTopic, askDeleteTopic, client, closeTopic, guard, markThreadUnread, newConversationOn, openDeclarations,
+  readThreadOn, revealLabel, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -36,6 +37,19 @@ const topic = computed(() =>
 const serverRunning = computed(
   () => ws.value?.runtime?.status === 'up' || ws.value?.runtime?.status === 'starting',
 )
+/**
+ * The answer this row has already shown, if it has one — what "Mark as unread"
+ * puts the mark back on. Null while the row is lit, working, or has never had
+ * a conversation, and the item is simply not there.
+ */
+const readThread = computed(() =>
+  ws.value
+    ? readThreadOn({ kind: 'workspace', workspaceId: ws.value.id })
+    : topic.value
+      ? readThreadOn({ kind: 'topic', topicId: topic.value.id })
+      : null,
+)
+
 /** An inferred topic has nowhere to keep a state, so it has no switch and nothing to close. */
 const topicOwned = computed(() => !!topic.value && !topic.value.derived && topic.value.state !== 'closed')
 /** … and the one verb that ends that: the record it never had, written. */
@@ -127,6 +141,9 @@ async function copyPath(path: string) {
       <button @click="act(() => newConversationOn({ kind: 'workspace', workspaceId: ws!.id }))">
         <MessageSquarePlus /> New conversation here
       </button>
+      <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
+        <component :is="attentionIcon('reply')" /> Mark as unread
+      </button>
       <!-- §8 — on the repositories of the project, not on a branch's
            worktree: a declaration belongs to the repository, and every
            worktree of it already runs what the repository declares. -->
@@ -163,6 +180,9 @@ async function copyPath(path: string) {
     <template v-else-if="topic">
       <button @click="act(() => newConversationOn({ kind: 'topic', topicId: topic!.id }))">
         <MessageSquarePlus /> New conversation on this topic
+      </button>
+      <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
+        <component :is="attentionIcon('reply')" /> Mark as unread
       </button>
       <button
         v-if="topicOwned"

@@ -1061,6 +1061,12 @@ interface ThreadMemory {
   pinned: Record<string, string>
   /** session id → the `endedAt` that has been read. */
   read: Record<string, number>
+  /**
+   * session id → put back to unread by hand. A fact of its own rather than a
+   * `read` entry taken away: a conversation older than `since` has no entry to
+   * take, and it is as fair a thing to want to come back to as any other.
+   */
+  unread: Record<string, true>
   /** scopeKey → showing an empty composer here rather than any thread. */
   fresh: Record<string, true>
   /**
@@ -1075,13 +1081,14 @@ interface ThreadMemory {
 export const threads = reactive<ThreadMemory>(readThreads())
 
 function readThreads(): ThreadMemory {
-  const empty: ThreadMemory = { pinned: {}, read: {}, fresh: {}, since: Date.now() }
+  const empty: ThreadMemory = { pinned: {}, read: {}, unread: {}, fresh: {}, since: Date.now() }
   try {
     const raw = JSON.parse(localStorage.getItem(THREADS_KEY) ?? 'null') as Partial<ThreadMemory> | null
     if (!raw || typeof raw !== 'object') return empty
     return {
       pinned: raw.pinned ?? {},
       read: raw.read ?? {},
+      unread: raw.unread ?? {},
       fresh: raw.fresh ?? {},
       since: typeof raw.since === 'number' ? raw.since : empty.since,
     }
@@ -1626,8 +1633,11 @@ export function attentionOf(c: Conversation): Attention {
   if (c.pending?.length) return 'approval'
   if (isBusy(c)) return 'none'
   const at = lastActivityAt(c)
-  if (at < threads.since) return 'none'
-  if ((threads.read[c.id] ?? 0) >= at) return 'none'
+  // Marked by hand outranks both ways of having been read.
+  if (!threads.unread[c.id]) {
+    if (at < threads.since) return 'none'
+    if ((threads.read[c.id] ?? 0) >= at) return 'none'
+  }
   if (c.status === 'failed') return 'failed'
   if (c.denials.length) return 'blocked'
   return 'reply'
@@ -1804,6 +1814,7 @@ export async function deleteConversation(sessionId: string, opts: { letGo?: bool
     if (threads.pinned[key] === sessionId) delete threads.pinned[key]
   }
   delete threads.read[sessionId]
+  delete threads.unread[sessionId]
   saveThreads()
   delete state.transcripts[sessionId]
   delete state.deltas[sessionId]
@@ -2395,8 +2406,31 @@ function wire(files: DraftFile[]): AttachmentInput[] {
 export function markThreadRead(c: Conversation): void {
   if (isBusy(c)) return
   const at = lastActivityAt(c)
-  if ((threads.read[c.id] ?? 0) >= at) return
+  if (!threads.unread[c.id] && (threads.read[c.id] ?? 0) >= at) return
   threads.read[c.id] = at
+  delete threads.unread[c.id]
+  saveThreads()
+}
+
+/**
+ * The thread a row could be put back to unread on: the one opening the row
+ * brings up, once it has answered and been read. That one and no other — the
+ * mark is cleared by showing the thread, so it has to sit on the thread the
+ * row shows, or the row would stay lit with nothing on it left to read.
+ */
+export function readThreadOn(scope: AgentScope): Conversation | null {
+  const c = openThreadFor(scope)
+  if (!c || c.hiddenAt !== null || isBusy(c) || attentionOf(c) !== 'none') return null
+  return c
+}
+
+/**
+ * The way back from "having it on screen is having read it": the answer was
+ * seen, and is not dealt with. It lights everything an unread answer lights,
+ * and goes out the same way — the next time the thread is brought up.
+ */
+export function markThreadUnread(c: Conversation): void {
+  threads.unread[c.id] = true
   saveThreads()
 }
 
