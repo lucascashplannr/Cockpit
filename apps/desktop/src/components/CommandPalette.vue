@@ -15,7 +15,7 @@ import {
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import type { Scored } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, viewKey, openCommits, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, layout, mergeTopic, markResolved, newProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state, toggleList,
+  SHELL_VIEWS, setView, viewKey, openCommits, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, layout, mergeTopic, markResolved, newProject, onProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state, toggleList,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 
@@ -95,7 +95,7 @@ const hereTopic = computed<Topic | null>(() => {
 
 /** A topic standing selected is the narrowest thing selected: the row that
  *  stays active under it is only what the review column shows. */
-const hereRepo = computed<Workspace | null>(() => (selectedTopicId.value ? null : activeWorkspace.value))
+const hereRepo = computed<Workspace | null>(() => (selectedTopicId.value || onProject.value ? null : activeWorkspace.value))
 
 function topicWorkspaces(t: Topic): Workspace[] {
   return state.workspaces.filter((w) => searchable(w) && (w.topicId === t.id || t.workspaceIds.includes(w.id)))
@@ -435,10 +435,13 @@ function buildCommands(lvl: Level): Item[] {
     })
   }
 
+  // The tools of one checkout; on the project there is none to open them on.
+  const single = !onProject.value
+
   if (w) {
-    tab('code', 'Code', FileCode)
-    if (w.git) tab('diff', 'Diff', GitCompareArrows)
-    if (w.git) {
+    if (single) tab('code', 'Code', FileCode)
+    if (single && w.git) tab('diff', 'Diff', GitCompareArrows)
+    if (single && w.git) {
       out.push({
         id: 'tab:commits',
         label: 'Go to Commits',

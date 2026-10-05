@@ -7,7 +7,7 @@ import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
 import {
-  activeAgentScope, activeWorkspace, isBranchProtected, scopeLabel, selectedTopicGroup,
+  activeAgentScope, activeWorkspace, isBranchProtected, onProject, projectScopeWorkspaces, scopeLabel, selectedTopicGroup,
 } from '../core/store.js'
 
 /**
@@ -39,9 +39,11 @@ const w = computed(() => activeWorkspace.value)
  * counts — a true statement about something nobody had asked about, sitting
  * where the answer to "how does this topic stand" belongs.
  */
-const covered = computed(() =>
-  selectedTopicGroup.value?.workspaces ?? (w.value ? [w.value] : []),
-)
+const covered = computed(() => {
+  // §7 — the project: every repository, at its main checkout.
+  if (onProject.value) return projectScopeWorkspaces.value
+  return selectedTopicGroup.value?.workspaces ?? (w.value ? [w.value] : [])
+})
 
 /**
  * The branch is named only when there is exactly one of it. Across a topic
@@ -126,7 +128,7 @@ const label = computed(() => scopeLabel(scope.value))
            because "which branch is this" is still a fair question; only the
            invitation goes. -->
       <BranchMenu
-        v-if="branchName && !w.topicId"
+        v-if="branchName && !w.topicId && !onProject"
         class="br"
         :workspace-id="w.id"
         :branch="branchName"
@@ -135,7 +137,7 @@ const label = computed(() => scopeLabel(scope.value))
         v-else-if="branchName"
         class="br brf"
         :class="{ guarded }"
-        :title="'On ' + branchName + ' — this topic’s branch' + (guarded ? ', protected' : '')"
+        :title="'On ' + branchName + (onProject ? '' : ' — this topic’s branch') + (guarded ? ', protected' : '')"
       >
         <component :is="guarded ? ShieldCheck : GitBranch" class="sm" /><span class="bn">{{ branchName }}</span>
       </span>
@@ -187,7 +189,9 @@ const label = computed(() => scopeLabel(scope.value))
          went to the thing it is about; this bar is about the checkout. -->
     <span class="acts">
       <TopicActions v-if="selectedTopicGroup" :group="selectedTopicGroup" />
-      <WorkspaceActions v-else />
+      <!-- On the project there is no one checkout to start, push or open:
+           the verbs are a repository's, and a row is one click away. -->
+      <WorkspaceActions v-else-if="!onProject" />
 
       <!-- §12 — how the right of the window is divided. It ends the bar
            because it is the only control here that is about the *window*

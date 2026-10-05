@@ -43,8 +43,11 @@
  * 2.14 — `AttachmentInput.quoted`, a passage of the thread referred to. An
  * older core drops the field and hands the engine the passage as a paste:
  * its own words, presented as new material, with nothing to say which.
+ *
+ * 2.15 — `terminal.open` takes a `projectId` in place of a `workspaceId`, for
+ * a shell at the project's root. An older core refuses it: unknown workspace.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 14 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 15 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

@@ -33,9 +33,25 @@ import {
  * every line said twice.
  */
 
-const props = defineProps<{ workspace: Workspace }>()
+/** `wholeProject`: every repository of the project, each run named for where it ran. */
+const props = defineProps<{ workspace: Workspace; wholeProject?: boolean }>()
 
-const history = ref<ProcessLog[]>([])
+/** What the pane speaks for: this checkout, or every one the project holds. */
+const covered = computed<Workspace[]>(() =>
+  props.wholeProject
+    ? state.workspaces.filter((w) => w.projectId === props.workspace.projectId && w.kind !== 'group')
+    : [props.workspace],
+)
+const coveredKey = computed(() => covered.value.map((w) => w.id).join(','))
+const coveredIds = computed(() => new Set(covered.value.map((w) => w.id)))
+
+/** A run's name: across a project, the repository comes first. */
+function tag(wsId: string, label: string): string {
+  if (!props.wholeProject) return label
+  return (state.workspaces.find((w) => w.id === wsId)?.name ?? '?') + ' · ' + label
+}
+
+const history = ref<(ProcessLog & { workspaceId: string })[]>([])
 const body = ref<HTMLElement | null>(null)
 const follow = ref(true)
 /** Which process's runs are shown; null is all of them. */
@@ -45,7 +61,7 @@ const q = ref('')
 type Status = 'running' | 'exited' | 'failed'
 type Tone = '' | 'err' | 'warn'
 interface Line { text: string; tone: Tone; parts: { t: string; url?: string }[] | null }
-interface Run { id: string; label: string; at: number; status: Status; code: number | null; lines: Line[] }
+interface Run { id: string; label: string; proc: string; wsId: string; at: number; status: Status; code: number | null; lines: Line[] }
 
 /** One run's lines, bounded: a pane is read from the bottom. */
 const RUN_LINES = 800
@@ -76,12 +92,12 @@ const runs = computed<Run[]>(() => {
     known.add(h.procId)
     const live = state.procOutput[h.procId]?.text ?? ''
     const st = h.status === 'running' ? statusOf(h.procId, 'running', null) : { status: h.status, code: h.exitCode }
-    out.push({ id: h.procId, label: h.label, at: h.startedAt, ...st, lines: split(h.text + live) })
+    out.push({ id: h.procId, label: tag(h.workspaceId, h.label), proc: h.label, wsId: h.workspaceId, at: h.startedAt, ...st, lines: split(h.text + live) })
   }
   // Started since the history was read: only the live buffer knows of it.
   for (const [id, o] of Object.entries(state.procOutput)) {
-    if (o.workspaceId !== props.workspace.id || known.has(id)) continue
-    out.push({ id, label: o.label, at: o.at, ...statusOf(id, 'running', null), lines: split(o.text) })
+    if (!coveredIds.value.has(o.workspaceId) || known.has(id)) continue
+    out.push({ id, label: tag(o.workspaceId, o.label), proc: o.label, wsId: o.workspaceId, at: o.at, ...statusOf(id, 'running', null), lines: split(o.text) })
   }
   // A finished run with nothing left to say is only noise — a running one
   // is kept, because "web · running" over an empty body is still an answer.
@@ -162,19 +178,21 @@ function stateWord(r: Run): string {
 /** The port a running server is bound to, when the name says which. */
 function portOf(r: Run): number | null {
   if (r.status !== 'running') return null
-  return props.workspace.runtime?.ports.find((p) => p.name === r.label)?.port ?? null
+  return covered.value.find((w) => w.id === r.wsId)?.runtime?.ports.find((p) => p.name === r.proc)?.port ?? null
 }
 
 /* ── loading, following ────────────────────────────────────────────── */
 
 async function load() {
-  const id = props.workspace.id
-  const got = await loadRuntimeLogs(id)
-  if (props.workspace.id === id) history.value = got
+  const key = coveredKey.value
+  const got = await Promise.all(
+    covered.value.map(async (w) => (await loadRuntimeLogs(w.id)).map((l) => ({ ...l, workspaceId: w.id }))),
+  )
+  if (coveredKey.value === key) history.value = got.flat()
 }
 
 watch(
-  () => props.workspace.id,
+  coveredKey,
   () => {
     history.value = []
     only.value = null
@@ -187,20 +205,24 @@ watch(
 // Refreshed on the way in: the other branches are a snapshot and the tab may
 // have been closed while three topics came and went.
 void refreshBoard()
-watch(() => props.workspace.runtime?.status, () => void refreshBoard())
+watch(() => covered.value.map((w) => w.runtime?.status).join(), () => void refreshBoard())
 
-let stop: (() => void) | null = null
+let stops: (() => void)[] = []
 watch(
-  () => props.workspace.id,
-  (id) => {
-    stop?.()
-    stop = onRuntimeLogData(id, () => {
-      if (follow.value) void toBottom()
-    })
+  coveredKey,
+  () => {
+    for (const s of stops) s()
+    stops = covered.value.map((w) =>
+      onRuntimeLogData(w.id, () => {
+        if (follow.value) void toBottom()
+      }),
+    )
   },
   { immediate: true },
 )
-onBeforeUnmount(() => stop?.())
+onBeforeUnmount(() => {
+  for (const s of stops) s()
+})
 
 async function toBottom() {
   await nextTick()
@@ -227,7 +249,7 @@ watch([only, q], () => {
 /* ── the two verbs ─────────────────────────────────────────────────── */
 
 async function clear() {
-  if (!(await clearRuntimeLogs(props.workspace.id))) return
+  for (const w of covered.value) if (!(await clearRuntimeLogs(w.id))) return
   only.value = null
   q.value = ''
   await load()
@@ -245,6 +267,8 @@ async function copy() {
 
 /** This checkout, or another repository of the same topic. */
 function isCurrent(r: ServerBoardRow): boolean {
+  // On the project every row is equally "here", so none is marked.
+  if (props.wholeProject) return false
   if (r.workspaceId === props.workspace.id) return true
   const topic = props.workspace.topicId
   return !!topic && state.workspaces.find((w) => w.id === r.workspaceId)?.topicId === topic
@@ -317,14 +341,15 @@ async function stopRow(id: string) {
 /* ── an empty pane ─────────────────────────────────────────────────── */
 
 /** Nothing declared to run here: no server, no command — say so, and offer the way in. */
-const runnable = computed(() => !!props.workspace.runtime || state.commands.length > 0)
+const runnable = computed(() => covered.value.some((w) => !!w.runtime) || state.commands.length > 0)
 
 function setUp() {
-  openDeclarations(props.workspace.repoName, 'server')
+  openDeclarations(props.wholeProject ? undefined : props.workspace.repoName, 'server')
 }
 
 const canStart = computed(() => {
-  const rt = props.workspace.runtime
+  // One switch per repository, and each has its own on its row's bar.
+  const rt = props.wholeProject ? null : props.workspace.runtime
   return !!rt && rt.status !== 'up' && rt.status !== 'starting'
 })
 
@@ -394,7 +419,7 @@ async function start() {
       <div v-else-if="!shown.length && !runnable" class="empty">
         <Server />
         <strong>Nothing to run here</strong>
-        <span>This repository declares no server and no command yet. Set one up and its output lands here.</span>
+        <span>{{ wholeProject ? 'No repository of this project declares a server or a command yet.' : 'This repository declares no server and no command yet.' }} Set one up and its output lands here.</span>
         <button class="btn" @click="setUp"><Server /> Set up a server</button>
       </div>
       <div v-else-if="!shown.length" class="empty">

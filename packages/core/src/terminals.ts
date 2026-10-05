@@ -2,7 +2,7 @@ import { createRequire } from 'node:module'
 import { EventEmitter } from 'node:events'
 import { newId } from '@cockpit/shared'
 import { loadConfig } from './config.js'
-import { requireWorkspace } from './registry.js'
+import { getProject, requireWorkspace } from './registry.js'
 import { append } from './journal.js'
 
 /**
@@ -48,7 +48,8 @@ termBus.setMaxListeners(200)
 interface Session {
   id: string
   pty: IPty
-  workspaceId: string
+  /** Null for a shell at a project's root: it is in no one checkout. */
+  workspaceId: string | null
   /** Replayed on reconnect, so closing the window does not lose scrollback. */
   scrollback: string[]
 }
@@ -63,11 +64,27 @@ function defaultShell(): string {
   return process.env.SHELL ?? '/bin/zsh'
 }
 
-export function open(workspaceId: string, cols: number, rows: number, shell?: string): string {
+/** Where a shell opens: one checkout, or the root folder of a project. */
+export type TerminalTarget = { workspaceId?: string; projectId?: string }
+
+export function open(target: TerminalTarget, cols: number, rows: number, shell?: string): string {
   const mod = loadPty()
   if (!mod) throw new Error('node-pty unavailable: ' + ptyError)
 
-  const ws = requireWorkspace(workspaceId)
+  // §7 — the project's root is where a project-wide agent's repositories sit
+  // side by side; a shell there is in none of them, so its journal lines
+  // belong to no workspace.
+  let ws: { name: string; path: string }
+  let workspaceId: string | null = null
+  if (target.workspaceId) {
+    const w = requireWorkspace(target.workspaceId)
+    ws = w
+    workspaceId = w.id
+  } else {
+    const project = target.projectId ? getProject(target.projectId) : null
+    if (!project) throw new Error('unknown project: ' + target.projectId)
+    ws = { name: project.name, path: project.root }
+  }
   const id = newId('term_')
   const file = shell ?? defaultShell()
 

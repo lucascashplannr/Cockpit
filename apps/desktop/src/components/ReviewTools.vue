@@ -11,7 +11,7 @@ import CommitsTab from './tabs/CommitsTab.vue'
 import JournalTab from './tabs/JournalTab.vue'
 import OutputTab from './tabs/OutputTab.vue'
 import TerminalTab from './tabs/TerminalTab.vue'
-import { goTo, reviewTools, state } from '../core/store.js'
+import { goTo, onProject, reviewTools, shownReviewTool, state } from '../core/store.js'
 import type { ReviewTool } from '../core/store.js'
 
 /**
@@ -76,7 +76,7 @@ const tools = computed(() =>
         v-for="t in tools"
         :key="t.id"
         class="tool"
-        :class="{ on: state.reviewTool === t.id }"
+        :class="{ on: shownReviewTool === t.id }"
         @click="goTo(t.id)"
       >
         <component :is="t.icon" class="sm" />
@@ -88,14 +88,14 @@ const tools = computed(() =>
 
     <div class="body">
       <!-- The Diff's other reading, in its place: see `diffMode`. -->
-      <CommitsTab v-if="state.reviewTool === 'diff' && state.diffMode === 'commits'" :workspace="workspace" />
-      <DiffTab v-else-if="state.reviewTool === 'diff'" :workspace="workspace" />
-      <MemoryTab v-else-if="state.reviewTool === 'memory'" :workspace="workspace" />
-      <DocsTab v-else-if="state.reviewTool === 'docs'" :workspace="workspace" />
-      <CodeTab v-else-if="state.reviewTool === 'code'" :workspace="workspace" />
-      <OutputTab v-else-if="state.reviewTool === 'output'" :workspace="workspace" />
-      <JournalTab v-else-if="state.reviewTool === 'journal'" :workspace="workspace" />
-      <TerminalTab v-else-if="state.reviewTool === 'terminal'" :workspace="workspace" />
+      <CommitsTab v-if="shownReviewTool === 'diff' && state.diffMode === 'commits'" :workspace="workspace" />
+      <DiffTab v-else-if="shownReviewTool === 'diff'" :workspace="workspace" />
+      <MemoryTab v-else-if="shownReviewTool === 'memory'" :workspace="workspace" />
+      <DocsTab v-else-if="shownReviewTool === 'docs'" :workspace="workspace" />
+      <CodeTab v-else-if="shownReviewTool === 'code'" :workspace="workspace" />
+      <OutputTab v-else-if="shownReviewTool === 'output'" :workspace="workspace" :whole-project="onProject" />
+      <JournalTab v-else-if="shownReviewTool === 'journal'" :workspace="workspace" :whole-project="onProject" />
+      <TerminalTab v-else-if="shownReviewTool === 'terminal'" :workspace="workspace" :whole-project="onProject" />
     </div>
   </div>
 </template>

@@ -997,7 +997,11 @@ export interface Rpc {
   'lease.list': { params: void; result: import('./model.js').LeaseInfo[] }
   'lease.release': { params: { leaseId: string }; result: { ok: true } }
 
-  'terminal.open': { params: { workspaceId: string; cols: number; rows: number; shell?: string }; result: { termId: string } }
+  /** In a checkout — or, given `projectId` instead, at the project's root folder. */
+  'terminal.open': {
+    params: { workspaceId?: string; projectId?: string; cols: number; rows: number; shell?: string }
+    result: { termId: string }
+  }
   'terminal.write': { params: { termId: string; data: string }; result: { ok: true } }
   'terminal.resize': { params: { termId: string; cols: number; rows: number }; result: { ok: true } }
   'terminal.close': { params: { termId: string }; result: { ok: true } }

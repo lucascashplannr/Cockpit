@@ -26,7 +26,7 @@ import TrafficLights from './components/TrafficLights.vue'
 import Splitter from './components/Splitter.vue'
 import {
   LAYOUT_LIMITS, LIST_NARROW, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout, listWide,
-  requestPlan, resetColumnWidth, resetPlaceWidth, saveLayout, savePlaceWidth, setColumnWidth, showsAgent, showsReview, stepAttachment,
+  onProject, requestPlan, resetColumnWidth, resetPlaceWidth, saveLayout, savePlaceWidth, setColumnWidth, showsAgent, showsReview, shownReviewTool, stepAttachment,
   stepView, toggleList,
 } from './core/store.js'
 
@@ -121,7 +121,7 @@ function onKey(e: KeyboardEvent) {
     // Layer by layer back to the conversation, which is the ground state.
     else if (state.historyOpen) state.historyOpen = false
     // The commit graph stands in the Diff's place, so it is one layer above it.
-    else if (state.view !== 'agent' && state.reviewTool === 'diff' && state.diffMode === 'commits') {
+    else if (state.view !== 'agent' && shownReviewTool.value === 'diff' && state.diffMode === 'commits') {
       state.diffMode = 'changes'
     }
     // The ground state is the conversation with the whole width, so this is
@@ -185,7 +185,9 @@ function onKey(e: KeyboardEvent) {
   if (typing) return
 
   const w = activeWorkspace.value
-  if (!w) return
+  // On the project the active row is only an anchor: r, p, o and g would act
+  // on a repository that is not what is selected.
+  if (!w || onProject.value) return
 
   // §3.7 — the same rule the verbs follow: mid-rebase, git refuses both of
   // these, so the keystroke must not fire a plan guaranteed to fail. The

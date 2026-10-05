@@ -39,7 +39,8 @@ import { state } from '../../core/store.js'
  * hundred green "human" labels said only that you use your own cockpit.
  */
 
-const props = defineProps<{ workspace: Workspace }>()
+/** `wholeProject`: "here" is every repository of the project, not this one. */
+const props = defineProps<{ workspace: Workspace; wholeProject?: boolean }>()
 
 type Kind = 'all' | 'git' | 'agent' | 'runtime'
 
@@ -334,11 +335,16 @@ function shape(e: CockpitEvent): Shaped {
 const matcher = computed(() => KINDS.find((k) => k.id === kind.value)!)
 
 /** Scope and subject, before anything is read out of a payload. */
+const here = computed(() => {
+  if (!props.wholeProject) return new Set([props.workspace.id])
+  return new Set(state.workspaces.filter((w) => w.projectId === props.workspace.projectId).map((w) => w.id))
+})
+
 const picked = computed(() => {
   const has = matcher.value.has
   return state.events.filter(
     (e) =>
-      (scope.value === 'all' || e.workspaceId === props.workspace.id || e.workspaceId === null) &&
+      (scope.value === 'all' || e.workspaceId === null || here.value.has(e.workspaceId)) &&
       has(e.type),
   )
 })
@@ -458,7 +464,7 @@ function clear() {
   <div class="journal">
     <div class="bar">
       <div class="seg">
-        <button :class="{ on: scope === 'workspace' }" @click="scope = 'workspace'">here</button>
+        <button :class="{ on: scope === 'workspace' }" @click="scope = 'workspace'">{{ wholeProject ? 'this project' : 'here' }}</button>
         <button :class="{ on: scope === 'all' }" @click="scope = 'all'">everything</button>
       </div>
       <div class="seg">

@@ -8,7 +8,7 @@ import {
 import WorkspaceRow from './WorkspaceRow.vue'
 import ListToggle from './ListToggle.vue'
 import {
-  activeProject, activityFor, collapsedTopics, listWide, openAgentOn, openContextMenu,
+  activeProject, activityFor, collapsedTopics, listWide, onProject, openAgentOn, openContextMenu,
   selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 
@@ -115,7 +115,7 @@ function selectTopic(topicId: string) {
  * it in the list.
  */
 function holdsSelection(ws: { id: string }[]): boolean {
-  return ws.some((x) => x.id === state.activeWorkspaceId)
+  return !onProject.value && ws.some((x) => x.id === state.activeWorkspaceId)
 }
 
 const ATTENTION_TEXT: Record<string, string> = {
@@ -140,9 +140,17 @@ const ATTENTION_TEXT: Record<string, string> = {
          toolbar that does things to it are two jobs, and 68px has room for
          one. -->
     <header v-if="activeProject" class="top">
-      <span v-if="!narrow" class="pname" :title="activeProject.name + '\n' + activeProject.root">
+      <!-- §7 — and a place to stand, as a topic's header is: pressing the
+           name selects the project itself, the same scope the foot's sparkle
+           opens. Navigation, so it leaves the view alone as a row does. -->
+      <button
+        v-if="!narrow"
+        class="pname"
+        :title="activeProject.name + '\n' + activeProject.root + '\nClick to stand on the whole project'"
+        @click="openAgentOn({ kind: 'project', projectId: activeProject.id }, { reveal: false })"
+      >
         {{ activeProject.name }}
-      </span>
+      </button>
       <span v-if="!narrow" class="grow" />
       <ListToggle />
     </header>
@@ -303,6 +311,7 @@ const ATTENTION_TEXT: Record<string, string> = {
       </button>
       <button
         class="add go"
+        :class="{ selected: onProject }"
         title="Ask the agent across the whole project — every repository, on its default branch"
         @click="openAgentOn({ kind: 'project', projectId: activeProject.id })"
       >
@@ -340,6 +349,9 @@ const ATTENTION_TEXT: Record<string, string> = {
 .top button { -webkit-app-region: no-drag; }
 .pname {
   min-width: 0;
+  /* The hit area is the bar's height; the word stays where the span had it. */
+  align-self: stretch;
+  text-align: left;
   line-height: 1;
   font-size: var(--fs-md);
   font-weight: 600;
@@ -383,6 +395,10 @@ const ATTENTION_TEXT: Record<string, string> = {
 .add:hover { background: var(--hover); color: var(--text); }
 /* The one verb here that is not git: it gets the accent that means agent. */
 .add.go:hover { color: var(--agent); background: var(--agent-soft); }
+/* Standing on the project: the foot is where it was selected from, so the foot
+   is what is lit — the list's own selected tint, as a topic's header takes. */
+.add.go.selected { background: var(--selected); color: var(--text); }
+.add.go.selected .lucide { color: var(--agent); }
 .add .lucide { flex: none; margin: 0 1px; }
 
 /* ── the strip (§12, ⌘B) ─────────────────────────────────────────────── */

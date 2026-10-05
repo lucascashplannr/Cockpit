@@ -15,7 +15,8 @@ import { client, guard, onTermData, onTermExit, state, toast } from '../../core/
  * replace it.
  */
 
-const props = defineProps<{ workspace: Workspace }>()
+/** `wholeProject`: the shell opens at the project's root folder, not in this checkout. */
+const props = defineProps<{ workspace: Workspace; wholeProject?: boolean }>()
 
 const host = ref<HTMLElement | null>(null)
 const findInput = ref<HTMLInputElement | null>(null)
@@ -179,7 +180,7 @@ async function boot() {
 
   const res = await guard(() =>
     client.call('terminal.open', {
-      workspaceId: props.workspace.id,
+      ...(props.wholeProject ? { projectId: props.workspace.projectId } : { workspaceId: props.workspace.id }),
       cols: t.cols,
       rows: t.rows,
     }),
@@ -329,7 +330,7 @@ onBeforeUnmount(() => {
   scheme.removeEventListener('change', repaint)
   void teardown()
 })
-watch(() => props.workspace.id, () => void boot())
+watch(() => (props.wholeProject ? 'project:' + props.workspace.projectId : props.workspace.id), () => void boot())
 // After the attribute lands on the root, not with it: `palette()` reads the
 // scheme in force, and reading it in the same tick as the change gets the old
 // one back.

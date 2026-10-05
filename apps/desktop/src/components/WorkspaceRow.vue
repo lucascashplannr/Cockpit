@@ -7,7 +7,7 @@ import {
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import {
-  activeProject, activityFor, openContextMenu, selectedTopicId, selectWorkspace, shortName, state,
+  activeProject, activityFor, onProject, openContextMenu, selectedTopicId, selectWorkspace, shortName, state,
 } from '../core/store.js'
 
 /**
@@ -19,9 +19,9 @@ const props = defineProps<{ workspace: Workspace; compact?: boolean; narrow?: bo
 const w = computed(() => props.workspace)
 // Selecting a topic anchors the panel on one of its rows, so the row id
 // alone would light two things at once. The narrower selection wins: while the
-// topic is what is selected, none of its rows is.
+// topic is what is selected, none of its rows is — and the same on the project.
 const selected = computed(
-  () => w.value.id === state.activeWorkspaceId && !selectedTopicId.value,
+  () => w.value.id === state.activeWorkspaceId && !selectedTopicId.value && !onProject.value,
 )
 
 /** The right-click menu is open on this row: it keeps the hover tint, so you can see what it is about. */

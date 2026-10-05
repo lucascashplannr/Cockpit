@@ -663,8 +663,18 @@ export const projectWorkspaces = computed(() =>
  * folder with no repository, and the strip must not draw a tool that would
  * open on nothing.
  */
-export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
+export function reviewToolsFor(w: Workspace | null, wholeProject = false): ReviewTool[] {
   if (!w) return []
+  // §7 — standing on the project there is no one checkout to read. The Diff
+  // and the Code are each about a single repository, and drawn here they could
+  // only be about the anchor — the first one, which nobody chose. The rest
+  // widen instead: the Output is every repository's, the Journal the
+  // project's, and the Terminal opens at the project's root folder.
+  if (wholeProject) {
+    const ids: ReviewTool[] = ['output', 'journal', 'terminal', 'memory']
+    if (state.docsInfo[w.projectId]) ids.push('docs')
+    return ids
+  }
   const ids: ReviewTool[] = []
   if (w.git) ids.push('diff')
   ids.push('code')
@@ -690,7 +700,18 @@ export function reviewToolsFor(w: Workspace | null): ReviewTool[] {
   return ids
 }
 
-export const reviewTools = computed(() => reviewToolsFor(activeWorkspace.value))
+export const reviewTools = computed(() => reviewToolsFor(activeWorkspace.value, onProject.value))
+
+/**
+ * The tool on screen. `state.reviewTool` is what was last asked for, and the
+ * place you are standing on may not have it — the Diff, on a project or on a
+ * folder with no repository — so the strip and the body read this instead and
+ * fall to the first tool there is. The request itself is left alone: back on a
+ * checkout, it is the Diff again.
+ */
+export const shownReviewTool = computed<ReviewTool | null>(() =>
+  reviewTools.value.includes(state.reviewTool) ? state.reviewTool : (reviewTools.value[0] ?? null),
+)
 
 /**
  * What ⌘1..⌘n land on, and the only list they read — so a number can never
@@ -966,6 +987,23 @@ watch(
 export const selectedTopicId = computed(() =>
   state.agentScope?.kind === 'topic' ? state.agentScope.topicId : null,
 )
+
+/**
+ * §7 — the project itself is what is selected: the widest scope, opened from
+ * the list's foot. Like a topic, it anchors the panel on one of its rows
+ * without that row being what you are on — so no row is lit, and nothing that
+ * speaks for a single checkout (its branch, its verbs, its diff) is drawn.
+ */
+export const onProject = computed(
+  () => state.agentScope?.kind === 'project' && state.agentScope.projectId === state.activeProjectId,
+)
+
+/** The checkouts a project-wide agent runs in — `resolveScope` in the core, mirrored. */
+export const projectScopeWorkspaces = computed<Workspace[]>(() => {
+  const all = projectWorkspaces.value.filter((w) => w.kind !== 'group')
+  const mains = all.filter((w) => w.kind === 'main')
+  return mains.length ? mains : all
+})
 
 /** §7 — what a scope would do, before it is asked to do it. */
 export async function previewScope(scope: AgentScope): Promise<AgentScopePreview | null> {
@@ -3188,12 +3226,14 @@ export function selectWorkspace(id: string): void {
  *
  * Not `selectWorkspace`: that drops a topic standing selected, and opening a
  * file in one of the topic's own repositories is still working on the topic.
- * A scope the file falls outside of is dropped, as a click on the row would.
+ * A scope the file falls outside of is dropped, as a click on the row would —
+ * and so is the project's: it has no Code tool to open the file in, so asking
+ * for a file from there is going to that file's repository.
  */
 export function openFileAt(workspaceId: string, path: string, line: number | null = null): void {
   const w = state.workspaces.find((x) => x.id === workspaceId)
   if (!w) return
-  if (state.agentScope && !scopeCovers(state.agentScope, w)) state.agentScope = null
+  if (state.agentScope && (state.agentScope.kind === 'project' || !scopeCovers(state.agentScope, w))) state.agentScope = null
   if (w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
   if (state.activeWorkspaceId !== w.id) {
     state.activeWorkspaceId = w.id
