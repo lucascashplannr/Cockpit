@@ -4,6 +4,7 @@ import { newId } from '@cockpit/shared'
 import { loadConfig } from './config.js'
 import { getProject, requireWorkspace } from './registry.js'
 import { append } from './journal.js'
+import { integrationEnv, recorder, scan } from './terminalHistory.js'
 
 /**
  * §2 — "Il en embarque un, indispensable comme porte de sortie. Il ne remplace
@@ -76,14 +77,17 @@ export function open(target: TerminalTarget, cols: number, rows: number, shell?:
   // belong to no workspace.
   let ws: { name: string; path: string }
   let workspaceId: string | null = null
+  let projectId: string
   if (target.workspaceId) {
     const w = requireWorkspace(target.workspaceId)
     ws = w
     workspaceId = w.id
+    projectId = w.projectId
   } else {
     const project = target.projectId ? getProject(target.projectId) : null
     if (!project) throw new Error('unknown project: ' + target.projectId)
     ws = { name: project.name, path: project.root }
+    projectId = project.id
   }
   const id = newId('term_')
   const file = shell ?? defaultShell()
@@ -94,13 +98,15 @@ export function open(target: TerminalTarget, cols: number, rows: number, shell?:
     cols,
     rows,
     cwd: ws.path,
-    env: { ...process.env, COCKPIT_WORKSPACE: ws.name, TERM: 'xterm-256color' },
+    env: { ...process.env, ...integrationEnv(file, process.env), COCKPIT_WORKSPACE: ws.name, TERM: 'xterm-256color' },
   })
+  const history = recorder(projectId, workspaceId)
 
   const session: Session = { id, pty: p, workspaceId, scrollback: [] }
   sessions.set(id, session)
 
   p.onData((data) => {
+    scan(history, data)
     session.scrollback.push(data)
     if (session.scrollback.length > SCROLLBACK_MAX) session.scrollback.shift()
     termBus.emit('data', { termId: id, data })

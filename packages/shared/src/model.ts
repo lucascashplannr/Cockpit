@@ -489,6 +489,19 @@ export interface ProcessLog {
   text: string
 }
 
+/** A command run in the terminal tab, as the project's history holds it. */
+export interface TerminalCommand {
+  command: string
+  /** Its latest run. */
+  ts: number
+  /** How that run ended; null while it runs, or when the shell died under it. */
+  exitCode: number | null
+  /** Where that run was; null for a shell at the project's root. */
+  workspaceId: string | null
+  /** How many times it was run. */
+  count: number
+}
+
 /**
  * §8 — the answer to "start this", after it has actually been tried.
  *

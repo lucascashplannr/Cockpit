@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { ChevronDown, ChevronUp, Copy, Eraser, RotateCcw, Search, X } from '@lucide/vue'
+import { ChevronDown, ChevronUp, Copy, Eraser, History, RotateCcw, Search, X } from '@lucide/vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import type { Workspace } from '@cockpit/shared'
+import type { TerminalCommand, Workspace } from '@cockpit/shared'
 import { client, guard, onTermData, onTermExit, state, toast } from '../../core/store.js'
 
 /**
@@ -120,6 +120,11 @@ function onKey(e: KeyboardEvent): boolean {
   if (!meta || e.altKey) return true
   if (e.key.toLowerCase() === 'f') {
     if (e.type === 'keydown') openFind()
+    e.preventDefault()
+    return false
+  }
+  if (e.key.toLowerCase() === 'y' && !e.shiftKey) {
+    if (e.type === 'keydown') void openHistory()
     e.preventDefault()
     return false
   }
@@ -309,6 +314,111 @@ function onFindKey(e: KeyboardEvent) {
 
 watch(q, () => find(1, true))
 
+/* ── the history ───────────────────────────────────────────────────── */
+
+/**
+ * What was run in this project's terminals, whichever shell ran it and
+ * whenever. Find searches what is on the screen; this is for what is not
+ * there any more — cleared, restarted over, or typed last week. The core
+ * keeps it (the shell reports each line as it runs it), so it is read when
+ * the panel opens and on every change of the query, not held here.
+ */
+const historyOpen = ref(false)
+const historyInput = ref<HTMLInputElement | null>(null)
+const historyList = ref<HTMLElement | null>(null)
+const hq = ref('')
+const commands = ref<TerminalCommand[]>([])
+const picked = ref(0)
+/** Answers arrive in the order they were asked only by luck; the last asked wins. */
+let asked = 0
+
+async function loadHistory() {
+  const mine = ++asked
+  const rows = await client
+    .call('terminal.history', { projectId: props.workspace.projectId, q: hq.value || undefined })
+    .catch(() => [] as TerminalCommand[])
+  if (mine !== asked) return
+  commands.value = rows
+  picked.value = 0
+}
+
+async function openHistory() {
+  if (historyOpen.value) {
+    historyInput.value?.focus()
+    return
+  }
+  hq.value = ''
+  historyOpen.value = true
+  void nextTick(() => historyInput.value?.focus())
+  await loadHistory()
+}
+
+function closeHistory() {
+  historyOpen.value = false
+  term.value?.focus()
+}
+
+function toggleHistory() {
+  if (historyOpen.value) closeHistory()
+  else void openHistory()
+}
+
+/**
+ * Onto the prompt, and — only when asked — run. Pasted rather than written:
+ * a command of several lines sent raw would run its first line on the way in,
+ * and a paste is what the shell knows how to hold until Enter.
+ */
+function use(c: TerminalCommand, run: boolean) {
+  closeHistory()
+  if (exited.value) return
+  term.value?.paste(c.command)
+  if (run) send('\r')
+}
+
+async function forget(c: TerminalCommand) {
+  await client.call('terminal.forget', { projectId: props.workspace.projectId, command: c.command }).catch(() => undefined)
+  const at = picked.value
+  await loadHistory()
+  picked.value = Math.min(at, Math.max(0, commands.value.length - 1))
+  historyInput.value?.focus()
+}
+
+function onHistoryKey(e: KeyboardEvent) {
+  const n = commands.value.length
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    if (!n) return
+    picked.value = (picked.value + (e.key === 'ArrowDown' ? 1 : -1) + n) % n
+    void nextTick(() => historyList.value?.querySelector('.cmd.on')?.scrollIntoView({ block: 'nearest' }))
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    const c = commands.value[picked.value]
+    if (c) use(c, e.metaKey || e.ctrlKey)
+  } else if (e.key === 'Escape') {
+    // As in Find: done with the history, not done with the terminal.
+    e.preventDefault()
+    e.stopPropagation()
+    closeHistory()
+  }
+}
+
+watch(hq, () => void loadHistory())
+
+/** Where a run was, when the history spans more than the checkout in front of you. */
+function place(c: TerminalCommand): string {
+  if (!c.workspaceId || (!props.wholeProject && c.workspaceId === props.workspace.id)) return ''
+  return state.workspaces.find((w) => w.id === c.workspaceId)?.name ?? ''
+}
+
+function ago(ts: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  if (s < 60) return 'now'
+  if (s < 3600) return Math.floor(s / 60) + 'm'
+  if (s < 86400) return Math.floor(s / 3600) + 'h'
+  if (s < 86400 * 30) return Math.floor(s / 86400) + 'd'
+  return new Date(ts).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+}
+
 /**
  * The appearance changing repaints the shell in place.
  *
@@ -330,7 +440,10 @@ onBeforeUnmount(() => {
   scheme.removeEventListener('change', repaint)
   void teardown()
 })
-watch(() => (props.wholeProject ? 'project:' + props.workspace.projectId : props.workspace.id), () => void boot())
+watch(() => (props.wholeProject ? 'project:' + props.workspace.projectId : props.workspace.id), () => {
+  historyOpen.value = false
+  void boot()
+})
 // After the attribute lands on the root, not with it: `palette()` reads the
 // scheme in force, and reading it in the same tick as the change gets the old
 // one back.
@@ -359,6 +472,14 @@ watch(() => state.theme, () => void nextTick(repaint))
         </template>
       </label>
       <span class="tools">
+        <button
+          class="icon-btn"
+          :class="{ on: historyOpen }"
+          :title="isMac ? 'History  ⌘Y' : 'History'"
+          @click="toggleHistory"
+        >
+          <History class="sm" />
+        </button>
         <button class="icon-btn" title="Copy the selection, or everything" :disabled="!term" @click="copy">
           <Copy class="sm" />
         </button>
@@ -373,6 +494,49 @@ watch(() => state.theme, () => void nextTick(repaint))
     <div class="wrap">
       <div v-if="error" class="empty"><strong>Terminal unavailable</strong><span>{{ error }}</span></div>
       <div ref="host" class="term" />
+      <div v-if="historyOpen" class="history">
+        <label class="find wide">
+          <Search class="sm" />
+          <input
+            ref="historyInput"
+            v-model="hq"
+            placeholder="Search the commands run in this project"
+            spellcheck="false"
+            @keydown="onHistoryKey"
+          />
+          <button class="wipe" title="Close  Esc" @click="closeHistory"><X /></button>
+        </label>
+        <div v-if="commands.length" ref="historyList" class="cmds">
+          <div
+            v-for="(c, i) in commands"
+            :key="c.command"
+            class="cmd"
+            role="button"
+            :class="{ on: i === picked, failed: !!c.exitCode }"
+            :title="c.command"
+            @mousemove="picked = i"
+            @click="use(c, $event.metaKey || $event.ctrlKey)"
+          >
+            <span class="line">{{ c.command.replace(/\s*\n\s*/g, ' ⏎ ') }}</span>
+            <span v-if="place(c)" class="meta place">{{ place(c) }}</span>
+            <span v-if="c.exitCode" class="meta code num" :title="'Last run ended with ' + c.exitCode">{{ c.exitCode }}</span>
+            <span v-if="c.count > 1" class="meta num" :title="'Run ' + c.count + ' times'">×{{ c.count }}</span>
+            <span class="meta num when">{{ ago(c.ts) }}</span>
+            <button class="wipe" title="Forget this command" @click.stop="forget(c)"><X /></button>
+          </div>
+        </div>
+        <div v-else class="empty">
+          <template v-if="hq"><strong>No command matches</strong></template>
+          <template v-else>
+            <strong>Nothing run here yet</strong>
+            <span>Every command run in this project's terminals is kept here, across restarts and Clear.</span>
+          </template>
+        </div>
+        <div v-if="commands.length" class="keys">
+          <span><kbd>↵</kbd> to the prompt</span>
+          <span><kbd>{{ isMac ? '⌘' : 'Ctrl' }}↵</kbd> run</span>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -443,7 +607,62 @@ watch(() => state.theme, () => void nextTick(repaint))
 .wipe .lucide { width: 12px; height: 12px; }
 .tools { display: flex; gap: 2px; flex: none; margin-left: auto; }
 
-.wrap { flex: 1; min-height: 0; padding: 14px 8px 8px 16px; }
+.wrap { position: relative; flex: 1; min-height: 0; padding: 14px 8px 8px 16px; }
+
+/*
+ * The history, over the shell rather than beside it: the pane is as narrow as
+ * 360px, and a command is read whole or not at all. The shell keeps running
+ * underneath and is exactly where it was when this closes.
+ */
+.history {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 10px 8px 14px;
+  background: var(--surface-review);
+}
+.find.wide { flex: none; }
+.cmds { flex: 1; min-height: 0; overflow-y: auto; margin-right: -6px; padding-right: 6px; }
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 4px 0 9px;
+  border-radius: var(--radius-sm);
+}
+.cmd.on { background: var(--hover); }
+.cmd .line {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text);
+}
+.cmd .meta { flex: none; font-size: 11px; color: var(--text-dim); }
+.cmd .place { max-width: 30%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cmd .code { color: var(--danger); }
+.cmd .when { min-width: 3ch; text-align: right; }
+/* The time gives its place to the one action a row has, so nothing shifts. */
+.cmd .wipe { display: none; }
+.cmd.on .wipe { display: grid; }
+.cmd.on .when { display: none; }
+.history .empty { flex: 1; }
+.keys {
+  flex: none;
+  display: flex;
+  gap: 14px;
+  padding: 2px 9px 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.keys kbd { font: inherit; color: var(--text-muted); margin-right: 3px; }
 .term { height: 100%; }
 :deep(.xterm) { height: 100%; }
 :deep(.xterm-viewport) { background: transparent !important; }

@@ -295,6 +295,20 @@ function migrate(d: Db): void {
       status     TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS agent_turn_session ON agent_turns(session_id, seq);
+
+    -- What was typed into the terminal tab, as the shell reported it. Not the
+    -- journal: it is the user's own, it is not pruned with it, and a line of
+    -- it can be forgotten. A new table an older core never reads, so no
+    -- version bump.
+    CREATE TABLE IF NOT EXISTS terminal_history (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts           INTEGER NOT NULL,
+      project_id   TEXT NOT NULL,
+      workspace_id TEXT,
+      command      TEXT NOT NULL,
+      exit_code    INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS terminal_history_project ON terminal_history(project_id, id DESC);
   `)
 
   // §16 — "Coût affiché", and §6's whole argument: a conversation whose window

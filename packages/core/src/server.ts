@@ -32,6 +32,7 @@ import * as commit from './commit.js'
 import * as stash from './stash.js'
 import * as discard from './discard.js'
 import * as terminals from './terminals.js'
+import * as terminalHistory from './terminalHistory.js'
 import * as runtime from './runtime/index.js'
 import * as supervisor from './supervisor.js'
 import { portMap } from './ports.js'
@@ -1003,6 +1004,11 @@ const handlers: Record<string, Handler> = {
     terminals.close(p.termId)
     return { ok: true }
   },
+  'terminal.history': (p: { projectId: string; q?: string; limit?: number }) =>
+    terminalHistory.list(p.projectId, p.q, p.limit),
+  'terminal.forget': (p: { projectId: string; command?: string }) => ({
+    removed: terminalHistory.forget(p.projectId, p.command),
+  }),
 }
 
 export function startServer(port = DEFAULT_PORT): WebSocketServer {

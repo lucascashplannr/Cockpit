@@ -1005,6 +1005,13 @@ export interface Rpc {
   'terminal.write': { params: { termId: string; data: string }; result: { ok: true } }
   'terminal.resize': { params: { termId: string; cols: number; rows: number }; result: { ok: true } }
   'terminal.close': { params: { termId: string }; result: { ok: true } }
+  /** What was run in this project's terminals, each command once, latest first. */
+  'terminal.history': {
+    params: { projectId: string; q?: string; limit?: number }
+    result: import('./model.js').TerminalCommand[]
+  }
+  /** One command's every run — or, with none named, the project's whole history. */
+  'terminal.forget': { params: { projectId: string; command?: string }; result: { removed: number } }
 }
 
 export type RpcMethod = keyof Rpc

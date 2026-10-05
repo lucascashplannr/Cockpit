@@ -46,8 +46,11 @@
  *
  * 2.15 — `terminal.open` takes a `projectId` in place of a `workspaceId`, for
  * a shell at the project's root. An older core refuses it: unknown workspace.
+ *
+ * 2.16 — `terminal.history` and `terminal.forget`. An older core also records
+ * nothing: the shell it opens is not asked what it runs.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 15 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 16 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major
