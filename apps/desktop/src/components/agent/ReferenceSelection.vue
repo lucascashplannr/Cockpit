@@ -232,6 +232,8 @@ onBeforeUnmount(() => props.root?.removeEventListener('scroll', read))
   pointer-events: none;
 }
 .refsel.on { visibility: visible; pointer-events: auto; }
-.refsel:hover { background: var(--hover); }
+/* `--hover` is a tint, not a surface: on its own it replaces the panel and the
+   thread shows through. Laid over the panel, it tints it. */
+.refsel:hover { background: linear-gradient(var(--hover), var(--hover)), var(--panel-raised); }
 .ic { width: 13px; height: 13px; flex: none; color: var(--text-muted); }
 </style>
