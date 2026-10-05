@@ -447,4 +447,23 @@ watch(() => state.theme, () => void nextTick(repaint))
 .term { height: 100%; }
 :deep(.xterm) { height: 100%; }
 :deep(.xterm-viewport) { background: transparent !important; }
+
+/*
+ * The cursor, trimmed to the text. xterm paints it the full height of the
+ * cell, and the cell is 1.45 lines tall: the block stood well clear of the
+ * letters either side of it. Clipped rather than resized, so the rows keep
+ * their leading and the blink (which animates the background) is untouched.
+ */
+.term { --cursor-top: 3px; --cursor-bottom: 5px; }
+.term :deep(.xterm-rows .xterm-cursor) { clip-path: inset(var(--cursor-top) 0 var(--cursor-bottom)); }
+/* The unfocused outline would lose its top and bottom to the clip: redrawn inside it. */
+.term :deep(.xterm-rows .xterm-cursor.xterm-cursor-outline) {
+  outline: none;
+  background:
+    linear-gradient(var(--accent), var(--accent)) 0 var(--cursor-top) / 100% 1px,
+    linear-gradient(var(--accent), var(--accent)) 0 calc(100% - var(--cursor-bottom)) / 100% 1px,
+    linear-gradient(var(--accent), var(--accent)) 0 0 / 1px 100%,
+    linear-gradient(var(--accent), var(--accent)) 100% 0 / 1px 100%;
+  background-repeat: no-repeat;
+}
 </style>
