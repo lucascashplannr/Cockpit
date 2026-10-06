@@ -708,8 +708,16 @@ export interface LeaseInfo {
 export type AgentScope =
   /** Every worktree the topic spans, with its memory and CONTEXT.md (§6). */
   | { kind: 'topic'; topicId: string }
-  /** Every repository in the project, at its main checkout (§7, C0). */
-  | { kind: 'project'; projectId: string }
+  /**
+   * Every repository in the project, at its main checkout (§7, C0) — or, with
+   * `only`, the ones named and no others: the backend and the service beside
+   * it, with the rest of the project neither handed to the engine nor leased,
+   * so a second conversation can run on what was left out.
+   *
+   * `only` is workspace ids. Absent on a scope being aimed means all of them;
+   * a conversation's own scope always carries the set it was started on.
+   */
+  | { kind: 'project'; projectId: string; only?: string[] }
   /** One checkout — a worktree, or a main, or a folder with no repo at all. */
   | { kind: 'workspace'; workspaceId: string }
   /** One subtree of one checkout, for when the blast radius should be smaller. */

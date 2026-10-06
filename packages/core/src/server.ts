@@ -763,7 +763,9 @@ const handlers: Record<string, Handler> = {
 
     const res = await agents.startAgent({
       engine: p.engine,
-      scope: requested,
+      // A project conversation keeps the set it resolved to, narrowed or not:
+      // that is what it holds for as long as it lives.
+      scope: requested.kind === 'project' ? { ...requested, only: r.workspaces.map((w) => w.id) } : requested,
       workspaceIds: r.workspaces.map((w) => w.id),
       paths: r.paths,
       prompt: p.prompt,

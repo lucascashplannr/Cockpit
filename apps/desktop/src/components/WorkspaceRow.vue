@@ -7,7 +7,8 @@ import {
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import {
-  activeProject, activityFor, onProject, openContextMenu, selectedTopicId, selectWorkspace, shortName, state,
+  activeProject, activityFor, onProject, openContextMenu, pickRepo, projectNarrowing, selectedTopicId, selectWorkspace,
+  shortName, state,
 } from '../core/store.js'
 
 /**
@@ -23,6 +24,22 @@ const w = computed(() => props.workspace)
 const selected = computed(
   () => w.value.id === state.activeWorkspaceId && !selectedTopicId.value && !onProject.value,
 )
+
+/* ── §7 — the project, narrowed ───────────────────────────────────────────
+ * Standing on the project, this row is one of the repositories a conversation
+ * there runs in — or one that was left out. The ones that are in are lit, and
+ * a ⌘-click puts this one in or takes it out, as it does in any list that
+ * holds more than one selection.
+ */
+const lit = computed(() => {
+  const n = projectNarrowing.value
+  return !!n && n.every.some((x) => x.id === w.value.id) && n.picked.includes(w.value.id)
+})
+
+function press(e: MouseEvent): void {
+  if (e.metaKey) pickRepo(w.value.id)
+  else selectWorkspace(w.value.id)
+}
 
 /** The right-click menu is open on this row: it keeps the hover tint, so you can see what it is about. */
 const menued = computed(
@@ -135,9 +152,9 @@ const lead = computed(() => {
 <template>
   <button
     class="row"
-    :class="{ selected, compact, menued, narrow }"
+    :class="{ selected, compact, menued, narrow, lit }"
     :title="narrow ? tip : undefined"
-    @click="selectWorkspace(w.id)"
+    @click="press"
     @contextmenu.prevent="openContextMenu($event, { kind: 'workspace', id: w.id })"
   >
     <!-- The row's one icon, and it says the most urgent true thing: a hand
@@ -225,6 +242,11 @@ const lead = computed(() => {
    accent, and a name that already gains weight, so it was a fourth voice
    saying a thing three others had said. */
 .row.selected { background: var(--selected); color: var(--text); }
+
+/* In the project's scope: the list's own selected tint, on every row that is
+   in rather than on the one you stand on. */
+.row.lit { background: var(--selected); color: var(--text); }
+.row.lit .kind { color: var(--accent); }
 
 .kind { color: var(--text-dim); display: flex; flex: none; }
 /* One width whatever it holds, so the name does not step sideways when an

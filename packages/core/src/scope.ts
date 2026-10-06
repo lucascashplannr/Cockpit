@@ -61,10 +61,16 @@ export function resolveScope(scope: AgentScope): ResolvedScope {
       // A project with no main checkout at all (every repo opened as a
       // worktree) still has somewhere to run: the workspaces it does have.
       const mains = all.filter((w) => w.kind === 'main')
-      const workspaces = mains.length ? mains : all
+      const every = mains.length ? mains : all
+      // Narrowed to some of them. Ids that are not one of the project's own
+      // checkouts are dropped rather than trusted — `only` narrows a project,
+      // it is not a second way of naming paths — and a set that names none of
+      // them resolves to nothing, which `agent.start` refuses by name.
+      const workspaces = scope.only ? every.filter((w) => scope.only!.includes(w.id)) : every
+      const narrowed = workspaces.length < every.length
       return {
         scope,
-        label: p.name,
+        label: narrowed ? p.name + ' (' + workspaces.map((w) => w.name).join(', ') + ')' : p.name,
         workspaces,
         paths: workspaces.map((w) => w.path),
         topicId: null,

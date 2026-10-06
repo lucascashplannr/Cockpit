@@ -7,7 +7,8 @@ import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
 import {
-  activeAgentScope, activeWorkspace, isBranchProtected, onProject, projectScopeWorkspaces, scopeLabel, selectedTopicGroup,
+  activeAgentScope, activeWorkspace, isBranchProtected, onProject, projectNarrowing, projectScopeWorkspaces, scopeLabel,
+  selectedTopicGroup,
 } from '../core/store.js'
 
 /**
@@ -80,7 +81,19 @@ const branchName = computed(() =>
  * read by nobody as that. A shield now means one thing, the handrail you put
  * up, and it sits on the word it is about.
  */
-const guarded = computed(() => !!branchName.value && isBranchProtected(w.value, branchName.value))
+const guarded = computed(
+  () =>
+    !!branchName.value &&
+    // On the project the branch named is the one repository it was narrowed
+    // to, which need not be the row the panel happens to be anchored on.
+    isBranchProtected(onProject.value ? (covered.value[0] ?? w.value) : w.value, branchName.value),
+)
+
+/* §7 — the project, narrowed to some of its repositories: picked by ⌘-click
+ * in the list or from the composer, and counted here because it is what the
+ * word to the left now stands for. */
+const narrowing = computed(() => projectNarrowing.value)
+const coveredNames = computed(() => covered.value.map((x) => x.name).join(', '))
 
 /* ── what the bar is speaking for ─────────────────────────────────────────
  *
@@ -155,7 +168,15 @@ const label = computed(() => scopeLabel(scope.value))
     <span class="stats">
       <!-- How many repositories the word to the left stands for. -->
       <span
-        v-if="covered.length > 1"
+        v-if="narrowing?.narrowed"
+        class="stat num"
+        :title="'Narrowed to ' + coveredNames + ' — ' + (narrowing.every.length - covered.length) + ' left out'"
+      >
+        <Layers class="sm si" />
+        <span class="v">{{ covered.length }} of {{ narrowing.every.length }}</span>
+      </span>
+      <span
+        v-else-if="covered.length > 1"
         class="stat num"
         :title="covered.length + ' repositories in this scope'"
       >

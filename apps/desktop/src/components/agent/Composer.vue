@@ -12,6 +12,7 @@ import type { AgentCommand, AgentScope, Conversation, PermissionMode, QuoteSourc
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
+import RepoPicker from './RepoPicker.vue'
 import ContextMeter from './ContextMeter.vue'
 import EffortSlider from './EffortSlider.vue'
 import ModelPicker from './ModelPicker.vue'
@@ -922,6 +923,10 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
         <Paperclip class="xs" />
       </button>
       <input ref="picker" class="hidden" type="file" multiple @change="picked" />
+      <!-- §7 — on a project, which of its repositories it runs in. Beside the
+           clip, with the other glyph: both say what the question is given,
+           and a lone icon between two labelled choices read as a stray. -->
+      <RepoPicker v-if="scope?.kind === 'project'" />
 
       <!-- Engine first: it decides what every control after it means. -->
       <Picker

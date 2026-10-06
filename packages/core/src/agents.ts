@@ -1086,13 +1086,25 @@ function scopeId(scope: AgentScope): string {
   }
 }
 
+function idList(raw: unknown): string[] {
+  try {
+    const v: unknown = JSON.parse(String(raw ?? '[]'))
+    return Array.isArray(v) ? v.map(String) : []
+  } catch {
+    return []
+  }
+}
+
 function readScope(r: Record<string, unknown>): AgentScope {
   const id = String(r.scope_id ?? '')
   switch (String(r.scope_kind ?? 'workspace')) {
     case 'topic':
       return { kind: 'topic', topicId: id }
     case 'project':
-      return { kind: 'project', projectId: id }
+      // What it was started on is what it runs on for good — a resume goes
+      // back into the same paths — so the set is read off the row's own
+      // checkouts rather than kept twice.
+      return { kind: 'project', projectId: id, only: idList(r.workspace_ids) }
     case 'folder':
       return { kind: 'folder', workspaceId: id, subpath: String(r.scope_subpath ?? '') }
     default:

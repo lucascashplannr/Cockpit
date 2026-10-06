@@ -264,6 +264,13 @@ export const state = reactive({
    */
   agentScope: null as AgentScope | null,
   /**
+   * §7 — the project narrowed to some of its repositories, by project id: what
+   * the next conversation opened on it will be started on. Absent means all of
+   * them. Held for the session only, as the view of a place is — a narrowing
+   * remembered from last week is a project that quietly is not one.
+   */
+  projectOnly: {} as Record<string, string[]>,
+  /**
    * What is being written, per conversation.
    *
    * One draft for the whole window meant a half-typed question followed you
@@ -840,7 +847,9 @@ export function openAgentOn(scope: AgentScope, opts: { reveal?: boolean } = {}):
     state.activeWorkspaceId = w.id
     state.activeProjectId = w.projectId
   }
-  state.agentScope = scope
+  // Which of its repositories is not part of where you are standing: it is
+  // read off the open conversation, or off `projectOnly` (activeAgentScope).
+  state.agentScope = scope.kind === 'project' ? { kind: 'project', projectId: scope.projectId } : scope
   // And put the thread where it can be seen. Asking the agent something from
   // a row while the review had the whole window used to change the scope of a
   // conversation that was not on screen — the click did exactly what it said
@@ -921,7 +930,7 @@ export const activeAgentScope = computed<AgentScope | null>(() => {
         : chosen.kind === 'project'
           ? state.projects.some((p) => p.id === chosen.projectId)
           : state.workspaces.some((x) => x.id === chosen.workspaceId)
-    if (stillThere) return chosen
+    if (stillThere) return chosen.kind === 'project' ? projectScopeOf(chosen.projectId) : chosen
   }
   return w ? { kind: 'workspace', workspaceId: w.id } : null
 })
@@ -998,12 +1007,131 @@ export const onProject = computed(
   () => state.agentScope?.kind === 'project' && state.agentScope.projectId === state.activeProjectId,
 )
 
-/** The checkouts a project-wide agent runs in — `resolveScope` in the core, mirrored. */
-export const projectScopeWorkspaces = computed<Workspace[]>(() => {
-  const all = projectWorkspaces.value.filter((w) => w.kind !== 'group')
+/** The checkouts a project-wide agent can run in — `resolveScope` in the core, mirrored. */
+function projectCheckouts(projectId: string): Workspace[] {
+  const all = state.workspaces.filter((w) => w.projectId === projectId && w.kind !== 'group')
   const mains = all.filter((w) => w.kind === 'main')
   return mains.length ? mains : all
+}
+
+/**
+ * §7 — which of a project's repositories a conversation on it is on.
+ *
+ * Two answers, and which one applies is not a choice. With a conversation on
+ * screen it is that conversation's own set: what the engine was handed at
+ * launch, and what it will be handed again on every resume, so it is a fact
+ * and is drawn as one (`frozen`). On an empty composer it is whatever has been
+ * picked for the next one.
+ *
+ * `only` is absent when that comes to every repository there is — the whole
+ * project is the project, not a narrowing that happens to list all of it.
+ */
+function projectOnlyFor(projectId: string): { only: string[] | undefined; frozen: boolean } {
+  const every = projectCheckouts(projectId).map((w) => w.id)
+  const thread = openThreadFor({ kind: 'project', projectId })
+  const raw = thread ? thread.workspaceIds : state.projectOnly[projectId]
+  const kept = raw ? every.filter((id) => raw.includes(id)) : every
+  return { only: kept.length && kept.length < every.length ? kept : undefined, frozen: !!thread }
+}
+
+/**
+ * The project's scope as it stands, narrowing included. The same object for as
+ * long as it says the same thing: it is watched (the preview is re-read when
+ * it changes), and one rebuilt on every keystroke of a streaming answer would
+ * be a round trip to the core per token.
+ */
+let heldProjectScope: Extract<AgentScope, { kind: 'project' }> | null = null
+function projectScopeOf(projectId: string): AgentScope {
+  const { only } = projectOnlyFor(projectId)
+  const held = heldProjectScope
+  if (held && held.projectId === projectId && (held.only ?? []).join() === (only ?? []).join()) return held
+  return (heldProjectScope = only ? { kind: 'project', projectId, only } : { kind: 'project', projectId })
+}
+
+/**
+ * What the list and the composer draw: every repository of the project you are standing on,
+ * which of them are in, and whether that can still be changed.
+ */
+export const projectNarrowing = computed(() => {
+  if (!onProject.value || !state.activeProjectId) return null
+  const every = projectCheckouts(state.activeProjectId)
+  const { only, frozen } = projectOnlyFor(state.activeProjectId)
+  return { projectId: state.activeProjectId, every, picked: only ?? every.map((w) => w.id), narrowed: !!only, frozen }
 })
+
+/** The checkouts a conversation on the project runs in, here and now. */
+export const projectScopeWorkspaces = computed<Workspace[]>(() => {
+  const n = projectNarrowing.value
+  if (n) return n.every.filter((w) => n.picked.includes(w.id))
+  return state.activeProjectId ? projectCheckouts(state.activeProjectId) : []
+})
+
+function setProjectOnly(projectId: string, ids: string[]): void {
+  const every = projectCheckouts(projectId).map((w) => w.id)
+  const next = every.filter((id) => ids.includes(id))
+  if (!next.length || next.length === every.length) delete state.projectOnly[projectId]
+  else state.projectOnly[projectId] = next
+}
+
+/**
+ * One repository in or out of the next conversation on its project.
+ *
+ * Never the last one out: a project conversation on no repository is not a
+ * smaller scope, it is no scope. And never under a conversation that exists —
+ * its paths were fixed when it launched, so that one is drawn as a fact
+ * and this declines it.
+ */
+export function toggleProjectRepo(workspaceId: string): void {
+  const w = state.workspaces.find((x) => x.id === workspaceId)
+  if (!w) return
+  const every = projectCheckouts(w.projectId).map((x) => x.id)
+  if (!every.includes(workspaceId)) return
+  const now = projectOnlyFor(w.projectId)
+  if (now.frozen) return
+  const picked = new Set(now.only ?? every)
+  if (!picked.delete(workspaceId)) picked.add(workspaceId)
+  if (!picked.size) return
+  setProjectOnly(w.projectId, [...picked])
+}
+
+/** Back to every repository — the way out of a narrowing. */
+export function widenProject(projectId: string): void {
+  delete state.projectOnly[projectId]
+}
+
+/**
+ * ⌘-click on a row: this one too.
+ *
+ * From a row, it is that row and this one — the two you pointed at, on the
+ * project they share. On the project already, it adds or drops the one. And
+ * with a conversation on screen it opens an empty composer on this one alone:
+ * that conversation's set cannot move, so pointing somewhere else is asking
+ * for another conversation, beside it.
+ */
+export function pickRepo(workspaceId: string): void {
+  const w = state.workspaces.find((x) => x.id === workspaceId)
+  if (!w) return
+  const every = projectCheckouts(w.projectId).map((x) => x.id)
+  if (!every.includes(workspaceId)) {
+    selectWorkspace(workspaceId)
+    return
+  }
+  const scope: AgentScope = { kind: 'project', projectId: w.projectId }
+  if (state.agentScope?.kind === 'project' && state.agentScope.projectId === w.projectId) {
+    if (!openThreadFor(scope)) {
+      toggleProjectRepo(workspaceId)
+      return
+    }
+    startFresh(scope)
+    setProjectOnly(w.projectId, [workspaceId])
+    return
+  }
+  const from = state.agentScope ? null : activeWorkspace.value
+  const ids = from && from.id !== workspaceId && every.includes(from.id) ? [from.id, workspaceId] : [workspaceId]
+  if (openThreadFor(scope)) startFresh(scope)
+  setProjectOnly(w.projectId, ids)
+  openAgentOn(scope, { reveal: false })
+}
 
 /** §7 — what a scope would do, before it is asked to do it. */
 export async function previewScope(scope: AgentScope): Promise<AgentScopePreview | null> {
@@ -3032,7 +3160,10 @@ function onProtected(ws: Workspace[]): Workspace[] {
 /** What a scope writes into, as far as the window can tell — the core resolves the rest. */
 function scopeCheckouts(scope: AgentScope): Workspace[] {
   if (scope.kind === 'topic') return state.workspaces.filter((w) => w.topicId === scope.topicId && w.kind !== 'group')
-  if (scope.kind === 'project') return state.workspaces.filter((w) => w.projectId === scope.projectId && w.kind === 'main')
+  if (scope.kind === 'project') {
+    const every = projectCheckouts(scope.projectId)
+    return scope.only ? every.filter((w) => scope.only!.includes(w.id)) : every
+  }
   const w = state.workspaces.find((x) => x.id === scope.workspaceId)
   return w ? [w] : []
 }
