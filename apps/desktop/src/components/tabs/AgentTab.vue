@@ -1456,7 +1456,7 @@ function ago(ts: number): string {
                   @click="copy('q' + x.turn.id, asked(x.turn))"
                 >
                   <Check v-if="copied === 'q' + x.turn.id" class="sm" />
-                  <Copy v-else class="sm" />
+                  <Copy v-else class="sm cp" />
                 </button>
                 <!-- Marks, not sentences. "Undo from here" was the only worded
                      button in a thread, and a row that says one thing in words
@@ -1640,7 +1640,7 @@ function ago(ts: number): string {
                 @click="copy('a' + x.turn.id, answered(x))"
               >
                 <Check v-if="copied === 'a' + x.turn.id" class="sm" />
-                <Copy v-else class="sm" />
+                <Copy v-else class="sm cp" />
               </button>
             </div>
             </div>
@@ -2091,6 +2091,18 @@ function ago(ts: number): string {
 }
 .act:hover { color: var(--text); background: var(--hover); }
 .act .lucide { width: 12px; height: 12px; }
+/* Copy is the one mark here made only of straight edges, and at 12px every one
+   of them falls exactly on a pixel boundary (lucide draws it on even units of
+   24, halved). On a 1x display a 0.95px stroke centred on a boundary is two
+   half-grey pixels — twice as heavy as the arrows beside it. Half a pixel over
+   puts each edge on one pixel, but then it is a hard hairline at full ink next
+   to curves that antialias soft and a little wide: thinner and darker than its
+   row. So it also gets 1.25px of stroke — one full pixel and a faint halo
+   either side, which is what a curve looks like. Only at 1x: on a 2x display
+   the boundary is already a device pixel and the mark was never wrong. */
+@media (max-resolution: 1.5dppx) {
+  .act .lucide.cp { transform: translate(0.5px, 0.5px); stroke-width: 2.5; }
+}
 /* Taken. The app's yes, for the second and a bit the tick is up — and stated
    on the button rather than read off which icon is inside it, because the
    icon set's own class names are not ours to depend on. */
