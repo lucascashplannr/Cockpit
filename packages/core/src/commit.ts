@@ -314,8 +314,93 @@ export async function lastMessage(workspaceId: string): Promise<string | null> {
  * could not attribute a commit nobody looked at.
  */
 
-/** Enough diff to write about; past this, the summary carries the rest. */
-const DRAFT_DIFF_BUDGET = 48_000
+/**
+ * Enough diff to write about; past this, the summary carries the rest. In
+ * characters, across every repository of the commit — about 30k tokens, which
+ * an engine reads in the time it takes to notice the button was pressed.
+ */
+const DRAFT_DIFF_BUDGET = 120_000
+
+/**
+ * Files whose patch says nothing the filename does not. A regenerated lockfile
+ * is thousands of lines and one fact, and it used to arrive first and take the
+ * whole budget with it — the draft was then written from `pnpm-lock.yaml`.
+ */
+const DRAFT_NOISE = [
+  /(^|\/)(pnpm-lock\.yaml|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|bun\.lockb?|Cargo\.lock|composer\.lock|Gemfile\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|Podfile\.lock|flake\.lock|go\.sum)$/,
+  /\.min\.(js|css)$/,
+  /\.(map|snap)$/,
+]
+
+/**
+ * Shares a budget between pieces of unequal size: the small ones are taken
+ * whole and what they leave is split between the large ones. Cutting at the
+ * budget instead gave everything to whichever file git happened to list first.
+ */
+function allot(sizes: number[], budget: number): number[] {
+  const out = new Array<number>(sizes.length).fill(0)
+  const order = sizes.map((_, i) => i).sort((x, y) => sizes[x]! - sizes[y]!)
+  let left = Math.max(0, budget)
+  order.forEach((i, n) => {
+    const take = Math.min(sizes[i]!, Math.floor(left / (order.length - n)))
+    out[i] = take
+    left -= take
+  })
+  return out
+}
+
+/** Whole lines from the start of `text`, as many as fit. */
+function headLines(text: string, room: number): string {
+  if (text.length <= room) return text
+  const cut = text.lastIndexOf('\n', room)
+  return cut > 0 ? text.slice(0, cut) : ''
+}
+
+/**
+ * One file's patch, cut to `room`. The header always stays — it is the path —
+ * and the room is shared between the hunks, so a file changed in five places
+ * shows the start of all five rather than the whole of the first.
+ */
+function fitFile(patch: string, room: number): string {
+  if (patch.length <= room) return patch
+  const at = patch.search(/^@@ /m)
+  if (at < 0) return headLines(patch, room)
+  const header = patch.slice(0, at)
+  const hunks = patch.slice(at).split(/^(?=@@ )/m)
+  const rooms = allot(hunks.map((h) => h.length), room - header.length)
+  let dropped = 0
+  const kept = hunks.map((h, i) => {
+    const part = headLines(h, rooms[i]!)
+    dropped += h.split('\n').length - (part ? part.split('\n').length : 0)
+    return part && !part.endsWith('\n') ? part + '\n' : part
+  })
+  return header + kept.join('') + '[… ' + dropped + ' more changed line(s) of this file not shown]\n'
+}
+
+/**
+ * Fits a set of patches into the budget, file by file. Exported for the same
+ * reason it is a function at all: it is the part that can be wrong without
+ * git or an engine being involved.
+ */
+export function fitPatches(patches: string[], budget: number): { texts: string[]; truncated: boolean } {
+  const files: { repo: number; text: string; noise: boolean }[] = []
+  patches.forEach((patch, repo) => {
+    for (const text of patch.split(/^(?=diff --git )/m)) {
+      if (!text.trim()) continue
+      const path = /^diff --git .* b\/(.+?)"?$/m.exec(text)?.[1] ?? ''
+      const noise = DRAFT_NOISE.some((re) => re.test(path))
+      files.push({ repo, text: noise ? text.slice(0, text.indexOf('\n') + 1) + '[generated — patch left out]\n' : text, noise })
+    }
+  })
+  const rooms = allot(files.map((f) => f.text.length), budget)
+  const texts = patches.map(() => '')
+  let truncated = false
+  files.forEach((f, i) => {
+    if (f.text.length > rooms[i]!) truncated = true
+    texts[f.repo] += fitFile(f.text, rooms[i]!)
+  })
+  return { texts, truncated }
+}
 
 export interface DraftInput extends CommitScope {
   /** What the person already knows and the diff does not say. Optional. */
@@ -336,15 +421,17 @@ export interface DraftResult {
  * as `--stat` plus as much patch as the budget allows. Untracked files are
  * named rather than pasted — a new 2000-line lockfile would eat the budget
  * and say nothing the filename does not.
+ *
+ * The `--stat` is never cut: whatever happens to the patches, every file of
+ * the commit is named with its size, and the draft is told to write from that.
  */
 async function draftContext(
   input: DraftInput,
 ): Promise<{ text: string; repos: string[]; truncated: boolean }> {
   const rows = await preview(input)
-  const parts: string[] = []
+  const heads: string[] = []
+  const patches: string[] = []
   const repos: string[] = []
-  let budget = DRAFT_DIFF_BUDGET
-  let truncated = false
 
   for (const w of resolveTargets(input)) {
     const row = rows.find((r) => r.workspaceId === w.id)
@@ -356,7 +443,7 @@ async function draftContext(
     // committed, not what happens to be lying around.
     const scope = input.all ? ['HEAD'] : ['--cached']
     const [stat, patch, untracked] = await Promise.all([
-      git(w.path, ['diff', ...scope, '--stat'], 20_000),
+      git(w.path, ['diff', ...scope, '--stat=200'], 20_000),
       git(w.path, ['diff', ...scope, '--no-color', '--unified=3'], 30_000),
       input.all
         ? git(w.path, ['ls-files', '--others', '--exclude-standard'], 20_000)
@@ -367,21 +454,16 @@ async function draftContext(
     if (stat.stdout.trim()) head.push(stat.stdout.trim())
     const news = untracked.stdout.split('\n').filter(Boolean)
     if (news.length) head.push('new files: ' + news.join(', '))
-
-    let body = patch.stdout
-    if (body.length > budget) {
-      body = body.slice(0, budget)
-      truncated = true
-    }
-    budget -= body.length
-    parts.push(head.join('\n') + '\n\n' + body)
-    if (budget <= 0) {
-      truncated = truncated || repos.length < rows.filter((r) => r.willCommit).length
-      break
-    }
+    heads.push(head.join('\n'))
+    patches.push(patch.stdout)
   }
 
-  return { text: parts.join('\n\n'), repos, truncated }
+  const fit = fitPatches(patches, DRAFT_DIFF_BUDGET)
+  return {
+    text: heads.map((h, i) => h + '\n\n' + fit.texts[i]).join('\n\n'),
+    repos,
+    truncated: fit.truncated,
+  }
 }
 
 /**
@@ -437,7 +519,11 @@ export async function draftMessage(input: DraftInput): Promise<DraftResult> {
          ...examples.map((s) => '  ' + s)]
       : []),
     ...(hint ? ['', 'What the author says this change is about: ' + hint] : []),
-    ...(ctx.truncated ? ['', 'NOTE: the diff below is truncated; describe what it shows.'] : []),
+    ...(ctx.truncated
+      ? ['', 'NOTE: the diff is too large to show whole. The file list with line counts is complete;',
+         'the larger patches are abridged where marked. Describe the change as a whole, weighing',
+         'every file in the list — not only the ones whose patch you can read.']
+      : []),
     '',
     '--- diff ---',
     ctx.text,

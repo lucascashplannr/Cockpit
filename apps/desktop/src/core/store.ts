@@ -4167,7 +4167,7 @@ export async function draftCommitMessage(
     toast('error', res.detail || 'Draft failed, and the engine did not say why — is the claude CLI signed in?')
     return null
   }
-  if (res.truncated) toast('warn', 'The diff was too large to send whole — read the draft closely.')
+  if (res.truncated) toast('warn', 'The diff was too large to send whole — the largest files were abridged. Read the draft closely.')
   return res.message
 }
 
