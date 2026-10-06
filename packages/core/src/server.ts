@@ -25,6 +25,7 @@ import * as docs from './docs.js'
 import * as leases from './leases.js'
 import * as agents from './agents.js'
 import * as attachments from './attachments.js'
+import * as summary from './summary.js'
 import * as topics from './topics/index.js'
 import * as conflict from './conflict.js'
 import * as seed from './seed.js'
@@ -810,6 +811,7 @@ const handlers: Record<string, Handler> = {
   },
   'agent.attachment': (p: { path: string }) => attachments.readAttachment(p.path),
   'agent.list': () => agents.list(),
+  'agent.summary': (p: { sessionId: string }) => summary.summarize(p.sessionId),
   'agent.handoff': async (p: { sessionId: string }) => {
     const c = agents.get(p.sessionId)
     if (!c) throw new Error('unknown session: ' + p.sessionId)

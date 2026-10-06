@@ -54,8 +54,11 @@
  * `AskUserQuestion`. An older core never offers the tool, so nothing is asked.
  *
  * 2.18 — `agent.memorize`, behind the composer's `/memorize`.
+ *
+ * 2.19 — `agent.summary`, and a `conversation` quote: another conversation of
+ * the project tagged with `@`. An older core has no summary to give.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 18 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 19 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

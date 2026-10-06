@@ -6,7 +6,8 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentAnswers, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, CockpitSettings,
+  AddRepoSource, AgentAnswers, AgentScope, AttachmentInput, BranchRef, Conversation, ConversationSummary, PermissionMode,
+  CockpitSettings,
   CommandRunResult, CommitDetail, CommitGraph, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DeclaredServer,
   DatabasePlan,
@@ -839,6 +840,13 @@ export interface Rpc {
    */
   'agent.attachment': { params: { path: string }; result: string | null }
   'agent.list': { params: void; result: Conversation[] }
+  /**
+   * Another conversation, summarised so it can be tagged into this one with
+   * `@`. A summary and never the transcript: what was wanted, what was done,
+   * what was decided and where it stands. Null when there is no such
+   * conversation, or nothing was said in it.
+   */
+  'agent.summary': { params: { sessionId: string }; result: ConversationSummary | null }
   'agent.stop': { params: { sessionId: string }; result: { ok: true } }
   /**
    * §6 — before `/clear`: one turn in which the agent brings the shared memory

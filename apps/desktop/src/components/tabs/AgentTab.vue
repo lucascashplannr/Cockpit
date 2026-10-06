@@ -21,7 +21,7 @@ import QuestionAsk from '../agent/QuestionAsk.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, agentDraft, agentFiles, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
+  activeAgentScope, agentDraft, agentFiles, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, restoreConversation,
@@ -546,6 +546,8 @@ const canSend = computed(() => {
   // A pasted screenshot on its own is a question. What is refused is an empty
   // turn — no words and nothing attached.
   if (!agentDraft.value.trim() && !agentFiles.value.length) return false
+  // A tagged conversation whose summary has not landed would go as an empty one.
+  if (filesPending.value) return false
   if (busy.value) return false
   if (blocked.value.length) return false
   return continuing.value || !!scope.value

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { FileText } from '@lucide/vue'
+import { FileText, MessageSquare } from '@lucide/vue'
 import type { Attachment } from '@cockpit/shared'
 import { attachmentSrc, attachmentText, loadAttachment, state } from '../../core/store.js'
 
@@ -32,6 +32,7 @@ const props = defineProps<{
 const src = computed(() => attachmentSrc(props.file.path))
 /** A folded paste shows its opening lines, the way a picture shows itself. */
 const text = computed(() => (props.file.pasted ? attachmentText(props.file.path) : ''))
+const conv = computed(() => props.file.quoted === 'conversation')
 const tip = computed(() =>
   text.value ? text.value.slice(0, 600) + (text.value.length > 600 ? '\n…' : '') : props.file.name,
 )
@@ -45,8 +46,13 @@ watch(
 </script>
 
 <template>
-  <li class="tile" :class="{ pic: file.image && src, text: file.pasted && text, quote: file.quoted }" :title="tip">
+  <li class="tile" :class="{ pic: file.image && src, text: file.pasted && text && !conv, quote: file.quoted && !conv }" :title="tip">
     <img v-if="file.image && src" :src="src" :alt="file.name" />
+    <!-- A tagged conversation, as the composer drew it: named, not excerpted. -->
+    <template v-else-if="conv">
+      <MessageSquare class="glyph" />
+      <span class="fname title">{{ file.name }}</span>
+    </template>
     <pre v-else-if="file.pasted && text" class="snip">{{ text.slice(0, 400) }}</pre>
     <template v-else>
       <FileText class="glyph" />
@@ -157,4 +163,5 @@ watch(
   line-height: 1.3;
   word-break: break-all;
 }
+.fname.title { word-break: normal; overflow-wrap: anywhere; }
 </style>

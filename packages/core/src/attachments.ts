@@ -192,6 +192,7 @@ const QUOTED_FROM: Record<QuoteSource, string> = {
   agent: 'your earlier answer in this conversation',
   user: "the user's earlier message in this conversation",
   thread: 'earlier in this conversation',
+  conversation: 'another conversation in this project',
 }
 
 /**
@@ -214,6 +215,19 @@ function pastedBlock(file: Attachment): string {
   // what was already said that the sentence around it is about. So it says
   // whose words they are, and carries no path — the passage is in the
   // conversation already, which is the one place it cannot be lost from.
+  // Another conversation, tagged: neither of the two above. It is new to this
+  // engine, so it keeps its path like a paste — and it is a summary, which has
+  // to be said, or what it leaves out reads as what did not happen.
+  if (file.quoted === 'conversation') {
+    return (
+      '<conversation-summary name="' + file.handle + '" title="' + attr(file.name) +
+      '" path="' + file.path + '">\n' +
+      'The user tagged another conversation from this project. This is a summary of it, ' +
+      'not its transcript: take it as context for what is asked here.\n\n' +
+      body +
+      '\n</conversation-summary>'
+    )
+  }
   if (file.quoted) {
     return (
       '<quoted-text name="' + file.handle + '" from="' + QUOTED_FROM[file.quoted] + '">\n' +
@@ -227,6 +241,11 @@ function pastedBlock(file: Attachment): string {
     body +
     '\n</pasted-text>'
   )
+}
+
+/** A title, safe between the quotes of an attribute. */
+function attr(s: string): string {
+  return s.replace(/[\r\n]+/g, ' ').replace(/"/g, "'").replace(/[<>]/g, '').slice(0, 120)
 }
 
 function suffixFor(items: Attachment[], someWerePlaced: boolean): string {

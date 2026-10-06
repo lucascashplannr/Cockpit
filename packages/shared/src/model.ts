@@ -836,8 +836,24 @@ export interface Attachment {
 /**
  * Who said the passage a reference points at: the agent, in an answer; the
  * person, in a question; or `thread`, when the selection ran across both.
+ *
+ * `conversation` is the one that is not a passage of this thread at all: a
+ * summary of another conversation in the same project, tagged with `@` so
+ * this one starts from where that one got to. The attachment's `name` is that
+ * conversation's title.
  */
-export type QuoteSource = 'agent' | 'user' | 'thread'
+export type QuoteSource = 'agent' | 'user' | 'thread' | 'conversation'
+
+/** What `agent.summary` answers: another conversation, as context for this one. */
+export interface ConversationSummary {
+  title: string
+  summary: string
+  /**
+   * Written by a model from the transcript. False when there was no engine to
+   * write it, and what came back is the transcript's own outline instead.
+   */
+  drafted: boolean
+}
 
 /** The same file on its way in, before the core has anywhere to put it. */
 export interface AttachmentInput {

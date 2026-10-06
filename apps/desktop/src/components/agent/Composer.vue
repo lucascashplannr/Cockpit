@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { BookMarked, CornerDownLeft, FileCode, FileText, Paperclip, Square, SquareSlash, UnfoldVertical, X } from '@lucide/vue'
 import {
-  agentDraft, agentFiles, attachFiles, attachText, chooseMemory, client, dataUrl, detachFile, engineName, guard,
-  isLive, isLongPaste, memoryChoiceFor, memoryLabel, openDraftFiles, placedHandles, saveComposer, state, switchMode,
+  BookMarked, CornerDownLeft, FileCode, FileText, Loader, MessageSquare, Paperclip, Square, SquareSlash, UnfoldVertical, X,
+} from '@lucide/vue'
+import {
+  agentDraft, agentFiles, attachConversation, attachFiles, attachText, chooseMemory, client, dataUrl, detachFile,
+  engineName, guard, isLive, isLongPaste, lastActivityAt, memoryChoiceFor, memoryLabel, openDraftFiles, placedHandles,
+  projectOfConversation, saveComposer, state, switchMode,
 } from '../../core/store.js'
 import {
   AGENT_COMMANDS, ANCHOR_PAD, CLAUDE_MODELS, COMMAND_ENGINES, anchorOf, anchorWritten, splitPrompt,
@@ -255,6 +258,8 @@ interface Row {
   pic?: string
   /** A `/` row: accepting it can run it rather than only write it. */
   command?: AgentCommand
+  /** An `@` row that is a conversation rather than a file: accepting it tags it. */
+  conversation?: Conversation
 }
 
 const fileRows = computed<Row[]>(() =>
@@ -277,6 +282,38 @@ const attachRows = computed<Row[]>(() =>
     pic: f.mediaType.startsWith('image/') ? dataUrl(f) : undefined,
   })),
 )
+
+/**
+ * The other conversations of this project, as things `@` can point at.
+ *
+ * The same sigil as a file, because it is the same sentence — "look at this"
+ * — and the list says which kind each row is. Any scope of the project, not
+ * only this one: the conversation worth tagging is usually the one that
+ * happened somewhere else, on the topic or the repository next door. Latest
+ * first, since the one meant is nearly always the one just left.
+ */
+const conversationRows = computed<Row[]>(() => {
+  const pid = projectId.value
+  if (!pid) return []
+  return state.agents
+    .filter((c) => c.id !== props.session?.id && c.history.length > 0 && projectOfConversation(c) === pid)
+    .sort((a, b) => lastActivityAt(b) - lastActivityAt(a))
+    .map((c) => ({
+      key: 'conv:' + c.id,
+      label: c.title || 'untitled',
+      hint: 'conversation · ' + ago(lastActivityAt(c)),
+      insert: '',
+      conversation: c,
+    }))
+})
+
+function ago(ts: number): string {
+  const m = Math.max(0, Math.round((Date.now() - ts) / 60_000))
+  if (m < 1) return 'now'
+  if (m < 60) return m + 'm ago'
+  if (m < 60 * 24) return Math.round(m / 60) + 'h ago'
+  return Math.round(m / (60 * 24)) + 'd ago'
+}
 
 /* ── / commands ──────────────────────────────────────────────────────────
  *
@@ -307,9 +344,22 @@ const matches = computed<Row[]>(() => {
   if (q !== null) return commandRows.value.filter((r) => r.insert.startsWith(q))
   const m = mention.value
   if (m === null) return []
-  const rows = m.sigil === '#' ? attachRows.value : fileRows.value
-  if (!m.query) return rows.slice(0, 8)
-  return fuzzyFilter(rows, m.query, (r) => (r.hint ?? '') + '/' + r.label, 8).map((s) => s.item)
+  if (m.sigil === '#') {
+    const rows = attachRows.value
+    if (!m.query) return rows.slice(0, 8)
+    return fuzzyFilter(rows, m.query, (r) => (r.hint ?? '') + '/' + r.label, 8).map((s) => s.item)
+  }
+  // Files and conversations in one list, with room kept for each: a few of the
+  // latest conversations lead, so they are findable before a letter is typed,
+  // and neither kind can push the other off the bottom while one is.
+  const convs = conversationRows.value
+  if (!m.query) {
+    const lead = convs.slice(0, 3)
+    return [...lead, ...fileRows.value.slice(0, 8 - lead.length)]
+  }
+  const found = fuzzyFilter(convs, m.query, (r) => r.label, 3).map((s) => s.item)
+  const paths = fuzzyFilter(fileRows.value, m.query, (r) => (r.hint ?? '') + '/' + r.label, 8 - found.length)
+  return [...paths.map((s) => s.item), ...found]
 })
 
 const cursor = ref(0)
@@ -347,6 +397,15 @@ function accept(r: Row | undefined, run = false): void {
   const m = mention.value
   if (!m || !r) return
   const after = agentDraft.value.slice(caret.value)
+  // A conversation is tagged, not named: the `@word` typed to find it gives way
+  // to the chip of what was attached, as a pasted screenshot's does.
+  if (r.conversation) {
+    agentDraft.value = agentDraft.value.slice(0, m.from) + after
+    caret.value = m.from
+    const f = attachConversation(r.conversation)
+    if (f) insertAtCaret(anchorWritten(f.handle))
+    return
+  }
   // An attachment token is written with the blank its chip needs around it; a
   // `@path` is drawn as plain text and wants none.
   const token = m.sigil === '#' ? anchorWritten(r.insert) : m.sigil + r.insert
@@ -671,6 +730,11 @@ function unfold(f: DraftFile): void {
 function head(text = ''): string {
   return text.replace(/^\s*\n/, '').split('\n', 14).join('\n')
 }
+/** How much summary there is, the way a file says its size. */
+function words(text = ''): string {
+  const n = text.split(/\s+/).filter(Boolean).length
+  return n + (n === 1 ? ' word' : ' words')
+}
 function lineCount(text = ''): number {
   return text.replace(/\n$/, '').split('\n').length
 }
@@ -799,6 +863,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
           <!-- An attached picture shows itself: `#` is answered by looking. -->
           <img v-if="m.pic" class="tiny" :src="m.pic" alt="" />
           <SquareSlash v-else-if="m.command" class="xs" />
+          <MessageSquare v-else-if="m.conversation" class="xs" />
           <FileCode v-else class="xs" />
           <span class="path" :class="{ cmd: m.command }">{{ m.label }}</span>
           <span v-if="m.command?.args" class="args">{{ m.command.args }}</span>
@@ -819,24 +884,38 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
           :key="f.id"
           :class="{
             pic: f.mediaType.startsWith('image/'),
-            text: f.pasted,
-            quote: f.quoted,
+            text: f.pasted && f.quoted !== 'conversation',
+            quote: f.quoted && f.quoted !== 'conversation',
+            conv: f.quoted === 'conversation',
+            pending: f.pending,
             loose: !placedHandles.has(f.handle),
           }"
           :title="
-            f.pasted
+            f.pending
+              ? 'Summarising “' + f.name + '” — it goes with the message as a summary, not the whole conversation'
+              : f.pasted
               ? (f.text ?? '').slice(0, 600) + ((f.text ?? '').length > 600 ? '\n…' : '')
               : placedHandles.has(f.handle)
               ? f.name + ' — placed at ' + anchorOf(f.handle) + ' in the message'
               : f.name + ' — about the whole message. Type ' + anchorOf(f.handle) + ' to place it.'
           "
-          @click="open(f)"
+          @click="f.pending || open(f)"
         >
           <!-- The picture itself, not an icon labelled with its name: the whole
                reason for pasting one is that looking is faster than reading. -->
           <img v-if="f.mediaType.startsWith('image/')" :src="dataUrl(f)" :alt="f.name" />
           <!-- Folded text says what it starts with and how much of it there is:
                `paste.txt` would tell two pastes apart by number and nothing else. -->
+          <!-- A tagged conversation is drawn as the file it stands in for: what
+               it is, what it is called, and how much of it there is. While the
+               summary is being written the glyph turns and the last line says
+               so — and the tile opens nothing, there being nothing to read. -->
+          <template v-else-if="f.quoted === 'conversation'">
+            <Loader v-if="f.pending" class="glyph spin" />
+            <MessageSquare v-else class="glyph" />
+            <span class="fname title">{{ f.name }}</span>
+            <span class="fsize">{{ f.pending ? 'Summarising…' : words(f.text) }}</span>
+          </template>
           <template v-else-if="f.pasted">
             <pre class="snip">{{ head(f.text) }}</pre>
             <span class="fsize">{{ lineCount(f.text) }} {{ lineCount(f.text) === 1 ? 'line' : 'lines' }}</span>
@@ -1244,6 +1323,14 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
 /* A reference is prose out of the thread, not a page of code: it wraps, in the
    face it was read in, where a paste keeps its lines and its indentation. */
 .files li.quote .snip { font-family: inherit; font-size: 7.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* A tagged conversation wears the file tile. Its name is a sentence, not a
+   path, so it breaks between words; and while its summary is being written it
+   is not yet a thing to open. */
+.files .fname.title { word-break: normal; overflow-wrap: anywhere; }
+.files li.pending { cursor: progress; border-style: dashed; }
+.files li.pending .fname { color: var(--text-dim); }
+.files li.pending .fsize { color: var(--accent); }
 
 /* Present on every tile, and only legible on the one under the cursor: a strip
    of five ✕ is a row of buttons where a list of files should be. */

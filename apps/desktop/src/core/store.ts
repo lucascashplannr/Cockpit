@@ -2310,6 +2310,8 @@ export interface DraftFile {
   text?: string
   /** A passage of the thread, referred to; see `attachText`. Beside `pasted`. */
   quoted?: QuoteSource
+  /** A tagged conversation whose summary is still being written; see `attachConversation`. */
+  pending?: boolean
 }
 
 /** What the thumbnail's `src` is. Built here so nothing has to be revoked. */
@@ -2500,6 +2502,81 @@ export function attachText(text: string, quoted?: QuoteSource): DraftFile | null
   agentFiles.value = [...agentFiles.value, f]
   return f
 }
+
+/** The project a conversation belongs to, from where it ran or what it was aimed at. */
+export function projectOfConversation(c: Conversation): string | null {
+  for (const id of c.workspaceIds) {
+    const w = state.workspaces.find((x) => x.id === id)
+    if (w) return w.projectId
+  }
+  if (c.scope.kind === 'project') return c.scope.projectId
+  if (c.scope.kind === 'topic') {
+    const topicId = c.scope.topicId
+    return state.topics.find((t) => t.id === topicId)?.projectId ?? null
+  }
+  return null
+}
+
+/**
+ * Another conversation of the project, tagged into this message.
+ *
+ * On the reference's rails — a tile over the box, a chip in the sentence, read
+ * only — because it is the same act aimed further away: "this, here" about
+ * something already said, only said in another thread. What travels is a
+ * summary the core writes, never the transcript.
+ *
+ * The tile and its chip are there at once and the summary lands in them a few
+ * seconds later: the chip has to go in where the sentence is *now*, not where
+ * the caret has wandered to by the time a model has finished reading. Sending
+ * waits for it — see `filesPending`.
+ */
+export function attachConversation(c: Conversation): DraftFile | null {
+  if (agentFiles.value.length >= MAX_FILES) {
+    toast('error', MAX_FILES + ' files is the limit for one turn')
+    return null
+  }
+  const key = activeDraftKey.value
+  const title = c.title || 'untitled'
+  const handle = handleFor(title, agentFiles.value.map((f) => f.handle))
+  const id = 'df_' + Math.random().toString(36).slice(2, 10)
+  agentFiles.value = [
+    ...agentFiles.value,
+    { id, name: title, handle, mediaType: 'text/plain', bytes: 0, data: '', pasted: true, text: '', quoted: 'conversation', pending: true },
+  ]
+  // Found again by id, in the box it was put in: the window may be pointing at
+  // another thread by the time this lands, and the tile may have been removed.
+  const mine = (): DraftFile | undefined => state.attachments[key]?.find((f) => f.id === id)
+  const drop = (): void => {
+    const rest = (state.attachments[key] ?? []).filter((f) => f.id !== id)
+    if (rest.length) state.attachments[key] = rest
+    else delete state.attachments[key]
+  }
+  void client
+    .call('agent.summary', { sessionId: c.id })
+    .then((r) => {
+      const f = mine()
+      if (!f) return
+      if (!r) {
+        drop()
+        toast('error', 'Nothing to summarise in “' + title + '” yet')
+        return
+      }
+      const bytes = new TextEncoder().encode(r.summary)
+      f.text = r.summary
+      f.bytes = bytes.length
+      f.data = base64(bytes.buffer)
+      f.pending = false
+    })
+    .catch((e: unknown) => {
+      if (!mine()) return
+      drop()
+      toast('error', 'Could not summarise “' + title + '” — ' + (e instanceof Error ? e.message : String(e)))
+    })
+  return agentFiles.value.find((f) => f.id === id) ?? null
+}
+
+/** Something attached is not ready to go: a tagged conversation still being summarised. */
+export const filesPending = computed(() => agentFiles.value.some((f) => f.pending))
 
 /** Twelve is the core's ceiling; refusing here says so before the socket does. */
 const MAX_FILES = 12
