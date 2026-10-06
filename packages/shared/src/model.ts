@@ -926,7 +926,51 @@ export interface PermissionRequest {
   description?: string
   /** Why it had to ask rather than just run it. */
   reason?: string
+  /** The call in the thread this is about, when the engine names it. */
+  toolUseId?: string
   askedAt: number
+}
+
+/**
+ * The tool an agent asks a person something with.
+ *
+ * It rides the same channel as a permission — the engine will not go on until
+ * the window answers — but what it wants back is a choice rather than a yes:
+ * the answers go in with the call, keyed by the question they answer.
+ */
+export const QUESTION_TOOL = 'AskUserQuestion'
+
+export interface AgentQuestion {
+  question: string
+  /** A word or two naming what is being decided. */
+  header: string
+  options: { label: string; description: string }[]
+  /** More than one option may be taken. */
+  multiSelect: boolean
+}
+
+/** Each question's answer, by the question's own text. Several choices are joined with `, `. */
+export type AgentAnswers = Record<string, string>
+
+/** The questions in an `AskUserQuestion` call, read defensively: the model wrote them. */
+export function questionsIn(input: Record<string, unknown>): AgentQuestion[] {
+  const raw = input.questions
+  if (!Array.isArray(raw)) return []
+  const out: AgentQuestion[] = []
+  for (const q of raw as Record<string, unknown>[]) {
+    const question = typeof q?.question === 'string' ? q.question : ''
+    if (!question) continue
+    const options = Array.isArray(q.options) ? (q.options as Record<string, unknown>[]) : []
+    out.push({
+      question,
+      header: typeof q.header === 'string' ? q.header : '',
+      options: options
+        .map((o) => ({ label: String(o?.label ?? ''), description: typeof o?.description === 'string' ? o.description : '' }))
+        .filter((o) => o.label),
+      multiSelect: !!q.multiSelect,
+    })
+  }
+  return out
 }
 
 export interface Conversation {

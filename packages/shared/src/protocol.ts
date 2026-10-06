@@ -6,7 +6,7 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, CockpitSettings,
+  AddRepoSource, AgentAnswers, AgentScope, AttachmentInput, BranchRef, Conversation, PermissionMode, CockpitSettings,
   CommandRunResult, CommitDetail, CommitGraph, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DeclaredServer,
   DatabasePlan,
@@ -929,9 +929,12 @@ export interface Rpc {
   /**
    * The answer to one of `Conversation.pending`. A refusal goes back to the
    * engine as a refusal, and it carries on from there.
+   *
+   * `answers` is for a question the agent asked (`QUESTION_TOOL`): what was
+   * chosen, by question. Without `allow` it is a question left unanswered.
    */
   'agent.permission': {
-    params: { sessionId: string; requestId: string; allow: boolean }
+    params: { sessionId: string; requestId: string; allow: boolean; answers?: AgentAnswers }
     result: { ok: boolean; reason?: string }
   }
   /**

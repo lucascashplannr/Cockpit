@@ -1,6 +1,6 @@
 import { computed, reactive, ref, shallowRef, toRaw, watch } from 'vue'
 import type {
-  AddRepoSource, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
+  AddRepoSource, AgentAnswers, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, DocsInfo, DocsProposalSet, MemorySummary, Topic,
@@ -1831,9 +1831,14 @@ export async function renameTopic(topicId: string, name: string): Promise<boolea
  * history list — and three copies of one RPC call is three places for the toast
  * to disagree with itself.
  */
-/** Yes or no to a tool call the agent is waiting on. */
-export async function answerPermission(sessionId: string, requestId: string, allow: boolean): Promise<void> {
-  const r = await guard(() => client.call('agent.permission', { sessionId, requestId, allow }))
+/** Yes or no to a tool call the agent is waiting on — or, to a question it asked, the answers. */
+export async function answerPermission(
+  sessionId: string,
+  requestId: string,
+  allow: boolean,
+  answers?: AgentAnswers,
+): Promise<void> {
+  const r = await guard(() => client.call('agent.permission', { sessionId, requestId, allow, ...(answers ? { answers } : {}) }))
   if (r && !r.ok) toast('error', r.reason ?? 'that question is no longer open')
 }
 

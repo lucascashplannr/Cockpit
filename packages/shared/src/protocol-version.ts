@@ -49,8 +49,11 @@
  *
  * 2.16 — `terminal.history` and `terminal.forget`. An older core also records
  * nothing: the shell it opens is not asked what it runs.
+ *
+ * 2.17 — `agent.permission` takes `answers`, and agents are handed
+ * `AskUserQuestion`. An older core never offers the tool, so nothing is asked.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 16 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 17 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

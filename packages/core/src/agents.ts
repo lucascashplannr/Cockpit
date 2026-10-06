@@ -4,9 +4,9 @@ import type { ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { CLAUDE_MODELS, MEMORY_OFF, commandIn, newId } from '@cockpit/shared'
+import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, commandIn, newId } from '@cockpit/shared'
 import type {
-  AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, MemorySource, PermissionMode,
+  AgentAnswers, AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, MemorySource, PermissionMode,
   PermissionRequest, TurnUsage,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
@@ -288,7 +288,8 @@ export interface EngineSpec {
   control?: {
     /** `memory`: whether the memory tools are hosted on this channel. */
     open(memory: boolean): string
-    answer(requestId: string, allow: boolean, input: Record<string, unknown>): string
+    /** `refusal`: what the engine is told when the answer is no. */
+    answer(requestId: string, allow: boolean, input: Record<string, unknown>, refusal?: string): string
     setMode(requestId: string, mode: PermissionMode): string
     unsupported(requestId: string): string
     /** The answer to an `mcp` request: the server's JSON-RPC reply. */
@@ -369,7 +370,9 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // §16 — the tool set, replaced rather than added to. Comma-joined into one
     // argument on purpose: the flag is variadic, so space-separated values
     // would swallow the flag that follows them.
-    '--tools', [...ctx.tools, ...(ctx.memory ? memoryTools.TOOL_NAMES : [])].join(','),
+    // The question tool goes in whatever the project's own list says: it
+    // reaches nothing, and without it an agent that is unsure can only guess.
+    '--tools', [...new Set([...ctx.tools, QUESTION_TOOL]), ...(ctx.memory ? memoryTools.TOOL_NAMES : [])].join(','),
     ...(ctx.deny.length ? ['--disallowedTools', ctx.deny.join(',')] : []),
     // Chosen in the composer. What the mode does not approve by itself comes
     // back over stdio as a `can_use_tool` request and waits for the window.
@@ -703,7 +706,7 @@ const claudeEngine: EngineSpec = {
           response: { mcp_response: response ?? { jsonrpc: '2.0', id: 0, result: {} } },
         },
       }),
-    answer: (requestId, allow, input) =>
+    answer: (requestId, allow, input, refusal) =>
       JSON.stringify({
         type: 'control_response',
         response: {
@@ -711,7 +714,7 @@ const claudeEngine: EngineSpec = {
           request_id: requestId,
           response: allow
             ? { behavior: 'allow', updatedInput: input }
-            : { behavior: 'deny', message: 'The person reviewing this refused it. Do not retry it as is.' },
+            : { behavior: 'deny', message: refusal ?? 'The person reviewing this refused it. Do not retry it as is.' },
         },
       }),
     setMode: (requestId, mode) =>
@@ -800,7 +803,10 @@ function usageIn(o: Record<string, unknown>): NormalizedEvent['usage'] | null {
 function denialsIn(o: Record<string, unknown>): string[] {
   const raw = o.permission_denials
   if (!Array.isArray(raw)) return []
-  const names = raw.map((d) => {
+  // A question a person skipped arrives here too, and is not a refusal of
+  // anything: the turn went on without the answer, which is what skipping asks.
+  const refused = raw.filter((d) => (d as { tool_name?: unknown })?.tool_name !== QUESTION_TOOL)
+  const names = refused.map((d) => {
     const e = d as { tool_name?: unknown; name?: unknown; tool_input?: Record<string, unknown> }
     const tool = String(e?.tool_name ?? e?.name ?? 'tool')
     const cmd = e?.tool_input?.command
@@ -922,6 +928,8 @@ interface Live {
    * whether a call was waved through is a question about what ran.
    */
   engineMode: PermissionMode | null
+  /** What a person answered to a question, by tool use id, until its result is journalled. */
+  answers: Map<string, AgentAnswers>
   /** Calls waiting on a person, by request id, in the order they were asked. */
   pending: Map<string, PermissionRequest>
   /** The mode the process is in now, so a change is sent once and only once. */
@@ -1903,6 +1911,7 @@ async function launch(
     busy: true,
     calls: new Map(),
     asked: new Set(),
+    answers: new Map(),
     engineMode: null,
     pending: new Map(),
     mode: ctx.permissionMode ?? 'acceptEdits',
@@ -2022,6 +2031,8 @@ async function launch(
           const call = l.calls.get(id)
           l.calls.delete(id)
           const asked = l.asked.delete(id)
+          const answers = l.answers.get(id)
+          l.answers.delete(id)
           // A refusal did not run, so nothing went through unasked.
           const refused = !!ev.isError && /has been denied/i.test(ev.stdout ?? '')
           const unasked = call && !refused ? ranUnasked(call.tool, call.input, call.mode, asked) : null
@@ -2041,6 +2052,7 @@ async function launch(
               interrupted: !!ev.interrupted,
               // Absent rather than null when it was not: most calls are not.
               ...(unasked ? { unasked } : {}),
+              ...(answers ? { answers } : {}),
             },
           })
           changed = true
@@ -2058,6 +2070,7 @@ async function launch(
             input: ev.input ?? {},
             description: ev.description,
             reason: ev.reason,
+            toolUseId: ev.toolUseId,
             askedAt: Date.now(),
           })
           changed = true
@@ -2660,6 +2673,14 @@ export function setMode(sessionId: string, mode: PermissionMode): { ok: true } {
   return { ok: true }
 }
 
+/**
+ * What the agent is told when its question is skipped. Not a refusal of the
+ * work: the person declined to choose, and the worst reading of that is to
+ * stop, or to ask the same thing again.
+ */
+const QUESTION_SKIPPED =
+  'The person skipped this question without answering. Do not ask it again: go on with your best judgement and say which assumption you made, or ask in plain text at the end of your turn if you cannot proceed.'
+
 /** The calls waiting on a person, oldest first. */
 export function pendingIn(sessionId: string): PermissionRequest[] {
   return [...(live.get(sessionId)?.pending.values() ?? [])]
@@ -2676,18 +2697,25 @@ export function answerPermission(
   sessionId: string,
   requestId: string,
   allow: boolean,
+  answers?: AgentAnswers,
 ): { ok: boolean; reason?: string } {
   const l = live.get(sessionId)
   const req = l?.pending.get(requestId)
   if (!l || !req || !l.spec.control) return { ok: false, reason: 'that question is no longer open' }
+  // A question is answered by what goes back in with the call; a yes with
+  // nothing in it would tell the agent the person chose nothing at all.
+  const question = req.tool === QUESTION_TOOL
+  if (question && allow && !Object.keys(answers ?? {}).length) return { ok: false, reason: 'answer the question, or skip it' }
   l.pending.delete(requestId)
-  l.child.stdin?.write(l.spec.control.answer(requestId, allow, req.input) + '\n')
+  const input = question && allow ? { ...req.input, answers } : req.input
+  if (question && allow && req.toolUseId) l.answers.set(req.toolUseId, answers!)
+  l.child.stdin?.write(l.spec.control.answer(requestId, allow, input, question ? QUESTION_SKIPPED : undefined) + '\n')
   append({
     type: 'agent.permission',
     level: allow ? 'info' : 'warn',
     actor: { kind: 'human' },
     workspaceId: l.session.workspaceIds[0] ?? null,
-    payload: { sessionId, tool: req.tool, input: req.input, allow },
+    payload: { sessionId, tool: req.tool, input, allow },
   })
   agentBus.emit('changed')
   return { ok: true }

@@ -5,7 +5,7 @@ import {
   MEMORY_NEW, MEMORY_OFF, PROJECT_MEMORY, PROTOCOL_VERSION, documentPrompt, handoffPrompt, isHandoff, topicMemoryId,
 } from '@cockpit/shared'
 import type {
-  AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
+  AgentAnswers, AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
   Conversation, PermissionMode, ProjectSettings, ServerBoardRow, ServerPush, Workspace,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
@@ -912,8 +912,8 @@ const handlers: Record<string, Handler> = {
     if (refusal) return { ok: false as const, reason: refusal }
     return agents.setMode(p.sessionId, p.mode)
   },
-  'agent.permission': (p: { sessionId: string; requestId: string; allow: boolean }) => {
-    const r = agents.answerPermission(p.sessionId, p.requestId, p.allow)
+  'agent.permission': (p: { sessionId: string; requestId: string; allow: boolean; answers?: AgentAnswers }) => {
+    const r = agents.answerPermission(p.sessionId, p.requestId, p.allow, p.answers)
     if (r.ok) pushAgentActivity()
     return r
   },

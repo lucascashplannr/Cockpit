@@ -165,6 +165,8 @@ export interface AgentToolResultPayload {
   isError: boolean
   /** Stopped by a person rather than by finishing. */
   interrupted: boolean
+  /** `AskUserQuestion` only: what the person answered, by question. */
+  answers?: Record<string, string>
 }
 
 export interface RestorePointPayload {

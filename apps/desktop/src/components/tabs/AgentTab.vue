@@ -4,7 +4,7 @@ import type {
   // Aliased: the component that draws one is `Attachment` too, and the file
   // needs both in the same scope.
   Attachment as AttachedFile,
-  AgentScopePreview, Conversation, AgentTurn, PermissionMode, QuoteSource, Workspace,
+  AgentAnswers, AgentQuestion, AgentScopePreview, Conversation, AgentTurn, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
   ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, Hand, Paperclip,
@@ -17,6 +17,8 @@ import Attachment from '../agent/Attachment.vue'
 import Composer from '../agent/Composer.vue'
 import ReferenceSelection from '../agent/ReferenceSelection.vue'
 import PermissionAsk from '../agent/PermissionAsk.vue'
+import QuestionAsk from '../agent/QuestionAsk.vue'
+import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
   activeAgentScope, agentDraft, agentFiles, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
@@ -26,7 +28,8 @@ import {
   threadScrollOf, toast, transcriptOf, type ThreadScroll,
 } from '../../core/store.js'
 import {
-  COMMAND_ENGINES, anchorOf, anchorsIn, canonicalSection, commandIn, isDocument, isHandoff, readPrompt,
+  COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, isDocument, isHandoff, questionsIn,
+  readPrompt,
 } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
 
@@ -162,6 +165,17 @@ type Item =
   | { kind: 'compact'; id: string; before: number; after: number }
   /** §6 — a line the agent put in the shared memory, or the state it set. */
   | { kind: 'memory'; id: string; section: string; text: string }
+  /** Something the agent asked a person, and what it was told. */
+  | Asked
+
+interface Asked {
+  kind: 'question'
+  id: string
+  questions: AgentQuestion[]
+  answers: AgentAnswers | null
+  /** Its outcome reached the journal — answered, or skipped. */
+  closed: boolean
+}
 
 /**
  * What a turn is actually drawn as.
@@ -177,6 +191,7 @@ type Row =
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
   | { kind: 'compact'; id: string; before: number; after: number }
   | { kind: 'memory'; id: string; section: string; text: string }
+  | Asked
 
 /**
  * Every run of calls folds, down to a run of one.
@@ -210,7 +225,7 @@ function rowsOf(items: Item[]): Row[] {
     // what follows is different from what came before. So does an undo, which
     // is the loudest possible break in what a turn did.
     flush()
-    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'memory') rows.push({ ...it })
+    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'memory' || it.kind === 'question') rows.push({ ...it })
     else rows.push({ kind: 'text', id: it.id, text: it.text })
   }
   flush()
@@ -247,6 +262,7 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
   const buckets: Item[][] = turns.map(() => [])
   if (!turns.length) return buckets
   const byCall = new Map<string, Extract<Item, { kind: 'tool' }>>()
+  const byQuestion = new Map<string, Asked>()
   let ti = 0
 
   for (const e of transcriptOf(sessionId)) {
@@ -291,6 +307,15 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
         if (memo !== 'read') into.push({ kind: 'memory', id: e.id, ...memo })
         continue
       }
+      // A question is something said, not something done: it is shown as
+      // the exchange it was, and never folded into a run of calls.
+      const questions = p?.tool === QUESTION_TOOL ? questionsIn(p.input ?? {}) : []
+      if (questions.length) {
+        const asked: Asked = { kind: 'question', id: e.id, questions, answers: null, closed: false }
+        if (p?.toolUseId) byQuestion.set(p.toolUseId, asked)
+        into.push(asked)
+        continue
+      }
       const item: Extract<Item, { kind: 'tool' }> = {
         kind: 'tool',
         id: e.id,
@@ -312,6 +337,13 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
         isError?: boolean
         interrupted?: boolean
         unasked?: PermissionMode
+        answers?: AgentAnswers
+      }
+      const asked = p?.toolUseId ? byQuestion.get(p.toolUseId) : undefined
+      if (asked) {
+        asked.answers = p?.answers ?? null
+        asked.closed = true
+        continue
       }
       const call = p?.toolUseId ? byCall.get(p.toolUseId) : undefined
       // A result whose call fell off the end of the kept journal is dropped
@@ -782,6 +814,8 @@ function showImage(turn: AgentTurn, file: AttachedFile): void {
  */
 const queued = computed(() => selected.value?.queued ?? [])
 const pending = computed(() => selected.value?.pending ?? [])
+/** The call at the front is a question to answer rather than a call to allow. */
+const asking = computed(() => pending.value[0]?.tool === QUESTION_TOOL && questionsIn(pending.value[0].input).length > 0)
 
 async function unqueue(prompt: string): Promise<void> {
   const s = selected.value
@@ -1267,7 +1301,7 @@ function ago(ts: number): string {
              scope until it is let go. Neither: it is a thread you can read
              and resume. This said WORKING for the middle one, which is how
              a finished answer came to sit under a word claiming otherwise. -->
-        <span v-if="selected.pending.length" class="needs approval chip warn" title="A tool call is waiting on your answer, above the box">
+        <span v-if="selected.pending.length" class="needs approval chip warn" :title="(asking ? 'The agent asked you something' : 'A tool call is waiting on your answer') + ', above the box'">
           <Hand class="sm" /> needs you
         </span>
         <span v-else-if="isBusy(selected)" class="busytag">
@@ -1497,6 +1531,13 @@ function ago(ts: number): string {
                 :calls="r.calls"
                 :live="x.turn.status === 'running'"
               />
+              <QuestionRecord
+                v-else-if="r.kind === 'question'"
+                :data-anchor="r.id"
+                :questions="r.questions"
+                :answers="r.answers"
+                :state="r.answers ? 'answered' : r.closed ? 'skipped' : x.turn.status === 'running' ? 'waiting' : 'lost'"
+              />
               <!-- Where the window stands now, beside where it stood: the
                    whole of what a compaction did, and why it was worth it. -->
               <!-- §6 — what the next agent will know that it would not have. -->
@@ -1542,7 +1583,7 @@ function ago(ts: number): string {
                  make all three easier to miss. -->
             <p v-if="x.turn.status === 'running' && pending.length" class="pulse asking">
               <Hand class="star" />
-              <span class="verb">Waiting for you to allow {{ pending[0]!.tool }}</span>
+              <span class="verb">{{ asking ? 'Waiting for your answer' : 'Waiting for you to allow ' + pending[0]!.tool }}</span>
               <span class="sep">·</span>
               <span class="num">{{ since(pending[0]!.askedAt) }}</span>
             </p>
@@ -1645,7 +1686,13 @@ function ago(ts: number): string {
           <button class="link go" @click="scope && startFresh(scope)">Start fresh</button>
         </p>
 
-        <PermissionAsk v-if="selected && pending.length" :session-id="selected.id" :requests="pending" />
+        <QuestionAsk
+          v-if="selected && asking"
+          :session-id="selected.id"
+          :request="pending[0]!"
+          :more="pending.length - 1"
+        />
+        <PermissionAsk v-else-if="selected && pending.length" :session-id="selected.id" :requests="pending" />
 
         <Composer
           ref="composer"

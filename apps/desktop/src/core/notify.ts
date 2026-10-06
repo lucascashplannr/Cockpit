@@ -1,4 +1,5 @@
 import { watch } from 'vue'
+import { QUESTION_TOOL, questionsIn } from '@cockpit/shared'
 import type { Conversation, PermissionRequest } from '@cockpit/shared'
 import {
   activeAgentScope, dismissToast, hostNotify, isBusy, openAgentOn, openThreadFor, pinThread,
@@ -105,6 +106,8 @@ interface Line {
 }
 
 function approvalLine(p: PermissionRequest, count: number): Line {
+  const asked = p.tool === QUESTION_TOOL ? questionsIn(p.input)[0] : undefined
+  if (asked) return { what: 'Asked you a question', detail: clip(asked.question, 160) }
   const str = (k: string) => (typeof p.input[k] === 'string' ? (p.input[k] as string) : '')
   const what = str('command') || str('file_path') || str('notebook_path') || str('url') || p.description || ''
   const line = what.split('\n')[0]!.trim()
