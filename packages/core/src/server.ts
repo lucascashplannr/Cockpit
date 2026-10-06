@@ -2,7 +2,8 @@ import { join, resolve } from 'node:path'
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
-  MEMORY_NEW, MEMORY_OFF, PROJECT_MEMORY, PROTOCOL_VERSION, documentPrompt, handoffPrompt, isHandoff, topicMemoryId,
+  MEMORIZE_PROMPT, MEMORY_NEW, MEMORY_OFF, PROJECT_MEMORY, PROTOCOL_VERSION, documentPrompt, handoffPrompt, isHandoff,
+  isMemorize, topicMemoryId,
 } from '@cockpit/shared'
 import type {
   AgentAnswers, AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
@@ -831,6 +832,23 @@ const handlers: Record<string, Handler> = {
     }
     if (set) collectWhenSettled(p.sessionId, set.id)
     return { ok: true as const, skipped: false, docsSetId: set?.id ?? null }
+  },
+  /**
+   * `/memorize` — the handoff's turn without what follows it: the memory is
+   * brought up to date and the conversation stays. Never the docs; those are
+   * the Document step's, and a person's to accept.
+   */
+  'agent.memorize': async (p: { sessionId: string }) => {
+    const c = agents.get(p.sessionId)
+    if (!c) throw new Error('unknown session: ' + p.sessionId)
+    // Said rather than skipped: unlike `/clear`, nothing else happens here, so
+    // a silent no-op would read as a command that did not take.
+    if (c.engine !== 'claude') return { ok: false as const, reason: '/memorize needs a Claude conversation' }
+    if (c.memory === MEMORY_OFF) return { ok: false as const, reason: 'this conversation keeps no memory' }
+    const last = agents.turnsOf(p.sessionId).at(-1)
+    if (!last) return { ok: false as const, reason: 'there is nothing to memorize yet' }
+    if (isMemorize(last.prompt)) return { ok: false as const, reason: 'the memory is already up to date' }
+    return sendOnBehalf(p.sessionId, MEMORIZE_PROMPT)
   },
   /**
    * §9 — the Document step, on its own: this conversation drafts proposals to

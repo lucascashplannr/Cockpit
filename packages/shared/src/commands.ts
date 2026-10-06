@@ -33,6 +33,7 @@ export const AGENT_COMMANDS: AgentCommand[] = [
   { name: 'clear', hint: 'New conversation on this scope', run: 'window' },
   { name: 'compact', args: 'what to keep', hint: 'Summarise the conversation to free up context', run: 'engine', thread: true },
   { name: 'init', hint: 'Write a CLAUDE.md that describes this repository', run: 'engine' },
+  { name: 'memorize', hint: 'Bring the memory up to date, and carry on here', run: 'window', thread: true },
   { name: 'document', hint: 'Propose documentation updates from this conversation', run: 'window', thread: true },
 ]
 
@@ -73,6 +74,26 @@ export const HANDOFF_PROMPT = HANDOFF_WORDS
 
 export function isHandoff(prompt: string | null | undefined): boolean {
   return !!prompt && prompt.startsWith(HANDOFF_PROMPT.slice(0, 40))
+}
+
+/**
+ * `/memorize` — the handoff's note-taking without the goodbye: the memory is
+ * brought up to date and the conversation carries on. For the moment something
+ * is worth keeping and nothing is worth clearing — before handing a piece to an
+ * agent in another repository, or ahead of a long stretch of work.
+ *
+ * Memory only. The docs are `/document`'s, and they pass through a person.
+ */
+export const MEMORIZE_PROMPT = [
+  'Memorize: bring the memory up to date with this conversation so far, for whoever reads it next — a',
+  'later conversation here, or an agent in another repository: note every decision, contract,',
+  'constraint, dropped approach or open question that is not in it yet (replacing the entries they',
+  'supersede), then set the state (done, in progress, next, and the files that matter). Do not change',
+  'any code. This conversation carries on afterwards. Reply with one short line.',
+].join(' ')
+
+export function isMemorize(prompt: string | null | undefined): boolean {
+  return !!prompt && prompt.startsWith(MEMORIZE_PROMPT.slice(0, 40))
 }
 
 /**

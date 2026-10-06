@@ -849,6 +849,11 @@ export interface Rpc {
     params: { sessionId: string }
     result: { ok: true; skipped: boolean; docsSetId?: string | null } | { ok: false; reason: string }
   }
+  /**
+   * `/memorize` — the same note-taking turn, with the conversation kept.
+   * Answers once the turn is sent; it lands in the thread like any other.
+   */
+  'agent.memorize': { params: { sessionId: string }; result: { ok: true } | { ok: false; reason: string } }
   /** Waits (at most ~90s) for the conversation's turns to land; call again if not `settled`. */
   'agent.settled': { params: { sessionId: string }; result: { settled: boolean } }
   /** §9 — draft documentation proposals in this conversation. Answers once sent. */

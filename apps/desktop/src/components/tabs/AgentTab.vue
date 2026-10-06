@@ -28,8 +28,8 @@ import {
   threadScrollOf, toast, transcriptOf, type ThreadScroll,
 } from '../../core/store.js'
 import {
-  COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, isDocument, isHandoff, questionsIn,
-  readPrompt,
+  COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, isDocument, isHandoff, isMemorize,
+  questionsIn, readPrompt,
 } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
 
@@ -643,6 +643,25 @@ async function documentThread(): Promise<void> {
   await documentConversation(s.id)
 }
 
+/**
+ * `/memorize` — what `/clear` asks of the agent first, and nothing after it:
+ * the memory is brought up to date, in this thread, and the thread stays.
+ */
+async function memorizeThread(): Promise<void> {
+  const s = selected.value
+  if (!s || !continuing.value) {
+    toast('info', 'there is no conversation to memorize yet')
+    return
+  }
+  if (isBusy(s)) {
+    toast('info', 'it is still on a turn — let it finish first')
+    return
+  }
+  agentDraft.value = ''
+  const r = await guard(() => client.call('agent.memorize', { sessionId: s.id }))
+  if (r && !r.ok) toast('info', r.reason)
+}
+
 /** The conversation `/clear` is waiting on, while it writes its handoff. */
 const handingOff = ref<string | null>(null)
 
@@ -667,6 +686,7 @@ async function send(): Promise<void> {
   if (cmd) {
     if (cmd.command.name === 'clear') return clearThread()
     if (cmd.command.name === 'document') return documentThread()
+    if (cmd.command.name === 'memorize') return memorizeThread()
     const no = refuseCommand(cmd.command.name, cmd.command.run, !!cmd.command.thread)
     if (no) {
       toast('info', no)
@@ -706,6 +726,9 @@ async function send(): Promise<void> {
  * always looked like.
  */
 function bubble(turn: AgentTurn): ({ text: string } | { file: AttachedFile })[] {
+  // `/memorize` is a turn the person asked for by name, unlike `/clear`'s
+  // handoff: the bubble says what they typed, not what the window sent for it.
+  if (isMemorize(turn.prompt)) return [{ text: '/memorize' }]
   const files = turn.attachments ?? []
   const byHandle = new Map(files.filter((f) => f.handle).map((f) => [f.handle, f]))
   // `readPrompt` rather than `splitPrompt`: the chip here is an element with
@@ -919,6 +942,7 @@ const doing = computed(() => {
   // No calls and no words: without this a two-minute summary reads "Thinking".
   if (last && commandIn(last.turn.prompt)?.command.name === 'compact') return 'Compacting the conversation'
   if (last && isHandoff(last.turn.prompt)) return 'Handing off to memory'
+  if (last && isMemorize(last.turn.prompt)) return 'Bringing the memory up to date'
   if (last && isDocument(last.turn.prompt)) return 'Drafting documentation proposals'
   for (let i = (last?.items.length ?? 0) - 1; i >= 0; i--) {
     const it = last!.items[i]!

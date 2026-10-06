@@ -52,8 +52,10 @@
  *
  * 2.17 — `agent.permission` takes `answers`, and agents are handed
  * `AskUserQuestion`. An older core never offers the tool, so nothing is asked.
+ *
+ * 2.18 — `agent.memorize`, behind the composer's `/memorize`.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 17 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 18 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major
