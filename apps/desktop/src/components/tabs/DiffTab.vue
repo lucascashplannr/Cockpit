@@ -4,13 +4,14 @@ import type { CommitPreview, DiffFile, FileDiff, StashEntry, Workspace } from '@
 import type { Component } from 'vue'
 import {
   Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, Code, Columns2, Eye, FileCode, Rows2, GitBranch, LoaderCircle,
-  ChevronUp, GitCommitHorizontal, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
+  ChevronUp, FileText, GitCommitHorizontal, Save, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
   Copy, FilePen, FolderOpen, GitGraph, Info, Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
+import FileChanges from '../FileChanges.vue'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, openFileAt, resetPlaceWidth,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
   resetCommitHeight, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
@@ -126,26 +127,82 @@ const selected = ref<string | null>(null)
  * reader's call, and it is remembered. Narrow, there is no room for two
  * columns of code, and the panel falls back to unified without forgetting
  * the choice.
+ *
+ * File is the third: neither a story nor a before and after, but the file as
+ * it stands with the change marked on it (see `FileChanges`). A deleted file
+ * has nothing to stand as, and falls back the same way.
  */
-type DiffView = 'unified' | 'split'
+type DiffView = 'unified' | 'split' | 'file'
 const VIEW_KEY = 'cockpit.diffView'
 function readView(): DiffView {
   try {
-    return localStorage.getItem(VIEW_KEY) === 'split' ? 'split' : 'unified'
+    const v = localStorage.getItem(VIEW_KEY)
+    return v === 'split' || v === 'file' ? v : 'unified'
   } catch {
     return 'unified'
   }
 }
 const view = ref<DiffView>(readView())
 function setView(v: DiffView): void {
-  view.value = v
-  try {
-    localStorage.setItem(VIEW_KEY, v)
-  } catch {
-    /* remembered for this session only */
-  }
+  if (v === view.value) return
+  leaveEdit(() => {
+    // A line asked for was asked for once; coming back later opens on the change.
+    if (v !== 'file') startLine.value = null
+    view.value = v
+    try {
+      localStorage.setItem(VIEW_KEY, v)
+    } catch {
+      /* remembered for this session only */
+    }
+  })
 }
 const split = computed(() => view.value === 'split' && !narrow.value)
+const whole = computed(() => view.value === 'file' && editable.value)
+
+/* ── editing, in place ────────────────────────────────────────────────────
+ *
+ * The whole-file view is an editor that starts closed. Off until asked, and
+ * not remembered: opening the app on a review should never mean a keystroke
+ * lands in a file. Once on it stays on from file to file, because a pass that
+ * fixes one typo usually finds a second.
+ *
+ * An edit that is not saved exists only on screen, so the three ways of
+ * walking away from it — another file, another view, closing the editor — ask
+ * first. Unlike a discard, nothing keeps it: the question says so.
+ */
+const editing = ref(false)
+const fileView = ref<InstanceType<typeof FileChanges> | null>(null)
+const unsaved = computed(() => !!fileView.value?.dirty)
+
+function leaveEdit(then: () => void): void {
+  if (!unsaved.value) return then()
+  state.pendingConfirm = {
+    title: 'Drop your edit?',
+    body: ['What you typed in ' + baseName(selected.value ?? '') + ' is not saved, and nothing keeps a copy of it.'],
+    verb: 'Drop the edit',
+    cancel: 'Keep editing',
+    done: 'Edit dropped',
+    danger: true,
+    run: async () => {
+      then()
+      return true
+    },
+  }
+}
+
+function toggleEditing(): void {
+  if (!whole.value || !editing.value) editHere()
+  else
+    leaveEdit(() => {
+      editing.value = false
+      void fileView.value?.revert()
+    })
+}
+
+async function afterSave() {
+  await Promise.all([load(), refreshCommit()])
+  await reloadCurrent()
+}
 
 /* ── a markdown file, read as it reads ────────────────────────────────────
  *
@@ -391,12 +448,20 @@ async function load() {
     // file they never asked for, with the list they came for now behind a back
     // arrow, is the panel deciding for them.
     if (narrow.value) drilled.value = false
-    else void select(files.value[0]!.path)
+    else void open(files.value[0]!.path)
   }
 }
 
-async function select(path: string) {
+function select(path: string) {
+  // The file being edited, clicked again: it is already open, and reading it
+  // again would be the one thing that loses the edit.
+  if (path === selected.value && unsaved.value) return
+  leaveEdit(() => void open(path))
+}
+
+async function open(path: string) {
   selected.value = path
+  startLine.value = null
   current.value = null
   if (narrow.value) drilled.value = true
   const r = await guard(() => client.call('diff.file', { workspaceId: props.workspace.id, path }))
@@ -868,17 +933,31 @@ async function openInIde() {
 }
 
 /**
- * §12 — a review that finds a typo should not need an IDE to fix it. The Code
- * tool opens on the file, at the line asked for, or at the first thing that
- * changed: that is the line the reader was about to look at anyway.
+ * §12 — a review that finds a typo should not need an IDE to fix it, nor
+ * another tool. Edit means one thing wherever it is pressed: this file, here,
+ * open for typing. From a hunk view that is a move to the whole file first —
+ * at the line asked for, when a line number was what was clicked.
  */
 const editable = computed(() => !!selected.value && selectedFile.value?.status !== 'D')
-function editInCode(line: number | null = null) {
+const startLine = ref<number | null>(null)
+function editHere(line: number | null = null) {
   if (!editable.value) return
-  const lines = current.value?.lines ?? []
-  const at = line ?? lines.find((l) => l.kind === 'add')?.newLine ?? lines.find((l) => l.newLine)?.newLine ?? null
-  openFileAt(props.workspace.id, selected.value!, at)
+  startLine.value = line
+  editing.value = true
+  setView('file')
 }
+
+/**
+ * Hunk views draw two columns of numbers, before and after. A file that is
+ * new from top to bottom has no before, and a deleted one no after: the empty
+ * column was only pushing the code away from the edge, so it is not drawn.
+ */
+const sides = computed(() => {
+  const lines = (current.value?.lines ?? []).filter((l) => l.kind !== 'meta')
+  const old = lines.some((l) => l.oldLine != null)
+  const now = lines.some((l) => l.newLine != null)
+  return { old: old || !now, new: now || !old }
+})
 
 /**
  * A removed line has no number in the new file, so it lands on the line that
@@ -1327,6 +1406,7 @@ const mark: Record<string, Component> = {
              rest of what there is to know about the file is one click away. -->
         <div ref="detailRoot" class="vname">
           <span class="mono vpath" :title="selected">{{ baseName(selected) }}</span>
+          <span v-if="unsaved" class="vdirty" title="Unsaved changes" aria-label="Unsaved changes" />
           <button
             class="icon-btn vinfo"
             :class="{ on: detailOpen }"
@@ -1376,14 +1456,30 @@ const mark: Record<string, Component> = {
         <!-- Each carries its icon and its word; when the column cannot spare
              the room, the words go and the path keeps it. The title and the
              aria-label still say what the icon means. -->
+        <!-- One Edit, meaning one thing: this file, here. From a hunk view
+             it opens the whole file to type in. -->
         <button
-          v-if="editable"
+          v-if="editable && !previewing"
           class="btn ghost vbtn"
-          title="Edit here, in Code"
-          aria-label="Edit in Code"
-          @click="editInCode()"
+          :class="{ on: whole && editing }"
+          :disabled="whole && fileView?.truncated"
+          :title="whole && editing ? 'Stop editing' : 'Edit this file'"
+          :aria-label="whole && editing ? 'Stop editing' : 'Edit this file'"
+          :aria-pressed="whole && editing"
+          @click="toggleEditing"
         >
           <FilePen /><span class="vlabel">Edit</span>
+        </button>
+        <button
+          v-if="whole && !previewing && editing"
+          class="icon-btn vsave"
+          :class="{ due: unsaved }"
+          :disabled="!unsaved"
+          title="Save (⌘S)"
+          aria-label="Save"
+          @click="fileView?.save()"
+        >
+          <Save />
         </button>
         <button class="btn ghost vbtn" title="Open in IDE" aria-label="Open in IDE" @click="openInIde">
           <SquareArrowOutUpRight /><span class="vlabel">Open in IDE</span>
@@ -1396,12 +1492,29 @@ const mark: Record<string, Component> = {
             <Eye /><span class="vlabel">Preview</span>
           </button>
         </div>
-        <div v-if="!narrow && !previewing && current && current.lines.length" class="seg" role="group" aria-label="Diff view">
-          <button :class="{ on: view === 'unified' }" title="Unified" aria-label="Unified" @click="setView('unified')">
+        <!-- Narrow, there is no room for Split and it is not offered; a
+             deleted file has no whole to show. With neither, there is no
+             choice to make and no switch. -->
+        <div
+          v-if="!previewing && current && current.lines.length && (!narrow || editable)"
+          class="seg"
+          role="group"
+          aria-label="Diff view"
+        >
+          <button :class="{ on: !whole && !split }" title="Unified" aria-label="Unified" @click="setView('unified')">
             <Rows2 /><span class="vlabel">Unified</span>
           </button>
-          <button :class="{ on: view === 'split' }" title="Split" aria-label="Split" @click="setView('split')">
+          <button v-if="!narrow" :class="{ on: split && !whole }" title="Split" aria-label="Split" @click="setView('split')">
             <Columns2 /><span class="vlabel">Split</span>
+          </button>
+          <button
+            v-if="editable"
+            :class="{ on: whole }"
+            title="Whole file, with the changes marked"
+            aria-label="Whole file"
+            @click="setView('file')"
+          >
+            <FileText /><span class="vlabel">File</span>
           </button>
         </div>
         </div>
@@ -1413,6 +1526,17 @@ const mark: Record<string, Component> = {
           <MarkdownPreview :source="preview.content" :changed="marks.changed" :cut="marks.cut" />
         </template>
       </div>
+
+      <FileChanges
+        v-else-if="whole && current && current.lines.length"
+        ref="fileView"
+        :workspace="workspace"
+        :path="selected!"
+        :lines="current.lines"
+        :editing="editing"
+        :start-line="startLine"
+        @saved="afterSave"
+      />
 
       <div class="hunks mono split" v-else-if="split && current && current.lines.length">
         <template v-for="(r, i) in splitRows" :key="i">
@@ -1433,7 +1557,7 @@ const mark: Record<string, Component> = {
                 class="gutter num"
                 :class="{ jump: editable }"
                 :title="editable ? 'Edit from here' : undefined"
-                @click="editable && editInCode(nearestNew(splitNew, i))"
+                @click="editable && editHere(nearestNew(splitNew, i))"
               >{{ r.left.num ?? '' }}</span>
               <span class="sign">{{ r.left.kind === 'del' ? '−' : ' ' }}</span>
               <span class="txt">{{ r.left.text }}</span>
@@ -1443,7 +1567,7 @@ const mark: Record<string, Component> = {
                 class="gutter num"
                 :class="{ jump: editable }"
                 :title="editable ? 'Edit from here' : undefined"
-                @click="editable && editInCode(nearestNew(splitNew, i))"
+                @click="editable && editHere(nearestNew(splitNew, i))"
               >{{ r.right.num ?? '' }}</span>
               <span class="sign">{{ r.right.kind === 'add' ? '+' : ' ' }}</span>
               <span class="txt">{{ r.right.text }}</span>
@@ -1455,21 +1579,23 @@ const mark: Record<string, Component> = {
       <div class="hunks mono" v-else-if="current && current.lines.length">
         <div v-for="(l, i) in current.lines" :key="i" class="line" :class="l.kind">
           <template v-if="l.kind === 'meta'">
-            <span class="gutter num" />
-            <span class="gutter num" />
+            <span v-if="sides.old" class="gutter num" />
+            <span v-if="sides.new" class="gutter num" />
           </template>
           <template v-else>
             <span
+              v-if="sides.old"
               class="gutter num"
               :class="{ jump: editable }"
               :title="editable ? 'Edit from here' : undefined"
-              @click="editable && editInCode(nearestNew(unifiedNew, i))"
+              @click="editable && editHere(nearestNew(unifiedNew, i))"
             >{{ l.oldLine ?? '' }}</span>
             <span
+              v-if="sides.new"
               class="gutter num"
               :class="{ jump: editable }"
               :title="editable ? 'Edit from here' : undefined"
-              @click="editable && editInCode(nearestNew(unifiedNew, i))"
+              @click="editable && editHere(nearestNew(unifiedNew, i))"
             >{{ l.newLine ?? '' }}</span>
           </template>
           <span class="sign">{{ l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' ' }}</span>
@@ -1926,6 +2052,21 @@ const mark: Record<string, Component> = {
 .grow { flex: 1; }
 .vhead .btn { height: 26px; padding: 0 9px; font-size: var(--fs-xs); }
 .vhead .back { width: 26px; height: 26px; margin-left: -4px; }
+/* Editing is a state the header is in, not a thing it did. */
+.vhead .vbtn.on,
+.vhead .vbtn.on:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
+.vdirty {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 3px 0 5px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.vsave { width: 26px; height: 26px; }
+.vsave .lucide { width: 14px; height: 14px; }
+/* Only worth pressing when there is something to write; then it says so. */
+.vsave.due { color: var(--accent); }
 
 .hunks {
   flex: 1;

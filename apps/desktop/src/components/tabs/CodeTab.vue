@@ -3,13 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { javascript } from '@codemirror/lang-javascript'
-import { json } from '@codemirror/lang-json'
-import { markdown } from '@codemirror/lang-markdown'
-import { yaml } from '@codemirror/lang-yaml'
-import { css } from '@codemirror/lang-css'
-import { html } from '@codemirror/lang-html'
-import { php } from '@codemirror/lang-php'
 import type { FileEntry, Workspace } from '@cockpit/shared'
 import {
   ChevronDown, ChevronRight, Code, Copy, Eye, File, FileCode, Folder, FolderOpen, Info, Save, Search,
@@ -20,6 +13,7 @@ import {
   LAYOUT_DEFAULTS, LAYOUT_LIMITS, client, guard, layout, resetPlaceWidth, savePlaceWidth, setColumnWidth, state,
   stopSaveOnProtected, toast,
 } from '../../core/store.js'
+import { cockpitTheme, languageFor } from '../../core/editor.js'
 
 /**
  * §12 — "Périmètre assumé : voir, naviguer, éditer manuellement. Pas de
@@ -84,18 +78,6 @@ const langCompartment = new Compartment()
 /** Bumped on every edit and every open, so what reads the document follows it. */
 const docTick = ref(0)
 
-function languageFor(path: string) {
-  const ext = path.split('.').pop()?.toLowerCase() ?? ''
-  if (['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'vue'].includes(ext)) return javascript({ typescript: true, jsx: true })
-  if (ext === 'json') return json()
-  if (['md', 'markdown'].includes(ext)) return markdown()
-  if (['yaml', 'yml'].includes(ext)) return yaml()
-  if (ext === 'css') return css()
-  if (['html', 'htm'].includes(ext)) return html()
-  if (ext === 'php') return php()
-  return []
-}
-
 const CODE_EXT = new Set([
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'vue', 'json', 'css', 'html', 'php', 'yml', 'yaml',
 ])
@@ -104,25 +86,6 @@ const CODE_EXT = new Set([
 function fileIcon(name: string) {
   return CODE_EXT.has(name.split('.').pop()?.toLowerCase() ?? '') ? FileCode : File
 }
-
-/** A theme built from the same tokens as the rest of the app, so the editor
- *  does not look like a different product embedded in this one. */
-const cockpitTheme = EditorView.theme({
-  '&': { backgroundColor: 'transparent', color: 'var(--text)', height: '100%' },
-  '.cm-content': { fontFamily: 'var(--mono)', fontSize: 'var(--fs-sm)', padding: '8px 0 40px' },
-  '.cm-gutters': {
-    backgroundColor: 'transparent',
-    color: 'var(--text-dim)',
-    border: 'none',
-    fontFamily: 'var(--mono)',
-    fontSize: 'var(--fs-xs)',
-  },
-  '.cm-activeLine': { backgroundColor: 'var(--hover)' },
-  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--text-muted)' },
-  '.cm-cursor': { borderLeftColor: 'var(--accent)' },
-  '.cm-selectionBackground, ::selection': { backgroundColor: 'var(--accent-soft) !important' },
-  '.cm-scroller': { overflow: 'auto', lineHeight: '1.55' },
-})
 
 async function loadDir(rel: string): Promise<FileEntry[]> {
   const r = await guard(() => client.call('fs.list', { workspaceId: props.workspace.id, rel }))
