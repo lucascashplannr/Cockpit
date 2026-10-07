@@ -452,7 +452,7 @@ async function submit() {
         <input
           ref="nameInput"
           v-model="name"
-          class="input"
+          class="input hero"
           :placeholder="onBranch ?? 'Two-factor auth'"
           @keydown.enter="submit"
         />
@@ -470,14 +470,17 @@ async function submit() {
           </div>
         </div>
 
-        <div class="row">
-          <div v-if="mode === 'new'" class="bbox" :class="{ blank: !name.trim() }">
+        <!-- One control, read as one sentence: this branch, from that one. It
+             was a dashed box, a loose word and a second box — three objects
+             for a single statement. -->
+        <div class="bline">
+          <div v-if="mode === 'new'" class="bseg" :class="{ blank: !name.trim() }">
             <GitBranch class="sm" />
             <code class="mono bname">{{ name.trim() ? slug : 'named after the topic' }}</code>
           </div>
 
           <div v-else ref="branchRoot" class="bpick">
-            <button class="bbox press" :class="{ on: branchOpen, blank: !picked }" @click="toggleBranch">
+            <button class="bseg press" :class="{ on: branchOpen, blank: !picked }" @click="toggleBranch">
               <GitBranch class="sm" />
               <code class="mono bname">{{ picked ?? 'Choose a branch…' }}</code>
               <ChevronDown class="ch" />
@@ -517,9 +520,11 @@ async function submit() {
           </div>
 
           <template v-if="mode === 'new' || pickedPartial">
+            <span class="bdiv" />
             <span class="from">from</span>
             <BaseSelect
               v-model="base"
+              variant="inline"
               :options="baseOptions"
               :loading="branchLoading"
               fallback="default branch"
@@ -565,14 +570,12 @@ async function submit() {
         <span class="lbl">Setup</span>
         <div class="cards">
           <button class="card" :class="{ on: setup === 'branch' }" @click="setup = 'branch'">
-            <GitBranch class="sm" />
-            <strong>Here</strong>
-            <span>In the repositories themselves</span>
+            <span class="chead"><GitBranch class="sm" /><strong>Here</strong><i class="radio" /></span>
+            <span class="cdesc">In the repositories themselves</span>
           </button>
           <button class="card" :class="{ on: setup === 'isolated' }" @click="setup = 'isolated'">
-            <FolderTree class="sm" />
-            <strong>Separate</strong>
-            <span>A folder of its own per repository</span>
+            <span class="chead"><FolderTree class="sm" /><strong>Separate</strong><i class="radio" /></span>
+            <span class="cdesc">A folder of its own per repository</span>
           </button>
         </div>
       </div>
@@ -703,51 +706,57 @@ async function submit() {
 .gi { color: var(--text-dim); }
 .grow { flex: 1; }
 
-.form { display: flex; flex-direction: column; gap: 18px; padding-bottom: 14px; }
+.form { display: flex; flex-direction: column; gap: 20px; padding: 2px 0 16px; }
 .field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
-.lbl {
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-.lbl .dim { margin-left: 4px; font-weight: 500; letter-spacing: 0; text-transform: none; opacity: 0.7; }
+/* The label the sheet had before: sentence case, in the muted ink. Small
+   capitals on five sections made a form of it; this reads as a question. */
+.lbl { font-size: var(--fs-xs); color: var(--text-muted); }
+.lbl .dim { margin-left: 4px; color: var(--text-dim); }
 .lblrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 22px; }
 .help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.55; }
 .help code { color: var(--text-muted); }
 .help.bad { color: var(--danger); }
 
-.row { display: flex; align-items: center; gap: 8px; }
+/* ── surfaces ────────────────────────────────────────────────────────────
+   One well for everything on the sheet, and it is the input's own: the
+   `--bg-sunken` fill and `--line` border of `.input`, so the branch line, the
+   list and the cards are the same object as the field above them. */
+.form { --well: var(--bg-sunken); --well-shadow: none; }
+/* The name is the one thing typed here, and it names everything after it. */
+.input.hero { padding: 10px 12px; font-size: var(--fs-md); font-weight: 520; letter-spacing: -0.005em; }
+.input.hero::placeholder { font-weight: 400; }
 
-/* The branch, drawn as the field it sits among: the box of the name above it,
-   so a name that is derived and a name that is chosen read as one kind of
-   answer. Only the chosen one is pressable, and only it says so. */
-.bpick { position: relative; flex: 1; min-width: 0; }
-.bbox {
+/* The branch sentence: name on the left, base on the right, one border. */
+.bline {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  box-shadow: var(--well-shadow);
+  transition: border-color var(--dur-1) var(--ease-soft), box-shadow var(--dur-1) var(--ease-soft);
+}
+.bline:hover { border-color: var(--line-strong); }
+.bline:has(.on) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* Static, so the list it opens hangs from the whole line, not from its left part. */
+.bpick { flex: 1; min-width: 0; display: flex; }
+.bseg {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  padding: 9px 11px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--bg-sunken);
+  padding: 0 12px;
+  border-radius: calc(var(--radius-sm) - 1px);
   font-size: var(--fs-sm);
-  line-height: 1.55;
   text-align: left;
-  transition:
-    border-color var(--dur-1) var(--ease-soft),
-    background var(--dur-1) var(--ease-soft);
+  transition: background var(--dur-1) var(--ease-soft);
 }
-/* Derived, not typed: no well to type into, so no sunken fill either. */
-div.bbox { background: none; border-style: dashed; }
-.bbox.press:hover { border-color: var(--line-strong); }
-.bbox.press.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.bbox .lucide { flex: none; color: var(--text-dim); }
-.bbox .ch { width: 12px; height: 12px; opacity: 0.6; }
+.bseg.press:hover, .bseg.press.on { background: var(--hover); }
+.bseg .lucide { flex: none; color: var(--text-dim); }
+.bseg .ch { width: 12px; height: 12px; opacity: 0.6; }
 .bname {
   flex: 1 1 auto;
   min-width: 0;
@@ -755,10 +764,18 @@ div.bbox { background: none; border-style: dashed; }
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--accent);
+  font-weight: 500;
 }
-.bbox.blank .bname { color: var(--text-dim); font-family: var(--font); }
-.from { flex: none; font-size: var(--fs-xs); color: var(--text-dim); }
+.bseg.blank .bname { color: var(--text-dim); font-family: var(--font); font-weight: 400; }
+.bdiv { flex: none; width: 1px; margin: 8px 0; background: var(--line); }
+.from { flex: none; align-self: center; padding-left: 12px; font-size: var(--fs-xs); color: var(--text-dim); }
 
+/* A list that arrives rather than appears: 110ms, and only the list. */
+.bmenu { animation: pop var(--dur-1) var(--ease-soft); transform-origin: top; }
+@keyframes pop {
+  from { opacity: 0; transform: translateY(-3px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
 .bmenu {
   top: calc(100% + 4px);
   left: 0;
@@ -809,7 +826,8 @@ div.bbox { background: none; border-style: dashed; }
   flex-direction: column;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg-sunken);
+  background: var(--well);
+  box-shadow: var(--well-shadow);
 }
 .list.pad { padding: 6px 12px 8px; }
 .check {
@@ -820,7 +838,7 @@ div.bbox { background: none; border-style: dashed; }
   font-size: var(--fs-sm);
   color: var(--text-muted);
 }
-.lrow { padding: 0 12px; min-height: 34px; gap: 5px; }
+.lrow { padding: 0 12px; min-height: 36px; gap: 5px; transition: background var(--dur-1) var(--ease-soft); }
 .lrow + .lrow { border-top: 1px solid var(--line-soft); }
 /* No `overflow: hidden` on the list — a row's base list has to leave it — so
    the hover fill rounds its own two ends instead. */
@@ -830,6 +848,7 @@ div.bbox { background: none; border-style: dashed; }
 .lrow:hover { background: var(--hover); }
 .rpick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; align-self: stretch; }
 .rname { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rname { transition: color var(--dur-1) var(--ease-soft); }
 .lrow.off .rname { color: var(--text-dim); }
 /* What happens here, in the repository's own row. Ink only where there is
    something to read: a branch that is already there, or one in the way. */
@@ -857,25 +876,48 @@ div.bbox { background: none; border-style: dashed; }
   min-width: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-  padding: 10px 11px 11px;
+  /* Said, not inherited: a button centres its children, and the head then
+     shrank to its words with the ring stuck to the title. */
+  align-items: stretch;
+  gap: 4px;
+  padding: 11px 12px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
-  background: var(--bg-sunken);
+  background: var(--well);
+  box-shadow: var(--well-shadow);
   text-align: left;
   transition:
     border-color var(--dur-1) var(--ease-soft),
-    background var(--dur-1) var(--ease-soft);
+    background var(--dur-1) var(--ease-soft),
+    box-shadow var(--dur-1) var(--ease-soft),
+    transform var(--dur-1) var(--ease-soft);
 }
-.card .lucide { color: var(--text-dim); margin-bottom: 2px; }
-.card strong { font-size: var(--fs-sm); color: var(--text); font-weight: 620; }
-.card > span { font-size: 10px; color: var(--text-dim); line-height: 1.4; }
-.card:hover { border-color: var(--line-strong); background: var(--hover); }
+.card:active { transform: scale(0.99); }
+.chead { display: flex; align-items: center; gap: 7px; }
+.chead .lucide { flex: none; color: var(--text-dim); }
+.chead strong { flex: 1; font-size: var(--fs-sm); color: var(--text); font-weight: 620; }
+.cdesc { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.4; }
+/* It is one choice of two, so it says so the way a choice does: the ring is
+   empty on the one you did not take. The fill alone left the unchosen card
+   looking like a disabled one. */
+.radio {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  transition: border-color var(--dur-1) var(--ease-soft), border-width var(--dur-1) var(--ease-soft);
+}
+.card:hover { border-color: var(--line-strong); }
 .card.on,
-.card.on:hover { border-color: var(--accent); background: var(--accent-soft); }
-.card.on strong,
-.card.on .lucide { color: var(--accent); }
+.card.on:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.card.on .chead strong,
+.card.on .chead .lucide { color: var(--accent); }
+.card.on .radio { border-color: var(--accent); border-width: 4.5px; }
 
 .none { margin: 4px 0 0; font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.55; }
 

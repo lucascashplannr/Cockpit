@@ -24,7 +24,7 @@ const props = withDefaults(
     options: { name: string; note?: string }[]
     /** What an empty choice resolves to, shown in its place. */
     fallback: string
-    variant?: 'field' | 'word'
+    variant?: 'field' | 'word' | 'inline'
     loading?: boolean
     /** Said in amber: the chosen branch is not somewhere it needs to be. */
     problem?: string
@@ -176,6 +176,22 @@ onBeforeUnmount(() => {
 .as-field .trigger.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .as-field .trigger.dflt { color: var(--text-dim); font-family: var(--font); }
 
+/* Inline: the right half of a control that already has a border — it brings
+   none of its own, and fills the height it is given. */
+.bs.as-inline { flex: none; align-self: stretch; max-width: 46%; }
+.as-inline .trigger {
+  gap: 6px;
+  height: 100%;
+  padding: 0 11px 0 7px;
+  border-radius: calc(var(--radius-sm) - 1px);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  transition: background var(--dur-1) var(--ease-soft);
+}
+.as-inline .trigger:hover, .as-inline .trigger.on { background: var(--hover); }
+.as-inline .trigger.dflt { color: var(--text-muted); font-family: var(--font); }
+
 /* The word: text until it is under the cursor, like the branch on the bar. */
 .as-word .trigger {
   gap: 3px;
@@ -200,6 +216,12 @@ onBeforeUnmount(() => {
   width: 280px;
   max-height: 280px;
   padding: 6px;
+  animation: pop var(--dur-1) var(--ease-soft);
+  transform-origin: top right;
+}
+@keyframes pop {
+  from { opacity: 0; transform: translateY(-3px) scale(0.99); }
+  to { opacity: 1; transform: none; }
 }
 .find {
   flex: none;
