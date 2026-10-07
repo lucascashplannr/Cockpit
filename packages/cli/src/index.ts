@@ -869,7 +869,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     if (sub === 'open') {
       const name = args[1]
       if (!name) {
-        out('usage: cockpit topic open "<name>" [--repos a,b] [--base main] [--setup branch|isolated]')
+        out('usage: cockpit topic open "<name>" [--branch existing] [--repos a,b] [--base main] [--setup branch|isolated]')
         process.exit(1)
       }
       const flags = parseFlags(args.slice(2))
@@ -891,7 +891,8 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
       // §7 — what git will not check out. Shown with the plan so the whole of
       // what is about to happen is on one screen, and passed only when the
       // user said yes: a detected proposal nobody saw never writes to a .env.
-      const slug = slugify(name)
+      // An existing branch is taken as it is named; only a new one is derived.
+      const slug = flags.branch ?? slugify(name)
       const seed =
         setup === 'branch' || flags['no-seed'] !== undefined
           ? []
@@ -907,6 +908,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
         setup,
         repoWorkspaceIds,
         base: flags.base,
+        ...(flags.branch ? { branch: flags.branch } : {}),
         ...(carrying.length
           ? { seed: carrying, rememberSeed: flags['no-remember'] === undefined }
           : {}),
@@ -1058,7 +1060,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
 
     out('usage: cockpit topic <command>')
     out('  ls [--all]                    every topic; --all includes closed ones')
-    out('  open "<name>"                 [--repos a,b --base main --setup isolated --yes]')
+    out('  open "<name>"                 [--branch existing --repos a,b --base main --setup isolated --yes]')
     out('  merge [name]                  merge it onto the base branch in every repository')
     out('  start [name] [--force]        bring its servers up')
     out('  stop [name]                   servers down; the branches stay')

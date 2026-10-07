@@ -57,8 +57,11 @@
  *
  * 2.19 — `agent.summary`, and a `conversation` quote: another conversation of
  * the project tagged with `@`. An older core has no summary to give.
+ *
+ * 2.20 — `topic.open` takes `branch`, an existing branch to open the topic
+ * on. An older core ignores it and forks a new branch named after the topic.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 19 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 20 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

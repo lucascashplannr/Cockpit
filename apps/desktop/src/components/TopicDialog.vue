@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { ArrowRight, Database, FileKey, GitBranch, Layers, Loader, TriangleAlert, X } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  ArrowRight, ChevronDown, Cloud, Database, FileKey, GitBranch, Layers, Loader, Lock, Plus,
+  TriangleAlert, X,
+} from '@lucide/vue'
 import { slugify } from '@cockpit/shared'
-import type { DatabasePlan, SeedProposal } from '@cockpit/shared'
-import { openTopic, previewDatabase, previewSeed, state } from '../core/store.js'
+import type { BranchRef, DatabasePlan, SeedProposal } from '@cockpit/shared'
+import { client, openTopic, previewDatabase, previewSeed, state } from '../core/store.js'
 
 /**
  * §4 — opening a topic. One name, the repositories it spans, and the level
@@ -23,15 +26,154 @@ const repos = computed(() =>
   state.workspaces.filter((w) => w.projectId === state.activeProjectId && w.kind === 'main' && w.repo),
 )
 
+/* ── §4 — the branch: a new one, or one that is already there ─────────────
+ *
+ * A topic used to be able to *make* a branch and nothing else, so work begun
+ * in the terminal, or a colleague's branch on origin, had no way into a folder
+ * of its own short of `git worktree add` by hand. The picker lists what the
+ * chosen repositories already have; taking one opens the topic on it, as it
+ * stands, and only a repository that lacks it forks from the base.
+ */
+
+/** The existing branch the topic opens on; null is a new one named after it. */
+const picked = ref<string | null>(null)
+const branchOpen = ref(false)
+const branchLoading = ref(false)
+const branchQ = ref('')
+const branchRoot = ref<HTMLElement | null>(null)
+const branchField = ref<HTMLInputElement | null>(null)
+const branchesByRepo = ref<Record<string, BranchRef[]>>({})
+
+/** §3.4 — read when the sheet opens, never remembered between two of them. */
+async function loadBranches() {
+  branchLoading.value = true
+  const out: Record<string, BranchRef[]> = {}
+  await Promise.all(
+    repos.value.map(async (r) => {
+      try {
+        out[r.id] = await client.call('git.branches', { workspaceId: r.id })
+      } catch {
+        // One unreadable repository must not cost the others their list.
+        out[r.id] = []
+      }
+    }),
+  )
+  branchesByRepo.value = out
+  branchLoading.value = false
+}
+
+interface BranchOption {
+  name: string
+  /** The chosen repositories that have it, here or on origin, by name. */
+  repos: string[]
+  /** On origin only, everywhere it is: taking it creates the tracking branch. */
+  remoteOnly: boolean
+  /** Where it is already checked out, when that would stop the plan. */
+  heldAt: string | null
+  ts: number
+  subject: string
+}
+
+/**
+ * One row per branch name across the chosen repositories — `origin/dev` and a
+ * local `dev` are the same branch said twice, as in every other picker here.
+ *
+ * `heldAt` depends on the setup: a new folder cannot take a branch that is out
+ * anywhere, the repository's own checkout included, while a switch in place
+ * only minds the other folders.
+ */
+const branchOptions = computed<BranchOption[]>(() => {
+  const by = new Map<string, BranchOption>()
+  for (const r of repos.value) {
+    if (!selected.value.includes(r.id)) continue
+    for (const b of branchesByRepo.value[r.id] ?? []) {
+      const short = b.remoteOnly ? b.name.replace(/^[^/]+\//, '') : b.name
+      const held = b.checkedOutAt ?? (b.current && setup.value !== 'branch' ? r.path : null)
+      const o = by.get(short)
+      if (!o) {
+        by.set(short, {
+          name: short, repos: [r.name], remoteOnly: b.remoteOnly, heldAt: held, ts: b.ts, subject: b.subject,
+        })
+        continue
+      }
+      o.repos.push(r.name)
+      o.remoteOnly &&= b.remoteOnly
+      o.heldAt ??= held
+      if (b.ts > o.ts) {
+        o.ts = b.ts
+        o.subject = b.subject
+      }
+    }
+  }
+  return [...by.values()].sort((a, b) => b.ts - a.ts)
+})
+
+const branchMatches = computed(() => {
+  const t = branchQ.value.trim().toLowerCase()
+  return t ? branchOptions.value.filter((b) => b.name.toLowerCase().includes(t)) : branchOptions.value
+})
+
+const pickedOption = computed(() => branchOptions.value.find((b) => b.name === picked.value) ?? null)
+/** Somewhere the picked branch is missing, so the base still matters there. */
+const pickedPartial = computed(
+  () => !!picked.value && (pickedOption.value?.repos.length ?? 0) < selected.value.length,
+)
+/** The chosen repositories the picked branch is missing from, by name. */
+const pickedMissing = computed(() => {
+  const has = new Set(pickedOption.value?.repos ?? [])
+  return repos.value.filter((r) => selected.value.includes(r.id) && !has.has(r.name)).map((r) => r.name)
+})
+
+async function toggleBranch() {
+  branchOpen.value = !branchOpen.value
+  if (!branchOpen.value) return
+  branchQ.value = ''
+  await nextTick()
+  branchField.value?.focus()
+}
+
+function pickBranch(b: BranchOption | null) {
+  if (b?.heldAt) return
+  picked.value = b?.name ?? null
+  branchOpen.value = false
+}
+
+function branchTitle(b: BranchOption): string {
+  if (b.heldAt) {
+    return 'Already checked out at ' + b.heldAt + ' — git allows a branch in one worktree at a time'
+  }
+  return b.name + ' — in ' + b.repos.join(', ') + (b.subject ? ' — ' + b.subject : '')
+}
+
+/**
+ * Which repositories, by name. A count answered "how many" to someone asking
+ * "whose branch is this" — with five repositories, `1 of 5` names none of them.
+ */
+function branchNote(b: BranchOption): string {
+  if (b.heldAt) return 'in use'
+  if (selected.value.length < 2) return ''
+  return b.repos.length === selected.value.length ? 'all' : b.repos.join(', ')
+}
+
+function onDown(e: MouseEvent) {
+  if (branchRoot.value && !branchRoot.value.contains(e.target as Node)) branchOpen.value = false
+}
+onMounted(() => document.addEventListener('mousedown', onDown))
+onBeforeUnmount(() => document.removeEventListener('mousedown', onDown))
+
 /** The branch and folder name — the core's own function, not a copy of it.
- *  It is the branch, the folder, the hostname and the database name now. */
-const slug = computed(() => slugify(name.value))
+ *  It is the branch, the folder, the hostname and the database name now.
+ *  An existing branch is taken as it is named: the topic is found by it. */
+const slug = computed(() => picked.value ?? slugify(name.value))
 
 const taken = computed(() =>
   state.topics.some((f) => f.projectId === state.activeProjectId && f.slug === slug.value && f.state !== 'closed'),
 )
 
-const canOpen = computed(() => !!name.value.trim() && selected.value.length > 0 && !taken.value)
+/** On an existing branch the name is optional: the branch's own will do. */
+const canOpen = computed(
+  () => (!!name.value.trim() || !!picked.value) && selected.value.length > 0 && !taken.value,
+)
 
 /* ── §7 — the local config a worktree cannot check out ───────────────────
  *
@@ -71,7 +213,7 @@ const seedCount = computed(() =>
 
 /** Debounced: this runs while the topic name is being typed. */
 async function refreshSeed() {
-  if (!seedApplies.value || !name.value.trim() || !selected.value.length) {
+  if (!seedApplies.value || !(name.value.trim() || picked.value) || !selected.value.length) {
     seed.value = []
     return
   }
@@ -133,6 +275,10 @@ watch(
     if (!open) return
     name.value = ''
     base.value = ''
+    picked.value = null
+    branchOpen.value = false
+    branchesByRepo.value = {}
+    void loadBranches()
     setup.value = 'isolated'
     selected.value = repos.value.map((r) => r.id)
     busy.value = false
@@ -145,7 +291,12 @@ watch(
   },
 )
 
+/** Innermost layer first: esc closes the branch list before it closes the sheet. */
 function close() {
+  if (branchOpen.value) {
+    branchOpen.value = false
+    return
+  }
   if (!busy.value) state.topicDialogOpen = false
 }
 
@@ -157,7 +308,8 @@ async function submit() {
     name: name.value.trim(),
     setup: setup.value,
     repoWorkspaceIds: selected.value,
-    ...(base.value.trim() ? { base: base.value.trim() } : {}),
+    ...(picked.value ? { branch: picked.value } : {}),
+    ...(base.value.trim() && (!picked.value || pickedPartial.value) ? { base: base.value.trim() } : {}),
     ...(approved.length ? { seed: approved, rememberSeed: remember.value } : {}),
     ...(seedApplies.value && cloneDb.value && dbClonable.value.length ? { cloneDatabase: true } : {}),
   })
@@ -182,16 +334,68 @@ async function submit() {
             ref="nameInput"
             v-model="name"
             class="input"
-            placeholder="Two-factor auth"
+            :placeholder="picked ?? 'Two-factor auth'"
             @keydown.enter="submit"
           />
-          <span class="hint">
-            <GitBranch class="sm" />
-            <code class="mono">{{ slug }}</code>
-            <span v-if="taken" class="bad">— already in use by an open topic</span>
-            <span v-else>— the branch created in every repository below</span>
-          </span>
         </label>
+
+        <div class="field">
+          <span class="lbl">Branch</span>
+          <div ref="branchRoot" class="bpick">
+            <button class="input bbtn" :class="{ on: branchOpen }" @click="toggleBranch">
+              <GitBranch class="sm" />
+              <code class="mono bname">{{ slug }}</code>
+              <span class="bkind">{{ picked ? 'existing' : 'new' }}</span>
+              <ChevronDown class="ch" />
+            </button>
+
+            <div v-if="branchOpen" class="menu bmenu">
+              <input
+                ref="branchField"
+                v-model="branchQ"
+                class="find"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="Find a branch…"
+              >
+              <div class="rows">
+                <button class="mk" @click="pickBranch(null)">
+                  <Plus />
+                  <span class="nm">New branch, named after the topic</span>
+                </button>
+                <span class="rule" />
+                <p v-if="branchLoading" class="bhint">Reading the branches…</p>
+                <template v-else>
+                  <button
+                    v-for="b in branchMatches"
+                    :key="b.name"
+                    :disabled="!!b.heldAt"
+                    :title="branchTitle(b)"
+                    @click="pickBranch(b)"
+                  >
+                    <component :is="b.heldAt ? Lock : b.remoteOnly ? Cloud : GitBranch" />
+                    <span class="nm">{{ b.name }}</span>
+                    <span v-if="branchNote(b)" class="bnote">{{ branchNote(b) }}</span>
+                  </button>
+                  <p v-if="!branchMatches.length" class="bhint">
+                    {{ branchQ.trim() ? 'Nothing matches.' : 'No branch in the chosen repositories.' }}
+                  </p>
+                </template>
+              </div>
+            </div>
+          </div>
+          <span class="hint">
+            <span v-if="taken" class="bad">Already in use by an open topic.</span>
+            <span v-else-if="!picked">Created in every repository below.</span>
+            <span v-else-if="pickedPartial">
+              <template v-if="pickedOption">Opened as it stands in {{ pickedOption.repos.join(', ') }}; created</template>
+              <template v-else>Created</template>
+              from the base in {{ pickedMissing.join(', ') }}.
+            </span>
+            <span v-else>Opened as it stands; nothing is forked.</span>
+          </span>
+        </div>
 
         <div class="field">
           <span class="lbl">Repositories</span>
@@ -222,7 +426,7 @@ async function submit() {
           </span>
         </div>
 
-        <label class="field">
+        <label v-if="!picked || pickedPartial" class="field">
           <span class="lbl">Fork from <span class="opt">optional</span></span>
           <input v-model="base" class="input" placeholder="each repository's default branch" />
         </label>
@@ -417,8 +621,74 @@ async function submit() {
   font-size: var(--fs-xs);
   color: var(--text-dim);
 }
-.hint code { color: var(--accent); }
 .hint .bad { color: var(--danger); }
+
+/* The branch, drawn as the field it sits among: same box as the name above it,
+   so choosing one reads as filling in the sheet rather than opening a menu. */
+.bpick { position: relative; }
+.bbtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.bbtn .lucide { flex: none; color: var(--text-dim); }
+.bbtn .ch { width: 12px; height: 12px; opacity: 0.6; }
+.bname {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+}
+.bkind { flex: none; font-size: 10px; color: var(--text-dim); }
+
+.bmenu {
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  padding: 6px;
+}
+.find {
+  flex: none;
+  height: 30px;
+  margin-bottom: 5px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-family: var(--font);
+}
+.find:focus { outline: none; border-color: var(--focus-ring); }
+.find::placeholder { color: var(--text-dim); }
+/* Same list as the branch chip's: rows that keep their height whatever their
+   number, and a name that gives way before the row grows sideways. */
+.rows { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.rows > button { flex: none; width: 100%; min-width: 0; height: 26px; }
+.rows > button:disabled { opacity: 0.45; cursor: default; }
+.nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Its own class: `.note` is already the paragraph under Repositories, and its
+   top margin dropped this a few pixels below the name it sits beside. The
+   repository names give way before the branch does, but never to nothing. */
+.bnote {
+  flex: 0 1 auto;
+  min-width: 48px;
+  max-width: 50%;
+  margin-left: auto;
+  padding-left: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.mk .nm { color: var(--accent); }
+.bhint { margin: 0; padding: 10px 9px; font-size: var(--fs-xs); color: var(--text-dim); }
 
 .check {
   display: flex;

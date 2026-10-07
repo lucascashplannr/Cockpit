@@ -5,7 +5,7 @@ import type {
   Setup, DatabasePlan, Topic, PlanPreview, PlanStep, SeedProposal, Workspace,
 } from '@cockpit/shared'
 import { append } from '../journal.js'
-import { defaultBranch, git } from '../git.js'
+import { defaultBranch, git, listWorktrees } from '../git.js'
 import * as plans from '../plans.js'
 import { pushRefusal } from '../protect.js'
 import * as registry from '../registry.js'
@@ -48,6 +48,14 @@ export interface OpenTopicInput {
   /** Main checkouts to span. Empty means every repository in the project. */
   repoWorkspaceIds?: string[]
   base?: string
+  /**
+   * §4 — a branch that already exists, to open the topic *on* rather than a
+   * name to derive one from. Taken verbatim: it is the topic's slug, so a
+   * `feature/2fa` stays `feature/2fa` — the same thing `adopt` records for a
+   * topic found on disk. A repository that does not have it gets it created
+   * from the base, like any other topic.
+   */
+  branch?: string
   ticketUrl?: string
   /**
    * §7 — the gitignored local config to carry into each worktree, as approved.
@@ -82,9 +90,10 @@ export async function openPlan(
   const project = registry.allProjects().find((p) => p.id === input.projectId)
   if (!project) throw new Error('unknown project: ' + input.projectId)
 
-  const name = input.name.trim()
+  const onBranch = input.branch?.trim() || null
+  const name = input.name.trim() || onBranch || ''
   if (!name) throw new Error('a topic needs a name')
-  const slug = store.slugify(name)
+  const slug = onBranch ?? store.slugify(name)
 
   const existing = store.bySlug(project.id, slug)
   if (existing && existing.state !== 'closed') {
@@ -103,26 +112,78 @@ export async function openPlan(
   const rootPath =
     input.setup === 'branch' ? null : plans.topicRootPath(repos[0]!.path, slug)
 
+  if (onBranch) {
+    // The name came from a list of refs, but the plan is the layer that has to
+    // be right on its own: one answer from git, asked of the first repository.
+    const ok = await git(repos[0]!.path, ['check-ref-format', '--branch', onBranch], 10_000)
+    if (!ok.ok) throw new Error('"' + onBranch + '" is not a branch name git will take')
+  }
+
   for (const repo of repos) {
     const base = input.base ?? (await baseFor(repo.path))
     const branchTaken = await hasBranch(repo.path, slug)
-    if (branchTaken) {
+    // Known to this clone as of its last fetch — the step below fetches it
+    // again before anything is built on it.
+    const onRemote = !!onBranch && !branchTaken && (await hasRemoteBranch(repo.path, slug))
+    /** Nothing to fork: the branch is here, or on the remote to be tracked. */
+    const reused = !!onBranch && (branchTaken || onRemote)
+
+    if (branchTaken && !onBranch) {
       warnings.push(repo.name + ': branch "' + slug + '" already exists and will be reused as-is.')
     }
+    if (onBranch && !reused) {
+      warnings.push(
+        repo.name + ': no branch "' + slug + '" here or on origin — it is created from ' + base + '.',
+      )
+    }
 
-    steps.push({
-      title: repo.name + ': fetch ' + base,
-      command: 'git fetch origin ' + base,
-      cwd: repo.path,
-      destructive: false,
-    })
+    // Git allows a branch in one worktree at a time. A new folder cannot take
+    // one that is out anywhere, the main checkout included; a switch in place
+    // only minds the others.
+    if (branchTaken) {
+      const held = (await listWorktrees(repo.path)).find(
+        (w) => w.branch === slug && (input.setup !== 'branch' || w.path !== repo.path),
+      )
+      if (held) {
+        warnings.push(
+          repo.name + ': "' + slug + '" is already checked out at ' + held.path +
+            ' — git allows a branch in one worktree at a time, so the plan will stop there.' +
+            (input.setup !== 'branch' && held.path === repo.path
+              ? ' Switch that checkout to another branch first.'
+              : ''),
+        )
+      }
+    }
+
+    // A branch that is already here has nothing to fetch: it is opened as it
+    // stands, and catching it up is the topic's own verb afterwards.
+    const fetched = reused ? (onRemote ? slug : null) : base
+    if (fetched) {
+      steps.push({
+        title: repo.name + ': fetch ' + fetched,
+        command: 'git fetch origin ' + fetched,
+        cwd: repo.path,
+        destructive: false,
+      })
+    }
 
     if (input.setup === 'branch') {
       // A branch in the existing checkout. Switching back is the only honest
       // undo: deleting the branch could take a commit the agent already made.
+      const dirty = (repo.git?.staged ?? 0) + (repo.git?.unstaged ?? 0)
+      if (reused && dirty) {
+        warnings.push(
+          repo.name + ': ' + dirty + ' uncommitted change(s) come across to "' + slug +
+            '". If any would be overwritten, git refuses and the plan stops there.',
+        )
+      }
       steps.push({
-        title: repo.name + ': create branch ' + slug,
-        command: 'git switch -c ' + slug,
+        title: repo.name + (reused ? ': switch to ' : ': create branch ') + slug,
+        command: branchTaken && onBranch
+          ? 'git switch ' + slug
+          : onRemote
+            ? 'git switch -c ' + slug + ' --track origin/' + slug
+            : 'git switch -c ' + slug,
         cwd: repo.path,
         destructive: false,
         undo: [{ title: repo.name + ': switch back', command: 'git switch -', cwd: repo.path }],
@@ -139,8 +200,10 @@ export async function openPlan(
     // branch and the checkout come undone separately.
     if (!branchTaken) {
       steps.push({
-        title: repo.name + ': create branch ' + slug,
-        command: 'git branch ' + slug + ' origin/' + base,
+        title: repo.name + (onRemote ? ': track origin/' : ': create branch ') + slug,
+        command: onRemote
+          ? 'git branch --track ' + slug + ' origin/' + slug
+          : 'git branch ' + slug + ' origin/' + base,
         cwd: repo.path,
         destructive: false,
         undo: [{ title: repo.name + ': delete branch ' + slug, command: 'git branch -D ' + slug, cwd: repo.path }],
@@ -316,6 +379,11 @@ async function runSeed(
 
 async function hasBranch(repoPath: string, branch: string): Promise<boolean> {
   const r = await git(repoPath, ['rev-parse', '--verify', '--quiet', 'refs/heads/' + branch], 10_000)
+  return r.ok && !!r.stdout.trim()
+}
+
+async function hasRemoteBranch(repoPath: string, branch: string): Promise<boolean> {
+  const r = await git(repoPath, ['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/' + branch], 10_000)
   return r.ok && !!r.stdout.trim()
 }
 

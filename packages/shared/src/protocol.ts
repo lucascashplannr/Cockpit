@@ -400,6 +400,12 @@ export interface Rpc {
       repoWorkspaceIds?: string[]
       /** Branch to fork from; defaults to each repo's own default branch. */
       base?: string
+      /**
+       * An existing branch to open the topic on, verbatim — it becomes the
+       * slug, and `name` may then be empty. Reused where it is local, tracked
+       * where it is only on origin, created from the base where it is neither.
+       */
+      branch?: string
       ticketUrl?: string
       /**
        * §7 — the local config to carry into each worktree, as approved by the
