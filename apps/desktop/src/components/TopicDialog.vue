@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  ArrowRight, ChevronDown, Cloud, Database, FileKey, GitBranch, Layers, Loader, Lock, Plus,
-  TriangleAlert, X,
+  ArrowRight, ChevronDown, Cloud, Database, FileKey, FolderTree, GitBranch, Layers, Lock,
+  TriangleAlert,
 } from '@lucide/vue'
 import { slugify } from '@cockpit/shared'
-import type { BranchRef, DatabasePlan, SeedProposal } from '@cockpit/shared'
+import type { BranchRef, DatabasePlan, SeedProposal, Workspace } from '@cockpit/shared'
 import { client, openTopic, previewDatabase, previewSeed, state } from '../core/store.js'
+import BaseSelect from './BaseSelect.vue'
+import DialogShell from './DialogShell.vue'
 
 /**
  * §4 — opening a topic. One name, the repositories it spans, and the level
@@ -35,8 +37,16 @@ const repos = computed(() =>
  * stands, and only a repository that lacks it forks from the base.
  */
 
-/** The existing branch the topic opens on; null is a new one named after it. */
+/**
+ * Said outright rather than left inside a list: whether the branch is made or
+ * taken is the first thing this sheet has to know, and a row at the top of a
+ * dropdown was the only place that asked.
+ */
+const mode = ref<'new' | 'existing'>('new')
+/** The existing branch last chosen. Kept across a look at New and back. */
 const picked = ref<string | null>(null)
+/** The branch the topic opens on, when it is one that is already there. */
+const onBranch = computed(() => (mode.value === 'existing' ? picked.value : null))
 const branchOpen = ref(false)
 const branchLoading = ref(false)
 const branchQ = ref('')
@@ -113,16 +123,109 @@ const branchMatches = computed(() => {
   return t ? branchOptions.value.filter((b) => b.name.toLowerCase().includes(t)) : branchOptions.value
 })
 
-const pickedOption = computed(() => branchOptions.value.find((b) => b.name === picked.value) ?? null)
+const pickedOption = computed(() => branchOptions.value.find((b) => b.name === onBranch.value) ?? null)
 /** Somewhere the picked branch is missing, so the base still matters there. */
 const pickedPartial = computed(
-  () => !!picked.value && (pickedOption.value?.repos.length ?? 0) < selected.value.length,
+  () => !!onBranch.value && (pickedOption.value?.repos.length ?? 0) < selected.value.length,
 )
-/** The chosen repositories the picked branch is missing from, by name. */
-const pickedMissing = computed(() => {
-  const has = new Set(pickedOption.value?.repos ?? [])
-  return repos.value.filter((r) => selected.value.includes(r.id) && !has.has(r.name)).map((r) => r.name)
+
+/* ── the base: one for the topic, and one per repository when they differ ──
+ *
+ * "Fork from" was one text field for every repository, which is the right
+ * default and the wrong ceiling: a front that works against `dev` beside a
+ * back that works against `master` is the ordinary case, not the exotic one.
+ * The field above the list sets it for all of them; a repository's own row
+ * overrides it for that one.
+ */
+
+/** Base chosen for one repository, by workspace id. Absent follows the field. */
+const repoBase = ref<Record<string, string>>({})
+
+const shortOf = (b: BranchRef) => (b.remoteOnly ? b.name.replace(/^[^/]+\//, '') : b.name)
+
+/**
+ * The branches a repository can fork from. The plan fetches the base from
+ * origin and branches off `origin/<base>`, so a branch that exists only here
+ * is not one — offering it would be offering a step that fails.
+ */
+function basesIn(r: Workspace): string[] {
+  const out = new Set<string>()
+  for (const b of branchesByRepo.value[r.id] ?? []) {
+    if (b.remoteOnly || b.upstream) out.add(shortOf(b))
+  }
+  return [...out]
+}
+
+/** Every base across the chosen repositories, saying whose when not all. */
+const baseOptions = computed(() => {
+  const chosen = repos.value.filter((r) => selected.value.includes(r.id))
+  const by = new Map<string, string[]>()
+  for (const r of chosen) {
+    for (const n of basesIn(r)) by.set(n, [...(by.get(n) ?? []), r.name])
+  }
+  return [...by].map(([name, inRepos]) => ({
+    name,
+    ...(chosen.length > 1 && inRepos.length < chosen.length ? { note: inRepos.join(', ') } : {}),
+  }))
 })
+
+/** What a repository's row resolves to when it has no choice of its own. */
+function inheritedBase(r: Workspace): string {
+  return base.value || r.git?.base || 'default branch'
+}
+function baseOf(r: Workspace): string {
+  return repoBase.value[r.id] || inheritedBase(r)
+}
+/** A base named for this repository that its origin does not have. */
+function baseProblem(r: Workspace): string {
+  const named = repoBase.value[r.id] || base.value
+  const known = basesIn(r)
+  if (!named || !known.length || known.includes(named)) return ''
+  return r.name + ' has no "' + named + '" on origin as far as this clone knows — pick another for it'
+}
+function setRepoBase(r: Workspace, v: string) {
+  const next = { ...repoBase.value }
+  if (v) next[r.id] = v
+  else delete next[r.id]
+  repoBase.value = next
+}
+
+/**
+ * What opening the topic does *in this repository* — the answer to "whose
+ * branch is this", given on the row of the repository being asked about
+ * rather than as a count beside the branch.
+ */
+function repoPlan(r: Workspace): { text: string; tone: 'new' | 'has' | 'held' | 'idle'; title: string } {
+  // Said once or not at all: an unticked row is its own explanation, and in a
+  // sheet where every branch is new, "new, from" five times over is five
+  // copies of the line above the list. The base alone ends the row.
+  if (!selected.value.includes(r.id)) return { text: '', tone: 'idle', title: '' }
+  if (mode.value === 'new') return { text: '', tone: 'new', title: '' }
+  const want = onBranch.value
+  if (!want) return { text: r.git?.branch ?? '—', tone: 'idle', title: 'On ' + (r.git?.branch ?? '—') + ' now' }
+  const b = (branchesByRepo.value[r.id] ?? []).find((x) => shortOf(x) === want)
+  if (!b) return { text: 'new, from', tone: 'new', title: want + ' is not in ' + r.name + ' — it is created there' }
+  // Only here does the word earn its place: beside rows that say "already there".
+  const held = b.checkedOutAt ?? (b.current && setup.value !== 'branch' ? r.path : null)
+  if (held) {
+    return {
+      text: 'in use',
+      tone: 'held',
+      title: 'Already checked out at ' + held + ' — git allows a branch in one worktree at a time',
+    }
+  }
+  return b.remoteOnly
+    ? { text: 'on origin', tone: 'has', title: 'Fetched and tracked: ' + b.name }
+    : { text: 'already there', tone: 'has', title: b.subject }
+}
+
+async function setMode(m: 'new' | 'existing') {
+  mode.value = m
+  branchOpen.value = false
+  // Nothing chosen yet, so the list is the next thing wanted: open it rather
+  // than leave an empty field and a second click.
+  if (m === 'existing' && !picked.value) await toggleBranch()
+}
 
 async function toggleBranch() {
   branchOpen.value = !branchOpen.value
@@ -132,9 +235,9 @@ async function toggleBranch() {
   branchField.value?.focus()
 }
 
-function pickBranch(b: BranchOption | null) {
-  if (b?.heldAt) return
-  picked.value = b?.name ?? null
+function pickBranch(b: BranchOption) {
+  if (b.heldAt) return
+  picked.value = b.name
   branchOpen.value = false
 }
 
@@ -164,16 +267,15 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDown))
 /** The branch and folder name — the core's own function, not a copy of it.
  *  It is the branch, the folder, the hostname and the database name now.
  *  An existing branch is taken as it is named: the topic is found by it. */
-const slug = computed(() => picked.value ?? slugify(name.value))
+const slug = computed(() => (mode.value === 'existing' ? (picked.value ?? '') : slugify(name.value)))
 
 const taken = computed(() =>
   state.topics.some((f) => f.projectId === state.activeProjectId && f.slug === slug.value && f.state !== 'closed'),
 )
 
 /** On an existing branch the name is optional: the branch's own will do. */
-const canOpen = computed(
-  () => (!!name.value.trim() || !!picked.value) && selected.value.length > 0 && !taken.value,
-)
+const ready = computed(() => (mode.value === 'existing' ? !!picked.value : !!name.value.trim()))
+const canOpen = computed(() => ready.value && selected.value.length > 0 && !taken.value)
 
 /* ── §7 — the local config a worktree cannot check out ───────────────────
  *
@@ -211,9 +313,17 @@ const seedCount = computed(() =>
   ),
 )
 
+/**
+ * Only the repositories with something to decide. One that carries nothing
+ * used to get a heading and a sentence saying so, and in a project of five
+ * that was most of the section: three paragraphs about nothing above the one
+ * file that needed a look.
+ */
+const seedShown = computed(() => seed.value.filter((p) => p.files.length || p.skipped.length))
+
 /** Debounced: this runs while the topic name is being typed. */
 async function refreshSeed() {
-  if (!seedApplies.value || !(name.value.trim() || picked.value) || !selected.value.length) {
+  if (!seedApplies.value || !ready.value || !selected.value.length) {
     seed.value = []
     return
   }
@@ -275,6 +385,8 @@ watch(
     if (!open) return
     name.value = ''
     base.value = ''
+    repoBase.value = {}
+    mode.value = 'new'
     picked.value = null
     branchOpen.value = false
     branchesByRepo.value = {}
@@ -304,12 +416,19 @@ async function submit() {
   if (!canOpen.value || busy.value) return
   busy.value = true
   const approved = seedApplies.value ? approvedSeed() : []
+  // Only where a base is used at all: a repository that already has the
+  // branch forks nothing, and one left out of the topic is not asked.
+  const forks = !onBranch.value || pickedPartial.value
+  const bases = Object.fromEntries(
+    Object.entries(repoBase.value).filter(([id, v]) => v && selected.value.includes(id)),
+  )
   await openTopic({
     name: name.value.trim(),
     setup: setup.value,
     repoWorkspaceIds: selected.value,
-    ...(picked.value ? { branch: picked.value } : {}),
-    ...(base.value.trim() && (!picked.value || pickedPartial.value) ? { base: base.value.trim() } : {}),
+    ...(onBranch.value ? { branch: onBranch.value } : {}),
+    ...(forks && base.value ? { base: base.value } : {}),
+    ...(forks && Object.keys(bases).length ? { bases } : {}),
     ...(approved.length ? { seed: approved, rememberSeed: remember.value } : {}),
     ...(seedApplies.value && cloneDb.value && dbClonable.value.length ? { cloneDatabase: true } : {}),
   })
@@ -318,34 +437,49 @@ async function submit() {
 </script>
 
 <template>
-  <div v-if="state.topicDialogOpen" class="scrim" @mousedown.self="close" @keydown.esc="close">
-    <div class="dlg" role="dialog" aria-label="Open a topic">
-      <header class="head">
-        <Layers class="sm gi" />
-        <h2>Open a topic</h2>
-        <span class="grow" />
-        <button class="icon-btn" title="Close (esc)" @click="close"><X class="sm" /></button>
-      </header>
+  <DialogShell
+    v-if="state.topicDialogOpen"
+    title="Open a topic"
+    :dismissible="!busy"
+    :on-escape="close"
+    @close="close"
+  >
+    <template #lead><Layers class="sm gi" /></template>
 
-      <div class="body">
-        <label class="field">
-          <span class="lbl">Name</span>
-          <input
-            ref="nameInput"
-            v-model="name"
-            class="input"
-            :placeholder="picked ?? 'Two-factor auth'"
-            @keydown.enter="submit"
-          />
-        </label>
+    <div class="form">
+      <label class="field">
+        <span class="lbl">Name <span v-if="mode === 'existing'" class="dim">optional</span></span>
+        <input
+          ref="nameInput"
+          v-model="name"
+          class="input"
+          :placeholder="onBranch ?? 'Two-factor auth'"
+          @keydown.enter="submit"
+        />
+      </label>
 
-        <div class="field">
+      <!-- §4 — made or taken, asked as the question it is. The base sits on
+           the same line because it is the same sentence: this branch, from
+           that one. -->
+      <div class="field">
+        <div class="lblrow">
           <span class="lbl">Branch</span>
-          <div ref="branchRoot" class="bpick">
-            <button class="input bbtn" :class="{ on: branchOpen }" @click="toggleBranch">
+          <div class="seg">
+            <button :class="{ on: mode === 'new' }" @click="setMode('new')">New</button>
+            <button :class="{ on: mode === 'existing' }" @click="setMode('existing')">Existing</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div v-if="mode === 'new'" class="bbox" :class="{ blank: !name.trim() }">
+            <GitBranch class="sm" />
+            <code class="mono bname">{{ name.trim() ? slug : 'named after the topic' }}</code>
+          </div>
+
+          <div v-else ref="branchRoot" class="bpick">
+            <button class="bbox press" :class="{ on: branchOpen, blank: !picked }" @click="toggleBranch">
               <GitBranch class="sm" />
-              <code class="mono bname">{{ slug }}</code>
-              <span class="bkind">{{ picked ? 'existing' : 'new' }}</span>
+              <code class="mono bname">{{ picked ?? 'Choose a branch…' }}</code>
               <ChevronDown class="ch" />
             </button>
 
@@ -360,16 +494,12 @@ async function submit() {
                 placeholder="Find a branch…"
               >
               <div class="rows">
-                <button class="mk" @click="pickBranch(null)">
-                  <Plus />
-                  <span class="nm">New branch, named after the topic</span>
-                </button>
-                <span class="rule" />
                 <p v-if="branchLoading" class="bhint">Reading the branches…</p>
                 <template v-else>
                   <button
                     v-for="b in branchMatches"
                     :key="b.name"
+                    :class="{ sel: b.name === picked }"
                     :disabled="!!b.heldAt"
                     :title="branchTitle(b)"
                     @click="pickBranch(b)"
@@ -385,67 +515,77 @@ async function submit() {
               </div>
             </div>
           </div>
-          <span class="hint">
-            <span v-if="taken" class="bad">Already in use by an open topic.</span>
-            <span v-else-if="!picked">Created in every repository below.</span>
-            <span v-else-if="pickedPartial">
-              <template v-if="pickedOption">Opened as it stands in {{ pickedOption.repos.join(', ') }}; created</template>
-              <template v-else>Created</template>
-              from the base in {{ pickedMissing.join(', ') }}.
+
+          <template v-if="mode === 'new' || pickedPartial">
+            <span class="from">from</span>
+            <BaseSelect
+              v-model="base"
+              :options="baseOptions"
+              :loading="branchLoading"
+              fallback="default branch"
+            />
+          </template>
+        </div>
+
+        <!-- No sentence under a branch that is fine: the rows below already
+             say, per repository, what becomes of it. -->
+        <span v-if="taken" class="help bad">An open topic already holds this branch.</span>
+      </div>
+
+      <div class="field">
+        <span class="lbl">Repositories</span>
+        <div v-if="repos.length" class="list">
+          <!-- A div, with the label inside it: a row that is one big label
+               ticks its checkbox for a click anywhere in the base list. -->
+          <div v-for="r in repos" :key="r.id" class="check lrow" :class="{ off: !selected.includes(r.id) }">
+            <label class="rpick">
+              <input v-model="selected" type="checkbox" :value="r.id" />
+              <span class="rname">{{ r.name }}</span>
+            </label>
+            <span v-if="repoPlan(r).text" class="rplan" :class="repoPlan(r).tone" :title="repoPlan(r).title">
+              <Lock v-if="repoPlan(r).tone === 'held'" />
+              {{ repoPlan(r).text }}
             </span>
-            <span v-else>Opened as it stands; nothing is forked.</span>
-          </span>
-        </div>
-
-        <div class="field">
-          <span class="lbl">Repositories</span>
-          <label v-for="r in repos" :key="r.id" class="check">
-            <input v-model="selected" type="checkbox" :value="r.id" />
-            <span class="rname">{{ r.name }}</span>
-            <span class="rbranch mono">{{ r.git?.branch ?? '—' }}</span>
-          </label>
-          <p v-if="!repos.length" class="none">No repository in this project.</p>
-          <p v-else-if="selected.length > 1" class="note">
-            A <code class="mono">CONTEXT.md</code> will be created at the topic root. Fill it in
-            before letting an agent span more than one of these.
-          </p>
-        </div>
-
-        <div class="field">
-          <span class="lbl">Setup</span>
-          <div class="segs">
-            <button class="seg" :class="{ on: setup === 'branch' }" @click="setup = 'branch'">
-              <strong>Here</strong><span>a branch in each repository</span>
-            </button>
-            <button class="seg" :class="{ on: setup === 'isolated' }" @click="setup = 'isolated'">
-              <strong>Separate</strong><span>each branch in its own folder</span>
-            </button>
+            <BaseSelect
+              v-if="repoPlan(r).tone === 'new'"
+              variant="word"
+              :model-value="repoBase[r.id] ?? ''"
+              :options="basesIn(r).map((name) => ({ name }))"
+              :loading="branchLoading"
+              :fallback="inheritedBase(r)"
+              :problem="baseProblem(r)"
+              @update:model-value="setRepoBase(r, $event)"
+            />
           </div>
-          <span class="hint">
-            You can always move up a level later; you never move down.
-          </span>
         </div>
+        <span v-else class="help">No repository in this project.</span>
+      </div>
 
-        <label v-if="!picked || pickedPartial" class="field">
-          <span class="lbl">Fork from <span class="opt">optional</span></span>
-          <input v-model="base" class="input" placeholder="each repository's default branch" />
-        </label>
+      <div class="field">
+        <span class="lbl">Setup</span>
+        <div class="cards">
+          <button class="card" :class="{ on: setup === 'branch' }" @click="setup = 'branch'">
+            <GitBranch class="sm" />
+            <strong>Here</strong>
+            <span>In the repositories themselves</span>
+          </button>
+          <button class="card" :class="{ on: setup === 'isolated' }" @click="setup = 'isolated'">
+            <FolderTree class="sm" />
+            <strong>Separate</strong>
+            <span>A folder of its own per repository</span>
+          </button>
+        </div>
+      </div>
 
-        <!-- §7 — git checks out tracked files only. Without this the worktree
-             has no .env and will not boot; with it copied verbatim, three
-             worktrees fight over one hostname and one database. -->
-        <div v-if="seedApplies && (seed.length || seedLoading)" class="field">
-          <span class="lbl">
-            Local config
-            <span class="opt">— what git will not check out</span>
-          </span>
+      <!-- §7 — git checks out tracked files only. Without this the worktree
+           has no .env and will not boot; with it copied verbatim, three
+           worktrees fight over one hostname and one database. -->
+      <div v-if="seedApplies && seedShown.length" class="field">
+        <span class="lbl">Local config <span class="dim">what git will not check out</span></span>
 
-          <p v-if="seedLoading && !seed.length" class="none">
-            <Loader class="sm spin" /> looking…
-          </p>
-
-          <div v-for="p in seed" :key="p.repo" class="seedrepo">
-            <div v-if="seed.length > 1" class="seedhead">
+        <div class="list pad">
+          <div v-for="p in seedShown" :key="p.repo" class="seedrepo">
+            <div v-if="selected.length > 1" class="seedhead">
               <span class="rname">{{ p.repo }}</span>
               <span v-if="p.source === 'manifest'" class="src">declared in cockpit.yaml</span>
             </div>
@@ -454,9 +594,6 @@ async function submit() {
                  resolved when something starts. -->
             <p v-if="p.wired" class="none">
               Its address and ports come from <code class="mono">cockpit.yaml</code> at start.
-            </p>
-            <p v-if="!p.files.length" class="none">
-              Nothing to carry — this branch checks out everything it needs.
             </p>
 
             <div v-for="f in p.files" :key="f.path" class="seedfile">
@@ -486,13 +623,12 @@ async function submit() {
                     @change="toggle(changeKey(p.repo, f.path, c.key))"
                   />
                   <code class="mono ckey">{{ c.key }}</code>
-                  <span v-if="c.from" class="from mono">{{ c.from }}</span>
+                  <span v-if="c.from" class="was mono">{{ c.from }}</span>
                   <ArrowRight class="sm ar" />
                   <span class="to mono">{{ c.to }}</span>
                 </label>
-                <!-- The repo header already says "declared in cockpit.yaml"; repeating
-                     it under every key is noise where the reason should be. -->
-                <p v-if="c.reason !== 'declared in cockpit.yaml'" class="why">{{ c.reason }}</p>
+                <!-- Why it changes is on the row's tooltip. Under every key it
+                     doubled the height of a list whose point is the values. -->
               </div>
             </div>
 
@@ -500,141 +636,118 @@ async function submit() {
               <code class="mono">{{ sk.path }}</code> — {{ sk.reason }}
             </p>
           </div>
-
-          <label v-if="seedCount && seed.some((p) => p.source !== 'manifest')" class="check remember">
-            <input v-model="remember" type="checkbox" />
-            <span>Remember this in <code class="mono">cockpit.yaml</code></span>
-            <span class="opt">— the next topic carries it without asking</span>
-          </label>
         </div>
 
-        <!-- §10 — the third thing that is global. Ports and hostnames are
-             already scoped per topic; the database is not, and folder
-             isolation cannot fix it. -->
-        <div v-if="seedApplies && dbs.length" class="field">
-          <span class="lbl">Database <span class="opt">— shared until it is not</span></span>
+        <label v-if="seedCount && seed.some((p) => p.source !== 'manifest')" class="check remember">
+          <input v-model="remember" type="checkbox" />
+          <span>Remember this in <code class="mono">cockpit.yaml</code></span>
+        </label>
+      </div>
 
-          <label v-if="dbClonable.length" class="check remember">
+      <!-- §10 — the third thing that is global. Ports and hostnames are
+           already scoped per topic; the database is not, and folder
+           isolation cannot fix it. -->
+      <div v-if="seedApplies && dbs.length" class="field">
+        <span class="lbl">Database <span class="dim">shared until it is not</span></span>
+
+        <div class="list pad">
+          <label v-if="dbClonable.length" class="check">
             <input v-model="cloneDb" type="checkbox" :disabled="dbMissingTools.length > 0" />
             <Database class="sm fi" />
-            <span>Give each branch its own copy</span>
+            <span class="rname">Give each branch its own copy</span>
           </label>
 
           <div v-for="d in dbs" :key="d.repo" class="dbrow">
             <span class="dbrepo">{{ d.repo }}</span>
             <span class="dbengine">{{ d.engine }}</span>
             <template v-if="d.to">
-              <code class="mono from">{{ d.from }}</code>
+              <code class="mono was">{{ d.from }}</code>
               <ArrowRight class="sm ar" />
               <code class="mono to">{{ d.to }}</code>
             </template>
             <span v-else class="why inline">{{ d.detail }}</span>
           </div>
-
-          <p v-if="dbMissingTools.length" class="warnline">
-            <TriangleAlert class="sm" />
-            <span>
-              {{ dbMissingTools.join(', ') }} not found — Cockpit cannot copy a database
-              without the client. The branch still gets its own name in
-              <code class="mono">.env</code>; create the database yourself.
-            </span>
-          </p>
-          <p v-else-if="cloneDb" class="why">
-            A full copy per branch: slow for a large database, and the same disk again.
-            Dropping them is part of deleting the topic — and unlike the folder, a database
-            has no Trash.
-          </p>
-          <p v-else-if="dbClonable.length" class="why">
-            Without this every branch points at
-            <code class="mono">{{ dbClonable[0]!.from }}</code>, so a migration run in one
-            reaches the others.
-          </p>
         </div>
-      </div>
 
-      <footer class="foot">
-        <span class="rp">
-          Nothing is created until you approve the plan.
-          <template v-if="seedApplies && seedCount">
-            {{ seedCount }} local file(s) carried in after it.
-          </template>
+        <p v-if="dbMissingTools.length" class="warnline">
+          <TriangleAlert class="sm" />
+          <span>
+            {{ dbMissingTools.join(', ') }} not found — Cockpit cannot copy a database
+            without the client. The branch still gets its own name in
+            <code class="mono">.env</code>; create the database yourself.
+          </span>
+        </p>
+        <span v-else-if="cloneDb" class="help">
+          A full copy: slow for a large database, and dropped for good with the topic.
         </span>
-        <span class="grow" />
-        <button class="btn ghost" @click="close">Cancel</button>
-        <button class="btn primary" :disabled="!canOpen || busy" @click="submit">
-          {{ busy ? 'Planning…' : 'Preview plan' }}
-        </button>
-      </footer>
+        <span v-else-if="dbClonable.length" class="help">
+          Otherwise a migration run in one branch reaches the others.
+        </span>
+      </div>
     </div>
-  </div>
+
+    <template #foot>
+      <span class="grow" />
+      <button class="btn ghost" :disabled="busy" @click="close">Cancel</button>
+      <button class="btn primary" :disabled="!canOpen || busy" @click="submit">
+        {{ busy ? 'Planning…' : 'Preview plan' }}
+      </button>
+    </template>
+  </DialogShell>
 </template>
 
 <style scoped>
-.scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--scrim);
-  backdrop-filter: blur(6px) saturate(1.1);
-}
-.dlg {
-  width: min(560px, 92vw);
-  max-height: 84vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--overlay);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-lg), var(--inset-top);
-  overflow: hidden;
-}
-
-.head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 16px 14px 14px 20px;
-  border-bottom: 1px solid var(--line);
-}
-.head h2 { margin: 0; font-size: var(--fs-lg); font-weight: 640; letter-spacing: -0.01em; }
+/* The chrome is DialogShell's. What is here is the form: the same uppercase
+   label, 7px under it, 18px between fields, that Add a repository and the
+   project sheet use — this one was written before they agreed on it. */
 .gi { color: var(--text-dim); }
 .grow { flex: 1; }
 
-.body { flex: 1; overflow-y: auto; padding: 18px 20px 6px; }
-.field { display: block; margin-bottom: 18px; }
+.form { display: flex; flex-direction: column; gap: 18px; padding-bottom: 14px; }
+.field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .lbl {
-  display: block;
   font-size: var(--fs-xs);
-  color: var(--text-muted);
-  margin-bottom: 6px;
-}
-.opt { color: var(--text-dim); }
-.hint {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--text-dim);
 }
-.hint .bad { color: var(--danger); }
+.lbl .dim { margin-left: 4px; font-weight: 500; letter-spacing: 0; text-transform: none; opacity: 0.7; }
+.lblrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 22px; }
+.help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.55; }
+.help code { color: var(--text-muted); }
+.help.bad { color: var(--danger); }
 
-/* The branch, drawn as the field it sits among: same box as the name above it,
-   so choosing one reads as filling in the sheet rather than opening a menu. */
-.bpick { position: relative; }
-.bbtn {
+.row { display: flex; align-items: center; gap: 8px; }
+
+/* The branch, drawn as the field it sits among: the box of the name above it,
+   so a name that is derived and a name that is chosen read as one kind of
+   answer. Only the chosen one is pressable, and only it says so. */
+.bpick { position: relative; flex: 1; min-width: 0; }
+.bbox {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-sunken);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
   text-align: left;
+  transition:
+    border-color var(--dur-1) var(--ease-soft),
+    background var(--dur-1) var(--ease-soft);
 }
-.bbtn .lucide { flex: none; color: var(--text-dim); }
-.bbtn .ch { width: 12px; height: 12px; opacity: 0.6; }
+/* Derived, not typed: no well to type into, so no sunken fill either. */
+div.bbox { background: none; border-style: dashed; }
+.bbox.press:hover { border-color: var(--line-strong); }
+.bbox.press.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.bbox .lucide { flex: none; color: var(--text-dim); }
+.bbox .ch { width: 12px; height: 12px; opacity: 0.6; }
 .bname {
   flex: 1 1 auto;
   min-width: 0;
@@ -643,7 +756,8 @@ async function submit() {
   white-space: nowrap;
   color: var(--accent);
 }
-.bkind { flex: none; font-size: 10px; color: var(--text-dim); }
+.bbox.blank .bname { color: var(--text-dim); font-family: var(--font); }
+.from { flex: none; font-size: var(--fs-xs); color: var(--text-dim); }
 
 .bmenu {
   top: calc(100% + 4px);
@@ -671,10 +785,9 @@ async function submit() {
 .rows { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
 .rows > button { flex: none; width: 100%; min-width: 0; height: 26px; }
 .rows > button:disabled { opacity: 0.45; cursor: default; }
+.rows > button.sel { color: var(--text); background: var(--hover); }
 .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Its own class: `.note` is already the paragraph under Repositories, and its
-   top margin dropped this a few pixels below the name it sits beside. The
-   repository names give way before the branch does, but never to nothing. */
+/* The repository names give way before the branch does, but never to nothing. */
 .bnote {
   flex: 0 1 auto;
   min-width: 48px;
@@ -687,27 +800,90 @@ async function submit() {
   font-size: 11px;
   color: var(--text-dim);
 }
-.mk .nm { color: var(--accent); }
 .bhint { margin: 0; padding: 10px 9px; font-size: var(--fs-xs); color: var(--text-dim); }
 
+/* One bordered list, as On disk is in Add a repository: the rows are a set,
+   and loose checkboxes on the card read as three unrelated settings. */
+.list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+.list.pad { padding: 6px 12px 8px; }
 .check {
   display: flex;
   align-items: center;
   gap: 9px;
-  height: 30px;
+  min-height: 30px;
   font-size: var(--fs-sm);
   color: var(--text-muted);
 }
-.check input { accent-color: var(--accent); }
-.rname { flex: 1; color: var(--text); }
-.rbranch { font-size: var(--fs-xs); color: var(--text-dim); }
-.none, .note { margin: 6px 0 0; font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.55; }
+.lrow { padding: 0 12px; min-height: 34px; gap: 5px; }
+.lrow + .lrow { border-top: 1px solid var(--line-soft); }
+/* No `overflow: hidden` on the list — a row's base list has to leave it — so
+   the hover fill rounds its own two ends instead. */
+.lrow:first-child { border-radius: calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0 0; }
+.lrow:last-child { border-radius: 0 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px); }
+.lrow:only-child { border-radius: calc(var(--radius-sm) - 1px); }
+.lrow:hover { background: var(--hover); }
+.rpick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; align-self: stretch; }
+.rname { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow.off .rname { color: var(--text-dim); }
+/* What happens here, in the repository's own row. Ink only where there is
+   something to read: a branch that is already there, or one in the way. */
+.rplan {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.rplan .lucide { width: 11px; height: 11px; flex: none; }
+.rplan.has { color: var(--ok); }
+.rplan.held { color: var(--warn); }
+.rplan.idle { opacity: 0.7; }
+
+/* The two setups, as the cards a new project's sources are. */
+.cards { display: flex; gap: 8px; }
+.card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 11px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-sunken);
+  text-align: left;
+  transition:
+    border-color var(--dur-1) var(--ease-soft),
+    background var(--dur-1) var(--ease-soft);
+}
+.card .lucide { color: var(--text-dim); margin-bottom: 2px; }
+.card strong { font-size: var(--fs-sm); color: var(--text); font-weight: 620; }
+.card > span { font-size: 10px; color: var(--text-dim); line-height: 1.4; }
+.card:hover { border-color: var(--line-strong); background: var(--hover); }
+.card.on,
+.card.on:hover { border-color: var(--accent); background: var(--accent-soft); }
+.card.on strong,
+.card.on .lucide { color: var(--accent); }
+
+.none { margin: 4px 0 0; font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.55; }
 
 /* §7 — the seed section. Dense on purpose: it is a review, and a review that
    needs scrolling to see three keys is one nobody reads. */
-.seedrepo + .seedrepo { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
-.seedhead { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
-.seedhead .rname { font-size: var(--fs-xs); color: var(--text); font-weight: 600; }
+.seedrepo + .seedrepo { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.seedhead { display: flex; align-items: baseline; gap: 8px; margin: 4px 0; }
+.seedhead .rname { flex: none; font-size: var(--fs-xs); font-weight: 600; }
 .src { font-size: 10px; color: var(--ok); }
 
 .seedfile + .seedfile { margin-top: 6px; }
@@ -715,11 +891,11 @@ async function submit() {
 .fname { color: var(--text); font-size: var(--fs-xs); }
 .bytes { font-size: 10px; color: var(--text-dim); }
 
-.chg { margin: 0 0 2px 22px; }
+.chg { margin: 0 0 2px 25px; }
 .chg.off { opacity: 0.4; }
-.check.sub { height: 22px; gap: 7px; }
+.check.sub { min-height: 22px; gap: 7px; }
 .ckey { font-size: 10px; color: var(--text-muted); flex: none; }
-.from {
+.was {
   font-size: 10px;
   color: var(--text-dim);
   text-decoration: line-through;
@@ -736,10 +912,9 @@ async function submit() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.why { margin: 0 0 4px 21px; font-size: 10px; color: var(--text-dim); line-height: 1.45; }
+.why { margin: 0 0 4px 23px; font-size: 10px; color: var(--text-dim); line-height: 1.45; }
 
-.remember { height: auto; margin-top: 10px; gap: 8px; font-size: var(--fs-xs); }
-.remember .opt { color: var(--text-dim); }
+.remember { min-height: 0; gap: 8px; font-size: var(--fs-xs); }
 
 .dbrow {
   display: flex;
@@ -751,7 +926,7 @@ async function submit() {
   padding: 2px 0;
   font-size: var(--fs-xs);
 }
-.dbrow .why.inline { flex: 1; min-width: 0; }
+.dbrow .why.inline { flex: 1; min-width: 0; margin: 0; }
 .dbrepo { color: var(--text); }
 .dbengine {
   font-size: 10px;
@@ -760,14 +935,12 @@ async function submit() {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
 }
-.dbrow .from, .dbrow .to { font-size: 10px; }
-.why.inline { margin: 0; }
 
 .warnline {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin: 8px 0 0;
+  margin: 0;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
   background: var(--warn-soft);
@@ -777,34 +950,4 @@ async function submit() {
 }
 .warnline .lucide { margin-top: 1px; flex: none; }
 
-.spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-.segs { display: flex; gap: 6px; }
-.seg {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--bg-sunken);
-  text-align: left;
-}
-.seg strong { font-size: var(--fs-sm); color: var(--text); font-weight: 620; }
-.seg span { font-size: 10px; color: var(--text-dim); }
-.seg.on { border-color: var(--accent); background: var(--accent-soft); }
-.seg.on strong { color: var(--accent); }
-
-.foot {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 13px 16px;
-  border-top: 1px solid var(--line);
-  background: var(--bg-sunken);
-}
-.rp { font-size: var(--fs-xs); color: var(--text-muted); }
 </style>

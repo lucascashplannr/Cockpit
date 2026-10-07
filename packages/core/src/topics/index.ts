@@ -49,6 +49,11 @@ export interface OpenTopicInput {
   repoWorkspaceIds?: string[]
   base?: string
   /**
+   * The base for one repository, by workspace id, where it differs from
+   * `base`: a front that works against `dev` beside a back on `master`.
+   */
+  bases?: Record<string, string>
+  /**
    * §4 — a branch that already exists, to open the topic *on* rather than a
    * name to derive one from. Taken verbatim: it is the topic's slug, so a
    * `feature/2fa` stays `feature/2fa` — the same thing `adopt` records for a
@@ -120,7 +125,7 @@ export async function openPlan(
   }
 
   for (const repo of repos) {
-    const base = input.base ?? (await baseFor(repo.path))
+    const base = input.bases?.[repo.id] || input.base || (await baseFor(repo.path))
     const branchTaken = await hasBranch(repo.path, slug)
     // Known to this clone as of its last fetch — the step below fetches it
     // again before anything is built on it.

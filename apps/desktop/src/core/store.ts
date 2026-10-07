@@ -4966,6 +4966,7 @@ export async function openTopic(input: {
   setup: 'branch' | 'isolated'
   repoWorkspaceIds?: string[]
   base?: string
+  bases?: Record<string, string>
   branch?: string
   seed?: SeedProposal[]
   rememberSeed?: boolean

@@ -406,6 +406,8 @@ export interface Rpc {
        * where it is only on origin, created from the base where it is neither.
        */
       branch?: string
+      /** The base for one repository, by workspace id, where it differs from `base`. */
+      bases?: Record<string, string>
       ticketUrl?: string
       /**
        * §7 — the local config to carry into each worktree, as approved by the

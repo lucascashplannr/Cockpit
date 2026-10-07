@@ -60,8 +60,11 @@
  *
  * 2.20 — `topic.open` takes `branch`, an existing branch to open the topic
  * on. An older core ignores it and forks a new branch named after the topic.
+ *
+ * 2.21 — `topic.open` takes `bases`, a base per repository. An older core
+ * ignores it and forks every repository from the one `base`.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 20 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 21 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major
