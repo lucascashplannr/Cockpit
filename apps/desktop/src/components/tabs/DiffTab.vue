@@ -1014,7 +1014,7 @@ const mark: Record<string, Component> = {
          own columns. Narrow, there is one column and nothing to divide. -->
     <Splitter
       v-if="!narrow"
-      :style="{ left: filesW - 3 + 'px' }"
+      :style="{ left: filesW - 4 + 'px' }"
       :size="filesW"
       :min="LAYOUT_LIMITS.files.min"
       :max="filesMax"

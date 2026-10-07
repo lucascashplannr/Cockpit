@@ -333,7 +333,7 @@ onUnmounted(() => {
         <Splitter
           v-if="splitReview"
           class="sp"
-          :style="{ right: `${splitReview - 3}px` }"
+          :style="{ right: `${splitReview - 4}px` }"
           :size="splitReview"
           :min="LAYOUT_LIMITS.review.min"
           :max="reviewMax"
@@ -354,7 +354,7 @@ onUnmounted(() => {
     <Splitter
       v-if="listWide"
       class="sp"
-      :style="{ left: `calc(var(--rail-w) + ${layout.list}px - 3px)` }"
+      :style="{ left: `calc(var(--rail-w) + ${layout.list}px - 4px)` }"
       :size="layout.list"
       :min="LAYOUT_LIMITS.list.min"
       :max="LAYOUT_LIMITS.list.max"

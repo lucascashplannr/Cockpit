@@ -426,7 +426,7 @@ onBeforeUnmount(() => view.value?.destroy())
 
     <Splitter
       v-if="!stacked"
-      :style="{ left: treeW - 3 + 'px' }"
+      :style="{ left: treeW - 4 + 'px' }"
       :size="treeW"
       :min="LAYOUT_LIMITS.tree.min"
       :max="treeMax"
