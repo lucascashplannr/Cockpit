@@ -6,6 +6,7 @@ import {
   SquareDot, TriangleAlert,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
+import StripDots from './StripDots.vue'
 import {
   activeProject, activityFor, onProject, openContextMenu, pickRepo, projectNarrowing, selectedTopicId, selectWorkspace,
   shortName, state,
@@ -13,7 +14,7 @@ import {
 
 /**
  * `narrow` is the list folded down to its strip (§12, ⌘B): the same row, as a
- * tile — its glyph over its name, and one dot where the counters were.
+ * tile — its glyph over its name, and three dots where the counters were.
  */
 const props = defineProps<{ workspace: Workspace; compact?: boolean; narrow?: boolean }>()
 
@@ -67,6 +68,8 @@ const dirty = computed(() => {
  * So: the same two glyphs the bar uses for the same two verbs, each drawn only
  * when it has something to say. In the ordinary case that is still one number.
  */
+const up = computed(() => w.value.runtime?.status === 'up')
+
 const behindBase = computed(() => w.value.git?.behindBase ?? 0)
 
 /**
@@ -110,13 +113,14 @@ const tip = computed(() => {
   const g = w.value.git
   const facts: string[] = []
   if (g) {
-    if (g.ahead) facts.push(g.ahead + ' ahead')
+    if (g.ahead) facts.push(g.ahead + ' to push')
     if (behindBase.value) facts.push(behindBase.value + ' behind ' + (g.base ?? 'the base'))
     if (toPull.value) facts.push(toPull.value + ' to pull')
     if (dirty.value) facts.push(dirty.value + ' uncommitted')
     if (g.conflicted) facts.push(g.conflicted + ' conflicted')
     if (g.headState !== 'attached') facts.push(g.headState)
   }
+  if (up.value) facts.unshift('server up')
   return [w.value.name + ' — ' + lead.value.title, facts.join(' · ')].filter(Boolean).join('\n')
 })
 
@@ -168,11 +172,16 @@ const lead = computed(() => {
     <!-- §12 — the branch is the identity; the repository name is context. -->
     <span class="name">{{ narrow ? short : w.name }}</span>
 
-    <!-- The strip's one counter: something here is not committed. It is the
-         fact the wide row's amber number states and the same colour the
-         project tile uses for it one column to the left; how much, and
-         everything else, is in the hover. -->
-    <i v-if="narrow && (dirty || w.git?.conflicted)" class="pip" :class="{ conflict: w.git?.conflicted }" />
+    <!-- The strip's counters: the project tile's three places, one column
+         to the left — a server up, commits to push, something uncommitted.
+         How much of each is in the hover. -->
+    <StripDots
+      v-if="narrow"
+      :run="up"
+      :push="!!w.git?.ahead"
+      :dirty="!!dirty"
+      :conflict="!!w.git?.conflicted"
+    />
 
     <span v-if="!narrow" class="meta num">
       <!-- Absent capability, absent indicator (§3.9): no git means no counters. -->
@@ -302,7 +311,7 @@ const lead = computed(() => {
   flex-direction: column;
   justify-content: center;
   gap: var(--tile-stack, 5px);
-  height: var(--tile-h, 48px);
+  height: var(--tile-h, 58px);
   padding: 0 4px;
 }
 .row.narrow .kind .lucide { width: var(--tile-ic, 15px); height: var(--tile-ic, 15px); }
@@ -314,21 +323,6 @@ const lead = computed(() => {
   line-height: 1.15;
   letter-spacing: 0;
 }
-/* On the glyph's shoulder rather than in the tile's corner: placed from the
-   centre, so it stays with the icon whatever the strip's width is. */
-.pip {
-  position: absolute;
-  top: 7px;
-  left: calc(50% + 8px);
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--warn);
-  box-shadow: 0 0 0 2px var(--surface-nav);
-}
-.row.narrow.selected .pip { box-shadow: none; }
-.pip.conflict { background: var(--danger); }
-
 .ahead { color: var(--ok); }
 .behind { color: var(--warn); }
 .dirty { color: var(--warn); }

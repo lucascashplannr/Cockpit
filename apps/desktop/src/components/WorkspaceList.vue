@@ -166,7 +166,7 @@ const ATTENTION_TEXT: Record<string, string> = {
       </div>
 
       <template v-else>
-        <div v-for="(g, i) in groups" :key="g.topicId ?? 'loose-' + i" class="group">
+        <div v-for="(g, i) in groups" :key="g.topicId ?? 'loose-' + i" class="group" :class="{ topic: !!(g.title && g.topicId) }">
           <!-- A topic is a decoration (§4): no topic, no header. And a
                header you can stand on: selecting it is selecting its scope. -->
           <!-- On the strip the header is one tile: what it leads with, and
@@ -411,7 +411,10 @@ const ATTENTION_TEXT: Record<string, string> = {
    much the other way — a strip is there to give width back. This is the step
    between: a little air on every side of what a tile holds, and no more. */
 .list.narrow {
-  --tile-h: 48px;
+  /* A row carries three dots under its name (StripDots); a topic's tile
+     does not, and is the head of a frame rather than a tile among tiles. */
+  --tile-h: 58px;
+  --tile-h-topic: 48px;
   --tile-gap: 0px;
   --tile-stack: 5px;
   --tile-lbl: 10px;
@@ -442,6 +445,37 @@ const ATTENTION_TEXT: Record<string, string> = {
 }
 .list.narrow .divider { display: none; }
 
+/* A topic and its branches, in one frame. On the strip a topic's tile and a
+   repository's are the same shape — a glyph over a word — and a different
+   glyph was not enough to tell which rows belonged to which. The frame says
+   it without either tile having to: what is inside is the topic's, what is
+   outside is the project's own. It takes the rule's place between groups. */
+.list.narrow .group.topic {
+  margin: 0 -3px;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.list.narrow .group + .group.topic { margin-top: 8px; padding-top: 2px; }
+.list.narrow .group + .group.topic::before { display: none; }
+.list.narrow .group.topic .group-tile {
+  border-radius: calc(var(--radius) - 3px) calc(var(--radius) - 3px) var(--radius-sm) var(--radius-sm);
+}
+/* Inside the frame a row's tint runs wall to wall, so it is square where it
+   meets a neighbour and takes the frame's own curve only at the foot. */
+.list.narrow .group.topic .row { border-radius: 0; }
+.list.narrow .group.topic .row:last-child {
+  border-radius: 0 0 calc(var(--radius) - 3px) calc(var(--radius) - 3px);
+}
+/* The head's own floor, only while there is something under it: folded, the
+   frame's edge is already there. */
+.list.narrow .group.topic .group-tile:not(:last-child) {
+  border-bottom: 1px solid var(--line);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 /* The topic's header as a tile: the row's own box on end, in the header's
    weight, so a topic and the branches under it are told apart by the same
    thing that tells them apart in the list. */
@@ -452,7 +486,7 @@ const ATTENTION_TEXT: Record<string, string> = {
   justify-content: center;
   gap: var(--tile-stack);
   width: 100%;
-  height: var(--tile-h);
+  height: var(--tile-h-topic);
   padding: 0 4px;
   border-radius: var(--radius-sm);
   color: var(--text);

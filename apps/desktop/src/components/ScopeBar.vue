@@ -104,7 +104,17 @@ const coveredNames = computed(() => covered.value.map((x) => x.name).join(', '))
  * lines, and the split cost thirty-eight pixels of every screen.
  */
 const scope = computed(() => activeAgentScope.value)
-const label = computed(() => scopeLabel(scope.value))
+/**
+ * A repository checked out for a topic says so here: on the strip its tile
+ * sits inside the topic's frame, and the bar should not have a lesser idea of
+ * where you are than the list does.
+ */
+const label = computed(() => {
+  const l = scopeLabel(scope.value)
+  return scope.value?.kind === 'workspace' && l.kind === 'Repo' && w.value?.topicId
+    ? { ...l, kind: 'Topic repo' }
+    : l
+})
 /**
  * A repository with no git remote says so in its own kicker: it is why this
  * bar has no Push and never will, said once, in the word that already says
