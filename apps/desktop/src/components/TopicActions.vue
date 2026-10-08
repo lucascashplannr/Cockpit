@@ -271,9 +271,11 @@ const runTitle = computed(() => {
     <OverflowMenu label="Everything you can do on this topic">
       <button :disabled="!canPush" @click="pushTopic(f!.id)">
         <ArrowUp /> Push
+        <span v-if="!canPush" class="why">nothing to push</span>
       </button>
       <button :disabled="!canMerge" @click="mergeTopic(f!.id, false)">
         <GitMerge /> {{ sendLabel }}
+        <span v-if="!canMerge" class="why">nothing to send</span>
       </button>
       <button @click="rebaseTopic(f!.id)">
         <GitCompareArrows /> Catch up

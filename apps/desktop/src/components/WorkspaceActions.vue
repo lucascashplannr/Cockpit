@@ -398,15 +398,21 @@ async function undo() {
       <template v-if="git">
         <button :disabled="!uncommitted" @click="openCommit()">
           <GitCommitHorizontal /> Commit
+          <span v-if="!uncommitted" class="why">nothing to commit</span>
         </button>
         <button :disabled="!canPush" @click="requestPlan(w.id, 'push')">
-          <ArrowUpFromLine /> Push <span class="kb">P</span>
+          <ArrowUpFromLine /> Push
+          <span v-if="canPush" class="kb">P</span>
+          <span v-else class="why">{{ pullFirst ? 'pull first' : 'nothing to push' }}</span>
         </button>
         <button :disabled="!canCatchUp" @click="requestPlan(w.id, 'rebase')">
-          <GitCompareArrows /> Catch up <span class="kb">R</span>
+          <GitCompareArrows /> Catch up
+          <span v-if="canCatchUp" class="kb">R</span>
+          <span v-else class="why">no base</span>
         </button>
         <button :disabled="!canPull" @click="requestPlan(w.id, 'pull')">
           <ArrowDownToLine /> Pull
+          <span v-if="!canPull" class="why">nothing to pull</span>
         </button>
         <span class="rule" />
       </template>
