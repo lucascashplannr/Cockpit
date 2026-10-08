@@ -14,23 +14,11 @@ import {
 /**
  * §4 — the verbs of the selected topic, on the bar of the column it is about.
  *
- * All three are permanent, and that is the point: on a topic you reach for
- * Catch up and Send to as often as you reach for Start, and a verb you use
- * that often must not move. Drawing them only when the window judged them
- * "the next thing to do" meant the bar changed shape under you — the button
- * you were going for was in the menu this time, because a probe had decided
- * you were level with the base.
- *
- * Send and Push go quiet *and* stop taking clicks when there is nothing to
- * send or push. They used to stay live on the argument that a plan saying
- * "nothing to do" is the honest answer and costs one dialog — true, and it
- * turned out to be one dialog too many: these two sit next to Start, they are
- * pressed on reflex, and a modal that exists only to say "no" trains people to
- * dismiss modals. The count and the colour already said it; the button now
- * agrees with them.
- *
- * The tooltip is on the wrapper rather than the button: a disabled button
- * fires no mouse events, so a `title` on it is a reason nobody can read.
+ * §3.9 — Push and Send are on the bar only while there is something to push
+ * or to send, the rule a repository's bar follows. They stood here greyed for
+ * a while, so that nothing would move; two inert verbs on a topic with nothing
+ * committed turned out to be most of what the bar said. Catch up stays, as the
+ * one you press to find out.
  *
  * The agent is not among them: selecting the topic already aimed the
  * conversation at it.
@@ -92,7 +80,6 @@ const sendLabel = computed(() => (base.value ? 'Send to ' + base.value : 'Send t
 const catchUpFrom = computed(() => (base.value ? 'from ' + base.value : 'from the base'))
 
 const mergeTitle = computed(() => {
-  if (!canMerge.value) return 'Nothing to send: ' + (base.value ?? 'the base') + ' already has it all'
   if (dirty.value) return 'Commit first — sending refuses over uncommitted changes'
   return sendLabel.value + ' — ' + toLand.value + ' commit(s), one --no-ff merge per repository'
 })
@@ -125,11 +112,10 @@ const catchUpTitle = computed(() =>
  * different diffs. A push carries no message, which is exactly why it can be
  * the topic-wide verb the commit box stopped being.
  */
-const pushTitle = computed(() =>
-  canPush.value
-    ? 'Push every branch of this topic to origin' +
-      (ahead.value ? ' — ' + ahead.value + ' commit(s)' : ' — one has never been pushed')
-    : 'Nothing to push: every branch is level with its remote',
+const pushTitle = computed(
+  () =>
+    'Push every branch of this topic to origin' +
+    (ahead.value ? ' — ' + ahead.value + ' commit(s)' : ' — one has never been pushed'),
 )
 
 async function toggleTopic() {
@@ -250,32 +236,24 @@ const runTitle = computed(() => {
     <!-- The counterpart of a per-repository commit: nothing about a push is
          specific to one repository's diff, so it is one act across all of
          them. -->
-    <span class="verb" :title="pushTitle">
-      <button
-        class="btn ghost"
-        :class="{ nudge: canPush }"
-        :disabled="!canPush"
-        @click="pushTopic(f!.id)"
-      >
-        <ArrowUp /><span class="vl">Push</span>
-        <span v-if="ahead" class="cnt">{{ ahead }}</span>
-      </button>
-    </span>
+    <button v-if="canPush" class="btn ghost nudge" :title="pushTitle" @click="pushTopic(f!.id)">
+      <ArrowUp /><span class="vl">Push</span>
+      <span v-if="ahead" class="cnt">{{ ahead }}</span>
+    </button>
 
     <!-- §4 — the step the lifecycle was missing: the branch goes onto the
          base, in every repository the topic spans. Green once there is
          something committed to send and nothing in the way of sending it. -->
-    <span class="verb" :title="mergeTitle">
-      <button
-        class="btn ghost"
-        :class="{ ready: canMerge && !dirty }"
-        :disabled="!canMerge"
-        @click="mergeTopic(f!.id, false)"
-      >
-        <GitMerge /><span class="vl">{{ sendLabel }}</span>
-        <span v-if="toLand" class="cnt">{{ toLand }}</span>
-      </button>
-    </span>
+    <button
+      v-if="canMerge"
+      class="btn ghost"
+      :class="{ ready: !dirty }"
+      :title="mergeTitle"
+      @click="mergeTopic(f!.id, false)"
+    >
+      <GitMerge /><span class="vl">{{ sendLabel }}</span>
+      <span v-if="toLand" class="cnt">{{ toLand }}</span>
+    </button>
     <!-- One plan across every repository it spans, stopping at the first
          conflict and keeping what already replayed. -->
     <button
@@ -287,6 +265,20 @@ const runTitle = computed(() => {
       <GitCompareArrows /><span class="vl">Catch up</span>
       <span v-if="behind" class="cnt">{{ behind }}</span>
     </button>
+    <!-- Every verb the topic has, always and in one order, off while it has
+         nothing to act on — so a bar that hides Push and Send never leaves
+         you wondering whether they exist. -->
+    <OverflowMenu label="Everything you can do on this topic">
+      <button :disabled="!canPush" @click="pushTopic(f!.id)">
+        <ArrowUp /> Push
+      </button>
+      <button :disabled="!canMerge" @click="mergeTopic(f!.id, false)">
+        <GitMerge /> {{ sendLabel }}
+      </button>
+      <button @click="rebaseTopic(f!.id)">
+        <GitCompareArrows /> Catch up
+      </button>
+    </OverflowMenu>
     <!-- The things this checkout runs, after the git verbs, parted from them
          by a hairline. Each sits on a chip — the branch chip's ground — so a
          label and its chevron read as one control and not as a word with a
@@ -388,9 +380,6 @@ const runTitle = computed(() => {
   gap: 2px;
   flex: none;
 }
-/* Carries the tooltip for the button inside it, which may be disabled and
-   would then never be hovered at all. */
-.verb { display: inline-flex; }
 .verbs .btn {
   height: 26px;
   padding: 0 9px;

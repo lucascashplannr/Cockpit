@@ -389,9 +389,27 @@ async function undo() {
     </button>
 
     <!-- The tail of the git verbs, and the end of that group: everything
-         else this repository can do, before the separator and the things it
-         runs. -->
-    <OverflowMenu label="Everything else you can do here" :disabled="busy">
+         this repository can do, before the separator and the things it runs.
+
+         The four git verbs lead it, always and in one order, off while they
+         have nothing to act on. That is the other half of hiding them on the
+         bar: the bar says what the state calls for, this says what exists. -->
+    <OverflowMenu label="Everything you can do here" :disabled="busy">
+      <template v-if="git">
+        <button :disabled="!uncommitted" @click="openCommit()">
+          <GitCommitHorizontal /> Commit
+        </button>
+        <button :disabled="!canPush" @click="requestPlan(w.id, 'push')">
+          <ArrowUpFromLine /> Push <span class="kb">P</span>
+        </button>
+        <button :disabled="!canCatchUp" @click="requestPlan(w.id, 'rebase')">
+          <GitCompareArrows /> Catch up <span class="kb">R</span>
+        </button>
+        <button :disabled="!canPull" @click="requestPlan(w.id, 'pull')">
+          <ArrowDownToLine /> Pull
+        </button>
+        <span class="rule" />
+      </template>
       <button v-if="preview && preview.kind === 'url'" @click="openPreview">
         <AppWindow /> Open the preview
       </button>

@@ -543,6 +543,8 @@ input[type='checkbox']:indeterminate::after {
 }
 .menu button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .menu button:hover:not(:disabled) .lucide { color: inherit; }
+/* A verb this thing has, with nothing to act on right now. */
+.menu button:disabled { opacity: 0.4; }
 /* The keystroke that does the same thing, at the right edge. A menu is where
    you find out a verb has one. */
 .menu button .kb { margin-left: auto; padding-left: 14px; font-size: 11px; color: var(--text-dim); }
