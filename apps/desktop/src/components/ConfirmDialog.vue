@@ -69,6 +69,8 @@ const typeInput = ref<HTMLInputElement | null>(null)
 
 function onKey(e: KeyboardEvent): void {
   if (!c.value || e.key !== 'Escape') return
+  // A list open inside the question closes first, and takes the key with it.
+  if ((e.target as HTMLElement | null)?.closest?.('.bsmenu')) return
   e.stopPropagation()
   cancel()
 }
@@ -121,8 +123,8 @@ watch(
         />
       </label>
 
-      <!-- §4 — only on a Catch up, and only under the sentence it qualifies:
-           the branch is the one word in the question that is a choice. -->
+      <!-- §4 — only on a Catch up, under the sentence it qualifies: where it
+           lands, and the branch, which is the one choice in the question. -->
       <BasePicker class="base" />
 
       <!-- The other kind of choice inside a question: a thing the act will
@@ -275,7 +277,7 @@ watch(
 .say:has(+ .foot) { padding-bottom: 16px; }
 /* Sits with the sentences it qualifies rather than in a band of its own: the
    dialog is a paragraph and a question, and a rule across it would make two. */
-.base { margin: 0 20px 12px; }
+.base { margin: 2px 16px 12px; }
 
 /* A row, not a form control with a label beside it: the whole thing is the
    target, and the sentence under it is why you would want it. */

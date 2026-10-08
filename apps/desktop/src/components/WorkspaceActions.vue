@@ -2,12 +2,12 @@
 import { computed } from 'vue'
 import {
   AppWindow, ArrowDownToLine, ArrowUpFromLine, ChevronDown, CirclePlay, CircleStop, ExternalLink,
-  FileCode, Check, GitCompareArrows, SlidersHorizontal, Terminal, Undo2,
+  FileCode, Check, GitCommitHorizontal, GitCompareArrows, SlidersHorizontal, Terminal, Undo2,
 } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
 import {
   activeWorkspace, askCommand, chooseCommand, chooseServer, chosenCommand, chosenServer, client,
-  gitBusy, guard, openDeclarations, requestPlan, runningServers, state, toggleWorkspaceRuntime,
+  gitBusy, guard, openCommit, openDeclarations, requestPlan, runningServers, state, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -146,19 +146,42 @@ const git = computed(() => (w.value?.git?.operation ? null : (w.value?.git ?? nu
  * That is the one case where the counter reads 0 and the verb still means
  * something.
  */
-const canPush = computed(() => {
+/** The same count the list draws beside the repository — and the same rule as Push. */
+const uncommitted = computed(() => {
+  const g = git.value
+  return g ? g.staged + g.unstaged + g.untracked : 0
+})
+
+const hasPush = computed(() => {
   const g = git.value
   return !!g && (g.ahead > 0 || !g.upstream)
 })
+/** Something to send, and nothing of somebody else's in the way of sending it. */
+const canPush = computed(() => hasPush.value && !pullFirst.value)
 
-/** Honest in both states, and when it is off it says why. */
+/**
+ * Behind its own remote, and which kind — see `GitState.incoming`.
+ *
+ *   rewritten  → origin holds the commits a Catch up replaced: force-push
+ *   pullFirst  → origin holds somebody else's: nothing is pushed over them
+ */
+const own = computed(() => {
+  const g = git.value
+  return !!g && !!g.branch && g.upstream === 'origin/' + g.branch
+})
+const rewritten = computed(() => own.value && git.value!.behind > 0 && git.value!.incoming === 0)
+const pullFirst = computed(() => own.value && git.value!.incoming > 0 && git.value!.ahead > 0)
+
+/** What pressing it does, and when it is off, why. */
 const pushTitle = computed(() => {
   const g = w.value?.git
   if (!g) return 'Push this branch'
+  if (pullFirst.value) return 'Pull first — ' + g.upstream + ' has ' + g.incoming + ' commit(s) you do not have'
+  if (rewritten.value && g.ahead) {
+    return 'Force-push this branch — it was replayed, and ' + g.upstream + ' still holds the ' + g.behind + ' commit(s) that replaces'
+  }
   if (g.ahead) return 'Push this branch — ' + g.ahead + ' commit(s) ahead'
-  return g.upstream
-    ? 'Nothing to push: ' + g.upstream + ' already has this branch'
-    : 'Push this branch — no upstream yet, this would set one'
+  return 'Push this branch — no upstream yet, this would set one'
 })
 
 /**
@@ -193,10 +216,7 @@ const behindBase = computed(() => git.value?.behindBase ?? 0)
  * people work on at once is the exception, and the bar is for the verbs of
  * every day.
  */
-const canPull = computed(() => {
-  const g = git.value
-  return !!g && !!g.branch && g.upstream === 'origin/' + g.branch && g.behind > 0
-})
+const canPull = computed(() => own.value && git.value!.incoming > 0)
 
 const pullLabel = computed(() => {
   const g = git.value
@@ -208,7 +228,7 @@ const pullLabel = computed(() => {
 const pullTitle = computed(() => {
   const g = git.value
   if (!g) return pullLabel.value
-  return pullLabel.value + ' — ' + g.behind + ' commit(s) on ' + g.upstream + ' you do not have'
+  return pullLabel.value + ' — ' + g.incoming + ' commit(s) on ' + g.upstream + ' you do not have'
 })
 
 const catchUpTitle = computed(() => {
@@ -309,18 +329,29 @@ async function undo() {
 
 <template>
   <div v-if="w" class="verbs">
-    <!-- Always, wherever there is a branch to push.
-         Push is the one git verb that is never a surprise and never contextual
-         — you reach for it because you decided to, not because the window
-         noticed something. Hiding it until the app agreed there was something
-         to send made it the only verb you had to go looking for, in a menu
-         labelled "everything else". It is present either way — and inert when
-         there is nothing to send, because a verb that is always live is one
-         whose only answer half the time is a dialog saying "no".
+    <!-- §3.9 — only while there is something to commit, and before Push
+         because that is the order they happen in. It commits nothing itself:
+         the review comes first (§16), so it opens the changes with the caret
+         in the message. -->
+    <button
+      v-if="git && uncommitted"
+      class="btn ghost nudge"
+      :disabled="busy"
+      :title="'Commit — ' + uncommitted + ' uncommitted change(s)'"
+      @click="openCommit()"
+    >
+      <GitCommitHorizontal /><span class="vl">Commit</span>
+      <span class="cnt">{{ uncommitted }}</span>
+    </button>
+    <!-- §3.9 — only while there is something to send. It stood here inert for
+         a while, so that it would never move; a greyed verb on a clean branch
+         turned out to be the loudest thing on a bar with nothing to say.
 
-         The tooltip is on the wrapper: a disabled button fires no mouse
+         Still drawn, and off, in the one case where there is something to
+         send and it cannot go yet: origin has commits to pull first. The
+         tooltip is on the wrapper because a disabled button fires no mouse
          events, so a `title` on it is a reason nobody can read. -->
-    <span v-if="git" class="verb" :title="pushTitle">
+    <span v-if="git && hasPush" class="verb" :title="pushTitle">
       <button
         class="btn ghost"
         :class="{ ready: canPush }"
@@ -331,9 +362,6 @@ async function undo() {
         <span v-if="git.ahead" class="cnt">{{ git.ahead }}</span>
       </button>
     </span>
-    <!-- Permanent, like Push and for the same reason: a verb reached for this
-         often must not move, and a bar that changes shape as probes come back
-         is one you cannot aim at without looking. -->
     <button
       v-if="git && canCatchUp"
       class="btn ghost"
@@ -345,13 +373,10 @@ async function undo() {
       <GitCompareArrows /><span class="vl">Catch up</span>
       <span v-if="behindBase" class="cnt">{{ behindBase }}</span>
     </button>
-    <!-- §3.9 — beside Catch up, and only while there is something to pull.
-         The other two verbs here are permanent on purpose: you reach for Push
-         and Catch up because you decided to, so they must not move. Pull is not
-         that kind of verb — nobody decides to pull, you pull *because*
-         something arrived, and until it has there is nothing to aim at. So it
-         is absent rather than inert, and its number is the whole of its
-         reason for being on the bar. -->
+    <!-- §3.9 — beside Catch up, and only while there is something to pull:
+         nobody decides to pull, you pull *because* something arrived. Absent
+         rather than inert, and its number is the whole of its reason for
+         being on the bar. -->
     <button
       v-if="git && canPull"
       class="btn ghost nudge"
@@ -360,7 +385,7 @@ async function undo() {
       @click="requestPlan(w.id, 'pull')"
     >
       <ArrowDownToLine /><span class="vl">Pull</span>
-      <span class="cnt">{{ git.behind }}</span>
+      <span class="cnt">{{ git.incoming }}</span>
     </button>
 
     <!-- The tail of the git verbs, and the end of that group: everything
@@ -576,8 +601,7 @@ async function undo() {
 }
 .verbs .btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .verbs .btn .lucide { width: 14px; height: 14px; }
-/* The number that used to be the reason the button appeared at all. It now
-   rides on a button that is always there, so it carries the signal instead. */
+/* The number that is the reason the button is on the bar at all. */
 .verbs .cnt {
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-xs);

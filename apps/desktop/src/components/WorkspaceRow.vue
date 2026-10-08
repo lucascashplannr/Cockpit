@@ -76,7 +76,7 @@ const behindBase = computed(() => w.value.git?.behindBase ?? 0)
  */
 const toPull = computed(() => {
   const g = w.value.git
-  return g && g.branch && g.upstream === 'origin/' + g.branch ? g.behind : 0
+  return g && g.branch && g.upstream === 'origin/' + g.branch ? g.incoming : 0
 })
 
 /**

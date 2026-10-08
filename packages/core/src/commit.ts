@@ -216,17 +216,18 @@ export async function plan(input: CommitInput): Promise<{
         return { ok: false, detail: w.name + ' has no origin remote to push to', plan: null, preview: rows }
       }
       const own = g?.upstream === 'origin/' + row.branch
-      const force = own && ((!!input.amend && onRemote) || ((g?.behind ?? 0) > 0 && (g?.ahead ?? 0) > 0))
+      // Rewritten, not merely behind: commits origin has that this branch
+      // never held are somebody else's, and no push here replaces those.
+      const rewritten = (g?.behind ?? 0) > 0 && (g?.incoming ?? 0) === 0
+      const force = own && ((!!input.amend && onRemote) || rewritten)
       steps.push({
         title: w.name + (force ? ': force-push (with lease) ' : ': push ') + row.branch,
-        command: force
-          ? 'git push --force-with-lease origin ' + row.branch
-          : 'git push -u origin ' + row.branch,
+        command: force ? plans.FORCE_PUSH + row.branch : 'git push -u origin ' + row.branch,
         cwd: w.path,
         destructive: force,
       })
-      if (!force && own && (g?.behind ?? 0) > 0) {
-        warnings.push('origin/' + row.branch + ' has commits this branch does not; the push will be refused until you catch up.')
+      if (own && (g?.incoming ?? 0) > 0) {
+        warnings.push('origin/' + row.branch + ' has ' + g!.incoming + ' commit(s) you do not have; the push will be refused until you pull.')
       }
     }
     repos.push(w.name)

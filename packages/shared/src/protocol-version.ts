@@ -63,8 +63,15 @@
  *
  * 2.21 — `topic.open` takes `bases`, a base per repository. An older core
  * ignores it and forks every repository from the one `base`.
+ *
+ * 2.22 — `GitState.incoming`, and for the reason 2.5 gives: an older core
+ * sends no such field, the window reads it as zero, and Pull never appears.
+ *
+ * 2.23 — `topic.rebase` takes `bases`, a base per repository, and its plan
+ * carries `targets`. An older core ignores the first and replays every
+ * repository onto the one `base`; without the second the rows say no count.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 21 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 23 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

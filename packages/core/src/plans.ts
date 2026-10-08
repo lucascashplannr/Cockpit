@@ -7,7 +7,7 @@ import { defaultBranch, git, listWorktrees, probeOperation } from './git.js'
 import * as restore from './restore.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
-import { getWorkspace, requireWorkspace, baseOverride as getBaseOverride } from './registry.js'
+import { getWorkspace, refreshGit, requireWorkspace, baseOverride as getBaseOverride } from './registry.js'
 import { readManifest, findManifest } from './detect.js'
 import { pushRefusal } from './protect.js'
 
@@ -163,11 +163,11 @@ export async function plan(
       // fast-forward: nothing is stashed and nothing is rewritten.
       if (branch !== base) {
         if ((ws.git?.unstaged ?? 0) + (ws.git?.staged ?? 0) > 0) {
-          warnings.push('Uncommitted changes are set aside by --autostash and put back when the rebase ends — including when it is aborted. Git owns that stash, so a conflict cannot strand it.')
+          warnings.push('Uncommitted changes are set aside and put back when the rebase ends, abort included.')
         }
-        if ((ws.git?.ahead ?? 0) > 0 && ws.git?.upstream) {
-          warnings.push('This branch is ' + ws.git.ahead + ' commit(s) ahead of ' + ws.git.upstream + '; a rebase rewrites them and a force-push will be required.')
-        }
+        // Published, not "ahead": a branch level with its remote is rewritten
+        // by the replay all the same, and that was the case that went unsaid.
+        if (ws.git?.upstream === 'origin/' + branch) warnings.push(REWRITES_ORIGIN)
       } else if ((ws.git?.unstaged ?? 0) + (ws.git?.staged ?? 0) > 0) {
         warnings.push('A fast-forward refuses over changes git would have to overwrite; commit or stash them if it stops.')
       }
@@ -222,7 +222,7 @@ export async function plan(
         )
       }
       if ((ws.git.unstaged ?? 0) + (ws.git.staged ?? 0) > 0) {
-        warnings.push('Uncommitted changes are set aside by --autostash and put back when it ends — including if it is aborted.')
+        warnings.push('Uncommitted changes are set aside and put back when it ends, abort included.')
       }
       break
     }
@@ -339,17 +339,21 @@ export async function plan(
       // push — so a fresh branch with two commits, on a base that had moved,
       // planned a `--force-with-lease` over a ref that did not exist yet and
       // dropped the `-u` that would have created it.
-      const own = ws.git.upstream === 'origin/' + branch
-      const force = own && ws.git.behind > 0 && ws.git.ahead > 0
+      //
+      // Probed again first: this is asked straight after a Catch up, and the
+      // counts it turns on are the ones the Catch up just changed.
+      const g = (await refreshGit(workspaceId))?.git ?? ws.git
+      const own = g.upstream === 'origin/' + branch
+      const diverged = own && g.behind > 0 && g.ahead > 0
+      const stranger = diverged ? pushOverwrites(branch, g.incoming) : null
+      if (stranger) throw new Error(stranger)
       steps.push({
-        title: force ? 'Force-push (with lease) ' + branch : 'Push ' + branch,
-        command: force
-          ? 'git push --force-with-lease origin ' + branch
-          : 'git push -u origin ' + branch,
+        title: diverged ? 'Force-push (with lease) ' + branch : 'Push ' + branch,
+        command: diverged ? FORCE_PUSH + branch : 'git push -u origin ' + branch,
         cwd: ws.path,
-        destructive: force,
+        destructive: diverged,
       })
-      if (force) warnings.push('History diverged; this rewrites the remote branch. --force-with-lease is used so a concurrent push aborts it.')
+      if (diverged) warnings.push(forcePushWarning(branch, g.behind))
       // The plan is asked as a question now rather than read as a briefing, and
       // a question with no sentence in it is a dialog that only says "Apply".
       // The branch is in the question this is the body of, so it is not named
@@ -389,6 +393,37 @@ export async function plan(
   })
   append({ type: 'git.plan', workspaceId, payload: { operation, steps, warnings } })
   return preview
+}
+
+/** Said on a Catch up of a branch origin already has. */
+export const REWRITES_ORIGIN =
+  'Already on origin: the push that follows is a force-push.'
+
+/**
+ * §16 — the one push that can take something away from someone else, and the
+ * two flags that stop it doing so.
+ *
+ * `--force-with-lease` alone is not the guard it reads as here: it compares
+ * against the remote-tracking ref, and Cockpit fetches in the background, so
+ * that ref is always fresh — a colleague's push is fetched, the lease is
+ * satisfied, and their commits are overwritten. `--force-if-includes` adds the
+ * missing half: the remote tip must be something this branch once held.
+ */
+export const FORCE_PUSH = 'git push --force-with-lease --force-if-includes origin '
+
+/** Why a diverged push is not on offer, or null when it is. */
+export function pushOverwrites(branch: string, incoming: number): string | null {
+  if (incoming <= 0) return null
+  return (
+    'origin/' + branch + ' has ' + incoming + ' commit(s) you do not have — a push now would overwrite them. Pull first.'
+  )
+}
+
+export function forcePushWarning(branch: string, replaced: number): string {
+  return (
+    'origin/' + branch + ' still holds the ' + replaced + ' commit(s) this replaces. Nothing there is new to you, and ' +
+    'the push aborts if that stops being true before it lands.'
+  )
 }
 
 /**

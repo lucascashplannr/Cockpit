@@ -1,21 +1,19 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { BranchRef } from '@cockpit/shared'
-import { ChevronDown, GitCompareArrows } from '@lucide/vue'
+import { computed, ref, watch } from 'vue'
+import type { BranchRef, Workspace } from '@cockpit/shared'
+import BaseSelect from './BaseSelect.vue'
 import { client, guard, replanBase, state } from '../core/store.js'
 
 /**
- * §4 — catching up from a branch other than the usual one.
+ * §4 — where a Catch up lands, and from which branch.
  *
  * The project's default branch is the answer nearly always, and it is a
  * setting because it is a standing fact about the project. This is the other
- * case: once, on purpose, from somewhere else — and the place to say so is the
- * question you are already being asked, which names the branch in its title.
- * No control on the bar, nothing to discover: the word you would want to
- * change is right there, and it is the word you press.
+ * case: once, on purpose, from somewhere else — chosen in the question you are
+ * already being asked, on the row of the repository it is about.
  *
- * Its own component because it is drawn wherever a Catch up is confirmed, and
- * one row that knows how to re-plan is better than two that nearly agree.
+ * A row per repository because a topic spans several and they need not agree:
+ * not on the branch, and not on whether there is anything to catch up on.
  *
  * Only a Catch up. Send to is the branch the work *belongs* to, and changing
  * that on the way past is a different decision.
@@ -23,122 +21,148 @@ import { client, guard, replanBase, state } from '../core/store.js'
 
 const from = computed(() => state.pendingPlanFrom)
 
-const picking = ref(false)
+/**
+ * The repositories the question is about. One, for a checkout; for a topic,
+ * every repository it spans — and then each gets a row of its own, because
+ * "from main" is one sentence about several repositories that need not agree.
+ */
+const repos = computed(() => {
+  const f = from.value
+  if (!f) return []
+  return f.scope.kind === 'topic'
+    ? state.workspaces.filter((w) => w.topicId === f.scope.id && w.repo)
+    : state.workspaces.filter((w) => w.id === f.workspaceId)
+})
+
 const loading = ref(false)
-const branches = ref<BranchRef[]>([])
+const branches = ref<Record<string, BranchRef[]>>({})
 
 /**
  * A base is a plain branch name — the steps say `git fetch origin <base>` and
  * rebase onto `origin/<base>` — so `origin/dev` and a local `dev` are one
- * entry here, not two. The current base is dropped: it is the word you pressed.
+ * entry here, not two, and a branch that exists only here is not one at all:
+ * offering it would be offering a step that fails. The same rule as the bases
+ * of a new topic.
  */
-const options = computed(() => {
+function basesIn(id: string): string[] {
   const seen = new Set<string>()
-  const out: { name: string; subject: string }[] = []
-  for (const b of branches.value) {
-    const name = b.remoteOnly ? b.name.replace(/^[^/]+\//, '') : b.name
-    if (name === from.value?.base || seen.has(name)) continue
-    seen.add(name)
-    out.push({ name, subject: b.subject })
+  for (const b of branches.value[id] ?? []) {
+    if (b.remoteOnly) seen.add(b.name.replace(/^[^/]+\//, ''))
+    else if (b.upstream) seen.add(b.name)
   }
-  return out
-})
-
-async function toggle() {
-  picking.value = !picking.value
-  if (!picking.value || !from.value?.workspaceId) return
-  // §3.4 — read every time, never remembered: a branch made a minute ago in
-  // the terminal is a legitimate thing to catch up from.
-  loading.value = true
-  branches.value =
-    (await guard(() => client.call('git.branches', { workspaceId: from.value!.workspaceId }))) ?? []
-  loading.value = false
+  return [...seen]
 }
 
-async function pick(name: string) {
-  picking.value = false
-  await replanBase(name)
+/**
+ * §3.4 — read every time the question is asked, never remembered: a branch
+ * pushed a minute ago is a legitimate thing to catch up from. Not again on a
+ * re-plan, though: the repositories are the same ones.
+ */
+watch(
+  () => repos.value.map((w) => w.id).join(' '),
+  async (key) => {
+    branches.value = {}
+    if (!key) return
+    loading.value = true
+    const ids = key.split(' ')
+    const got = await Promise.all(
+      ids.map((id) => guard(() => client.call('git.branches', { workspaceId: id }))),
+    )
+    if (repos.value.map((w) => w.id).join(' ') === key) {
+      branches.value = Object.fromEntries(ids.map((id, i) => [id, got[i] ?? []]))
+    }
+    loading.value = false
+  },
+  { immediate: true },
+)
+
+/**
+ * One checkout has one choice, kept as the plan's own; a topic keeps one per
+ * repository. Either way it is read and written through the row.
+ */
+function chosenFor(w: Workspace): string {
+  const f = from.value
+  if (!f) return ''
+  return f.scope.kind === 'topic' ? (f.bases[w.id] ?? '') : f.chosen
+}
+/** What a repository's row resolves to when it has no choice of its own. */
+function inherited(w: Workspace): string {
+  const f = from.value
+  return (f?.scope.kind === 'topic' && f.chosen) || w.git?.base || 'default branch'
+}
+/** A base named for all of them that this repository's origin does not have. */
+function problem(w: Workspace): string {
+  const f = from.value
+  if (!f || loading.value) return ''
+  const named = chosenFor(w) || (f.scope.kind === 'topic' ? f.chosen : '')
+  return named && !basesIn(w.id).includes(named) ? 'origin has no ' + named + ' in ' + w.name : ''
+}
+/** Empty is the list's "Default" row: back to what it would use anyway. */
+async function pickFor(w: Workspace, name: string) {
+  const f = from.value
+  if (!f || name === chosenFor(w)) return
+  if (f.scope.kind !== 'topic') return replanBase(name)
+  const bases = { ...f.bases }
+  if (name) bases[w.id] = name
+  else delete bases[w.id]
+  await replanBase(f.chosen, bases)
+}
+
+/**
+ * How far behind its base a repository is — which is whether this does
+ * anything there. From the plan, since the base may be one chosen a moment
+ * ago; from the probe when an older core's plan does not say.
+ */
+function behind(w: Workspace): number | null {
+  const t = state.pendingConfirm?.plan?.targets?.find((x) => x.workspaceId === w.id)
+  if (t) return t.behind
+  const onto = chosenFor(w) || inherited(w)
+  return onto === w.git?.base ? (w.git?.behindBase ?? null) : null
 }
 </script>
 
 <template>
-  <div v-if="from?.base" class="from">
-    <GitCompareArrows class="sm si" />
-    <span>from</span>
-    <div class="pick">
-      <button class="basebtn" :class="{ on: picking }" @click="toggle">
-        <span>{{ from.base }}</span>
-        <ChevronDown class="ch" />
-      </button>
-      <div v-if="picking" class="blist">
-        <p v-if="loading" class="hint">Reading the branches…</p>
-        <template v-else>
-          <button v-for="b in options" :key="b.name" :title="b.subject" @click="pick(b.name)">
-            {{ b.name }}
-          </button>
-          <p v-if="!options.length" class="hint">No other branch here.</p>
-        </template>
-      </div>
+  <!-- One row per repository, a checkout on its own included: the same line
+       says where this catches up, from what, and whether there is anything to. -->
+  <div v-if="from?.base && repos.length" class="rows">
+    <div v-for="w in repos" :key="w.id" class="row" :class="{ idle: behind(w) === 0 }">
+      <span class="rname">{{ w.name }}</span>
+      <span
+        v-if="behind(w) !== null"
+        class="state"
+        :title="behind(w) ? '' : 'As of the last fetch — this fetches again, and replays only if something came in'"
+      >
+        {{ behind(w) ? behind(w) + ' behind' : 'up to date with' }}
+      </span>
+      <BaseSelect
+        variant="word"
+        floating
+        title="Catch up from another branch, this once"
+        :model-value="chosenFor(w)"
+        :options="basesIn(w.id).map((name) => ({ name }))"
+        :loading="loading"
+        :fallback="inherited(w)"
+        :problem="problem(w)"
+        @update:model-value="pickFor(w, $event)"
+      />
     </div>
-    <span class="note">once — the project's default branch is unchanged</span>
   </div>
 </template>
 
 <style scoped>
-.from {
+/* On a raised surface, so the overlay hairline and no fill of its own: the
+   same box as the option row a question can carry. */
+.rows {
   flex: none;
   display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
-}
-.si { opacity: 0.8; }
-.note { color: var(--text-dim); opacity: 0.75; }
-.pick { position: relative; display: inline-flex; }
-.basebtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 24px;
-  padding: 0 6px;
+  flex-direction: column;
+  border: 1px solid var(--line-overlay);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--text);
-  font-size: var(--fs-xs);
-  font-family: var(--font);
 }
-.basebtn:hover, .basebtn.on { background: var(--hover); }
-.basebtn .ch { width: 11px; height: 11px; opacity: 0.5; }
-.blist {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 2;
-  width: 260px;
-  max-height: 240px;
-  overflow: auto;
-  padding: 5px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--line-strong);
-  background: var(--overlay);
-  box-shadow: var(--shadow-lg);
-}
-.blist button {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  height: 26px;
-  padding: 0 8px;
-  border-radius: 5px;
-  background: none;
-  border: 0;
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  font-family: var(--font);
-  text-align: left;
-}
-.blist button:hover { background: var(--hover); color: var(--text); }
-.blist .hint { margin: 0; padding: 6px 8px; color: var(--text-dim); font-size: var(--fs-xs); }
+.row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 11px; font-size: var(--fs-sm); }
+.row + .row { border-top: 1px solid var(--line-overlay); }
+.rname { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The count is the news; a repository with nothing to replay steps back. */
+.state { flex: none; font-size: var(--fs-xs); color: var(--warn); font-variant-numeric: tabular-nums; }
+.row.idle .state, .row.idle .rname { color: var(--text-dim); }
 </style>

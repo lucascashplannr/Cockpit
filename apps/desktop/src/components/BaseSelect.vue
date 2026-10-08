@@ -15,7 +15,8 @@ import { Check, ChevronDown, GitBranch, Plus } from '@lucide/vue'
  * control shows when nothing is chosen, so it never reads as unanswered.
  *
  * Two sizes because it is used twice in one sheet: as the field beside the new
- * branch's name, and as the word at the end of a repository's row.
+ * branch's name, and as the word at the end of a repository's row. The word
+ * is also the base on a Catch up's row (`BasePicker`).
  */
 
 const props = withDefaults(
@@ -26,10 +27,17 @@ const props = withDefaults(
     fallback: string
     variant?: 'field' | 'word' | 'inline'
     loading?: boolean
+    /** What the trigger says under the cursor, where it is not a fork. */
+    title?: string
+    /**
+     * Drawn over the page rather than inside its parent: for a dialog that
+     * clips what leaves it.
+     */
+    floating?: boolean
     /** Said in amber: the chosen branch is not somewhere it needs to be. */
     problem?: string
   }>(),
-  { variant: 'field', loading: false, problem: '' },
+  { variant: 'field', loading: false, problem: '', title: 'The branch the new one forks from', floating: false },
 )
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
@@ -50,10 +58,27 @@ const typed = computed(() => {
   return t && VALID.test(t) && !props.options.some((o) => o.name === t) ? t : ''
 })
 
+const trigger = ref<HTMLElement | null>(null)
+const place = ref<Record<string, string>>({})
+
 async function toggle() {
   open.value = !open.value
   if (!open.value) return
   q.value = ''
+  if (props.floating && trigger.value) {
+    const r = trigger.value.getBoundingClientRect()
+    const top = r.bottom + 4
+    place.value = {
+      position: 'fixed',
+      top: top + 'px',
+      // From the trigger's left edge, or its right one when that is the edge
+      // it is set against — the word at the end of a row.
+      left: Math.max(8, Math.min(props.variant === 'word' ? r.right - 280 : r.left, window.innerWidth - 288)) + 'px',
+      right: 'auto',
+      maxHeight: Math.max(120, Math.min(280, window.innerHeight - top - 12)) + 'px',
+      transformOrigin: props.variant === 'word' ? 'top right' : 'top left',
+    }
+  }
   await nextTick()
   field.value?.focus()
 }
@@ -79,29 +104,36 @@ function onKey(e: KeyboardEvent) {
     open.value = false
   }
 }
+/** A floating list is pinned to where the trigger was; it does not follow. */
+function onResize() {
+  if (props.floating) open.value = false
+}
 onMounted(() => {
   document.addEventListener('mousedown', onDown)
   window.addEventListener('keydown', onKey, true)
+  window.addEventListener('resize', onResize)
 })
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDown)
   window.removeEventListener('keydown', onKey, true)
+  window.removeEventListener('resize', onResize)
 })
 </script>
 
 <template>
   <span ref="root" class="bs" :class="'as-' + variant">
     <button
+      ref="trigger"
       class="trigger"
       :class="{ on: open, dflt: !modelValue, warn: !!problem }"
-      :title="problem || 'The branch the new one forks from'"
+      :title="problem || title"
       @click="toggle"
     >
       <span class="v">{{ modelValue || fallback }}</span>
       <ChevronDown class="ch" />
     </button>
 
-    <div v-if="open" class="menu bsmenu">
+    <div v-if="open" class="menu bsmenu" :style="floating ? place : undefined">
       <input
         ref="field"
         v-model="q"

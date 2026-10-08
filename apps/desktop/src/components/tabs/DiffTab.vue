@@ -853,6 +853,21 @@ watch(() => props.workspace.id, () => void refreshStashes(), { immediate: true }
 // The counts come from the core's own probe, so they follow every push.
 watch(() => props.workspace.git, () => void refreshCommit())
 
+// Asked for from the bar. The field is disabled until the preview has counted
+// the files, and a disabled field refuses the caret — so the ask waits for it.
+watch(
+  [() => state.commitAsked, fileCount],
+  () => {
+    if (!state.commitAsked || !fileCount.value) return
+    void nextTick(() => {
+      if (!subjectEl.value) return
+      subjectEl.value.focus()
+      state.commitAsked = false
+    })
+  },
+  { immediate: true, flush: 'post' },
+)
+
 /* ── about the file ───────────────────────────────────────────────────────
  *
  * The header shows the name and nothing else; this is where the rest went.

@@ -246,6 +246,13 @@ export interface PlanPreview {
   /** Every repository the plan touches, so the UI can say how wide it reaches. */
   repos?: string[]
   /**
+   * §4 — a Catch up across a topic, repository by repository: what each one
+   * replays onto, and how far behind it is there. `behind` is read off the
+   * refs as they stand, before the plan's own fetch — zero means "nothing to
+   * do as far as this clone knows", null that the base is not known here yet.
+   */
+  targets?: { workspaceId: string; name: string; onto: string; behind: number | null }[]
+  /**
    * §3.7 — what a failed step means for the steps that already ran.
    *
    * `rollback` is all-or-nothing and the default: three worktrees of which one
@@ -485,9 +492,12 @@ export interface Rpc {
    * §4 — one plan that replays every repository the topic spans onto its
    * base. It stops at the first conflict and keeps what already replayed;
    * running it again after resolving picks up the rest.
+   *
+   * `base` is for every repository; `bases`, by workspace id, is for the one
+   * that catches up from somewhere else. Neither named, each uses its own.
    */
   'topic.rebase': {
-    params: { topicId: string; base?: string }
+    params: { topicId: string; base?: string; bases?: Record<string, string> }
     result: { ok: boolean; detail: string; plan: PlanPreview | null }
   }
   /**

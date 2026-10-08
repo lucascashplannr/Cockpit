@@ -541,8 +541,8 @@ const handlers: Record<string, Handler> = {
   },
 
   /** §4 — the topic is the unit of work, so catching up is one act. */
-  'topic.rebase': (p: { topicId: string; base?: string }) =>
-    topics.rebasePlan(p.topicId, p.base),
+  'topic.rebase': (p: { topicId: string; base?: string; bases?: Record<string, string> }) =>
+    topics.rebasePlan(p.topicId, p.base, p.bases),
   /** §4 — and landing it is the act that makes the work count. */
   'topic.merge': (p: { topicId: string; push?: boolean; base?: string }) =>
     topics.mergePlan(p.topicId, { push: p.push, base: p.base }),

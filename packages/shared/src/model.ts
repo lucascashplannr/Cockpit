@@ -111,6 +111,22 @@ export interface GitState {
   ahead: number
   behind: number
   /**
+   * The part of `behind` this branch has never held — what a pull would bring.
+   *
+   * `behind` cannot tell a colleague's push from your own past. Catch up a
+   * branch that is already on origin and every commit it had there is replaced
+   * by a replayed one: origin still holds the originals, git counts them as
+   * "behind", and the bar offered to pull back the very commits the rebase had
+   * just rewritten. They are told apart by the branch's reflog — a commit this
+   * branch once pointed at is not news. The same test `--force-if-includes`
+   * makes at the remote, made here first so the bar agrees with it.
+   *
+   * Zero with `behind` above zero means rewritten, and the next push is a
+   * force-push. Above zero means somebody else pushed, and it must be pulled
+   * before anything is pushed over it.
+   */
+  incoming: number
+  /**
    * Commits on this branch that `base` does not have — what Send would land.
    *
    * Distinct from `ahead`, and the distinction is not academic: push a topic

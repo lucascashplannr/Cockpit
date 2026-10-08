@@ -248,6 +248,8 @@ export const state = reactive({
   diffMode: 'changes' as 'changes' | 'commits',
   /** The commit Commits opens on, once, then forgets. */
   commitsFocus: null as string | null,
+  /** The bar's Commit was pressed: the commit box takes the caret, once, then forgets. */
+  commitAsked: false,
   /** §6 — each project's memories, and which one the next conversation on a scope uses. */
   memories: {} as Record<string, MemorySummary[]>,
   memoryChoice: {} as Record<string, string>,
@@ -362,12 +364,16 @@ export const state = reactive({
    * branch this time": the base is not a setting you go and change, it is a
    * word in the plan you are already reading. `workspaceId` is the checkout
    * whose branch list gets offered — for a topic, the first repository it
-   * spans, since they are all forked from the same base.
+   * spans. `base` is the name the question uses; `chosen` is what was picked
+   * for all of it ('' when nothing was), and `bases` what was picked for one
+   * repository of a topic, by workspace id.
    */
   pendingPlanFrom: null as
     | { scope: { kind: 'workspace'; id: string } | { kind: 'topic'; id: string }
         workspaceId: string
-        base: string }
+        base: string
+        chosen: string
+        bases: Record<string, string> }
     | null,
   pendingConfirm: null as PendingConfirm | null,
 
@@ -751,6 +757,12 @@ export function goTo(id: TabId): void {
   // take the conversation off the screen, because only they are about the
   // window rather than about a tool.
   if (state.view === 'agent') state.view = 'split'
+}
+
+/** The changes, with the caret in the commit message — the review and the commit are one place (§16). */
+export function openCommit(): void {
+  goTo('diff')
+  state.commitAsked = true
 }
 
 /** The commit graph, in the Diff's place — open on `focus` when given. */
@@ -4102,8 +4114,14 @@ export async function requestPlan(
     }
     if (operation === 'rebase') {
       const base = args.base ?? w?.git?.base ?? ''
-      state.pendingPlanFrom = { scope: { kind: 'workspace', id: workspaceId }, workspaceId, base }
-      askCatchUp(plan, base, null)
+      state.pendingPlanFrom = {
+        scope: { kind: 'workspace', id: workspaceId },
+        workspaceId,
+        base,
+        chosen: args.base ?? '',
+        bases: {},
+      }
+      askCatchUp(plan, [base])
       return
     }
     state.pendingPlanFrom = null
@@ -4120,8 +4138,8 @@ async function settlePlan(
   /** What to say when it worked, for a caller whose button had its own word
    *  for it — "put back" beats "stash pop applied". */
   okMessage?: string,
-): Promise<void> {
-  if (!res) return
+): Promise<boolean> {
+  if (!res) return false
   // The topic row is written by the plan's own apply hook, so the list is
   // only true again once that has run.
   await refreshTopics()
@@ -4132,7 +4150,7 @@ async function settlePlan(
   if (res.conflict) {
     if (res.conflict.workspaceId) state.activeWorkspaceId = res.conflict.workspaceId
     toast('warn', res.conflict.repo + ': ' + res.conflict.kind + ' stopped on a conflict — resolve it below')
-    return
+    return false
   }
   if (!res.ok) {
     // The core writes a sentence into the output when it knows what happened —
@@ -4151,9 +4169,10 @@ async function settlePlan(
           ? 'stopped — what already succeeded was kept; see the journal'
           : 'stopped — nothing was left behind; see the journal',
     )
-    return
+    return false
   }
   toast('ok', okMessage ?? plan.operation + ' applied')
+  return true
 }
 
 /* ── a plan you do not need to read ──────────────────────────────────
@@ -4258,10 +4277,12 @@ export async function applyPendingConfirm(): Promise<void> {
   state.planBusy = false
   state.pendingConfirm = null
   // §4 — it belonged to the question, and the question is answered.
+  const from = state.pendingPlanFrom
   state.pendingPlanFrom = null
   // Its own wording rather than settlePlan's "<operation> applied": the button
   // said "Put it back", and the toast that follows should agree with it.
-  await settlePlan(c.plan, res, c.done)
+  const ok = await settlePlan(c.plan, res, c.done)
+  if (ok && from) await offerPush(from.scope)
 }
 
 export async function applyPendingPlan(): Promise<void> {
@@ -4559,6 +4580,31 @@ export async function pushTopic(topicId: string): Promise<void> {
 }
 
 /**
+ * §4 — the second half of a Catch up, for a branch origin already has.
+ *
+ * Replaying a published branch leaves origin holding the commits it replaced,
+ * and until that is pushed the two disagree: the branch reads as ahead *and*
+ * behind its own remote, and nothing on the bar said the way out was Push. So
+ * the question is asked the moment the replay ends — asked, not done: it is a
+ * force-push, the button is red and Cancel holds the focus.
+ *
+ * Only for a branch that was already there. One that has never been pushed has
+ * nothing on origin to disagree with, and its first push is nobody's to
+ * suggest.
+ */
+async function offerPush(scope: { kind: 'workspace' | 'topic'; id: string }): Promise<void> {
+  const rewritten = state.workspaces
+    .filter((w) => (scope.kind === 'topic' ? w.topicId === scope.id : w.id === scope.id))
+    .some((w) => {
+      const g = w.git
+      return !!g?.branch && g.upstream === 'origin/' + g.branch && g.ahead > 0 && g.behind > 0 && g.incoming === 0
+    })
+  if (!rewritten) return
+  if (scope.kind === 'topic') await pushTopic(scope.id)
+  else await requestPlan(scope.id, 'push')
+}
+
+/**
  * §16 — the verb that leaves the machine, asked rather than briefed.
  *
  * Push is short: one command per repository, no rollback to describe, no
@@ -4597,28 +4643,28 @@ function askPush(plan: PlanPreview, subject: string): void {
  * a restore point, so it is the kind of thing you can take back, and the red
  * button is reserved for the kind you cannot. The sentence says so instead.
  */
-function askCatchUp(plan: PlanPreview, base: string, repos: string[] | null): void {
+function askCatchUp(plan: PlanPreview, onto: string[]): void {
+  // One name when every repository catches up from the same branch, which is
+  // nearly always; several, and the rows under the question say which.
+  const distinct = [...new Set(onto.filter(Boolean))]
+  const named = distinct.length > 1 ? distinct.slice(0, -1).join(', ') + ' and ' + distinct.at(-1) : (distinct[0] ?? '')
   // A Catch up with nothing destructive in it is the fast-forward the planner
   // builds when the branch *is* the base — a different sentence, because
   // nothing is replayed and nothing is rewritten.
   const replays = plan.steps.some((s) => s.destructive)
   const body = [
     replays
-      ? (repos && repos.length > 1 ? 'Every branch in this topic is' : 'Your work is') +
-        ' replayed on top of ' + base + '. Nothing is discarded — a conflict is where both' +
-        ' sides changed the same lines.'
-      : base + ' has moved on and you have not. This only moves you forward — nothing of' +
-        ' yours is replayed or rewritten.',
+      ? 'Your work is replayed on top of ' + named + '.'
+      : 'This only moves you forward — nothing of yours is replayed.',
   ]
-  if (repos && repos.length > 1) body.push('In ' + repos.join(', ') + '.')
   body.push(...plan.warnings)
   if (plan.capturesRestorePoint) body.push('A restore point is captured first, so this can be undone.')
 
   state.pendingConfirm = {
-    title: 'Catch up from ' + base + '?',
+    title: 'Catch up from ' + named + '?',
     body,
     verb: 'Catch up',
-    done: 'caught up with ' + base,
+    done: 'caught up with ' + named,
     danger: false,
     plan,
   }
@@ -4685,6 +4731,12 @@ export async function resolveConflict(action: 'continue' | 'abort' | 'skip'): Pr
   conflictBusy.value = false
   if (!res) return
   toast(res.ok ? 'ok' : 'error', res.detail)
+  // A Catch up that stopped on a conflict ends here rather than in the dialog
+  // that started it, and owes the same question.
+  if (res.ok && action === 'continue' && !res.operation) {
+    await refreshTopics()
+    await offerPush({ kind: 'workspace', id: w.id })
+  }
 }
 
 /** The escape hatch for a file whose content is *meant* to contain markers. */
@@ -4710,8 +4762,14 @@ export async function openConflictFile(path: string): Promise<void> {
  * again after resolving picks up the rest, because a branch already rebased
  * costs only a fetch.
  */
-export async function rebaseTopic(topicId: string, base?: string): Promise<void> {
-  const res = await guard(() => client.call('topic.rebase', { topicId, base }))
+export async function rebaseTopic(
+  topicId: string,
+  base?: string,
+  bases: Record<string, string> = {},
+): Promise<void> {
+  const res = await guard(() =>
+    client.call('topic.rebase', { topicId, base, ...(Object.keys(bases).length ? { bases } : {}) }),
+  )
   if (!res) return
   if (!res.ok || !res.plan) {
     toast('error', res.detail)
@@ -4725,8 +4783,14 @@ export async function rebaseTopic(topicId: string, base?: string): Promise<void>
     scope: { kind: 'topic', id: topicId },
     workspaceId: anchor?.id ?? '',
     base: onto,
+    chosen: base ?? '',
+    bases,
   }
-  askCatchUp(res.plan, onto, res.plan.repos ?? null)
+  // What each repository replays onto, read the way the core reads it.
+  const each = state.workspaces
+    .filter((w) => w.topicId === topicId && w.repo)
+    .map((w) => bases[w.id] || base || w.git?.base || '')
+  askCatchUp(res.plan, each.length ? each : [onto])
 }
 
 /**
@@ -4736,13 +4800,22 @@ export async function rebaseTopic(topicId: string, base?: string): Promise<void>
  * nearly always; this is the exception you take once, on the plan you are
  * already looking at, and it does not change the setting.
  */
-export async function replanBase(base: string): Promise<void> {
+export async function replanBase(base: string, bases?: Record<string, string>): Promise<void> {
   const from = state.pendingPlanFrom
-  if (!from || base === from.base) return
+  if (!from) return
   state.pendingPlan = null
-  state.pendingPlanFrom = null
-  if (from.scope.kind === 'topic') await rebaseTopic(from.scope.id, base)
-  else await requestPlan(from.scope.id, 'rebase', { base })
+  // The question stays where it is while its plan is rebuilt — the rows you
+  // are choosing in would otherwise blink out — but it cannot be agreed to:
+  // the plan on screen is the one being replaced.
+  const asked = state.pendingConfirm
+  if (asked) asked.waiting = true
+  try {
+    if (from.scope.kind === 'topic') await rebaseTopic(from.scope.id, base || undefined, bases ?? from.bases)
+    else await requestPlan(from.scope.id, 'rebase', base ? { base } : {})
+  } finally {
+    // A plan that came back replaced the question; one that did not left it.
+    if (asked && state.pendingConfirm === asked) asked.waiting = false
+  }
 }
 
 /* ── topics ────────────────────────────────────────────────────────────

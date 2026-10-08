@@ -5,7 +5,7 @@ import type {
   Setup, DatabasePlan, Topic, PlanPreview, PlanStep, SeedProposal, Workspace,
 } from '@cockpit/shared'
 import { append } from '../journal.js'
-import { defaultBranch, git, listWorktrees } from '../git.js'
+import { countBehind, defaultBranch, git, listWorktrees } from '../git.js'
 import * as plans from '../plans.js'
 import { pushRefusal } from '../protect.js'
 import * as registry from '../registry.js'
@@ -643,10 +643,14 @@ export async function stop(topicId: string): Promise<{ ok: boolean; detail: stri
  *
  * Re-running it is the way forward after a conflict is resolved: a branch
  * already replayed answers "up to date" and costs a fetch.
+ *
+ * A base per repository, by workspace id, wins over the one for all of them:
+ * the same order `open` reads them in.
  */
 export async function rebasePlan(
   topicId: string,
   base?: string,
+  bases?: Record<string, string>,
 ): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
   const f = store.get(topicId)
   if (!f) throw new Error('unknown topic: ' + topicId)
@@ -671,11 +675,16 @@ export async function rebasePlan(
   const steps: PlanStep[] = []
   const warnings: string[] = []
   const names: string[] = []
+  const published: string[] = []
+  const targets: NonNullable<PlanPreview['targets']> = []
 
   for (const w of repos) {
-    const onto = base ?? (await baseFor(w.path))
+    const onto = bases?.[w.id] || base || (await baseFor(w.path))
     const branch = w.git?.branch ?? f.slug
     names.push(w.name)
+    // Not every repository has to catch up, and which do depends on the base
+    // each was given — so the plan says, rather than leaving it to be guessed.
+    targets.push({ workspaceId: w.id, name: w.name, onto, behind: await countBehind(w.path, onto) })
     steps.push({
       title: w.name + ': fetch ' + onto,
       command: 'git fetch origin ' + onto,
@@ -683,21 +692,21 @@ export async function rebasePlan(
       destructive: false,
     })
     steps.push(...plans.rebaseStep(w.path, branch, onto))
-    if ((w.git?.ahead ?? 0) > 0 && w.git?.upstream) {
-      warnings.push(
-        w.name + ' is ' + w.git.ahead + ' commit(s) ahead of ' + w.git.upstream +
-          '; the rebase rewrites them and pushing will need --force-with-lease.',
-      )
-    }
+    if (w.git?.upstream === 'origin/' + branch) published.push(w.name)
   }
 
+  if (published.length) {
+    warnings.push(
+      (published.length === repos.length ? '' : published.join(', ') + ': ') + plans.REWRITES_ORIGIN,
+    )
+  }
   if (repos.some((w) => (w.git?.staged ?? 0) + (w.git?.unstaged ?? 0) > 0)) {
     warnings.push(
-      'Uncommitted changes are set aside by --autostash and put back when each rebase ends, abort included. Git holds that stash, so a conflict cannot strand it.',
+      'Uncommitted changes are set aside and put back when each rebase ends, abort included.',
     )
   }
   warnings.push(
-    'Repositories are rebased in order and it stops at the first conflict — what already replayed is kept, not rolled back. Resolve, then run this again: a branch already up to date costs only a fetch.',
+    'It stops at the first conflict and keeps what already replayed. Resolve, then run it again.',
   )
 
   const preview: PlanPreview = {
@@ -707,6 +716,7 @@ export async function rebasePlan(
     warnings,
     capturesRestorePoint: true,
     repos: names,
+    targets,
     onFailure: 'halt',
   }
 
@@ -781,22 +791,21 @@ export async function pushPlan(
     // and forcing on it would rewrite a remote branch that does not exist.
     const own = g.upstream === 'origin/' + g.branch
     const force = own && g.behind > 0 && g.ahead > 0
+    // Somebody else's commits are not this push's to replace: it sits out.
+    const stranger = force ? plans.pushOverwrites(g.branch, g.incoming) : null
+    if (stranger) {
+      warnings.push(fresh.name + ': ' + stranger)
+      continue
+    }
     steps.push({
       title: force
         ? fresh.name + ': force-push (with lease) ' + g.branch
         : fresh.name + ': push ' + g.branch + ' (' + g.ahead + ' commit(s))',
-      command: force
-        ? 'git push --force-with-lease origin ' + g.branch
-        : 'git push -u origin ' + g.branch,
+      command: force ? plans.FORCE_PUSH + g.branch : 'git push -u origin ' + g.branch,
       cwd: fresh.path,
       destructive: force,
     })
-    if (force) {
-      warnings.push(
-        fresh.name + ': history diverged — this rewrites the remote branch. ' +
-          '--force-with-lease is used, so a push someone else made first aborts it.',
-      )
-    }
+    if (force) warnings.push(fresh.name + ': ' + plans.forcePushWarning(g.branch, g.behind))
     names.push(fresh.name)
     ids.push(fresh.id)
   }

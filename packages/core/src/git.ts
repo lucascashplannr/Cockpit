@@ -58,6 +58,7 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     base,
     ahead: 0,
     behind: 0,
+    incoming: 0,
     aheadOfBase: null,
     behindBase: null,
     staged: 0,
@@ -98,6 +99,12 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     } else if (line.startsWith('? ')) {
       state.untracked++
     }
+  }
+
+  // Only against the branch's own remote: until the first push `behind` is the
+  // base's distance, and Catch up already counts that.
+  if (state.branch && state.behind > 0 && state.upstream === 'origin/' + state.branch) {
+    state.incoming = await countIncoming(cwd, state.branch, state.upstream, state.behind)
   }
 
   // §4 — what Send would land, which is not what `ahead` counts. Skipped
@@ -445,8 +452,33 @@ async function countAhead(cwd: string, base: string): Promise<number | null> {
 }
 
 /** The other direction, and the same two refs tried in the same order. */
-async function countBehind(cwd: string, base: string): Promise<number | null> {
+export async function countBehind(cwd: string, base: string): Promise<number | null> {
   return countRange(cwd, base, (ref) => 'HEAD..' + ref)
+}
+
+/**
+ * Commits on `upstream` this branch has never pointed at — see
+ * `GitState.incoming`.
+ *
+ * Capped, because the tips go on a command line: a reflog cut short forgets
+ * the oldest of them, which can only overcount, and overcounting is the safe
+ * direction — it offers a pull and refuses a force-push. So is the fallback
+ * when the reflog cannot be read at all.
+ */
+const REFLOG_TIPS = 1000
+
+async function countIncoming(
+  cwd: string,
+  branch: string,
+  upstream: string,
+  behind: number,
+): Promise<number> {
+  const log = await git(cwd, ['reflog', 'show', '--format=%H', '-n', String(REFLOG_TIPS), 'refs/heads/' + branch])
+  if (!log.ok) return behind
+  const seen = [...new Set(log.stdout.split('\n').filter(Boolean))]
+  const r = await git(cwd, ['rev-list', '--count', upstream, '--not', 'HEAD', ...seen], 15_000)
+  const n = r.ok ? Number(r.stdout.trim()) : NaN
+  return Number.isFinite(n) ? n : behind
 }
 
 async function countRange(
