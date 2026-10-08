@@ -173,6 +173,12 @@ export interface GitState {
    */
   conflictedPaths: string[]
   lastCommit: { hash: string; subject: string; author: string; ts: number } | null
+  /**
+   * The repository has somewhere to push to. A repository that was only ever
+   * `git init`ed has no upstream either, and that is not "never pushed yet":
+   * there is no first push to make, so Push is not a verb it has (§3.9).
+   */
+  hasRemote: boolean
   /** §16 — refuse to tear down a workspace holding unpushed commits. */
   hasUnpushedWork: boolean
   /** Null whenever `headState` is `attached` or `detached`. */

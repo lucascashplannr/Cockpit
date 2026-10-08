@@ -162,8 +162,10 @@ export async function openPlan(
 
     // A branch that is already here has nothing to fetch: it is opened as it
     // stands, and catching it up is the topic's own verb afterwards.
+    // Nor has a repository with no remote, whose base is its local branch.
+    const remote = repo.git?.hasRemote !== false
     const fetched = reused ? (onRemote ? slug : null) : base
-    if (fetched) {
+    if (fetched && remote) {
       steps.push({
         title: repo.name + ': fetch ' + fetched,
         command: 'git fetch origin ' + fetched,
@@ -208,7 +210,7 @@ export async function openPlan(
         title: repo.name + (onRemote ? ': track origin/' : ': create branch ') + slug,
         command: onRemote
           ? 'git branch --track ' + slug + ' origin/' + slug
-          : 'git branch ' + slug + ' origin/' + base,
+          : 'git branch ' + slug + ' ' + plans.baseRef(base, remote),
         cwd: repo.path,
         destructive: false,
         undo: [{ title: repo.name + ': delete branch ' + slug, command: 'git branch -D ' + slug, cwd: repo.path }],
@@ -685,13 +687,16 @@ export async function rebasePlan(
     // Not every repository has to catch up, and which do depends on the base
     // each was given — so the plan says, rather than leaving it to be guessed.
     targets.push({ workspaceId: w.id, name: w.name, onto, behind: await countBehind(w.path, onto) })
-    steps.push({
-      title: w.name + ': fetch ' + onto,
-      command: 'git fetch origin ' + onto,
-      cwd: w.path,
-      destructive: false,
-    })
-    steps.push(...plans.rebaseStep(w.path, branch, onto))
+    const remote = w.git?.hasRemote !== false
+    if (remote) {
+      steps.push({
+        title: w.name + ': fetch ' + onto,
+        command: 'git fetch origin ' + onto,
+        cwd: w.path,
+        destructive: false,
+      })
+    }
+    steps.push(...plans.rebaseStep(w.path, branch, onto, remote))
     if (w.git?.upstream === 'origin/' + branch) published.push(w.name)
   }
 
@@ -774,6 +779,8 @@ export async function pushPlan(
       continue
     }
     if (g.ahead === 0 && g.upstream) continue
+    // Nowhere to push to is not a first push waiting to happen.
+    if (!g.hasRemote) continue
 
     // §16 — this repository sits the push out and says why; the others go.
     const refusal = await pushRefusal(fresh, g.branch)
@@ -893,12 +900,16 @@ export async function mergePlan(
     }
     names.push(main.name)
 
-    steps.push({
-      title: main.name + ': fetch ' + base,
-      command: 'git fetch origin ' + base,
-      cwd: main.path,
-      destructive: false,
-    })
+    // No remote: the local base is the only one there is, and it is current.
+    const remote = main.git?.hasRemote !== false
+    if (remote) {
+      steps.push({
+        title: main.name + ': fetch ' + base,
+        command: 'git fetch origin ' + base,
+        cwd: main.path,
+        destructive: false,
+      })
+    }
     // Only when it is not already there: switching a checkout that is already
     // on the base is a no-op that still shows up as a step, and a plan whose
     // steps do nothing is a plan nobody reads.
@@ -911,19 +922,21 @@ export async function mergePlan(
         undo: [{ title: main.name + ': switch back', command: 'git switch -', cwd: main.path }],
       })
     }
-    steps.push({
-      title: main.name + ': fast-forward ' + base,
-      command: 'git merge --ff-only origin/' + base,
-      cwd: main.path,
-      destructive: false,
-    })
+    if (remote) {
+      steps.push({
+        title: main.name + ': fast-forward ' + base,
+        command: 'git merge --ff-only origin/' + base,
+        cwd: main.path,
+        destructive: false,
+      })
+    }
     steps.push({
       title: main.name + ': merge ' + branch + ' into ' + base,
       command: 'git merge --no-ff ' + branch + ' -m "Merge ' + f.name.replace(/"/g, '') + '"',
       cwd: main.path,
       destructive: true,
     })
-    if (opts.push) {
+    if (opts.push && remote) {
       // §16 — a Send only adds a merge, which a protected base takes; what
       // would stop the push is a commit already sitting on it from elsewhere.
       const refusal = await pushRefusal(main, base)

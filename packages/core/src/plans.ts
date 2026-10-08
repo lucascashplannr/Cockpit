@@ -122,6 +122,11 @@ export async function plan(
   const warnings: string[] = []
   const base = args.base ?? getBaseOverride(ws.path) ?? (await defaultBranch(ws.path))
   const branch = ws.git?.branch ?? '(detached)'
+  // A repository that was only ever `git init`ed: there is nothing to fetch,
+  // and its base is the local branch rather than origin's copy of it. Every
+  // plan below read `origin` as a given, and stopped at its first step here.
+  const remote = ws.git?.hasRemote !== false
+  const onto = baseRef(base, remote)
 
   if (ws.git?.headState === 'rebasing' || ws.git?.headState === 'merging') {
     warnings.push('This repository is in the middle of a ' + ws.git.headState + '. Finish or abort it first.')
@@ -137,7 +142,7 @@ export async function plan(
 
   switch (operation) {
     case 'rebase': {
-      steps.push({ title: 'Fetch ' + base, command: 'git fetch origin ' + base, cwd: ws.path, destructive: false })
+      if (remote) steps.push({ title: 'Fetch ' + base, command: 'git fetch origin ' + base, cwd: ws.path, destructive: false })
       /**
        * §4 — catching up *on* the base is a fast-forward, and it was drawn as
        * "Rebase main onto main" over a warning saying there was nothing to do.
@@ -149,7 +154,9 @@ export async function plan(
        * definition — anything it holds is the base's. So there is nothing to
        * put back on top, and the honest command is the one that says so.
        */
-      if (branch === base) {
+      if (branch === base && !remote) {
+        warnings.push('"' + base + '" is the base and this repository has no remote — there is nothing to catch up from.')
+      } else if (branch === base) {
         steps.push({
           title: 'Fast-forward ' + branch + ' to origin/' + base,
           command: 'git merge --ff-only origin/' + base,
@@ -157,7 +164,7 @@ export async function plan(
           destructive: false,
         })
       } else {
-        steps.push(...rebaseStep(ws.path, branch, base))
+        steps.push(...rebaseStep(ws.path, branch, base, remote))
       }
       // Both of these are about the replay, so neither applies to the
       // fast-forward: nothing is stashed and nothing is rewritten.
@@ -228,8 +235,8 @@ export async function plan(
     }
 
     case 'merge': {
-      steps.push({ title: 'Fetch ' + base, command: 'git fetch origin ' + base, cwd: ws.path, destructive: false })
-      steps.push({ title: 'Merge ' + base + ' into ' + branch, command: 'git merge --no-ff origin/' + base, cwd: ws.path, destructive: true })
+      if (remote) steps.push({ title: 'Fetch ' + base, command: 'git fetch origin ' + base, cwd: ws.path, destructive: false })
+      steps.push({ title: 'Merge ' + base + ' into ' + branch, command: 'git merge --no-ff ' + onto, cwd: ws.path, destructive: true })
       break
     }
 
@@ -313,10 +320,10 @@ export async function plan(
       const root = worktreeRoot(ws.path, { override: args.root })
       const target = join(root, name)
       if (existsSync(target)) warnings.push('Target folder already exists: ' + target)
-      steps.push({ title: 'Fetch origin', command: 'git fetch origin', cwd: ws.path, destructive: false })
+      if (remote) steps.push({ title: 'Fetch origin', command: 'git fetch origin', cwd: ws.path, destructive: false })
       steps.push({
         title: 'Check out ' + name + ' in its own folder',
-        command: 'git worktree add -b ' + name + ' ' + target + ' origin/' + base,
+        command: 'git worktree add -b ' + name + ' ' + target + ' ' + onto,
         cwd: ws.path,
         destructive: false,
       })
@@ -329,6 +336,7 @@ export async function plan(
         warnings.push('Detached HEAD: nothing to push.')
         break
       }
+      if (!remote) throw new Error('This repository has no remote — there is nowhere to push to.')
       // §16 — refused outright rather than planned with a warning on it: a
       // plan that can be applied is an offer, and this one is not on offer.
       const refusal = await pushRefusal(ws, branch)
@@ -395,6 +403,11 @@ export async function plan(
   return preview
 }
 
+/** The base as git should read it: origin's copy, or the local branch where there is no origin. */
+export function baseRef(base: string, remote: boolean): string {
+  return remote ? 'origin/' + base : base
+}
+
 /** Said on a Catch up of a branch origin already has. */
 export const REWRITES_ORIGIN =
   'Already on origin: the push that follows is a force-push.'
@@ -436,11 +449,11 @@ export function forcePushWarning(branch: string, replaced: number): string {
  * to git makes it git's problem — it pops it when the rebase finishes, when it
  * is aborted, and never leaves it behind.
  */
-export function rebaseStep(cwd: string, branch: string, base: string): PlanStep[] {
+export function rebaseStep(cwd: string, branch: string, base: string, remote = true): PlanStep[] {
   return [
     {
       title: 'Rebase ' + branch + ' onto ' + base,
-      command: 'git rebase --autostash origin/' + base,
+      command: 'git rebase --autostash ' + baseRef(base, remote),
       cwd,
       destructive: true,
     },

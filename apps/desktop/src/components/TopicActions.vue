@@ -91,7 +91,9 @@ const mergeTitle = computed(() => {
  * agree with that or the button lies about what the plan would do.
  */
 const canPush = computed(() =>
-  ws.value.some((w) => !!w.repo && !!w.git && (w.git.ahead > 0 || !w.git.upstream)),
+  ws.value.some(
+    (w) => !!w.repo && !!w.git && w.git.hasRemote !== false && (w.git.ahead > 0 || !w.git.upstream),
+  ),
 )
 
 /** Nothing committed yet is nothing to land. Uncommitted work is a different
@@ -271,11 +273,9 @@ const runTitle = computed(() => {
     <OverflowMenu label="Everything you can do on this topic">
       <button :disabled="!canPush" @click="pushTopic(f!.id)">
         <ArrowUp /> Push
-        <span v-if="!canPush" class="why">nothing to push</span>
       </button>
       <button :disabled="!canMerge" @click="mergeTopic(f!.id, false)">
         <GitMerge /> {{ sendLabel }}
-        <span v-if="!canMerge" class="why">nothing to send</span>
       </button>
       <button @click="rebaseTopic(f!.id)">
         <GitCompareArrows /> Catch up

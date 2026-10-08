@@ -105,6 +105,12 @@ const coveredNames = computed(() => covered.value.map((x) => x.name).join(', '))
  */
 const scope = computed(() => activeAgentScope.value)
 const label = computed(() => scopeLabel(scope.value))
+/**
+ * A repository with no git remote says so in its own kicker: it is why this
+ * bar has no Push and never will, said once, in the word that already says
+ * what kind of thing this is.
+ */
+const offline = computed(() => scope.value?.kind === 'workspace' && w.value?.git?.hasRemote === false)
 
 /* §8 — the servers are not on this line. They were a dot and a port here, a
  * fact beside a switch that already said the same thing in green, three inches
@@ -122,8 +128,8 @@ const label = computed(() => scopeLabel(scope.value))
          hyphens in it and ate the whole row — is answered here by letting
          the branch, and only the branch, ellipsis. -->
     <span class="scope">
-      <span class="idr" :title="label.name">
-        <span class="k">{{ label.kind }}</span>
+      <span class="idr" :title="offline ? label.name + ' — no git remote: nothing to push to or pull from' : label.name">
+        <span class="k">{{ offline ? 'Off. ' + label.kind : label.kind }}</span>
         <span class="n">{{ label.name }}</span>
       </span>
 

@@ -70,8 +70,11 @@
  * 2.23 — `topic.rebase` takes `bases`, a base per repository, and its plan
  * carries `targets`. An older core ignores the first and replays every
  * repository onto the one `base`; without the second the rows say no count.
+ *
+ * 2.24 — `GitState.hasRemote`. An older core sends no such field, and the
+ * window reads its absence as "has one": Push is offered as before.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 23 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 24 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

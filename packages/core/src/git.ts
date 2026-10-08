@@ -36,7 +36,7 @@ export async function isWorktree(path: string): Promise<boolean> {
 export async function probeGit(cwd: string, baseOverride?: string | null): Promise<GitState | null> {
   if (!isRepo(cwd)) return null
 
-  const [status, head, unpushed, base] = await Promise.all([
+  const [status, head, unpushed, remotes, base] = await Promise.all([
     git(cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=all']),
     git(cwd, ['log', '-1', '--format=%H%x1f%s%x1f%an%x1f%at']),
     // `HEAD`, not `--branches`: the latter answers for the whole repository,
@@ -44,6 +44,7 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     // report unpushed work — and refused to close or delete topics holding
     // nothing at all. A checkout speaks for its own branch and no other.
     git(cwd, ['log', 'HEAD', '--not', '--remotes', '--format=%H', '-1']),
+    git(cwd, ['remote']),
     // Reads a ref file in the common case, so it costs about nothing to probe
     // it every time rather than resolving it at the moment of the action.
     baseOverride ? Promise.resolve(baseOverride) : defaultBranch(cwd),
@@ -67,6 +68,8 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     conflicted: 0,
     conflictedPaths: [],
     lastCommit: null,
+    // Unreadable is not "none": hiding Push on a failed probe would be a guess.
+    hasRemote: !remotes.ok || remotes.stdout.trim().length > 0,
     hasUnpushedWork: unpushed.ok && unpushed.stdout.trim().length > 0,
     operation: null,
   }

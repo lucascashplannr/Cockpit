@@ -144,7 +144,8 @@ const git = computed(() => (w.value?.git?.operation ? null : (w.value?.git ?? nu
  * A branch with no upstream is not "nothing to push" even at zero commits
  * ahead — it has never been sent anywhere, and `git push -u` is what sends it.
  * That is the one case where the counter reads 0 and the verb still means
- * something.
+ * something. A repository with no remote at all is not that case: it has
+ * nowhere to send anything, so it has no Push.
  */
 /** The same count the list draws beside the repository — and the same rule as Push. */
 const uncommitted = computed(() => {
@@ -154,7 +155,8 @@ const uncommitted = computed(() => {
 
 const hasPush = computed(() => {
   const g = git.value
-  return !!g && (g.ahead > 0 || !g.upstream)
+  // `!== false`: an older core says nothing, and nothing is not "none".
+  return !!g && g.hasRemote !== false && (g.ahead > 0 || !g.upstream)
 })
 /** Something to send, and nothing of somebody else's in the way of sending it. */
 const canPush = computed(() => hasPush.value && !pullFirst.value)
@@ -398,21 +400,15 @@ async function undo() {
       <template v-if="git">
         <button :disabled="!uncommitted" @click="openCommit()">
           <GitCommitHorizontal /> Commit
-          <span v-if="!uncommitted" class="why">nothing to commit</span>
         </button>
         <button :disabled="!canPush" @click="requestPlan(w.id, 'push')">
-          <ArrowUpFromLine /> Push
-          <span v-if="canPush" class="kb">P</span>
-          <span v-else class="why">{{ pullFirst ? 'pull first' : 'nothing to push' }}</span>
+          <ArrowUpFromLine /> Push <span class="kb">P</span>
         </button>
         <button :disabled="!canCatchUp" @click="requestPlan(w.id, 'rebase')">
-          <GitCompareArrows /> Catch up
-          <span v-if="canCatchUp" class="kb">R</span>
-          <span v-else class="why">no base</span>
+          <GitCompareArrows /> Catch up <span class="kb">R</span>
         </button>
         <button :disabled="!canPull" @click="requestPlan(w.id, 'pull')">
           <ArrowDownToLine /> Pull
-          <span v-if="!canPull" class="why">nothing to pull</span>
         </button>
         <span class="rule" />
       </template>
