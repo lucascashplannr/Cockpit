@@ -1,4 +1,4 @@
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { hasMemoryEntries, protectedPatterns, stableId } from '@cockpit/shared'
 import type {
@@ -238,13 +238,18 @@ function liveWork(p: Project): string[] {
   const out: string[] = []
   for (const wid of p.workspaceIds) {
     const w = workspaces.get(wid)
-    if (!w) continue
-    if (w.runtime && (w.runtime.status === 'up' || w.runtime.status === 'starting')) {
-      out.push(w.name + ': runtime is ' + w.runtime.status)
-    }
-    if (w.agentSessions.length) {
-      out.push(w.name + ': ' + w.agentSessions.length + ' agent session(s) open')
-    }
+    if (w) out.push(...liveIn(w))
+  }
+  return out
+}
+
+function liveIn(w: Workspace): string[] {
+  const out: string[] = []
+  if (w.runtime && (w.runtime.status === 'up' || w.runtime.status === 'starting')) {
+    out.push(w.name + ': runtime is ' + w.runtime.status)
+  }
+  if (w.agentSessions.length) {
+    out.push(w.name + ': ' + w.agentSessions.length + ' agent session(s) open')
   }
   return out
 }
@@ -259,12 +264,7 @@ export function liveWorkUnder(path: string): string[] {
   const out: string[] = []
   for (const w of workspaces.values()) {
     if (w.path !== p && !w.path.startsWith(p + '/')) continue
-    if (w.runtime && (w.runtime.status === 'up' || w.runtime.status === 'starting')) {
-      out.push(w.name + ': runtime is ' + w.runtime.status)
-    }
-    if (w.agentSessions.length) {
-      out.push(w.name + ': ' + w.agentSessions.length + ' agent session(s) open')
-    }
+    out.push(...liveIn(w))
   }
   return out
 }
@@ -388,6 +388,72 @@ export function forgetProject(projectId: string): void {
 }
 
 /**
+ * §7 — one repository leaves the project and nothing on disk moves. The
+ * project-level Untrack, one level down.
+ *
+ * What makes it more than dropping a row is that worktrees are only ever
+ * found *from* their repository (`discoverWorktrees`), so every branch of this
+ * one leaves the list with it. A branch that belongs to a topic cannot: the
+ * topic would go on to be merged, closed or deleted without the one checkout
+ * it can no longer see, and that checkout would be left in the topic's folder
+ * with whatever was in it. So this refuses rather than warns, the way a move
+ * does (§16), and names the topics.
+ */
+export async function untrackRepo(projectId: string, workspaceId: string): Promise<Project> {
+  const p = requireProject(projectId)
+  const main = workspaces.get(workspaceId)
+  if (!main || main.projectId !== p.id || main.kind !== 'main') {
+    throw new Error('not a repository of ' + p.name)
+  }
+  if (resolve(main.path) === resolve(p.root)) {
+    throw new Error(main.name + ' is the project itself — untrack the project instead.')
+  }
+
+  // Probed now rather than read off `repoName`: two repositories can share a
+  // folder name, and git is the one that knows whose worktree is whose.
+  const linked = (await listWorktrees(main.path))
+    .filter((e) => resolve(e.path) !== resolve(main.path))
+    .map((e) => workspaces.get(stableId('ws', e.path)))
+    .filter((w): w is Workspace => !!w)
+
+  const held = new Set<string>()
+  for (const w of linked) {
+    const topic = w.topicId ? topics.get(w.topicId) : null
+    if (topic && !topic.derived) held.add(withRecord(topic).name)
+  }
+  if (held.size) {
+    throw new Error(
+      main.name + ' still has a branch in ' + [...held].join(', ') + ' — close or delete ' +
+        (held.size === 1 ? 'that topic' : 'those topics') + ' first',
+    )
+  }
+
+  const live = [main, ...linked].flatMap((w) => [
+    ...liveIn(w),
+    ...(leaseCovering(w.path) ? [w.name + ': an agent holds it'] : []),
+  ])
+  if (live.length) throw new Error('stop these first — ' + live.join('; '))
+
+  const rel = relative(p.root, main.path).split(sep).join('/')
+  setProjectSettings(p.root, { untrackedRepos: [...projectSettings(p.root).untrackedRepos, rel] })
+  // By hand: a reconcile only drops a workspace whose folder is gone, and
+  // these are all still there.
+  for (const w of [main, ...linked]) workspaces.delete(w.id)
+  append({ type: 'project.repo_untracked', projectId, payload: { root: p.root, path: main.path } })
+  return buildProject(p.root)
+}
+
+/** The way back. A path that is not on the list is not an error: it is tracked already. */
+export function trackRepo(projectId: string, path: string): Project {
+  const p = requireProject(projectId)
+  const listed = projectSettings(p.root).untrackedRepos
+  if (!listed.includes(path)) return p
+  setProjectSettings(p.root, { untrackedRepos: listed.filter((r) => r !== path) })
+  append({ type: 'project.repo_tracked', projectId, payload: { root: p.root, path: resolve(p.root, path) } })
+  return buildProject(p.root)
+}
+
+/**
  * Reads the desired state (manifest, or nothing) and enumerates the real
  * workspaces on disk. Pure structure — no probing yet, that is a second pass.
  */
@@ -411,6 +477,9 @@ function buildProject(root: string): Project {
   } else {
     repoPaths = childRepos(root)
   }
+  // §7 — what this machine was told to leave out, whoever listed it above.
+  const untracked = new Set(projectSettings(root).untrackedRepos.map((r) => resolve(root, r)))
+  repoPaths = repoPaths.filter((rp) => !untracked.has(resolve(rp)))
 
   // Before the settings are read: an older build kept one protected list for
   // the whole project, and it lands on each repository the project holds.

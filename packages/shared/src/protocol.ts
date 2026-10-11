@@ -363,6 +363,19 @@ export interface Rpc {
   }
 
   /**
+   * §7 — the way back out: Cockpit forgets one repository of a project and
+   * touches nothing on disk. Remembered on this machine only, so neither
+   * detection nor a manifest's `repos:` brings it back.
+   *
+   * Refused while a topic still holds a branch of it, or while something runs
+   * in it: its worktrees would leave the list with it, and a topic closed
+   * afterwards would not know they were there.
+   */
+  'project.untrackRepo': { params: { projectId: string; workspaceId: string }; result: Project }
+  /** `path` as `ProjectSettings.untrackedRepos` lists it. */
+  'project.trackRepo': { params: { projectId: string; path: string }; result: Project }
+
+  /**
    * §13 rule 1 — the window has no filesystem, so it cannot know whether the
    * folder someone just picked is a repository, is already the right shape, or
    * is a name already taken. It asks.

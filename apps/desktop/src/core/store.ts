@@ -8,7 +8,7 @@ import type {
   ProjectSettings, QuoteSource, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
 import { anchorsIn, handleFor, matchesBranch, protectedPatterns, splitPrompt } from '@cockpit/shared'
-import { CoreClient } from './client.js'
+import { CoreClient, CoreError } from './client.js'
 import type { ConnectionState } from './client.js'
 
 /**
@@ -2982,7 +2982,8 @@ export async function guard<T>(fn: () => Promise<T>, okMessage?: string): Promis
     if (message === 'core is not connected' || message === 'core disconnected') return null
     // The stack is the only part that ever says where, and it is exactly the
     // part a one-line toast used to throw away.
-    const stack = e instanceof Error ? e.stack : undefined
+    // … except on a refusal from the core, where it only says who relayed it.
+    const stack = e instanceof Error && !(e instanceof CoreError) ? e.stack : undefined
     const detail = stack && stack.trim() !== message.trim() ? stack : undefined
     toast('error', message, detail ? { detail } : undefined)
     return null
@@ -3381,6 +3382,74 @@ export function askUntrackProject(projectId: string): void {
     danger: false,
     run: () => forgetProject(projectId),
   }
+}
+
+/**
+ * §7 — one repository out of a project, files untouched. The core refuses
+ * while a topic still holds a branch of it or something runs in it; what would
+ * get it refused is said here first, as Move to Trash does.
+ */
+export function askUntrackRepo(projectId: string, workspaceId: string): void {
+  const repo = state.workspaces.find((w) => w.id === workspaceId)
+  if (!repo) return
+  const branches = state.workspaces.filter(
+    (w) => w.projectId === projectId && w.kind === 'worktree' && w.repoName === repo.repoName,
+  )
+  const topics = state.topics
+    .filter((t) => !t.derived && t.state !== 'closed' && branches.some((w) => t.workspaceIds.includes(w.id)))
+    .map((t) => t.name)
+  const running = [repo, ...branches].filter((w) => w.runtime?.status === 'up').length
+  const loose = branches.length
+  const why: string[] = []
+  if (topics.length) {
+    why.push(
+      'It still has a branch in ' + topics.join(', ') + '. Close or delete ' +
+        (topics.length === 1 ? 'that topic' : 'those topics') + ' first.',
+    )
+  }
+  if (running) why.push((running === 1 ? 'A server is' : running + ' servers are') + ' still up. Stop ' + (running === 1 ? 'it' : 'them') + ' first.')
+  if (why.length) {
+    state.pendingConfirm = {
+      title: repo.repoName + ' can’t be untracked yet',
+      body: why,
+      verb: 'Untrack',
+      cancel: 'Close',
+      done: '',
+      danger: false,
+      blocked: true,
+      run: async () => false,
+    }
+    return
+  }
+  const body = [
+    'Cockpit forgets this repository' +
+      (loose ? ' and its ' + (loose === 1 ? 'other branch' : loose + ' other branches') : '') +
+      '. Every file stays where it is, and you can track it again any time.',
+  ]
+  state.pendingConfirm = {
+    title: 'Untrack ' + repo.repoName + '?',
+    body,
+    verb: 'Untrack',
+    done: repo.repoName + ' untracked',
+    danger: false,
+    run: async () => {
+      const ok = await guard(() => client.call('project.untrackRepo', { projectId, workspaceId }))
+      if (!ok) return false
+      await refreshProjects()
+      // Standing in it, or in a branch of it: there is nothing there to stand in now.
+      if (state.activeWorkspaceId && !state.workspaces.some((w) => w.id === state.activeWorkspaceId)) {
+        state.activeWorkspaceId = null
+      }
+      return true
+    },
+  }
+}
+
+export async function trackRepo(projectId: string, path: string): Promise<boolean> {
+  const ok = await guard(() => client.call('project.trackRepo', { projectId, path }), path + ' tracked again')
+  if (!ok) return false
+  await refreshProjects()
+  return true
 }
 
 /** The one act in the app that touches a source tree, so the name is typed back. */
@@ -4231,6 +4300,11 @@ interface ConfirmBase {
   cancel?: string
   /** Asked to be typed back before the button will do anything. */
   typeToConfirm?: string
+  /**
+   * Already known to be refused: the body says why, and the only button
+   * closes it. Better than a yes that answers with an error.
+   */
+  blocked?: boolean
   /**
    * Still being worked out. The question opens at once and its sentences fill
    * in, rather than the button hanging for the length of a `git diff` with

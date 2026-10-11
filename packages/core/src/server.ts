@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
@@ -411,11 +411,28 @@ const handlers: Record<string, Handler> = {
    */
   'project.addRepo': async (p: scaffold.AddRepoInput) => {
     const added = await scaffold.addRepo(p)
+    // A folder untracked earlier, removed, and made again under the same name
+    // is a repository someone just asked for.
+    const root = registry.getProject(p.projectId)?.root
+    if (root) registry.trackRepo(p.projectId, relative(root, added.repoPath).split(sep).join('/'))
     await registry.reconcile(p.projectId)
     pushAll()
     const project = registry.allProjects().find((x) => x.id === p.projectId)
     if (!project) throw new Error('the project went missing while its repository was added')
     return { ...added, project }
+  },
+
+  'project.untrackRepo': async (p: { projectId: string; workspaceId: string }) => {
+    const project = await registry.untrackRepo(p.projectId, p.workspaceId)
+    await registry.reconcile(project.id, { fetch: 'never' })
+    pushAll()
+    return registry.allProjects().find((x) => x.id === project.id) ?? project
+  },
+  'project.trackRepo': async (p: { projectId: string; path: string }) => {
+    const project = registry.trackRepo(p.projectId, p.path)
+    await registry.reconcile(project.id)
+    pushAll()
+    return registry.allProjects().find((x) => x.id === project.id) ?? project
   },
 
   'project.inspect': (p: { path: string }) => scaffold.inspectFolder(p.path),

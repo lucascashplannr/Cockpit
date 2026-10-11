@@ -18,6 +18,7 @@ export const PROJECT_DEFAULTS: ProjectSettings = {
   defaultBranch: null,
   protectedBranches: {},
   docsPath: null,
+  untrackedRepos: [],
 }
 
 /**
@@ -144,6 +145,7 @@ export function projectSettings(root: string): ProjectSettings {
     defaultBranch: row?.settings?.defaultBranch ?? PROJECT_DEFAULTS.defaultBranch,
     protectedBranches: row?.settings?.protectedBranches ?? PROJECT_DEFAULTS.protectedBranches,
     docsPath: row?.settings?.docsPath ?? PROJECT_DEFAULTS.docsPath,
+    untrackedRepos: row?.settings?.untrackedRepos ?? PROJECT_DEFAULTS.untrackedRepos,
   }
 }
 
@@ -161,10 +163,12 @@ export function setProjectSettings(root: string, patch: Partial<ProjectSettings>
       if (clean.length) guarded[repo] = clean
     }
     next.protectedBranches = guarded
+    next.untrackedRepos = [...new Set(next.untrackedRepos)]
     row.settings = {
       ...(next.defaultBranch ? { defaultBranch: next.defaultBranch } : {}),
       ...(Object.keys(guarded).length ? { protectedBranches: guarded } : {}),
       ...(next.docsPath ? { docsPath: next.docsPath } : {}),
+      ...(next.untrackedRepos.length ? { untrackedRepos: next.untrackedRepos } : {}),
     }
     if (!Object.keys(row.settings!).length) delete row.settings
     out = next

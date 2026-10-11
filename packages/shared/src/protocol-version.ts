@@ -73,8 +73,11 @@
  *
  * 2.24 — `GitState.hasRemote`. An older core sends no such field, and the
  * window reads its absence as "has one": Push is offered as before.
+ *
+ * 2.25 — `project.untrackRepo`, `project.trackRepo`, and
+ * `ProjectSettings.untrackedRepos`.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 24 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 25 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

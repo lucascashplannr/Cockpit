@@ -687,6 +687,13 @@ export interface ProjectSettings {
    * proposed by the Document step and accepted one by one.
    */
   docsPath: string | null
+  /**
+   * §7 — repositories this machine was told to leave out of the project, as
+   * paths relative to its root. They stay on disk exactly as they were; the
+   * list is what keeps detection, and a manifest's `repos:`, from bringing
+   * them straight back.
+   */
+  untrackedRepos: string[]
 }
 
 export interface Project {

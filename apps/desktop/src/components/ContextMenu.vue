@@ -2,12 +2,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Archive, CirclePlay, CircleStop, Copy, FileCode, FolderOpen, Info, MessageSquarePlus, Pause, Play,
-  SlidersHorizontal, Stamp, Trash2,
+  Settings, ShieldCheck, ShieldOff, SlidersHorizontal, Stamp, Trash2, Unlink,
 } from '@lucide/vue'
 import { attentionIcon } from './agent/attention.js'
 import {
-  adoptTopic, askDeleteTopic, client, closeTopic, guard, markThreadUnread, newConversationOn, openDeclarations,
-  readThreadOn, revealLabel, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
+  adoptTopic, askDeleteTopic, askUntrackRepo, client, closeTopic, guard, isBranchProtected, markThreadUnread, newConversationOn, openDeclarations,
+  readThreadOn, revealLabel, setBranchProtected, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -48,6 +48,19 @@ const readThread = computed(() =>
     : topic.value
       ? readThreadOn({ kind: 'topic', topicId: topic.value.id })
       : null,
+)
+
+/**
+ * §7 — a repository of the project, as opposed to a branch of one: the row
+ * that carries what is set per repository.
+ */
+const repo = computed(() => (ws.value?.kind === 'main' && ws.value.repoName ? ws.value : null))
+/** The branch worth guarding first, and whether it already is. */
+const base = computed(() => repo.value?.git?.base ?? null)
+const baseProtected = computed(() => isBranchProtected(repo.value, base.value))
+/** The project's own folder, when it is the repository: untracking that is untracking the project. */
+const isProjectRoot = computed(
+  () => !!repo.value && state.projects.find((p) => p.id === repo.value!.projectId)?.root === repo.value.path,
 )
 
 /** An inferred topic has nowhere to keep a state, so it has no switch and nothing to close. */
@@ -175,6 +188,24 @@ async function copyPath(path: string) {
       <button @click="act(() => (state.detailsFor = { kind: 'workspace', id: ws!.id }))">
         <Info /> Details…
       </button>
+      <template v-if="repo">
+        <span class="rule" />
+        <!-- §16 — the one rule set per repository. Its patterns (`release/*`)
+             are written out in project settings, a click further. -->
+        <button v-if="base" @click="act(() => setBranchProtected(repo!.id, base!, !baseProtected))">
+          <component :is="baseProtected ? ShieldOff : ShieldCheck" />
+          {{ baseProtected ? 'Unprotect' : 'Protect' }} {{ base }}
+        </button>
+        <button @click="act(() => (state.editingProjectId = repo!.projectId))">
+          <Settings /> Project settings…
+        </button>
+        <template v-if="!isProjectRoot">
+          <span class="rule" />
+          <button class="warn" @click="act(() => askUntrackRepo(repo!.projectId, repo!.id))">
+            <Unlink /> Untrack the repository…
+          </button>
+        </template>
+      </template>
     </template>
 
     <template v-else-if="topic">

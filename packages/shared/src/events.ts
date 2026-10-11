@@ -44,6 +44,8 @@ export type EventType =
   | 'workspace.probed'
   | 'project.created'
   | 'project.repo_added'
+  | 'project.repo_untracked'
+  | 'project.repo_tracked'
   | 'project.renamed'
   /** §15 — a rule this machine put up for one project: a locked branch, a base. */
   | 'project.settings'

@@ -35,6 +35,13 @@ interface Handlers {
   onState(state: ConnectionState, detail?: string): void
 }
 
+/**
+ * The core's own answer, when the answer is no. A sentence it wrote for a
+ * person — its stack is this file's `onmessage`, which says where the window
+ * heard it and nothing about why.
+ */
+export class CoreError extends Error {}
+
 export class CoreClient {
   private ws: WebSocket | null = null
   private nextId = 1
@@ -105,7 +112,7 @@ export class CoreClient {
           if (!p) break
           this.pending.delete(msg.id)
           if (msg.ok) p.resolve(msg.result)
-          else p.reject(new Error(msg.error?.message ?? 'rpc error'))
+          else p.reject(new CoreError(msg.error?.message ?? 'rpc error'))
           break
         }
         case 'projects':

@@ -3,8 +3,8 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { FolderOpen, Plus, ShieldCheck, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
 import DialogShell from './DialogShell.vue'
 import {
-  addRepoTo, askTrashProject, askUntrackProject, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
-  renameProject, setProjectSettings, state,
+  addRepoTo, askTrashProject, askUntrackProject, askUntrackRepo, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
+  renameProject, setProjectSettings, state, trackRepo,
 } from '../core/store.js'
 
 /**
@@ -167,7 +167,9 @@ function addRepository(): void {
   addRepoTo(p.value.id)
 }
 const steppedIntoAddRepo = computed(() => !!p.value && state.addRepoProjectId === p.value.id)
-const repoNames = computed(() => repos.value.map((r) => r.repoName).join(', ') || 'None yet.')
+/** The project's own folder, when it is the repository: untracking that is untracking the project. */
+const isRoot = (path: string) => path === p.value?.root
+const untracked = computed(() => p.value?.settings.untrackedRepos ?? [])
 
 // Back from the sheet: the dialog is drawn again, and focus goes with it so
 // Escape still has somewhere to land.
@@ -292,8 +294,32 @@ async function browse() {
            added to it. -->
       <div class="field">
         <span class="lbl">Repositories</span>
-        <div class="row">
-          <span class="summary grow names" :title="repoNames">{{ repoNames }}</span>
+        <div class="row top">
+          <div class="chips grow">
+            <template v-for="r in repos" :key="r.id">
+              <span v-if="isRoot(r.path)" class="chip guardchip mono">{{ r.repoName }}</span>
+              <button
+                v-else
+                class="chip guardchip mono"
+                title="Untrack — Cockpit forgets it, files stay put"
+                :disabled="busy"
+                @click="askUntrackRepo(p.id, r.id)"
+              >
+                {{ r.repoName }}<X class="sm x" />
+              </button>
+            </template>
+            <button
+              v-for="u in untracked"
+              :key="u"
+              class="chip guardchip off mono"
+              title="Untracked — track it again"
+              :disabled="busy"
+              @click="trackRepo(p.id, u)"
+            >
+              <Plus class="sm x" />{{ u }}
+            </button>
+            <span v-if="!repos.length && !untracked.length" class="summary">None yet.</span>
+          </div>
           <button class="btn" title="Add a repository — a new one, a clone, or a folder moved in" @click="addRepository">
             <Plus />Add
           </button>
@@ -437,8 +463,6 @@ async function browse() {
 }
 .help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.5; }
 .summary { font-size: var(--fs-sm); color: var(--text-muted); }
-/* Ten repositories are one line here and a hover, not a paragraph. */
-.names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* One repository's list: its name, when there is more than one to tell
    apart, then the branches, then the way to add one. */
@@ -463,6 +487,8 @@ async function browse() {
 .guardchip .lucide { width: 11px; height: 11px; }
 .guardchip .x { opacity: 0.55; }
 .guardchip:hover .x { opacity: 1; }
+/* Left out on this machine: still on disk, so still named — as an outline. */
+.guardchip.off { background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--text-dim); }
 
 /* A sentence that ends in an action, rather than a button sitting under one. */
 .linkish {
@@ -474,6 +500,8 @@ async function browse() {
 .row { display: flex; align-items: center; gap: 8px; }
 .row .input { flex: 1; min-width: 0; }
 .row .btn { flex: none; }
+.row.top { align-items: flex-start; }
+.row.top .chips { min-width: 0; padding-top: 4px; }
 
 .check {
   display: flex;

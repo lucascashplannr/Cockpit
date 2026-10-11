@@ -49,7 +49,7 @@ function cancel(): void {
 }
 
 async function go(): Promise<void> {
-  if (!armed.value || state.planBusy || c.value?.waiting) return
+  if (!armed.value || state.planBusy || c.value?.waiting || c.value?.blocked) return
   await applyPendingConfirm()
   open.value = false
 }
@@ -83,7 +83,7 @@ watch(
   (v) => {
     open.value = false
     typed.value = ''
-    if (v) void nextTick(() => (v.typeToConfirm ? typeInput.value : v.danger ? no.value : yes.value)?.focus())
+    if (v) void nextTick(() => (v.typeToConfirm ? typeInput.value : v.danger || v.blocked ? no.value : yes.value)?.focus())
   },
   { immediate: true },
 )
@@ -95,7 +95,7 @@ watch(
       <header class="head">
         <h2>{{ c.title }}</h2>
         <span class="grow" />
-        <button class="icon-btn" title="Cancel" @click="cancel"><X class="sm" /></button>
+        <button class="icon-btn" :title="c.cancel ?? 'Cancel'" @click="cancel"><X class="sm" /></button>
       </header>
 
       <!-- Their words, not ours. Pre-wrapped: a drafted message has a subject,
@@ -168,6 +168,7 @@ watch(
         <span class="grow" />
         <button ref="no" class="btn ghost" @click="cancel">{{ c.cancel ?? 'Cancel' }}</button>
         <button
+          v-if="!c.blocked"
           ref="yes"
           class="btn"
           :class="danger ? 'danger solid' : 'primary'"
