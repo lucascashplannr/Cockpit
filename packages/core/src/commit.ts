@@ -293,6 +293,68 @@ export async function plan(input: CommitInput): Promise<{
 
 export { basename }
 
+/**
+ * §16 — taking the last commit back, while it is still only here.
+ *
+ * `git reset --soft` to its parent: the commit goes, and what it held comes
+ * back staged, exactly as it stood the moment before it was made. Nothing in
+ * the working tree is touched, so there is no work this can lose.
+ *
+ * Only HEAD, and only while no remote has it. An older commit is a rebase, and
+ * a pushed one is somebody else's history too — neither is an undo.
+ */
+export async function undoPlan(input: { workspaceId: string; hash: string }): Promise<{
+  ok: boolean
+  detail: string
+  plan: PlanPreview | null
+}> {
+  const no = (detail: string) => ({ ok: false, detail, plan: null })
+  const target = registry.requireWorkspace(input.workspaceId)
+  if (!target.repo) return no('this is not a repository')
+  // Re-probed, for the reason `preview` gives: the question is about HEAD as
+  // it is now, not as the window last drew it.
+  const w = (await registry.refreshGit(target.id)) ?? target
+  const g = w.git
+  if (!g) return no('git did not answer for ' + w.name)
+  if (g.operation) return no(w.name + ' is in the middle of a ' + g.operation.kind + '; finish that first')
+  if (g.conflicted > 0) return no(w.name + ' has ' + g.conflicted + ' unresolved conflict(s); finish that first')
+
+  const head = await git(w.path, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])
+  const full = head.ok ? head.stdout.trim() : ''
+  if (!full || !/^[0-9a-f]{7,64}$/i.test(input.hash) || !full.startsWith(input.hash.toLowerCase())) {
+    return no('only the last commit can be undone, and this is no longer it')
+  }
+  const parents = await git(w.path, ['rev-list', '--parents', '-n', '1', full, '--'])
+  const [, ...up] = parents.stdout.trim().split(' ').filter(Boolean)
+  if (!parents.ok || up.length === 0) return no('the first commit of a repository has nothing to go back to')
+  if (up.length > 1) return no('a merge is not undone from here — its changes are not one commit\'s')
+
+  const local = await git(w.path, ['rev-list', '-n', '1', full, '--not', '--remotes', '--'])
+  if (!local.ok || local.stdout.trim() !== full) {
+    return no('this commit is already on a remote; undoing it here would not undo it there')
+  }
+
+  const p: PlanPreview = {
+    planId: newId('plan_'),
+    operation: 'undo commit',
+    steps: [{
+      title: w.name + ': undo ' + full.slice(0, 7),
+      command: 'git reset --soft ' + up[0],
+      cwd: w.path,
+      destructive: false,
+    }],
+    warnings: [
+      'From ' + w.name + (g.branch ? ', on ' + g.branch : '') + '.',
+      'Its changes come back as uncommitted, staged.',
+    ],
+    capturesRestorePoint: false,
+    repos: [w.name],
+    onFailure: 'halt',
+  }
+  plans.register(p, { workspaceIds: [w.id] })
+  return { ok: true, detail: w.name, plan: p }
+}
+
 /** The whole message of the last commit, body included — what an amend starts from. */
 export async function lastMessage(workspaceId: string): Promise<string | null> {
   const w = registry.requireWorkspace(workspaceId)

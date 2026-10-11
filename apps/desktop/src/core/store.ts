@@ -4434,6 +4434,29 @@ export async function commit(
   return true
 }
 
+/**
+ * The last commit taken back — only ever one that no remote has. Asked as a
+ * question like the commit was, with the message it is about to unmake.
+ */
+export async function undoCommit(workspaceId: string, hash: string, subject: string): Promise<boolean> {
+  const res = await guard(() => client.call('git.undoCommit', { workspaceId, hash }))
+  if (!res) return false
+  if (!res.ok || !res.plan) {
+    toast('error', res.detail)
+    return false
+  }
+  state.pendingConfirm = {
+    title: 'Undo this commit?',
+    body: res.plan.warnings,
+    quote: subject,
+    verb: 'Undo commit',
+    done: 'commit undone',
+    danger: false,
+    plan: res.plan,
+  }
+  return true
+}
+
 /** The last commit's whole message, for an amend to start from. */
 export async function lastCommitMessage(workspaceId: string): Promise<string | null> {
   try {

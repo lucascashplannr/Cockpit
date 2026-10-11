@@ -620,6 +620,14 @@ export interface Rpc {
     }
     result: { ok: boolean; detail: string; plan: PlanPreview | null; preview: CommitPreview[] }
   }
+  /**
+   * The last commit, taken back while no remote has it: a plan that resets
+   * softly to its parent, so what it held returns as staged changes.
+   */
+  'git.undoCommit': {
+    params: { workspaceId: string; hash: string }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null }
+  }
   /** The last commit's full message, for an amend to start from. */
   'git.lastMessage': { params: { workspaceId: string }; result: string | null }
 

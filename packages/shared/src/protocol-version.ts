@@ -76,8 +76,10 @@
  *
  * 2.25 — `project.untrackRepo`, `project.trackRepo`, and
  * `ProjectSettings.untrackedRepos`.
+ *
+ * 2.26 — `git.undoCommit`, behind Undo commit in the Commits tool.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 25 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 26 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

@@ -2,9 +2,9 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import type { CommitDetail, CommitGraph, FileDiff, GraphCommit, GraphRef, Workspace } from '@cockpit/shared'
 import {
-  ArrowLeft, ArrowUpFromLine, ChevronRight, Cloud, Copy, GitBranch, GitCommitVertical, GitGraph, Search, Sparkles, Tag, X,
+  ArrowLeft, ArrowUpFromLine, ChevronRight, Cloud, Copy, GitBranch, GitCommitVertical, GitGraph, Search, Sparkles, Tag, Undo2, X,
 } from '@lucide/vue'
-import { client, guard, state, toast } from '../../core/store.js'
+import { client, guard, state, toast, undoCommit } from '../../core/store.js'
 import { layout } from '../../core/graph.js'
 import type { LaidRow } from '../../core/graph.js'
 
@@ -263,6 +263,15 @@ function toggle(hash: string) {
   } else {
     void open(hash)
   }
+}
+
+/**
+ * Only the commit you are on, and only while it is on this machine alone: an
+ * older one is a rebase, a pushed one is not yours alone to take back, and a
+ * merge or a first commit has no single parent to return to.
+ */
+function canUndo(c: GraphCommit): boolean {
+  return c.hash === head.value && !c.pushed && c.parents.length === 1 && !props.workspace.git?.operation
 }
 
 function fileKey(hash: string, path: string): string {
@@ -525,6 +534,15 @@ watch(
                 <div v-else-if="isLocal(c)" class="meta">
                   <span class="pushline local"><svg class="mark" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /></svg><span>Not pushed — this commit is on this machine only</span></span>
                 </div>
+
+                <button
+                  v-if="canUndo(c)"
+                  class="btn undo"
+                  title="Remove this commit and bring its changes back as uncommitted"
+                  @click="undoCommit(workspace.id, c.hash, c.subject)"
+                >
+                  <Undo2 />Undo commit
+                </button>
 
                 <div class="files">
                   <div class="fhead">
@@ -890,6 +908,7 @@ watch(
 .pushline b { font-weight: 600; color: var(--text); }
 .pushline .lucide { width: 12px; height: 12px; }
 .pushline.local { color: var(--text-muted); }
+.undo { margin-top: 10px; }
 
 .files { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
 .fhead {
