@@ -2,10 +2,10 @@
 import { attentionIcon } from './agent/attention.js'
 import { computed, ref, watch } from 'vue'
 import type { Conversation } from '@cockpit/shared'
-import { ChevronDown, CircleStop, EyeOff, Plus, RotateCcw, Sparkles, Trash2, X } from '@lucide/vue'
+import { ChevronDown, CircleStop, EyeOff, Pencil, Plus, RotateCcw, Sparkles, Trash2, X } from '@lucide/vue'
 import {
   activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive, keptOnRemove,
-  openConversation, openThreadFor, pinThread, removedOn, restoreConversation, sessionsForScope, startFresh, state,
+  openConversation, openThreadFor, pinThread, removedOn, renameConversation, restoreConversation, sessionsForScope, startFresh, state,
   stopConversation,
 } from '../core/store.js'
 import type { Attention } from '../core/store.js'
@@ -69,6 +69,32 @@ function openRemoved(c: Conversation): void {
 async function restore(c: Conversation): Promise<void> {
   await restoreConversation(c.id)
   await loadRemoved()
+}
+
+/* ── renamed in the row ───────────────────────────────────────────────────
+ *
+ * The thread's bar renames the one that is open; this renames any of them
+ * without opening it first. ⏎ or clicking away keeps the name, Esc does not.
+ */
+const editing = ref<string | null>(null)
+const draft = ref('')
+function rename(c: Conversation): void {
+  // The pencil again, while its field is open, is "done".
+  if (editing.value === c.id) return commit(c)
+  draft.value = c.title
+  editing.value = c.id
+}
+function commit(c: Conversation): void {
+  if (editing.value !== c.id) return
+  editing.value = null
+  const name = draft.value.replace(/\s+/g, ' ').trim()
+  if (name && name !== c.title) void renameConversation(c.id, name)
+}
+/** One field at a time, so the ref is a function: focused as it arrives. */
+function focusField(el: unknown): void {
+  if (!(el instanceof HTMLInputElement) || document.activeElement === el) return
+  el.focus()
+  el.select()
 }
 
 function fresh(): void {
@@ -172,10 +198,24 @@ function dotClass(c: Conversation): string {
         class="conv"
         :class="{ on: selected?.id === c.id }"
       >
-        <button class="pick" @click="open(c)">
+        <!-- A field cannot live in a button, so the row is not one while its
+             name is being typed. -->
+        <component :is="editing === c.id ? 'div' : 'button'" class="pick" @click="editing === c.id || open(c)">
           <span class="crow">
             <span class="dot" :class="dotClass(c)" />
-            <Transition name="name-in" mode="out-in">
+            <input
+              v-if="editing === c.id"
+              :ref="focusField"
+              v-model="draft"
+              class="cinput"
+              aria-label="Conversation name"
+              maxlength="80"
+              spellcheck="false"
+              @keydown.enter.prevent="commit(c)"
+              @keydown.esc.stop.prevent="editing = null"
+              @blur="commit(c)"
+            />
+            <Transition v-else name="name-in" mode="out-in">
               <span v-if="c.naming" key="naming" class="naming" title="Naming this conversation" />
               <span v-else key="title" class="ctitle">{{ c.title || 'untitled' }}</span>
             </Transition>
@@ -198,7 +238,7 @@ function dotClass(c: Conversation): string {
               <component :is="attentionIcon(attentionOf(c))" class="sm" />
             </span>
           </span>
-        </button>
+        </component>
 
         <!-- The acts, on the row they act on. Quiet until the row is under the
              cursor: a list of twenty with sixty buttons lit is a toolbar. -->
@@ -212,6 +252,10 @@ function dotClass(c: Conversation): string {
             @click="stop(c)"
           >
             <CircleStop class="sm" />
+          </button>
+          <!-- It never takes the focus: that belongs to the field it opens. -->
+          <button class="icon-btn small" title="Rename" @mousedown.prevent @click="rename(c)">
+            <Pencil class="sm" />
           </button>
           <button
             class="icon-btn small del"
@@ -372,6 +416,29 @@ function dotClass(c: Conversation): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The title, as a field: the thread bar's, at this row's size. It keeps the
+   row's gap from the dot — pulled left to hold the letters still, it sat
+   against it — and the vertical margin takes back its edge, so the row does
+   not move when it opens. */
+.cinput {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  /* One line of the title plus its own edge, taken back by the margin. No
+     ring: in a row this tight it ran over the dot and into the line below. */
+  height: calc(1lh + 6px);
+  margin: -3px 0;
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  outline: 0;
+  background: var(--bg-sunken);
+  box-shadow: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+.cinput:focus, .cinput:focus-visible { outline: 0; box-shadow: none; }
 .meta { font-size: var(--fs-xs); color: var(--text-dim); }
 /* "open" is a state, not an event: it gets the weight of the rest of the meta
    line. "working" is the one word here worth a colour. */

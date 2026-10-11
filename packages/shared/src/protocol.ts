@@ -935,6 +935,14 @@ export interface Rpc {
     result: { ok: true; kept: boolean } | { ok: false; reason: string }
   }
   /**
+   * A conversation named by hand. Refused when the name is empty; a memory
+   * still named after the conversation takes the new name with it.
+   */
+  'agent.rename': {
+    params: { sessionId: string; title: string }
+    result: { ok: true } | { ok: false; reason: string }
+  }
+  /**
    * §6 — the conversation a memory note is signed with (`conversationRef`),
    * hidden or not, so the note can lead back to it. Null once it is gone.
    */

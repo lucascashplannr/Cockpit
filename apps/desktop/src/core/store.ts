@@ -2058,6 +2058,25 @@ export async function removedOn(scope: AgentScope | null): Promise<Conversation[
 }
 
 /** A removed conversation back in the list. */
+/** A name typed over a conversation's own. The list is pushed; this sets it at once. */
+export async function renameConversation(sessionId: string, title: string): Promise<boolean> {
+  const name = title.replace(/\s+/g, ' ').trim()
+  if (!name) return false
+  const r = await guard(() => client.call('agent.rename', { sessionId, title: name }))
+  if (!r) return false
+  if (!r.ok) {
+    toast('error', r.reason)
+    return false
+  }
+  for (const c of [...state.agents, ...state.keptAgents]) {
+    if (c.id === sessionId) {
+      c.title = name.slice(0, 80).trimEnd()
+      c.naming = false
+    }
+  }
+  return true
+}
+
 export async function restoreConversation(sessionId: string): Promise<void> {
   await guard(() => client.call('agent.restore', { sessionId }), 'back in the list')
 }

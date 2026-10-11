@@ -24,7 +24,7 @@ import {
   activeAgentScope, agentDraft, agentFiles, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
-  chooseMemory, deleteConversation, restoreConversation,
+  chooseMemory, deleteConversation, renameConversation, restoreConversation,
   threadScrollOf, toast, transcriptOf, type ThreadScroll,
 } from '../../core/store.js'
 import {
@@ -118,6 +118,35 @@ const lockedWhy = computed(() =>
  * the store now, and it is remembered.
  */
 const selected = computed(() => openThreadFor(scope.value))
+
+/* ── the name, typed over ────────────────────────────────────────────────
+ *
+ * Where it is read is where it is changed: a double-click on the title turns
+ * it into a field. ⏎ or clicking away keeps what was typed, Esc does not, and
+ * an empty field is a change of mind rather than a name.
+ */
+const renaming = ref(false)
+const renameDraft = ref('')
+const renameEl = ref<HTMLInputElement | null>(null)
+function startRename(): void {
+  if (!selected.value) return
+  renameDraft.value = selected.value.title
+  renaming.value = true
+}
+// Not on the next tick: the title leaves before the field arrives (`out-in`).
+watch(renameEl, (el) => {
+  el?.focus()
+  el?.select()
+})
+function commitRename(): void {
+  // Esc and ⏎ both take the field away, and it blurs on the way out.
+  if (!renaming.value) return
+  renaming.value = false
+  const c = selected.value
+  const name = renameDraft.value.replace(/\s+/g, ' ').trim()
+  if (c && name && name !== c.title) void renameConversation(c.id, name)
+}
+watch(() => selected.value?.id, () => { renaming.value = false })
 
 /**
  * Having a finished thread on screen is having read it — that is what clears
@@ -1318,7 +1347,23 @@ function ago(ts: number): string {
              room for words — the history list. -->
         <Transition name="name-in" mode="out-in">
           <span v-if="selected.naming" key="naming" class="naming" title="Naming this conversation" />
-          <span v-else key="title" class="ttitle">{{ selected.title || 'untitled' }}</span>
+          <!-- Sized by a ghost of what is typed, so the field is as wide as
+               the name and the state word stays beside it. -->
+          <span v-else-if="renaming" key="rename" class="trename">
+            <span class="ghost" aria-hidden="true">{{ renameDraft || ' ' }}</span>
+            <input
+              ref="renameEl"
+              v-model="renameDraft"
+              class="tinput"
+              aria-label="Conversation name"
+              maxlength="80"
+              spellcheck="false"
+              @keydown.enter.prevent="commitRename"
+              @keydown.esc.stop.prevent="renaming = false"
+              @blur="commitRename"
+            />
+          </span>
+          <span v-else key="title" class="ttitle" title="Double-click to rename" @dblclick="startRename">{{ selected.title || 'untitled' }}</span>
         </Transition>
         <!-- Three states, and the difference between the first two is the
              whole of §6's promise about what a session is. Working: a turn
@@ -1920,6 +1965,43 @@ function ago(ts: number): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The name, being typed over: a field, and unmistakably one — the sunken
+   ground and accent ring every other input has (base.css `.input:focus`). The
+   letters do not move: the negative margin is the field's own padding and
+   border. The ghost holds the width; the input lies over it. */
+.trename {
+  position: relative;
+  min-width: 120px;
+  max-width: 100%;
+  margin-left: -9px;
+  padding: 3px 8px;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.trename .ghost {
+  display: block;
+  visibility: hidden;
+  white-space: pre;
+  padding-right: 2px;
+}
+.tinput {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: none;
+  box-shadow: none;
+  font: inherit;
+  color: var(--text);
 }
 /* `busytag`, not `live` — for the same reason the one below is not `open`.
    A scoped style also lands on a child component's *root* element, and

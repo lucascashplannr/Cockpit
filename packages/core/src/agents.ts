@@ -2461,6 +2461,30 @@ export function restore(sessionId: string): void {
 }
 
 /**
+ * A name a person typed, over whichever one the conversation had — the typed
+ * prompt, or the few words drafted from it. A draft still on its way loses:
+ * it only ever replaces the title it was asked to replace.
+ */
+export function rename(sessionId: string, title: string): { ok: true } | { ok: false; reason: string } {
+  const name = title.replace(/\s+/g, ' ').trim().slice(0, 80).trimEnd()
+  if (!name) return { ok: false, reason: 'A conversation needs a name.' }
+  const c = live.get(sessionId)?.session ?? get(sessionId)
+  if (!c) return { ok: false, reason: 'That conversation is gone.' }
+  const was = c.title
+  if (name === was) return { ok: true }
+  getDb().prepare('UPDATE agent_sessions SET title = ? WHERE id = ?').run(name, sessionId)
+  const l = live.get(sessionId)
+  if (l) l.session.title = name
+  namingIds.delete(sessionId)
+  // §6 — a memory named after the conversation follows it, as it does when
+  // the drafted name lands; one a person renamed is left alone.
+  const projectId = projectOf(c)
+  if (projectId) memory.retitle(projectId, c.memory, was, name)
+  agentBus.emit('changed')
+  return { ok: true }
+}
+
+/**
  * The conversation a memory note is signed with — `conversationRef`, the tail
  * of its id — in this project, hidden or not. Null once it is gone for good.
  */

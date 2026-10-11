@@ -926,6 +926,11 @@ const handlers: Record<string, Handler> = {
     if (r.ok) pushAgentActivity()
     return r
   },
+  'agent.rename': (p: { sessionId: string; title: string }) => {
+    const r = agents.rename(p.sessionId, p.title)
+    if (r.ok) pushAgentActivity()
+    return r
+  },
   'agent.find': (p: { projectId: string; ref: string }) => agents.findByRef(p.projectId, p.ref),
   'agent.removed': () => agents.listHidden(),
   'agent.restore': (p: { sessionId: string }) => {

@@ -81,8 +81,10 @@
  *
  * 2.27 — `CommitDetail.branches`. An older core sends none, and the card
  * falls back to the labels the graph has for that commit.
+ *
+ * 2.28 — `agent.rename`, behind a double-click on a conversation's title.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 27 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 28 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major
