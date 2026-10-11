@@ -128,8 +128,8 @@ const topicRepos = computed(() =>
 
 const SETUP_TEXT: Record<string, string> = {
   none: 'No setup',
-  branch: 'Branch only',
-  isolated: 'Isolated — its own folder per repository',
+  branch: 'The same folders as the repositories',
+  isolated: 'New folders, one per repository',
   full: 'Full — folders, seeds and servers',
 }
 

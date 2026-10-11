@@ -271,16 +271,13 @@ export async function openPlan(
 
   if (input.setup !== 'branch') {
     warnings.push(
-      repos.length +
-        ' worktree(s) under ' +
-        rootPath +
-        '. Disk cost is real and accumulates silently (§16) — close the topic when it merges.',
+      'Under ' + rootPath + '. They take disk until the topic is closed.',
     )
   }
   if (repos.length > 1) {
     warnings.push(
-      'A CONTEXT.md describing how these repositories relate will be created at the topic root. ' +
-        'Fill it in before letting an agent span more than one of them (§7).',
+      'A CONTEXT.md is created there to say how these repositories relate. ' +
+        'Fill it in before an agent works across them.',
     )
   }
 

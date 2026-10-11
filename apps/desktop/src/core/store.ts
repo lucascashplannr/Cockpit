@@ -7,7 +7,7 @@ import type {
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, QuoteSource, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
-import { anchorsIn, handleFor, matchesBranch, protectedPatterns, splitPrompt } from '@cockpit/shared'
+import { anchorsIn, handleFor, matchesBranch, protectedPatterns, slugify, splitPrompt } from '@cockpit/shared'
 import { CoreClient, CoreError } from './client.js'
 import type { ConnectionState } from './client.js'
 
@@ -5125,7 +5125,25 @@ export async function openTopic(input: {
   )
   if (!res) return
   state.topicDialogOpen = false
-  state.pendingPlan = res.plan
+  // Asked as the question it is, like a push: the name, what becomes of the
+  // repositories, and the commands one click away. It came up as a bare plan
+  // headed "Open topic" with an Apply button and a line about restore points,
+  // none of which was what had just been asked for.
+  const branch = input.branch ?? slugify(input.name)
+  const n = res.plan.repos?.length ?? input.repoWorkspaceIds?.length ?? 1
+  state.pendingConfirm = {
+    title: 'Open ' + (input.name || branch) + '?',
+    body: [
+      input.setup === 'branch'
+        ? (n === 1 ? 'The repository switches' : n + ' repositories switch') + ' to ' + branch + '.'
+        : (n === 1 ? 'A new folder' : n + ' new folders') + ' on ' + branch + '. The repositories themselves are not touched.',
+      ...res.plan.warnings,
+    ],
+    verb: 'Open',
+    done: 'topic opened',
+    danger: false,
+    plan: res.plan,
+  }
 }
 
 /**

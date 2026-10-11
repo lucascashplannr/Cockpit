@@ -169,6 +169,34 @@ const baseOptions = computed(() => {
   }))
 })
 
+const chosen = computed(() => repos.value.filter((r) => selected.value.includes(r.id)))
+
+/** The one name the chosen repositories share for `pick`, or none when they differ. */
+function shared(pick: (r: Workspace) => string | null | undefined): string {
+  const names = new Set(chosen.value.map((r) => pick(r) ?? ''))
+  const [only] = names
+  return names.size === 1 && only ? only : ''
+}
+
+/**
+ * The base the line names. "default branch" was a description of a branch
+ * where its name would do: four repositories on `main` fork from `main`.
+ * Only when their defaults differ is there no one word, and then each row
+ * says its own.
+ */
+const lineBase = computed(() => base.value || shared((r) => r.git?.base))
+/** Where the chosen repositories are now, for the card that leaves them there. */
+const onNow = computed(() => shared((r) => r.git?.branch))
+
+/**
+ * A row repeats the line above it only under the cursor, where it is the way
+ * to change it. Left in ink it was the same word down the whole list, and
+ * read as where each repository *is* rather than what the branch forks from.
+ */
+function baseHushed(r: Workspace): boolean {
+  return mode.value === 'new' && !!lineBase.value && baseOf(r) === lineBase.value && !baseProblem(r)
+}
+
 /** What a repository's row resolves to when it has no choice of its own. */
 function inheritedBase(r: Workspace): string {
   return base.value || r.git?.base || 'default branch'
@@ -202,7 +230,9 @@ function repoPlan(r: Workspace): { text: string; tone: 'new' | 'has' | 'held' | 
   if (!selected.value.includes(r.id)) return { text: '', tone: 'idle', title: '' }
   if (mode.value === 'new') return { text: '', tone: 'new', title: '' }
   const want = onBranch.value
-  if (!want) return { text: r.git?.branch ?? '—', tone: 'idle', title: 'On ' + (r.git?.branch ?? '—') + ' now' }
+  // Nothing until a branch is picked: the branch it is on now sat exactly
+  // where the base sits in the other mode, one place for two meanings.
+  if (!want) return { text: '', tone: 'idle', title: '' }
   const b = (branchesByRepo.value[r.id] ?? []).find((x) => shortOf(x) === want)
   if (!b) return { text: 'new, from', tone: 'new', title: want + ' is not in ' + r.name + ' — it is created there' }
   // Only here does the word earn its place: beside rows that say "already there".
@@ -225,6 +255,11 @@ async function setMode(m: 'new' | 'existing') {
   // Nothing chosen yet, so the list is the next thing wanted: open it rather
   // than leave an empty field and a second click.
   if (m === 'existing' && !picked.value) await toggleBranch()
+  // The name field is a different one in each mode; in New it is what is next.
+  if (m === 'new') {
+    await nextTick()
+    nameInput.value?.focus()
+  }
 }
 
 async function toggleBranch() {
@@ -447,39 +482,43 @@ async function submit() {
     <template #lead><Layers class="sm gi" /></template>
 
     <div class="form">
-      <label class="field">
-        <span class="lbl">Name <span v-if="mode === 'existing'" class="dim">optional</span></span>
+      <!-- §4 — made or taken, asked first because it decides what is asked
+           next: a new branch is made from a name, one that is already there
+           is picked and needs none. It sat beside the Branch label, under a
+           name field that only one of its two answers wanted. -->
+      <div class="seg wide">
+        <button :class="{ on: mode === 'new' }" @click="setMode('new')">New branch</button>
+        <button :class="{ on: mode === 'existing' }" @click="setMode('existing')">Existing branch</button>
+      </div>
+
+      <div v-if="mode === 'new'" class="field">
+        <!-- The branch the name makes, beside the name that makes it. It had
+             a line of its own, which was the name said twice. -->
+        <div class="lblrow">
+          <label class="lbl" for="topic-name">Name</label>
+          <code v-if="name.trim()" class="mono made" title="The branch this name makes"><GitBranch />{{ slug }}</code>
+        </div>
         <input
+          id="topic-name"
           ref="nameInput"
           v-model="name"
           class="input hero"
-          :placeholder="onBranch ?? 'Two-factor auth'"
+          placeholder="Two-factor auth"
           @keydown.enter="submit"
         />
-      </label>
+        <span v-if="taken" class="help bad">An open topic already holds this branch.</span>
+      </div>
 
-      <!-- §4 — made or taken, asked as the question it is. The base sits on
-           the same line because it is the same sentence: this branch, from
-           that one. -->
-      <div class="field">
-        <div class="lblrow">
-          <span class="lbl">Branch</span>
-          <div class="seg">
-            <button :class="{ on: mode === 'new' }" @click="setMode('new')">New</button>
-            <button :class="{ on: mode === 'existing' }" @click="setMode('existing')">Existing</button>
-          </div>
-        </div>
+      <!-- The base sits on the same line because it is the same sentence:
+           this branch, from that one. -->
+      <div v-if="mode === 'existing'" class="field">
+        <span class="lbl">Branch</span>
 
         <!-- One control, read as one sentence: this branch, from that one. It
              was a dashed box, a loose word and a second box — three objects
              for a single statement. -->
         <div class="bline">
-          <div v-if="mode === 'new'" class="bseg" :class="{ blank: !name.trim() }">
-            <GitBranch class="sm" />
-            <code class="mono bname">{{ name.trim() ? slug : 'named after the topic' }}</code>
-          </div>
-
-          <div v-else ref="branchRoot" class="bpick">
+          <div ref="branchRoot" class="bpick">
             <button class="bseg press" :class="{ on: branchOpen, blank: !picked }" @click="toggleBranch">
               <GitBranch class="sm" />
               <code class="mono bname">{{ picked ?? 'Choose a branch…' }}</code>
@@ -519,17 +558,6 @@ async function submit() {
             </div>
           </div>
 
-          <template v-if="mode === 'new' || pickedPartial">
-            <span class="bdiv" />
-            <span class="from">from</span>
-            <BaseSelect
-              v-model="base"
-              variant="inline"
-              :options="baseOptions"
-              :loading="branchLoading"
-              fallback="default branch"
-            />
-          </template>
         </div>
 
         <!-- No sentence under a branch that is fine: the rows below already
@@ -537,8 +565,34 @@ async function submit() {
         <span v-if="taken" class="help bad">An open topic already holds this branch.</span>
       </div>
 
+      <div v-if="mode === 'existing'" class="field">
+        <label class="lbl" for="topic-name">Name <span class="dim">optional</span></label>
+        <input
+          id="topic-name"
+          ref="nameInput"
+          v-model="name"
+          class="input hero"
+          :placeholder="picked ?? 'The branch\'s own'"
+          @keydown.enter="submit"
+        />
+      </div>
+
       <div class="field">
-        <span class="lbl">Repositories</span>
+        <!-- What the branch forks from, over the repositories it forks in:
+             the rows under it are the same answer, one repository at a time. -->
+        <div class="lblrow">
+          <span class="lbl">Repositories</span>
+          <span v-if="mode === 'new' || pickedPartial" class="rfrom">
+            from
+            <BaseSelect
+              v-model="base"
+              variant="word"
+              :options="baseOptions"
+              :loading="branchLoading"
+              :fallback="lineBase || 'each default'"
+            />
+          </span>
+        </div>
         <div v-if="repos.length" class="list">
           <!-- A div, with the label inside it: a row that is one big label
                ticks its checkbox for a click anywhere in the base list. -->
@@ -553,6 +607,7 @@ async function submit() {
             </span>
             <BaseSelect
               v-if="repoPlan(r).tone === 'new'"
+              :class="{ hush: baseHushed(r) }"
               variant="word"
               :model-value="repoBase[r.id] ?? ''"
               :options="basesIn(r).map((name) => ({ name }))"
@@ -567,15 +622,33 @@ async function submit() {
       </div>
 
       <div class="field">
-        <span class="lbl">Setup</span>
+        <!-- Named by what is on disk afterwards and described by what becomes
+             of the work in hand. "Here" and "Separate" named the mechanism,
+             and neither said which one leaves `main` alone. -->
+        <span class="lbl">Work in</span>
         <div class="cards">
-          <button class="card" :class="{ on: setup === 'branch' }" @click="setup = 'branch'">
-            <span class="chead"><GitBranch class="sm" /><strong>Here</strong><i class="radio" /></span>
-            <span class="cdesc">In the repositories themselves</span>
+          <button
+            class="card"
+            :class="{ on: setup === 'branch' }"
+            title="Each repository switches to the branch where it is. Uncommitted changes come along."
+            @click="setup = 'branch'"
+          >
+            <span class="chead"><GitBranch class="sm" /><strong>The same folders</strong><i class="radio" /></span>
+            <span class="cdesc">
+              {{ selected.length === 1 ? 'The repository switches' : 'The repositories switch' }} to the branch
+            </span>
           </button>
-          <button class="card" :class="{ on: setup === 'isolated' }" @click="setup = 'isolated'">
-            <span class="chead"><FolderTree class="sm" /><strong>Separate</strong><i class="radio" /></span>
-            <span class="cdesc">A folder of its own per repository</span>
+          <button
+            class="card"
+            :class="{ on: setup === 'isolated' }"
+            title="Each repository gets a second folder on the branch, with its own local config. The repositories themselves are not touched."
+            @click="setup = 'isolated'"
+          >
+            <span class="chead"><FolderTree class="sm" /><strong>New folders</strong><i class="radio" /></span>
+            <span class="cdesc">
+              <template v-if="onNow"><code class="mono">{{ onNow }}</code> stays as it is</template>
+              <template v-else>Nothing moves</template> — both can run
+            </span>
           </button>
         </div>
       </div>
@@ -712,7 +785,25 @@ async function submit() {
    capitals on five sections made a form of it; this reads as a question. */
 .lbl { font-size: var(--fs-xs); color: var(--text-muted); }
 .lbl .dim { margin-left: 4px; color: var(--text-dim); }
-.lblrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 22px; }
+.lbl[for] { cursor: text; }
+/* The first question on the sheet, so it is the width of an answer to one. */
+.seg.wide { display: flex; }
+.seg.wide > button { flex: 1; justify-content: center; height: 28px; font-size: var(--fs-sm); }
+.lblrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.made {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--accent);
+}
+.made .lucide { flex: none; width: 11px; height: 11px; color: var(--text-dim); }
+/* A fixed height, so the label does not move when the word beside it is 22px. */
+.rfrom { display: inline-flex; align-items: center; gap: 3px; height: 16px; font-size: var(--fs-xs); color: var(--text-dim); }
 .help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.55; }
 .help code { color: var(--text-muted); }
 .help.bad { color: var(--danger); }
@@ -767,8 +858,6 @@ async function submit() {
   font-weight: 500;
 }
 .bseg.blank .bname { color: var(--text-dim); font-family: var(--font); font-weight: 400; }
-.bdiv { flex: none; width: 1px; margin: 8px 0; background: var(--line); }
-.from { flex: none; align-self: center; padding-left: 12px; font-size: var(--fs-xs); color: var(--text-dim); }
 
 /* A list that arrives rather than appears: 110ms, and only the list. */
 .bmenu { animation: pop var(--dur-1) var(--ease-soft); transform-origin: top; }
@@ -865,6 +954,9 @@ async function submit() {
   color: var(--text-dim);
 }
 .rplan .lucide { width: 11px; height: 11px; flex: none; }
+/* The base a row shares with the line above: there to be changed, not read. */
+.hush { opacity: 0; transition: opacity var(--dur-1) var(--ease-soft); }
+.lrow:hover .hush, .lrow:focus-within .hush, .hush:has(.menu) { opacity: 1; }
 .rplan.has { color: var(--ok); }
 .rplan.held { color: var(--warn); }
 .rplan.idle { opacity: 0.7; }
@@ -897,6 +989,7 @@ async function submit() {
 .chead .lucide { flex: none; color: var(--text-dim); }
 .chead strong { flex: 1; font-size: var(--fs-sm); color: var(--text); font-weight: 620; }
 .cdesc { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.4; }
+.cdesc code { font-size: inherit; color: var(--text-muted); }
 /* It is one choice of two, so it says so the way a choice does: the ring is
    empty on the one you did not take. The fill alone left the unchosen card
    looking like a disabled one. */
