@@ -252,6 +252,18 @@ function shownRefs(c: GraphCommit): { shown: GraphRef[]; rest: GraphRef[] } {
   return { shown: c.refs.slice(0, 3), rest: c.refs.slice(3) }
 }
 
+/**
+ * What the card says the commit is on: every branch that holds it, then the
+ * tags on it. The row's labels only mark tips, and squeeze; this is the place
+ * with room for the names.
+ */
+function holders(d: CommitDetail, c: GraphCommit): { shown: GraphRef[]; rest: GraphRef[] } {
+  const all = d.branches
+    ? [...d.branches, ...c.refs.filter((r) => r.kind === 'tag')]
+    : c.refs.filter((r) => r.kind !== 'head')
+  return { shown: all.slice(0, 4), rest: all.slice(4) }
+}
+
 function short(hash: string): string {
   return hash.slice(0, 7)
 }
@@ -535,6 +547,26 @@ watch(
                 <div class="by">
                   <span class="selectable" :title="d.committer !== d.author ? 'Committed by ' + d.committer : d.email">{{ d.author }}</span>
                   <span class="dimmed" :title="when(d.ts)">{{ day(d.ts) }}</span>
+                </div>
+
+                <div class="held">
+                  <span
+                    v-for="r in holders(d, c).shown"
+                    :key="r.kind + r.name"
+                    class="ref"
+                    :class="[r.kind, { current: r.current }]"
+                    :title="refTip(r)"
+                  >
+                    <Cloud v-if="r.kind === 'remote'" />
+                    <Tag v-else-if="r.kind === 'tag'" />
+                    <GitBranch v-else />
+                    <span class="rn">{{ r.name }}</span>
+                  </span>
+                  <span
+                    v-if="holders(d, c).rest.length"
+                    class="ref more"
+                    :title="holders(d, c).rest.map((r) => r.name).join('\n')"
+                  >+{{ holders(d, c).rest.length }}</span>
                   <button class="hash mono" :title="'Copy ' + d.hash" @click="copy(d.hash)">
                     {{ short(d.hash) }}<Copy />
                   </button>
@@ -829,7 +861,9 @@ watch(
 }
 .r.head .subj { font-weight: 500; }
 
-.refs { flex: 0 1 auto; display: inline-flex; gap: 4px; min-width: 0; overflow: hidden; }
+/* The subject gives way first — it is said again, whole, in the card — so a
+   label never shrinks to an icon with no name beside it. */
+.refs { flex: 0 0 auto; display: inline-flex; gap: 4px; max-width: 55%; overflow: hidden; }
 .ref {
   display: inline-flex;
   align-items: center;
@@ -947,8 +981,11 @@ watch(
 .pushline.local { color: var(--text-muted); }
 
 .by { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--fs-xs); color: var(--text-muted); }
-.by .hash { background: none; padding: 0; color: var(--text-dim); }
-.by .hash:hover { background: none; color: var(--text); }
+.held { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 8px; }
+.held .rn { max-width: 220px; }
+.held .hash { background: none; padding: 0 2px; color: var(--text-dim); }
+.held .hash:hover { background: none; color: var(--text); }
+.held + .meta { margin-top: 8px; }
 .status {
   display: flex;
   align-items: center;

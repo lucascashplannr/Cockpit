@@ -1188,6 +1188,13 @@ export interface CommitDetail {
   body: string
   /** Against the first parent — a merge shows what it brought in. */
   files: Omit<DiffFile, 'attribution'>[]
+  /**
+   * The branches that hold this commit — not only the ones whose tip it is,
+   * which is all a label on the graph can say. The current one first; a remote
+   * branch is left out when the local one of the same name is already there.
+   * Absent from a core older than 2.27.
+   */
+  branches?: GraphRef[]
 }
 
 export interface SearchHit {

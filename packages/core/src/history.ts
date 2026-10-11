@@ -194,9 +194,11 @@ export async function show(workspaceId: string, hash: string): Promise<CommitDet
   // Against the first parent, so a merge lists what it brought in rather than
   // the combined diff, which is empty for a clean merge and says nothing.
   const args = ['show', '--format=', '-M', '--diff-merges=first-parent', '-z']
-  const [numstat, status] = await Promise.all([
+  const [numstat, status, within, on] = await Promise.all([
     git(cwd, [...args, '--numstat', full, '--']),
     git(cwd, [...args, '--name-status', full, '--']),
+    git(cwd, ['for-each-ref', '--contains', full, '--format=%(refname)', 'refs/heads', 'refs/remotes']),
+    git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']),
   ])
 
   const counts = new Map<string, { add: number; del: number; binary: boolean }>()
@@ -246,7 +248,31 @@ export async function show(workspaceId: string, hash: string): Promise<CommitDet
     subject: nl === -1 ? message : message.slice(0, nl),
     body: nl === -1 ? '' : message.slice(nl + 1).trim(),
     files,
+    branches: holders(within.ok ? within.stdout : '', on.ok ? on.stdout.trim() : ''),
   }
+}
+
+/**
+ * Git does not record the branch a commit was made on; what it can say is
+ * which branches reach it. `origin/dev` beside `dev` is one branch said twice,
+ * and whether it was pushed is said elsewhere, so the remote one is dropped.
+ */
+function holders(refnames: string, current: string): GraphRef[] {
+  const out: GraphRef[] = []
+  for (const raw of refnames.split('\n').map((s) => s.trim()).filter(Boolean)) {
+    if (raw.startsWith('refs/heads/')) {
+      const name = raw.slice(11)
+      out.push({ name, kind: 'local', current: name === current })
+    } else if (raw.startsWith('refs/remotes/') && !raw.endsWith('/HEAD')) {
+      out.push({ name: raw.slice(13), kind: 'remote', current: false })
+    }
+  }
+  const local = new Set(out.filter((r) => r.kind === 'local').map((r) => r.name))
+  const rank = (r: GraphRef) => (r.current ? 0 : r.kind === 'local' ? 1 : 2)
+  return out
+    .filter((r) => r.kind !== 'remote' || !local.has(r.name.slice(r.name.indexOf('/') + 1)))
+    .sort((a, b) => rank(a) - rank(b))
+    .slice(0, 50)
 }
 
 export async function showFile(
