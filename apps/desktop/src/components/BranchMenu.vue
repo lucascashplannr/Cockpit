@@ -111,7 +111,7 @@ const canCreate = computed(() => {
  */
 const emptyNote = computed(() => {
   const t = q.value.trim()
-  if (!t) return 'This is the only branch here.'
+  if (!t) return 'The only branch here. Type a name to create one.'
   if (branches.value.some((b) => b.current && b.name === t)) return 'You are already on “' + t + '”.'
   if (branches.value.some((b) => b.name === t || b.name.replace(/^[^/]+\//, '') === t)) {
     return '“' + t + '” is not available here.'
