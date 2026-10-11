@@ -140,6 +140,19 @@ const unpushed = computed(() =>
   data.value?.hasRemote ? commits.value.filter((c) => !c.pushed).length : 0,
 )
 
+/**
+ * The legend's two marks are also two switches: on, the list is only what the
+ * mark counts. Asked of the count rather than stored beside it, so a switch
+ * whose last commit was just pushed lets go by itself.
+ */
+const only = reactive({ local: false, worktree: false })
+const onlyLocal = computed(() => only.local && unpushed.value > 0)
+const onlyWorktree = computed(() => only.worktree && showWorktree.value)
+const narrowed = computed(() => onlyLocal.value || onlyWorktree.value)
+const shown = computed(() =>
+  narrowed.value ? rows.value.filter(({ c }) => onlyLocal.value && isLocal(c)) : rows.value,
+)
+
 // ── filtering ─────────────────────────────────────────────────────────
 // Dimmed rather than removed: the graph is the point, and a list with the
 // commits in between taken out is a graph with its lines cut.
@@ -204,6 +217,15 @@ function ago(ts: number): string {
 function when(ts: number): string {
   return new Date(ts).toLocaleString([], {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+/** The card's date: the day and the hour, the year only when it is not this one. */
+function day(ts: number): string {
+  const at = new Date(ts)
+  return at.toLocaleString([], {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+    ...(at.getFullYear() === new Date().getFullYear() ? {} : { year: 'numeric' }),
   })
 }
 
@@ -326,9 +348,9 @@ async function copy(text: string) {
 
 function onKey(e: KeyboardEvent) {
   if (e.metaKey || e.ctrlKey || e.altKey) return
-  const all = commits.value
+  const all = shown.value.map((r) => r.c)
   if (!all.length) return
-  const at = cursor.value ? (index.value.get(cursor.value) ?? -1) : -1
+  const at = cursor.value ? all.findIndex((c) => c.hash === cursor.value) : -1
   const move = (to: number) => {
     const c = all[Math.max(0, Math.min(all.length - 1, to))]!
     cursor.value = c.hash
@@ -416,7 +438,7 @@ watch(
       tabindex="0"
       @keydown="onKey"
     >
-      <div v-if="worktreeRow" class="entry">
+      <div v-if="worktreeRow && (!narrowed || onlyWorktree)" class="entry">
         <div
           class="r wt"
           :class="{ dim: !!needle }"
@@ -439,7 +461,7 @@ watch(
         </div>
       </div>
 
-      <div v-for="{ c, g } in rows" :key="c.hash" class="entry" :data-hash="c.hash">
+      <div v-for="{ c, g } in shown" :key="c.hash" class="entry" :data-hash="c.hash">
         <div
           class="r"
           :class="{ open: opened === c.hash, cur: cursor === c.hash, dim: !matches(c), head: c.hash === head }"
@@ -510,39 +532,33 @@ watch(
                 <p class="subject selectable">{{ d.subject }}</p>
                 <pre v-if="d.body" class="body selectable">{{ d.body }}</pre>
 
-                <div class="meta">
+                <div class="by">
+                  <span class="selectable" :title="d.committer !== d.author ? 'Committed by ' + d.committer : d.email">{{ d.author }}</span>
+                  <span class="dimmed" :title="when(d.ts)">{{ day(d.ts) }}</span>
                   <button class="hash mono" :title="'Copy ' + d.hash" @click="copy(d.hash)">
                     {{ short(d.hash) }}<Copy />
                   </button>
-                  <span class="selectable">{{ d.author }}</span>
-                  <span class="dimmed">{{ when(d.ts) }}</span>
-                  <span v-if="d.committer !== d.author" class="dimmed">· committed by {{ d.committer }}</span>
                 </div>
 
-                <div v-if="d.parents.length" class="meta">
-                  <span class="dimmed">{{ d.parents.length > 1 ? 'Merge of' : 'After' }}</span>
+                <!-- The row below already is the parent; only a merge has
+                     parents the graph does not put under your eyes. -->
+                <div v-if="d.parents.length > 1" class="meta">
+                  <span class="dimmed">Merge of</span>
                   <button v-for="p in d.parents" :key="p" class="hash mono link" :title="'Go to ' + p" @click="jump(p)">
                     {{ short(p) }}
                   </button>
                 </div>
 
-                <div v-if="c.pushes.length" class="meta pushes">
-                  <span v-for="p in c.pushes" :key="p.ref + p.ts" class="pushline">
-                    <ArrowUpFromLine /><span>Pushed to <b>{{ p.ref }}</b> · {{ when(p.ts) }}</span>
-                  </span>
+                <div v-if="c.pushes.length || isLocal(c)" class="status">
+                  <div class="where">
+                    <span v-for="p in c.pushes" :key="p.ref + p.ts" class="pushline" :title="when(p.ts)">
+                      <ArrowUpFromLine /><span>Pushed to <b>{{ p.ref }}</b> · {{ ago(p.ts) }}</span>
+                    </span>
+                    <span v-if="!c.pushes.length && isLocal(c)" class="pushline local" title="This commit is on this machine only">
+                      <svg class="mark" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /></svg><span>Not pushed</span>
+                    </span>
+                  </div>
                 </div>
-                <div v-else-if="isLocal(c)" class="meta">
-                  <span class="pushline local"><svg class="mark" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /></svg><span>Not pushed — this commit is on this machine only</span></span>
-                </div>
-
-                <button
-                  v-if="canUndo(c)"
-                  class="btn undo"
-                  title="Remove this commit and bring its changes back as uncommitted"
-                  @click="undoCommit(workspace.id, c.hash, c.subject)"
-                >
-                  <Undo2 />Undo commit
-                </button>
 
                 <div class="files">
                   <div class="fhead">
@@ -587,6 +603,16 @@ watch(
                   </template>
                   <div v-if="!d.files.length" class="hnote">No file changed.</div>
                 </div>
+
+                <div v-if="canUndo(c)" class="foot">
+                  <button
+                    class="act"
+                    title="Remove this commit and bring its changes back as uncommitted"
+                    @click="undoCommit(workspace.id, c.hash, c.subject)"
+                  >
+                    <Undo2 />Undo commit
+                  </button>
+                </div>
               </template>
             </template>
             <div v-else-if="details.get(c.hash) === 'failed'" class="hnote">Could not read this commit.</div>
@@ -595,7 +621,7 @@ watch(
         </div>
       </div>
 
-      <button v-if="data?.more" class="btn ghost older" @click="more">Show older commits</button>
+      <button v-if="data?.more && !narrowed" class="btn ghost older" @click="more">Show older commits</button>
     </div>
 
     <div v-else-if="data" class="empty">
@@ -615,16 +641,26 @@ watch(
        at whatever depth you are reading, and the bar keeps one line. -->
     <footer v-if="rows.length && (!data!.hasRemote || unpushed || showWorktree)" class="legend">
       <span v-if="!data!.hasRemote" class="sum" title="Nothing here has anywhere to be pushed to">no remote</span>
-      <span v-else-if="unpushed" class="sum local num" :title="unpushed + ' commits exist on this machine only'">
+      <button
+        v-else-if="unpushed"
+        class="sum local num"
+        :class="{ on: onlyLocal }"
+        :aria-pressed="onlyLocal"
+        :title="onlyLocal ? 'Show every commit again' : 'Show only the commits not pushed'"
+        @click="only.local = !onlyLocal"
+      >
         <span class="slot"><svg class="mark" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /></svg></span>{{ unpushed }} not pushed
-      </span>
-      <span
+      </button>
+      <button
         v-if="showWorktree"
         class="sum local num"
-        :title="uncommitted + (uncommitted === 1 ? ' file' : ' files') + ' changed and not committed yet — the dashed row at the top'"
+        :class="{ on: onlyWorktree }"
+        :aria-pressed="onlyWorktree"
+        :title="onlyWorktree ? 'Show every commit again' : 'Show only what is not committed yet'"
+        @click="only.worktree = !onlyWorktree"
       >
         <span class="slot"><svg class="mark pending" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /></svg></span>{{ uncommitted }} uncommitted
-      </span>
+      </button>
     </footer>
   </div>
 </template>
@@ -716,7 +752,9 @@ watch(
   color: var(--text-dim);
   white-space: nowrap;
 }
-.sum.local { color: var(--text-muted); gap: 0; }
+.sum.local { color: var(--text-muted); gap: 0; height: 24px; padding-right: 9px; border-radius: 6px; }
+.sum.local:hover { background: var(--hover); color: var(--text); }
+.sum.local.on { background: var(--accent-soft); color: var(--accent); }
 /* The ← button's own footprint, so that when the legend wraps to a line of
    its own its ring falls on the same 27px the ←, the tabs' icons and the
    first lane share, and its words start where the ← ends. */
@@ -900,7 +938,6 @@ watch(
 .hash:hover { background: var(--active); color: var(--text); }
 .hash .lucide { width: 11px; height: 11px; opacity: 0.6; }
 .hash.link { color: var(--accent); }
-.pushes { flex-direction: column; align-items: flex-start; }
 /* One sentence beside its glyph, wrapping as a sentence: the glyph stays on
    the first line rather than centring against a two-line date. */
 .pushline { display: inline-flex; align-items: baseline; gap: 6px; color: var(--text-muted); }
@@ -908,19 +945,38 @@ watch(
 .pushline b { font-weight: 600; color: var(--text); }
 .pushline .lucide { width: 12px; height: 12px; }
 .pushline.local { color: var(--text-muted); }
-.undo { margin-top: 10px; }
+
+.by { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--fs-xs); color: var(--text-muted); }
+.by .hash { background: none; padding: 0; color: var(--text-dim); }
+.by .hash:hover { background: none; color: var(--text); }
+.status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+  margin-top: 8px;
+  font-size: var(--fs-xs);
+}
+.where { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.foot { display: flex; justify-content: flex-end; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.act {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  margin-right: -8px;
+  border-radius: 6px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.act:hover { background: var(--hover); color: var(--text); }
+.act .lucide { width: 12px; height: 12px; }
 
 .files { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
-.fhead {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
+.fhead { display: flex; gap: 8px; margin-bottom: 4px; font-size: var(--fs-xs); color: var(--text-dim); }
 .file {
   display: flex;
   align-items: center;
