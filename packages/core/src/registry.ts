@@ -808,6 +808,12 @@ export async function probeWorkspace(id: string): Promise<Workspace> {
  * lands inside a timer tick often — where `if (reconciling) return 0` meant the
  * button did nothing at all and said "refreshed". A person pressing it is the
  * one caller that must not be swallowed.
+ *
+ * Nor is a pass asked for after something was just done. Those used to be
+ * dropped too, and a topic opened inside a timer tick was pushed to the window
+ * from a registry that had listed the worktrees before they existed: the row
+ * only appeared on Refresh. Everyone waits their turn now; only the timer,
+ * which has nothing of its own to report, steps aside.
  */
 let inFlight: Promise<number> | null = null
 
@@ -821,13 +827,12 @@ export async function reconcile(
    * the Refresh button — a person asking on purpose, who should not be told
    * "nothing changed" because a 120-second window had not elapsed.
    */
-  opts: { fetch?: 'throttled' | 'force' | 'never' } = {},
+  opts: { fetch?: 'throttled' | 'force' | 'never'; ifIdle?: boolean } = {},
 ): Promise<number> {
-  if (inFlight) {
-    // A timer tick or a post-apply pass can be dropped; the button cannot.
-    if (opts.fetch !== 'force') return 0
-    await inFlight.catch(() => 0)
-  }
+  if (inFlight && opts.ifIdle) return 0
+  // A loop, not one await: several callers can be waiting on the same pass,
+  // and each of them has to find the way clear for itself.
+  while (inFlight) await inFlight.catch(() => 0)
   const pass = runReconcile(projectId, opts)
   inFlight = pass
   try {

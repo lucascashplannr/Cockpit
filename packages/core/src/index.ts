@@ -8,7 +8,7 @@ import * as leases from './leases.js'
 import * as checkpoints from './checkpoints.js'
 import * as terminals from './terminals.js'
 import * as watcher from './watcher.js'
-import { pushWorkspaces, startServer } from './server.js'
+import { pushTopics, pushWorkspaces, startServer } from './server.js'
 
 /**
  * §13 — the core is a permanent service. It starts at login, restarts on
@@ -82,8 +82,11 @@ async function main(): Promise<void> {
   // Periodic re-probe. Cheap, and it is what keeps §3.4 honest when things
   // change outside the cockpit entirely.
   const slow = setInterval(() => {
-    void registry.reconcile().then(() => {
+    void registry.reconcile(undefined, { ifIdle: true }).then(() => {
       pushWorkspaces()
+      // Topics are derived from the same pass: a worktree made in a terminal
+      // is a topic's new member, and the list should say so without Refresh.
+      pushTopics()
       watcher.start(() => pushWorkspaces())
     })
   }, 60_000)
