@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
-  ArrowUp, Check, ChevronDown, ExternalLink, GitCompareArrows, GitMerge, Pause, Play, Terminal,
+  ArrowUp, Check, ChevronDown, ExternalLink, GitCompareArrows, GitMerge, Play,
 } from '@lucide/vue'
-import type { DeclaredCommand, DeclaredServer } from '@cockpit/shared'
+import type { DeclaredServer, Workspace } from '@cockpit/shared'
 import OverflowMenu from './OverflowMenu.vue'
 import type { ListGroup } from '../core/store.js'
 import {
-  askCommand, chooseCommand, client, commandChoiceFor, guard, mergeTopic, pointServer, pushTopic,
-  rebaseTopic, runningServers, serverChoiceFor, startTopic, state, stopTopic, toggleWorkspaceRuntime,
+  client, guard, mergeTopic, pushTopic, rebaseTopic, refreshCommands, runningServers, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -120,21 +119,17 @@ const pushTitle = computed(
     (ahead.value ? ' — ' + ahead.value + ' commit(s)' : ' — one has never been pushed'),
 )
 
-async function toggleTopic() {
-  const topic = f.value
-  if (!topic) return
-  if (topic.state === 'running') await stopTopic(topic.id)
-  else await startTopic(topic.id)
-}
-
-/* ── the project's own servers and commands, here (§8) ────────────────
+/* ── what the topic runs (§8) ──────────────────────────────────────────
  *
- * A declaration with no `repo:` belongs to the project and runs in the
- * project's folder — which, inside a topic, is the topic's own folder. So the
- * topic's bar is where they are pressed, with the same two split buttons a
- * repository has and the same rules: a chevron only where there are names,
- * a Run button only where something is declared, and no way into editing
- * them — a topic is where declarations run, never where they are written.
+ * The switch is the topic's and nothing else: one press starts every server
+ * on `start:` in every repository the topic spans, and the project's own in
+ * the topic's folder. The menu beside it is that same stack by name — each
+ * row starts or stops one server, and says whether Start includes it. That
+ * last part is written to the manifest, so it holds for every topic, the
+ * ones not opened yet included.
+ *
+ * Servers only. The project's commands are not on this bar: a command is
+ * pressed where it runs, on a repository or on the project.
  */
 
 /** The topic's folder, which is the checkout the project's declarations run in. */
@@ -142,56 +137,61 @@ const folder = computed(
   () => state.workspaces.find((w) => w.kind === 'group' && w.topicId === f.value?.id) ?? null,
 )
 
-const servers = ref<DeclaredServer[]>([])
-const commands = ref<DeclaredCommand[]>([])
+/** Every checkout of the topic that runs something: its folder, then its repositories. */
+const hosts = computed(() =>
+  [...(folder.value ? [folder.value] : []), ...ws.value].filter((w) => w.runtime),
+)
+
+/** A declared server and the checkout it runs in here. */
+type Row = DeclaredServer & { ws: Workspace }
+
+const servers = ref<Row[]>([])
 
 async function load(): Promise<void> {
-  const w = folder.value
-  if (!w) {
-    servers.value = []
-    commands.value = []
-    return
-  }
-  const [c, s] = await Promise.all([
-    client.call('commands.list', { workspaceId: w.id }).catch(() => []),
-    w.runtime ? client.call('runtime.servers', { workspaceId: w.id }).catch(() => []) : [],
-  ])
+  const topicId = f.value?.id
+  const s = await Promise.all(
+    hosts.value.map(async (h) =>
+      (await client.call('runtime.servers', { workspaceId: h.id }).catch(() => [])).map(
+        (x): Row => ({ ...x, ws: h }),
+      ),
+    ),
+  )
   // An answer for a topic nobody is looking at any more is not an answer.
-  if (folder.value?.id !== w.id) return
-  commands.value = c
-  servers.value = s
+  if (f.value?.id !== topicId) return
+  servers.value = s.flat()
 }
 
-// The folder's runtime appears once the core has read a project server for it,
-// and the lists change whenever the manifest is written from the window.
+// A checkout's runtime appears once the core has read a server for it, and the
+// lists change whenever the manifest is written from the window.
 watch(
-  [() => folder.value?.id, () => folder.value?.runtime?.impl, () => state.declarations, () => state.commands],
+  [
+    () => folder.value?.id,
+    () => hosts.value.map((h) => h.id + ':' + h.runtime?.impl).join(),
+    () => state.declarations,
+    () => state.commands,
+  ],
   () => void load(),
   { immediate: true },
 )
 
-const alive = computed(() => runningServers(folder.value))
-/**
- * Null is every server — the topic's own switch, as it has always been. One
- * declared server has no *all*, as on the repository's bar: the button is
- * that server, by name.
- */
-const target = computed(() =>
-  servers.value.length === 1 ? servers.value[0]!.name : serverChoiceFor(folder.value, servers.value),
-)
+/** Read off the checkout the store holds now, not the one the row was built with. */
+const isAlive = (s: Row) =>
+  runningServers(state.workspaces.find((w) => w.id === s.ws.id) ?? s.ws).has(s.name)
 
-const running = computed(() =>
-  target.value ? alive.value.has(target.value) : f.value?.state === 'running',
+/**
+ * A server started by name leaves the topic's own state alone, so the switch
+ * asks the checkouts as well: something up is something Stop has to stop.
+ */
+const running = computed(
+  () =>
+    f.value?.state === 'running' ||
+    hosts.value.some((w) => w.runtime?.status === 'up' || w.runtime?.status === 'starting'),
 )
-/** "all" only on the split button — the plain one has nothing to pick between. */
-const switchLabel = computed(
-  () => target.value ?? (running.value ? 'Stop' : 'Start') + (servers.value.length ? ' all' : ''),
-)
+const switchLabel = computed(() => (running.value ? 'Stop' : 'Start'))
 const switchTitle = computed(() => {
-  if (target.value) return (running.value ? 'Stop ' : 'Start ') + target.value
-  return running.value
-    ? 'Stop the servers — the branches stay where they are'
-    : 'Start the servers for every repository in this topic'
+  if (running.value) return 'Stop the servers — the branches stay where they are'
+  const names = servers.value.filter((s) => s.inStart).map((s) => s.name)
+  return names.length ? 'Start ' + names.join(', ') : 'Start the servers for every repository in this topic'
 })
 
 /** Where the topic's servers answer, while they do — see WorkspaceActions. */
@@ -206,31 +206,40 @@ async function openPreview() {
 }
 
 async function toggle() {
-  const w = folder.value
-  if (target.value && w) await toggleWorkspaceRuntime(w, target.value)
-  else await toggleTopic()
+  const topic = f.value
+  if (!topic) return
+  if (running.value) await stopTopic(topic.id)
+  else await startTopic(topic.id)
 }
 
-/** Switch it, and leave the button pointed at it — `null` is the whole topic. */
-async function chooseServer(name: string | null) {
-  const w = folder.value
-  if (w) pointServer(w, name)
-  if (name && w) await toggleWorkspaceRuntime(w, name)
-  else await toggleTopic()
+async function toggleServer(s: Row) {
+  await toggleWorkspaceRuntime(state.workspaces.find((w) => w.id === s.ws.id) ?? s.ws, s.name)
 }
 
-function noteOf(s: DeclaredServer): string {
+/** On or off `start:` — the project's list, so every topic's. */
+async function setOnStart(s: Row) {
+  const res = await guard(() =>
+    client.call('declare.setStart', { projectId: s.ws.projectId, name: s.name, inStart: !s.inStart }),
+  )
+  if (!res) return
+  if (!res.ok) {
+    toast('error', res.detail)
+    return
+  }
+  await Promise.all([load(), refreshCommands()])
+}
+
+function noteOf(s: Row): string {
   if (s.unresolved.length) return 'nothing named ' + s.unresolved.map((u) => '{{' + u + '}}').join(', ')
-  if (alive.value.has(s.name)) return s.port ? ':' + s.port : 'running'
-  return s.inStart ? '' : 'not on Start'
+  if (isAlive(s)) return s.port ? ':' + s.port : 'running'
+  return ''
 }
 
-const chosen = computed(() => commandChoiceFor(folder.value, commands.value))
-const label = (c: DeclaredCommand) => c.name + (c.inputs.length ? '…' : '')
-const runTitle = computed(() => {
-  const c = chosen.value
-  return c ? 'Run ' + c.name + ' in the topic folder' + (c.cmd ? ' — ' + c.cmd : '') : ''
-})
+const startTitle = (s: Row) =>
+  s.inStart
+    ? 'Start includes ' + s.name + ', in every topic — click to leave it out'
+    : 'Start skips ' + s.name + ' — click to include it'
+
 </script>
 
 <template>
@@ -286,9 +295,8 @@ const runTitle = computed(() => {
          label and its chevron read as one control and not as a word with a
          stray arrow beside it. -->
     <i class="sep" />
-    <!-- Always: it is the switch. Split once the project declares servers of
-         its own, exactly as a repository's is: the left half is the whole
-         topic until one of them is picked. -->
+    <!-- Always: it is the switch, and always the whole topic's. Split once
+         there are servers to name: the menu is the stack, one row each. -->
     <button
       v-if="!servers.length && !openable"
       class="btn ghost sw solo"
@@ -319,7 +327,7 @@ const runTitle = computed(() => {
       </button>
     </div>
     <div v-else class="split">
-      <button class="btn ghost run" :class="{ on: running, sw: !target }" :title="switchTitle" @click="toggle">
+      <button class="btn ghost run sw" :class="{ on: running }" :title="switchTitle" @click="toggle">
         <i v-if="running" class="live" />
         <Play v-else />
         <span class="vl">{{ switchLabel }}</span>
@@ -336,39 +344,27 @@ const runTitle = computed(() => {
         </button>
       </template>
       <span class="div" />
-      <OverflowMenu class="pick" label="Pick what this switch starts">
+      <OverflowMenu class="pick" label="The servers of this topic">
         <template #trigger><ChevronDown /></template>
-        <template v-if="servers.length > 1">
-          <button @click="chooseServer(null)">
-            <component :is="f!.state === 'running' && !target ? Pause : Play" />
-            All servers
-            <Check v-if="!target" class="tick" aria-label="on the button" />
+        <div v-for="s in servers" :key="s.ws.id + s.name" class="srow">
+          <button
+            class="one"
+            :title="(isAlive(s) ? 'Stop ' : 'Start ') + s.name + ' in ' + s.ws.name"
+            @click="toggleServer(s)"
+          >
+            <i class="sd" :class="{ on: isAlive(s), bad: s.unresolved.length }" />
+            {{ s.name }}
+            <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
           </button>
-          <span class="rule" />
-        </template>
-        <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
-          <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
-          {{ s.name }}
-          <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
-          <Check v-if="target === s.name" class="tick" aria-label="on the button" />
-        </button>
+          <!-- Stopped here, so the menu stays open: ticking three of these in
+               a row is the ordinary case, and it switches nothing. -->
+          <button class="st" :class="{ on: s.inStart }" :title="startTitle(s)" @click.stop="setOnStart(s)">
+            <Check v-if="s.inStart" />{{ s.inStart ? 'on Start' : 'not on Start' }}
+          </button>
+        </div>
       </OverflowMenu>
     </div>
 
-    <!-- The project's commands, run in this topic's folder. -->
-    <div v-if="chosen" class="split">
-      <button class="btn ghost run" :title="runTitle" @click="askCommand(chosen)">
-        <Terminal /><span class="vl">{{ label(chosen) }}</span>
-      </button>
-      <span class="div" />
-      <OverflowMenu class="pick" label="Pick the command this button runs">
-        <template #trigger><ChevronDown /></template>
-        <button v-for="c in commands" :key="c.name" @click="chooseCommand(c, folder)">
-          <Terminal /> {{ label(c) }}
-          <Check v-if="chosen?.name === c.name" class="tick" aria-label="on the button" />
-        </button>
-      </OverflowMenu>
-    </div>
   </div>
 </template>
 
@@ -424,7 +420,6 @@ const runTitle = computed(() => {
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
 }
-.split + .split, .solo + .split { margin-left: 4px; }
 .verbs .btn.solo { background: var(--bg-sunken); }
 .verbs .btn.solo:hover:not(:disabled) { background: var(--hover); }
 .verbs .split :deep(.btn:hover:not(:disabled)) { border-color: transparent; }
@@ -445,11 +440,22 @@ const runTitle = computed(() => {
 .sd.on { background: var(--ok); box-shadow: none; }
 .sd.bad { background: var(--warn); box-shadow: none; }
 
-/* What the button beside the chevron presses, on whichever row it is — the
-   same tick the model picker uses for the same fact. After the note when there
-   is one, at the right edge when there is not. */
-.menu button .tick { margin-left: auto; width: 13px; height: 13px; color: var(--accent); }
-.menu button .sc + .tick { margin-left: 8px; }
+/* A row is two acts: the server itself, and whether Start includes it. The
+   second is a word rather than a checkbox because it is the word the sheet
+   and the repository's menu already use for the same fact. */
+.srow { display: flex; align-items: center; gap: 1px; }
+.srow .one { flex: 1; min-width: 0; }
+.menu .srow .st {
+  flex: none;
+  gap: 4px;
+  margin-left: 10px;
+  padding: 0 7px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.menu .srow .st.on { color: var(--text); }
+.menu .srow .st .lucide { width: 12px; height: 12px; color: var(--accent); }
+
 .sc {
   margin-left: auto;
   padding-left: 14px;

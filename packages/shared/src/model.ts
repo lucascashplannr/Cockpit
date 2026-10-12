@@ -366,6 +366,8 @@ export interface Declaration {
   confirm: string
   /** Servers only: whether one click starts it. */
   inStart: boolean
+  /** Servers only: whether its address is offered on the bar, to open. */
+  open: boolean
 }
 
 export interface Declarations {

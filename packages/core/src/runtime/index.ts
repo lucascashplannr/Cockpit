@@ -390,8 +390,14 @@ const declaredRuntime: Runtime = {
       }
     }
 
+    // One already up is left alone: started by name a minute ago, it would
+    // otherwise be spawned a second time by the plain Start and the two would
+    // fight over one port — and the loser's exit would be reported as Start
+    // failing.
+    const alive = sup.runningLabels(ws.id)
     const procIds: string[] = []
     for (const s of servers) {
+      if (alive.has(s.name)) continue
       const proc = sup.start({
         workspaceId: ws.id,
         label: s.name,
@@ -444,7 +450,10 @@ const declaredRuntime: Runtime = {
     // because a URL for a server that was never started is a connection
     // refused with extra steps (§7: write the truth, never a guess).
     const alive = sup.runningLabels(ws.id)
-    const serving = (await hostedServersOf(ws)).find((s) => s.url && alive.has(s.name))
+    // `open: false` is a server saying its address is not a page: an API is
+    // up at a URL nobody wants in a browser, and must not take the link from
+    // the frontend declared after it.
+    const serving = (await hostedServersOf(ws)).find((s) => s.url && s.open && alive.has(s.name))
     return serving?.url ? { kind: 'url', value: serving.url } : { kind: 'none' }
   },
   async ports(ws) {

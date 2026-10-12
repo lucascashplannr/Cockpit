@@ -789,6 +789,11 @@ export interface Rpc {
     params: { projectId: string; kind: 'server' | 'command'; name: string }
     result: { ok: boolean; detail: string; manifestPath: string | null }
   }
+  /** §8 — put one server on `start:` or take it off; project-wide, like the list. */
+  'declare.setStart': {
+    params: { projectId: string; name: string; inStart: boolean }
+    result: { ok: boolean; detail: string; manifestPath: string | null }
+  }
   /** §5 — stop guessing a server for this folder: `guess: { <repo>: false }`. */
   'declare.forgetGuess': {
     params: { projectId: string; repo: string }

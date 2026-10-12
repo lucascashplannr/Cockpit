@@ -53,6 +53,7 @@ export function declarationsOf(projectId: string): Declarations {
       // An absent `start:` means every server, which is the default the file
       // does not have to spell out.
       inStart: !start || start.includes(name),
+      open: d.open !== false,
     })
   }
   for (const [name, d] of Object.entries(manifest?.commands ?? {})) {
@@ -68,6 +69,7 @@ export function declarationsOf(projectId: string): Declarations {
       runs: d.runs ?? [],
       confirm: d.confirm === true ? 'true' : d.confirm ? String(d.confirm) : '',
       inStart: false,
+      open: false,
     })
   }
   const scopes = scopesOf(projectId)
@@ -125,6 +127,7 @@ function guessesOf(
             runs: [],
             confirm: '',
             inStart: true,
+            open: true,
           }
         : null,
     })
@@ -160,6 +163,8 @@ function bodyOf(d: Declaration): Record<string, unknown> {
     if (d.health.trim()) body.health = d.health.trim()
     const env = d.env.filter((e) => e.key.trim())
     if (env.length) body.env = Object.fromEntries(env.map((e) => [e.key.trim(), e.value]))
+    // Written only when it says something: opening is what a URL is for.
+    if (!d.open) body.open = false
   } else {
     const ask = d.ask.filter((a) => a.key.trim())
     if (ask.length) body.ask = Object.fromEntries(ask.map((a) => [a.key.trim(), a.label]))
@@ -275,6 +280,45 @@ export function removeDeclaration(projectId: string, kind: Declaration['kind'], 
     payload: { section, name, removed: true },
   })
   return { ok: true, detail: name + ' removed', manifestPath: path }
+}
+
+/**
+ * §8 — one server on or off `start:`, and nothing else touched.
+ *
+ * The form can already say this, as one field among eleven. This is the same
+ * line written from where Start is pressed: the list is the project's, so a
+ * server taken off it here is off it on main and in every topic, the ones not
+ * opened yet included.
+ */
+export function setStart(projectId: string, name: string, wanted: boolean): SaveResult {
+  const path = manifestPathFor(projectId)
+  if (!path || !existsSync(path)) return { ok: false, detail: 'no manifest', manifestPath: path }
+  let doc
+  try {
+    doc = parseDocument(readFileSync(path, 'utf8'))
+  } catch (e) {
+    return { ok: false, detail: 'could not read the manifest: ' + String(e), manifestPath: path }
+  }
+  if (!doc.hasIn(['servers', name])) return { ok: false, detail: 'no server named ' + name, manifestPath: path }
+  applyStart(doc, name, name, wanted)
+  // An emptied list would read as absent, and absent means every server —
+  // the opposite of what was just asked for.
+  const left = doc.get('start')
+  if (isSeq(left) && left.items.length === 0) {
+    return { ok: false, detail: 'Start needs at least one server', manifestPath: path }
+  }
+  try {
+    writeFileSync(path, String(doc), 'utf8')
+  } catch (e) {
+    return { ok: false, detail: 'could not write the manifest: ' + String(e), manifestPath: path }
+  }
+  append({
+    type: 'manifest.written',
+    projectId,
+    actor: { kind: 'human' },
+    payload: { section: 'start', name, inStart: wanted },
+  })
+  return { ok: true, detail: name + (wanted ? ' is on Start' : ' is off Start'), manifestPath: path }
 }
 
 /**

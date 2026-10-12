@@ -161,6 +161,7 @@ function blank(kind: Declaration['kind']): Declaration {
     runs: [],
     confirm: '',
     inStart: kind === 'server',
+    open: kind === 'server',
   }
 }
 
@@ -495,6 +496,10 @@ onMounted(() => {
           <label class="opt">
             <input v-model="editing.inStart" type="checkbox" />
             <span class="lab">Start it with one click</span>
+          </label>
+          <label v-if="editing.url.trim()" class="opt" title="Off for an API: the address is still used to check it and to wire other servers">
+            <input v-model="editing.open" type="checkbox" />
+            <span class="lab">Open in the browser from the bar</span>
           </label>
         </template>
 

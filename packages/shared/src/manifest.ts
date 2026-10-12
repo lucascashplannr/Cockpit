@@ -78,6 +78,12 @@ export interface ServerDecl {
    * it is per-run and per-environment, and nothing is written into a file.
    */
   env?: Record<string, string>
+  /**
+   * `false` keeps its address off the bar. An API needs a `url` — it is how
+   * it is health-checked and what `{{api.url}}` hands the frontend — without
+   * being a page anyone opens.
+   */
+  open?: boolean
 }
 
 /** §8 — a one-shot: the thing you press. Same runner, different lifetime. */

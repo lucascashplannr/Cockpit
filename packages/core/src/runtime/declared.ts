@@ -156,6 +156,8 @@ export interface ResolvedServer {
   /** The line as a person reads it, for the journal and the log header. */
   cmd: string
   url: string | null
+  /** Whether `url` is a page to offer, or only an address to wire and poll. */
+  open: boolean
   /** The absolute URL to poll, which is `url` unless `health` narrowed it. */
   probe: string | null
   env: Record<string, string>
@@ -257,6 +259,7 @@ export async function resolveEnvironment(ws: Workspace): Promise<ResolvedServer[
       args: argv.slice(1),
       cmd: cmd.text,
       url,
+      open: h.decl.open !== false,
       probe: probeUrl(url, h.decl.health),
       env: resolvedEnv,
       port: ports.get(h.name) ?? null,
