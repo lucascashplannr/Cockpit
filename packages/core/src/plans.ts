@@ -352,16 +352,23 @@ export async function plan(
       // counts it turns on are the ones the Catch up just changed.
       const g = (await refreshGit(workspaceId))?.git ?? ws.git
       const own = g.upstream === 'origin/' + branch
+      const first = g.published === false
       const diverged = own && g.behind > 0 && g.ahead > 0
       const stranger = diverged ? pushOverwrites(branch, g.incoming) : null
       if (stranger) throw new Error(stranger)
       steps.push({
-        title: diverged ? 'Force-push (with lease) ' + branch : 'Push ' + branch,
+        title: diverged
+          ? 'Force-push (with lease) ' + branch
+          : first
+            ? 'Create ' + branch + ' on origin and push it'
+            : 'Push ' + branch,
         command: diverged ? FORCE_PUSH + branch : 'git push -u origin ' + branch,
         cwd: ws.path,
         destructive: diverged,
       })
       if (diverged) warnings.push(forcePushWarning(branch, g.behind))
+      // Said first, so it is the sentence the question leads with.
+      if (first) warnings.push(FIRST_PUSH)
       // The plan is asked as a question now rather than read as a briefing, and
       // a question with no sentence in it is a dialog that only says "Apply".
       // The branch is in the question this is the body of, so it is not named
@@ -422,6 +429,9 @@ export const REWRITES_ORIGIN =
  * satisfied, and their commits are overwritten. `--force-if-includes` adds the
  * missing half: the remote tip must be something this branch once held.
  */
+/** A branch origin has never seen: the push is also what creates it there. */
+export const FIRST_PUSH = 'First push: the branch does not exist on origin yet, and this creates it there.'
+
 export const FORCE_PUSH = 'git push --force-with-lease --force-if-includes origin '
 
 /** Why a diverged push is not on offer, or null when it is. */

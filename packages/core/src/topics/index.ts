@@ -765,6 +765,8 @@ export async function pushPlan(
   const warnings: string[] = []
   const names: string[] = []
   const ids: string[] = []
+  /** Repositories whose branch origin has never seen. */
+  const firsts: string[] = []
 
   for (const tree of trees) {
     const fresh = (await registry.refreshGit(tree.id)) ?? tree
@@ -775,9 +777,12 @@ export async function pushPlan(
       warnings.push(fresh.name + ': detached HEAD — nothing to push.')
       continue
     }
-    if (g.ahead === 0 && g.upstream) continue
     // Nowhere to push to is not a first push waiting to happen.
     if (!g.hasRemote) continue
+    // Level with its own remote. A branch origin has never seen is not that,
+    // whatever its count says — the count is the base's until the first push.
+    const first = g.published === false
+    if (!first && g.ahead === 0) continue
 
     // §16 — this repository sits the push out and says why; the others go.
     const refusal = await pushRefusal(fresh, g.branch)
@@ -804,12 +809,15 @@ export async function pushPlan(
     steps.push({
       title: force
         ? fresh.name + ': force-push (with lease) ' + g.branch
-        : fresh.name + ': push ' + g.branch + ' (' + g.ahead + ' commit(s))',
+        : first
+          ? fresh.name + ': create ' + g.branch + ' on origin and push it'
+          : fresh.name + ': push ' + g.branch + ' (' + g.ahead + ' commit(s))',
       command: force ? plans.FORCE_PUSH + g.branch : 'git push -u origin ' + g.branch,
       cwd: fresh.path,
       destructive: force,
     })
     if (force) warnings.push(fresh.name + ': ' + plans.forcePushWarning(g.branch, g.behind))
+    if (first) firsts.push(fresh.name)
     names.push(fresh.name)
     ids.push(fresh.id)
   }
@@ -820,6 +828,15 @@ export async function pushPlan(
       detail: warnings.join(' ') || 'nothing to push — every branch is level with its remote',
       plan: null,
     }
+  }
+
+  // Ahead of the rest: it is what this push does that the next one will not.
+  if (firsts.length) {
+    warnings.unshift(
+      firsts.length === names.length
+        ? plans.FIRST_PUSH
+        : 'First push in ' + firsts.join(', ') + ': the branch is created on origin there.',
+    )
   }
 
   // §16 — a push is the one thing agents may never do, and the reason is that
@@ -1158,12 +1175,12 @@ export async function closePlan(
     planId: newId('plan_'),
     operation: 'topic.close',
     steps,
+    // That the branches stay is the dialog's own lead sentence; only what
+    // differs from topic to topic is said here.
     warnings: [
-      'The branches stay: only the checkouts go. Anything not committed is already refused above.',
-      unpushed.length
-        ? unpushed.join(', ') + ': commits no remote has stay on the branch, reachable after the checkout goes.'
-        : '',
-      'The memory at ' + registry.topicMemoryFile(f) + ' stays until the topic is deleted — /document what is worth keeping (§9).',
+      unpushed.length ? unpushed.join(', ') + ': commits no remote has stay on the branch.' : '',
+      // §9 — the memory file sits beside the checkouts, not inside them.
+      'Its memory stays until the topic is deleted — /document what is worth keeping.',
     ].filter(Boolean),
     capturesRestorePoint: false,
     repos: wss.map((w) => w.name),

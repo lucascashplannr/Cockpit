@@ -1,8 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import {
-  ChevronRight, Flag, ShieldCheck, ShieldOff, TriangleAlert, X,
-} from '@lucide/vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { ChevronRight, Flag, TriangleAlert, X } from '@lucide/vue'
 import { applyPendingPlan, state } from '../core/store.js'
 
 /**
@@ -10,13 +8,14 @@ import { applyPendingPlan, state } from '../core/store.js'
  * trace annulable", satisfied the way `ConfirmDialog` satisfies it: the plan is
  * *there*, one click away, rather than being the first thing on screen.
  *
- * It used to open on the argv. Four numbered steps of `git fetch origin main`
- * meant the question — do you want to catch up — had to be reconstructed from
- * the commands that would answer it, and the two things worth reading in the
- * box (the warnings, and which branch you are catching up from) sat below a
- * list nobody reads twice. The words come first now, the commands fold away
- * behind a summary, and the warnings stay out in the open where they were
- * always the point.
+ * Drawn as `ConfirmDialog`'s twin, because to the person reading it that is
+ * what it is — a question about something they pressed. It used to be a sheet
+ * of its own: a red chip claiming "rewrites history" over plans that rewrote
+ * nothing (closing a topic removes folders), filled amber boxes for every
+ * caveat, and a footer paragraph about restore points that most plans could
+ * only answer with "none". Red now lives where `ConfirmDialog` puts it, on the
+ * button that does the thing; whether a restore point is taken is said in the
+ * button's tooltip, where the one person who wants to know will look.
  *
  * §12 budget — Catch up is still two clicks: the button, then this.
  */
@@ -25,13 +24,8 @@ const plan = computed(() => state.pendingPlan)
 
 /**
  * §4 — the dialog says the verb you pressed, not the RPC that built it.
- *
- * The title rendered the operation id through `text-transform: capitalize`,
- * which is how the confirmation for **Catch up** came to be headed
- * "Topic.Rebase" — the word the lexicon renamed, plus a method name, in the
- * one place the act is named at full size. Anything unmapped falls back to the
- * raw id rather than to a guess: a new operation with an honest ugly title is
- * better than a wrong pretty one.
+ * Anything unmapped falls back to the raw id rather than to a guess: a new
+ * operation with an honest ugly title is better than a wrong pretty one.
  */
 const TITLES: Record<string, string> = {
   rebase: 'Catch up',
@@ -53,10 +47,10 @@ const title = computed(() => {
   const op = plan.value?.operation ?? ''
   return TITLES[op] ?? op
 })
+
 /**
  * The question, in the app's words. One sentence, and the commands say the
- * rest — the point of folding them away is that this has to stand without
- * them. An operation with no sentence here gets none rather than a generic
+ * rest. An operation with no sentence here gets none rather than a generic
  * one: "This will run 4 commands" is what the summary already says.
  */
 const LEADS: Record<string, string> = {
@@ -65,6 +59,7 @@ const LEADS: Record<string, string> = {
   switch: 'This checkout moves to another branch. Uncommitted work comes with it, or git refuses.',
   branch: 'A new branch from where you are. Uncommitted work comes with it.',
   sync: 'Every remote is fetched and pruned. Nothing local is touched.',
+  'topic.close': 'Its branch folders are removed. The branches and their commits stay.',
 }
 const lead = computed(() => LEADS[plan.value?.operation ?? ''] ?? null)
 
@@ -76,26 +71,35 @@ const reach = computed(() => {
 
 const destructive = computed(() => plan.value?.steps.some((s) => s.destructive) ?? false)
 
-/** Folded by default, and per opening: a plan read once is not one you want to
- *  keep re-reading. */
+/**
+ * §3.7 — a plan is all-or-nothing unless it says otherwise. Only the exception
+ * — a plan that stops and keeps what already ran — is worth a line before Apply.
+ */
+const halts = computed(() => plan.value?.onFailure === 'halt')
+
+/** §16 — the restore point is what makes undo real; said where it is asked about. */
+const applyTitle = computed(() =>
+  plan.value?.capturesRestorePoint ? 'A restore point is captured first — undo stays available' : undefined,
+)
+
+/** Folded by default, and per opening. */
 const showSteps = ref(false)
 
 /**
- * What the red mark means, which is not always the same thing. Every
- * destructive plan there had ever been rewrote history, so the chip said so
- * flatly; dropping a stash destroys work without touching a single commit,
- * and a warning that describes the wrong danger is one people learn to skip.
+ * The safe button holds the focus, as in `ConfirmDialog`: Return means yes for
+ * a plan that destroys nothing, and Cancel for one that does — a dialog that
+ * arrives with Return already meaning "remove it" is a trap.
  */
-const dangerLabel = computed(() =>
-  plan.value?.operation === 'stash drop' ? 'throws work away' : 'rewrites history',
+const yes = ref<HTMLButtonElement | null>(null)
+const no = ref<HTMLButtonElement | null>(null)
+watch(
+  plan,
+  (p) => {
+    showSteps.value = false
+    if (p) void nextTick(() => (destructive.value ? no.value : yes.value)?.focus())
+  },
+  { immediate: true },
 )
-
-/**
- * §3.7 — a plan is all-or-nothing unless it says otherwise. The default goes
- * unsaid; only the exception — a plan that stops and keeps what already ran —
- * matters enough to be on screen before Apply rather than discovered after it.
- */
-const halts = computed(() => plan.value?.onFailure === 'halt')
 
 function cancel() {
   state.pendingPlan = null
@@ -104,97 +108,69 @@ function cancel() {
 
 <template>
   <div v-if="plan" class="scrim" @mousedown.self="cancel">
-    <div class="dlg" role="dialog" :aria-label="plan.operation + ' plan'">
+    <div class="dlg" role="dialog" :aria-label="title">
       <header class="head">
         <h2>{{ title }}</h2>
-        <span v-if="destructive" class="chip danger">
-          <TriangleAlert />{{ dangerLabel }}
-        </span>
         <span class="grow" />
         <button class="icon-btn" title="Cancel" @click="cancel"><X class="sm" /></button>
       </header>
 
-      <!-- The question. Everything below it is either a caveat or the argv. -->
-      <div v-if="lead || reach" class="say">
-        <p v-if="lead" class="p lead">{{ lead }}</p>
-        <p v-if="reach" class="p">In {{ reach }}.</p>
-      </div>
-
-      <!-- Everything from here to the footer scrolls as one, rather than each
-           band fighting for the height. `details` cannot be relied on to
-           shrink: Chromium wraps its content in a `::details-content` box of
-           its own, so a `min-height: 0` flex chain through it silently stops
-           working and the steps paint straight over the warnings under them.
-           One scroller, outside the disclosure, has no such seam.
-
-           The base row stays above it on purpose — its list is a popover, and
-           a popover inside a scrolling box is a popover with a scrollbar
-           through it. -->
+      <!-- The one scroller: in a short window the caveats and the argv give
+           way, and Cancel stays on screen. `details` cannot be the scroller
+           itself — Chromium wraps its content in a `::details-content` box,
+           and a `min-height: 0` chain through it silently stops working. -->
       <div class="mid">
-      <!-- The plan, kept but not insisted upon — the same disclosure the stash
-           confirmations use, and for the same reason. `details` rather than a
-           hand-rolled toggle: it is a disclosure, the platform has one, and
-           this one is reachable by keyboard without anything being wired. -->
-      <details
-        class="what"
-        :open="showSteps"
-        @toggle="showSteps = ($event.target as HTMLDetailsElement).open"
-      >
-        <summary>
-          <ChevronRight class="chev sm" />
-          <span>{{ plan.steps.length }} command{{ plan.steps.length === 1 ? '' : 's' }}</span>
-          <span class="dim">— what this runs</span>
-        </summary>
-        <div class="steps">
-          <div v-for="(s, i) in plan.steps" :key="i" class="step" :class="{ bad: s.destructive }">
-            <span class="n num">{{ i + 1 }}</span>
-            <div class="body">
-              <div class="title">{{ s.title }}</div>
-              <code class="cmd mono selectable">{{ s.command }}</code>
-            </div>
-          </div>
+        <div v-if="lead || reach" class="say">
+          <p v-if="lead" class="lead">{{ lead }}</p>
+          <p v-if="reach">In {{ reach }}.</p>
         </div>
-      </details>
 
-      <!-- Never folded. A warning behind a disclosure is a warning nobody
-           reads, and these are the reason the confirmation exists at all. -->
-      <div v-if="plan.warnings.length" class="warns">
-        <div v-for="(w, i) in plan.warnings" :key="i" class="warn">
-          <TriangleAlert class="sm" />
-          <span>{{ w }}</span>
-        </div>
-      </div>
+        <!-- Never folded: these are the reason the question is asked at all. -->
+        <ul v-if="plan.warnings.length" class="warns">
+          <li v-for="(w, i) in plan.warnings" :key="i">
+            <TriangleAlert class="sm" />
+            <span>{{ w }}</span>
+          </li>
+        </ul>
 
-      <div v-if="halts" class="mode">
-        <Flag class="sm" />
-        <span>
-          Stops at the first repository that conflicts. What already ran is kept, not rolled
-          back — resolve it, then run this again.
-        </span>
-      </div>
+        <p v-if="halts" class="mode">
+          <Flag class="sm" />
+          <span>
+            Stops at the first repository that conflicts. What already ran is kept — resolve it,
+            then run this again.
+          </span>
+        </p>
+
+        <details
+          class="what"
+          :open="showSteps"
+          @toggle="showSteps = ($event.target as HTMLDetailsElement).open"
+        >
+          <summary>
+            <ChevronRight class="chev sm" />
+            <span>{{ plan.steps.length }} command{{ plan.steps.length === 1 ? '' : 's' }}</span>
+            <span class="dim">— what this runs</span>
+          </summary>
+          <ol class="cmds">
+            <li v-for="(s, i) in plan.steps" :key="i" :class="{ bad: s.destructive }">
+              <span v-if="plan.steps.length > 1" class="ct">{{ s.title }}</span>
+              <code class="mono cc selectable">{{ s.command }}</code>
+            </li>
+          </ol>
+        </details>
       </div>
 
       <footer class="foot">
-        <!-- §16 — the restore point is what makes the undo button real. -->
-        <span v-if="plan.capturesRestorePoint" class="rp">
-          <ShieldCheck class="sm ok" />
-          A restore point is captured first — undo stays available.
-        </span>
-        <!-- §16 — a restore point anchors HEAD, so there are operations it
-             cannot cover. Saying "nothing destructive" over a step marked red
-             would be the dialog contradicting itself. -->
-        <span v-else-if="destructive" class="rp warn">
-          <ShieldOff class="sm" />
-          No restore point covers this — a restore point anchors commits, and this
-          discards work that was never committed.
-        </span>
-        <span v-else class="rp dim">
-          <ShieldOff class="sm" />
-          Nothing destructive; no restore point needed.
-        </span>
         <span class="grow" />
-        <button class="btn ghost" @click="cancel">Cancel</button>
-        <button class="btn primary" :disabled="state.planBusy" @click="applyPendingPlan">
+        <button ref="no" class="btn ghost" @click="cancel">Cancel</button>
+        <button
+          ref="yes"
+          class="btn"
+          :class="destructive ? 'danger solid' : 'primary'"
+          :disabled="state.planBusy"
+          :title="applyTitle"
+          @click="applyPendingPlan"
+        >
           {{ state.planBusy ? 'Running…' : 'Apply' }}
         </button>
       </footer>
@@ -203,7 +179,8 @@ function cancel() {
 </template>
 
 <style scoped>
-
+/* Every measure here is `ConfirmDialog`'s, on purpose: two dialogs that ask the
+   same kind of question should not look like two kinds of dialog. */
 .scrim {
   position: fixed;
   inset: 0;
@@ -220,11 +197,7 @@ function cancel() {
   to { opacity: 1; }
 }
 .dlg {
-  /* Narrower than it was, and for the reason `ConfirmDialog` is narrower
-     still: it is a question now, and a question the width of a terminal reads
-     as a report. Wider than that one because when the plan *is* unfolded it is
-     argv, and argv that wraps is argv nobody can check. */
-  width: min(560px, 92vw);
+  width: min(480px, 92vw);
   max-height: 80vh;
   display: flex;
   flex-direction: column;
@@ -245,39 +218,59 @@ function cancel() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 16px 14px 14px 20px;
-  border-bottom: 1px solid var(--line);
+  padding: 16px 14px 6px 20px;
 }
 .head h2 {
   margin: 0;
-  font-size: var(--fs-lg);
+  font-size: var(--fs-md);
   font-weight: 640;
   letter-spacing: -0.01em;
 }
 .grow { flex: 1; }
-.count { font-size: var(--fs-xs); color: var(--text-dim); }
 
-/* The question, and how wide it reaches. Gives way before the footer does: a
-   plan with a paragraph per repository must not push Cancel off a short
-   window. */
-.say { flex: none; padding: 16px 20px 4px; }
-.say .p { margin: 0; font-size: var(--fs-sm); line-height: 1.55; color: var(--text-muted); }
-.say .p + .p { margin-top: 6px; }
+/* A warning can carry a path, and a path has no place to break: without
+   `anywhere` it pushed the box wider, and `overflow-y: auto` turns the other
+   axis into a scroller too. */
+.mid {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+.warns li > span,
+.mode > span { min-width: 0; }
+
+.say { padding: 4px 20px 10px; }
+.say p {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+.say p + p { margin-top: 7px; }
 .say .lead { color: var(--text); }
 
-/* The disclosure that holds the plan. Same shape as the one on the stash
-   confirmations, deliberately: two dialogs that fold the same thing away
-   should fold it away the same way. */
-/* The one scrolling region: the plan, its warnings and its failure mode. */
-.mid { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 0; }
-
-.what {
-  display: block;
-  margin: 0 12px 10px;
-  border-radius: var(--radius-sm);
+/* Amber text, not amber boxes: a caveat is a sentence in the question, and a
+   stack of filled cards made a two-line plan read like an incident report. */
+.warns { margin: 0; padding: 0 20px 10px; list-style: none; }
+.warns li,
+.mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--warn);
 }
+.warns li + li { margin-top: 6px; }
+.warns .lucide,
+.mode .lucide { flex: none; margin-top: 2px; }
+.mode { margin: 0; padding: 0 20px 10px; color: var(--text-muted); }
+
+.what { display: block; margin: 0 12px 8px; border-radius: var(--radius-sm); }
 .what summary {
-  flex: none;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -300,85 +293,32 @@ function cancel() {
 .what[open] .chev { transform: rotate(90deg); }
 .dim { color: var(--text-dim); }
 
-.steps { padding: 2px 8px 4px; }
-.step { display: flex; gap: 13px; padding: 11px 0; }
-.step + .step { border-top: 1px solid var(--line-soft); }
-.n {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  margin-top: 1px;
-  border-radius: 7px;
-  background: var(--hover);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.step.bad .n { background: var(--danger-soft); color: var(--danger); }
-.body { min-width: 0; flex: 1; }
-.title { font-size: var(--fs-sm); color: var(--text); }
-.step.bad .title { color: var(--danger); font-weight: 550; }
-.cmd {
+.cmds { margin: 2px 0; padding: 0 8px 0 28px; list-style: none; }
+.cmds li + li { margin-top: 9px; }
+.ct { display: block; font-size: var(--fs-xs); color: var(--text-muted); }
+.bad .ct { color: var(--danger); }
+.cc {
   display: block;
-  margin-top: 5px;
+  margin-top: 3px;
   font-size: var(--fs-xs);
   color: var(--text-dim);
-  word-break: break-all;
   line-height: 1.5;
+  word-break: break-all;
 }
-
-.warns { flex: none; padding: 0 20px 12px; }
-.warn {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 10px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--warn-soft);
-  color: var(--warn);
-  font-size: var(--fs-xs);
-  line-height: 1.55;
-}
-.warn .lucide { margin-top: 1px; }
-.warn + .warn { margin-top: 6px; }
-
-.mode {
-  flex: none;
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 0 20px 12px;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  line-height: 1.55;
-}
-.mode .lucide { margin-top: 1px; flex: none; }
 
 .foot {
   flex: none;
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 13px 16px;
+  padding: 12px 16px;
   border-top: 1px solid var(--line);
   background: var(--bg-sunken);
 }
-.rp {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  /* Was 58%, which fitted one line at 660px and wrapped to two at 560. The
-     buttons are `flex: none` and take what they need; this takes the rest. */
-  min-width: 0;
-  flex: 1 1 auto;
+.btn.danger.solid {
+  background: var(--danger);
+  border-color: transparent;
+  color: var(--accent-text);
 }
-.rp .ok { color: var(--ok); }
-.rp.dim { color: var(--text-dim); }
-.rp.warn { color: var(--warn); line-height: 1.4; align-items: flex-start; }
-.rp.warn .lucide { margin-top: 2px; flex: none; }
+.btn.danger.solid:hover:not(:disabled) { background: var(--danger); filter: brightness(1.08); }
 </style>

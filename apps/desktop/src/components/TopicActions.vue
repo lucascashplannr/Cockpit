@@ -91,7 +91,9 @@ const mergeTitle = computed(() => {
  */
 const canPush = computed(() =>
   ws.value.some(
-    (w) => !!w.repo && !!w.git && w.git.hasRemote !== false && (w.git.ahead > 0 || !w.git.upstream),
+    (w) =>
+      !!w.repo && !!w.git && w.git.hasRemote !== false &&
+      (w.git.ahead > 0 || !w.git.upstream || w.git.published === false),
   ),
 )
 

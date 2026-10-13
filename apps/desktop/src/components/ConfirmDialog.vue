@@ -8,12 +8,9 @@ import { applyPendingConfirm, state } from '../core/store.js'
  * A question, with the commands folded away behind it.
  *
  * §3.7 — "toute opération affiche son plan avant de s'exécuter" — is satisfied
- * by the plan being *there*, not by it being the first thing on screen. For an
- * operation that rewrites history it should be: `PlanDialog` puts every step
- * in front of you before you can agree to it. For setting work aside and
- * putting it back, that same treatment read as a warning about something
- * dangerous, when the honest answer is "yes, and you can undo it by clicking
- * the other one".
+ * by the plan being *there*, not by it being the first thing on screen.
+ * `PlanDialog` asks the git operations the same way and is drawn as this
+ * dialog's twin; keep the two in step.
  *
  * So the words come first and the argv comes second — one click away, in the
  * same box, before the button rather than after it. Anyone who wants to know

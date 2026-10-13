@@ -104,6 +104,29 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     }
   }
 
+  // The branch's own remote is what Push is measured against, whatever the
+  // tracking config says. A topic branch tracks `origin/<base>` until a push
+  // with `-u`, and one pushed from a terminal without it stays that way for
+  // good: its counts kept answering for the base, so a branch that was behind
+  // its own remote read as level and Push went dark.
+  state.published = false
+  if (state.branch && state.hasRemote) {
+    const own = 'origin/' + state.branch
+    const ref = await git(cwd, ['rev-parse', '--verify', '--quiet', 'refs/remotes/' + own], 10_000)
+    if (ref.ok && ref.stdout.trim()) {
+      state.published = true
+      if (state.upstream !== own) {
+        const ab = await git(cwd, ['rev-list', '--left-right', '--count', 'HEAD...' + own], 15_000)
+        const m = /^(\d+)\s+(\d+)/.exec(ab.stdout.trim())
+        if (ab.ok && m) {
+          state.upstream = own
+          state.ahead = Number(m[1])
+          state.behind = Number(m[2])
+        }
+      }
+    }
+  }
+
   // Only against the branch's own remote: until the first push `behind` is the
   // base's distance, and Catch up already counts that.
   if (state.branch && state.behind > 0 && state.upstream === 'origin/' + state.branch) {

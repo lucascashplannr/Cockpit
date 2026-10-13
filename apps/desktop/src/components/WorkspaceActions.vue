@@ -156,7 +156,9 @@ const uncommitted = computed(() => {
 const hasPush = computed(() => {
   const g = git.value
   // `!== false`: an older core says nothing, and nothing is not "none".
-  return !!g && g.hasRemote !== false && (g.ahead > 0 || !g.upstream)
+  // `published === false` is the first push: a topic branch tracks its base
+  // until then, so "no upstream" alone never caught it.
+  return !!g && g.hasRemote !== false && (g.ahead > 0 || !g.upstream || g.published === false)
 })
 /** Something to send, and nothing of somebody else's in the way of sending it. */
 const canPush = computed(() => hasPush.value && !pullFirst.value)

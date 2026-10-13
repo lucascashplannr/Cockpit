@@ -179,6 +179,13 @@ export interface GitState {
    * there is no first push to make, so Push is not a verb it has (§3.9).
    */
   hasRemote: boolean
+  /**
+   * `origin/<branch>` exists. Not the same as having an upstream: a topic
+   * branch is forked from `origin/<base>` and tracks *that* until its first
+   * push, so "no upstream" never described a branch nobody had pushed — and
+   * its counts were the base's. Optional: an older core says nothing.
+   */
+  published?: boolean
   /** §16 — refuse to tear down a workspace holding unpushed commits. */
   hasUnpushedWork: boolean
   /** Null whenever `headState` is `attached` or `detached`. */
