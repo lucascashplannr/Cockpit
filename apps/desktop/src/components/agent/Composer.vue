@@ -144,15 +144,18 @@ function pickEffort(id: string): void {
   saveComposer()
 }
 
-/** An engine that is not on PATH is shown and unpickable, never hidden: its
- *  absence is a thing to install, not a thing to wonder about. */
+/** Only the engines on PATH: one that is not installed is not a choice, and
+ *  the Service sheet is where its absence is said. The engine a conversation
+ *  already runs on stays listed even if it has since gone missing. */
 const engineOptions = computed<Option[]>(() =>
-  (props.engines ?? []).map((e) => ({
-    id: e.id,
-    label: engineName(e.id),
-    hint: e.available ? undefined : 'not installed',
-    disabled: !e.available,
-  })),
+  (props.engines ?? [])
+    .filter((e) => e.available || e.id === props.engine)
+    .map((e) => ({
+      id: e.id,
+      label: engineName(e.id),
+      hint: e.available ? undefined : 'not installed',
+      disabled: !e.available,
+    })),
 )
 
 /* ── @ mentions ───────────────────────────────────────────────────────────
@@ -1008,9 +1011,10 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
            and a lone icon between two labelled choices read as a stray. -->
       <RepoPicker v-if="scope?.kind === 'project'" />
 
-      <!-- Engine first: it decides what every control after it means. -->
+      <!-- Engine first: it decides what every control after it means. With
+           one engine installed there is nothing to pick, so nothing is shown. -->
       <Picker
-        v-if="engineOptions.length"
+        v-if="engineOptions.length > 1"
         :options="engineOptions"
         :model-value="engine"
         @update:model-value="emit('update:engine', $event)"
