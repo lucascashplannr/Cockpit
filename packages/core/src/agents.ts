@@ -94,8 +94,11 @@ export interface LaunchContext {
  * Editing, searching, and running commands — the job. `Bash` is in the set
  * because an agent that cannot run the test suite is a worse tool than the
  * terminal it replaces; what keeps it inside §16 is `DEFAULT_DENY`, not its
- * absence. A project narrows or widens this in `cockpit.yaml` under
- * `agents.allow`.
+ * absence. `Skill` is in it because `--tools` replaces the set: left out, the
+ * user's own skills in `~/.claude/skills` are on disk and unreachable, and the
+ * agent says so instead of using them. It only loads instructions; anything a
+ * skill then runs goes through `Bash` and the same deny list. A project
+ * narrows or widens this in `cockpit.yaml` under `agents.allow`.
  */
 export const DEFAULT_TOOLS = [
   'Read',
@@ -106,6 +109,7 @@ export const DEFAULT_TOOLS = [
   'NotebookEdit',
   'TodoWrite',
   'Bash',
+  'Skill',
 ]
 
 /**

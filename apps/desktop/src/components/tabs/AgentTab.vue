@@ -988,6 +988,7 @@ const VERBS: Record<string, string> = {
   Grep: 'Searching',
   Task: 'Delegating',
   TodoWrite: 'Planning',
+  Skill: 'Using',
   WebFetch: 'Fetching',
   WebSearch: 'Searching',
 }
@@ -1000,7 +1001,7 @@ function verbFor(tool: string, input: Record<string, unknown>): string {
   const subject =
     tool === 'Bash'
       ? s('command')
-      : (s('file_path') || s('path') || s('pattern') || s('description') || s('url'))
+      : (s('file_path') || s('path') || s('pattern') || s('description') || s('url') || s('skill'))
           .split('/')
           .slice(-1)[0] ?? ''
   // Cut without a mark of its own — the line's own trailing ellipsis is the

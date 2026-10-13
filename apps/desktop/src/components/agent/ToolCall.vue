@@ -79,6 +79,8 @@ const subject = computed(() => {
       return str('description')
     case 'WebFetch':
       return str('url')
+    case 'Skill':
+      return str('skill')
     default:
       return file.value || str('description') || ''
   }

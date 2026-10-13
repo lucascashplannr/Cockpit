@@ -312,7 +312,7 @@ changed nothing. Cockpit now launches it with an explicit allow-list instead, wh
 asked for all along:
 
 ```
-Read Edit Write Glob Grep NotebookEdit TodoWrite
+Read Edit Write Glob Grep NotebookEdit TodoWrite Skill
 Bash(git status:*) Bash(git diff:*) Bash(git log:*) Bash(git show:*)
 ```
 
