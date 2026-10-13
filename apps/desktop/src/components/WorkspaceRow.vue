@@ -162,11 +162,15 @@ const lead = computed(() => {
     @contextmenu.prevent="openContextMenu($event, { kind: 'workspace', id: w.id })"
   >
     <!-- The row's one icon, and it says the most urgent true thing: a hand
-         while an agent waits on you, the turning mark while one works, why it
+         while an agent waits on you, the agent's mark while one works, why it
          wants you once it has stopped — and only then what kind of row this
-         is. The kind is on hover and in the tree; it is never news. -->
+         is. The kind is on hover and in the tree; it is never news.
+
+         The mark turns only when the agent was started on this row. One
+         started on the topic above reaches here too, and the row says so
+         with the same mark held still: the one that moves is where to look. -->
     <span class="kind" :class="lead.cls" :title="narrow ? undefined : lead.title">
-      <component :is="lead.icon" class="sm" :class="{ 'agent-star': lead.cls === 'working' }" />
+      <component :is="lead.icon" class="sm" :class="{ 'agent-star': lead.cls === 'working' && act.own }" />
     </span>
 
     <!-- §12 — the branch is the identity; the repository name is context. -->

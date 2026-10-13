@@ -1853,12 +1853,18 @@ const ATTENTION_RANK: Record<Attention, number> = { none: 0, reply: 1, blocked: 
 /** What a badge somewhere in the shell has to say about one thing. */
 export interface AgentActivity {
   running: number
+  /**
+   * Of those, the ones started on this very thing rather than reaching it
+   * from a wider or a narrower scope. The mark turns only where the agent was
+   * set to work; everywhere else it lights, it holds still.
+   */
+  own: number
   waiting: number
   /** The loudest of the waiting ones, which is the colour the badge takes. */
   attention: Attention
 }
 
-const NO_ACTIVITY: AgentActivity = { running: 0, waiting: 0, attention: 'none' }
+const NO_ACTIVITY: AgentActivity = { running: 0, own: 0, waiting: 0, attention: 'none' }
 
 /**
  * §12's "where am I", answered for everything the shell draws at once: the
@@ -1872,9 +1878,10 @@ const NO_ACTIVITY: AgentActivity = { running: 0, waiting: 0, attention: 'none' }
  */
 export const agentActivity = computed(() => {
   const map = new Map<string, AgentActivity>()
-  const bump = (key: string, running: boolean, att: Attention) => {
-    const a = map.get(key) ?? { running: 0, waiting: 0, attention: 'none' as Attention }
+  const bump = (key: string, running: boolean, own: boolean, att: Attention) => {
+    const a = map.get(key) ?? { running: 0, own: 0, waiting: 0, attention: 'none' as Attention }
     if (running) a.running++
+    if (running && own) a.own++
     if (att !== 'none') {
       a.waiting++
       if (ATTENTION_RANK[att] > ATTENTION_RANK[a.attention]) a.attention = att
@@ -1900,7 +1907,10 @@ export const agentActivity = computed(() => {
       keys.add('project:' + w.projectId)
       if (w.topicId) keys.add('topic:' + w.topicId)
     }
-    for (const k of keys) bump(k, running, att)
+    const own = c.scope.kind + ':' + (
+      c.scope.kind === 'topic' ? c.scope.topicId : c.scope.kind === 'project' ? c.scope.projectId : c.scope.workspaceId
+    )
+    for (const k of keys) bump(k, running, k === own, att)
   }
   return map
 })

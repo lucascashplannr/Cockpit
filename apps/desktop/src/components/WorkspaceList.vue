@@ -56,17 +56,26 @@ function pressTopic(topicId: string): void {
   else selectTopic(topicId)
 }
 
-/** What the strip's topic tile leads with: the most urgent true thing, as a row does. */
-function topicLead(topicId: string): { icon: Component; cls: string } {
+/**
+ * What a topic is doing, as one mark: the most urgent true thing, as a row
+ * shows it. Nothing to say, no mark — the wide header then shows its chevron
+ * and the strip's tile the topic's own glyph.
+ */
+function topicMark(topicId: string): { icon: Component; cls: string; tip: string; turning?: boolean } | null {
   const a = activityFor('topic', topicId)
-  if (a.attention !== 'none') return { icon: attentionIcon(a.attention), cls: a.attention }
-  if (a.running) return { icon: Asterisk, cls: 'working' }
+  if (a.attention !== 'none') return { icon: attentionIcon(a.attention), cls: a.attention, tip: ATTENTION_TEXT[a.attention] ?? '' }
+  if (a.running) return { icon: Asterisk, cls: 'working', tip: a.running + ' conversation(s) running on this topic', turning: a.own > 0 }
+  return null
+}
+
+/** What the strip's topic tile leads with. */
+function topicLead(topicId: string): { icon: Component; cls: string } {
   // The topic's own mark, the one it has in the palette, the dialog and the
   // bar. A chevron stood here first — it is what the wide header leads with —
   // but there it is a control beside a name, and here it was the only picture
   // the tile had: a column of dropdown arrows, saying "this opens" about a
   // thing whose first job is to say what it is.
-  return { icon: Layers, cls: '' }
+  return topicMark(topicId) ?? { icon: Layers, cls: '' }
 }
 
 function topicTip(g: { title: string | null; topicId: string | null; workspaces: { git: { ahead: number } | null }[] }): string {
@@ -184,7 +193,7 @@ const ATTENTION_TEXT: Record<string, string> = {
             @contextmenu.prevent="openContextMenu($event, { kind: 'topic', id: g.topicId })"
           >
             <span class="lead" :class="topicLead(g.topicId).cls">
-              <component :is="topicLead(g.topicId).icon" class="sm" />
+              <component :is="topicLead(g.topicId).icon" class="sm" :class="{ 'agent-star': topicMark(g.topicId)?.turning }" />
             </span>
             <span class="title">{{ g.title }}</span>
           </button>
@@ -203,13 +212,20 @@ const ATTENTION_TEXT: Record<string, string> = {
           >
             <!-- Its own control, because folding is not selecting: the header
                  is a place to stand as much as a lid to close. -->
+            <!-- With something to say about the topic — an agent at work, an
+                 answer waiting — the lid wears that mark: the first thing on
+                 the row is then what the row is doing. The chevron is still
+                 under it — hover the mark and it is the lid again. -->
             <button
               v-if="g.topicId"
               class="twist"
-              :title="collapsedTopics[g.topicId] ? 'Show its branches' : 'Fold this topic away'"
+              :class="[topicMark(g.topicId) && 'marked', topicMark(g.topicId)?.cls]"
+              :title="(topicMark(g.topicId) ? topicMark(g.topicId)!.tip + '\n' : '')
+                + (collapsedTopics[g.topicId] ? 'Show its branches' : 'Fold this topic away')"
               @click="toggleTopicCollapsed(g.topicId)"
             >
-              <ChevronRight class="sm" :class="{ turned: !collapsedTopics[g.topicId] }" />
+              <component :is="topicMark(g.topicId)!.icon" v-if="topicMark(g.topicId)" class="sm mark" :class="{ 'agent-star': topicMark(g.topicId)!.turning }" />
+              <ChevronRight class="sm chev" :class="{ turned: !collapsedTopics[g.topicId] }" />
             </button>
             <Layers v-else class="sm gi" />
             <button
@@ -224,24 +240,6 @@ const ATTENTION_TEXT: Record<string, string> = {
                    folded inside. Nobody could know that: it had a tooltip and
                    no legend. The header takes the list's own selected tint
                    instead — one vocabulary, already learned. -->
-              <span
-                v-if="g.topicId && activityFor('topic', g.topicId).running && activityFor('topic', g.topicId).attention !== 'approval'"
-                class="agent"
-                :title="activityFor('topic', g.topicId).running + ' conversation(s) running on this topic'"
-              >
-                <Asterisk class="sm agent-star" />
-              </span>
-              <span
-                v-if="g.topicId && activityFor('topic', g.topicId).attention !== 'none'"
-                class="needs"
-                :class="activityFor('topic', g.topicId).attention"
-                :title="ATTENTION_TEXT[activityFor('topic', g.topicId).attention]"
-              >
-                <component
-                  :is="attentionIcon(activityFor('topic', g.topicId).attention)"
-                  class="sm"
-                />
-              </span>
               <span v-if="unpushed(g.workspaces)" class="up">
                 <ArrowUp class="sm" />{{ unpushed(g.workspaces) }}
               </span>
@@ -555,8 +553,20 @@ const ATTENTION_TEXT: Record<string, string> = {
   color: var(--text-dim);
 }
 .twist:hover { color: var(--text); background: var(--line-soft); }
-.twist .lucide { transition: transform var(--dur-1) var(--ease-soft); }
+.twist .chev { transition: transform var(--dur-1) var(--ease-soft); }
 .twist .turned { transform: rotate(90deg); }
+/* Marked: what the topic is doing stands where the chevron does, and gives
+   the place back the moment the pointer (or the keyboard) is on it. */
+.twist.marked .mark { width: 13px; height: 13px; stroke-width: 2.4; }
+.twist.working .mark { width: 14px; height: 14px; }
+.twist.working .mark, .twist.reply .mark { color: var(--agent); }
+.twist.approval .mark, .twist.blocked .mark { color: var(--warn); }
+.twist.failed .mark { color: var(--danger); }
+.twist.marked .chev { display: none; }
+.twist.marked:hover .mark,
+.twist.marked:focus-visible .mark { display: none; }
+.twist.marked:hover .chev,
+.twist.marked:focus-visible .chev { display: block; }
 
 /* The name is still the place to stand: selecting the topic aims the agent at
    it, and that must not become a second click away because folding arrived. */
@@ -610,19 +620,9 @@ const ATTENTION_TEXT: Record<string, string> = {
 .summary .up { color: var(--ok); display: inline-flex; align-items: center; gap: 2px; }
 .summary .up .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
 .summary .dim { color: var(--text-dim); }
-.summary .agent { color: var(--agent); display: inline-flex; align-items: center; gap: 2px; }
-.summary .agent .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
-.summary .agent .agent-star { width: 14px; height: 14px; }
 /* Only ever on the thing that is actually running — the header inherits it
    from its rows, and two pulses side by side would say nothing extra. */
 .summary .live { animation: pulse 1.6s var(--ease-soft) infinite; }
-.summary .needs { display: inline-flex; align-items: center; }
-.summary .needs .lucide { width: 12px; height: 12px; stroke-width: 2.4; }
-.summary .needs.reply { color: var(--agent); }
-.summary .needs.blocked { color: var(--warn); }
-.summary .needs.approval { color: var(--warn); }
-.summary .needs.failed { color: var(--danger); }
-
 /* Live reads as a state of the header, not as a badge to hunt for. */
 .group-head.running .gi { color: var(--ok); }
 
