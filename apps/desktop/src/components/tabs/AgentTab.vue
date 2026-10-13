@@ -1454,16 +1454,8 @@ function ago(ts: number): string {
            than measured up from the bottom of the panel: it was a hardcoded
            104px, and the composer stopped being 104px tall the moment its
            background came off. -->
-      <div class="scroller">
+      <div class="scroller" :class="{ gone: selected.hiddenAt !== null }">
         <div ref="scrollEl" class="thread" @scroll.passive="onScroll">
-
-          <!-- §6 — opened from a memory note: removed, and kept only because
-               the note names it. Saying something into it brings it back too. -->
-          <div v-if="selected.hiddenAt !== null" class="fold kept">
-            <EyeOff class="sm" />
-            <span>Removed — kept while its memory is</span>
-            <button class="lnk" @click="restoreConversation(selected.id)">Restore</button>
-          </div>
 
           <!-- §3.4 — what is missing, and why, rather than a thread that looks
                like it was never answered. -->
@@ -1481,7 +1473,7 @@ function ago(ts: number): string {
             <button class="lnk" @click="toggleFold(folds[i]!.key)">
               {{ unfolded.has(folds[i]!.key) ? 'Hide' : 'Show' }}
             </button>
-            <template v-if="folds[i]!.redo && !queueing">
+            <template v-if="folds[i]!.redo && !queueing && selected.hiddenAt === null">
               <button
                 class="lnk"
                 title="Bring these turns back, with their files — the agent remembers them again"
@@ -1577,11 +1569,12 @@ function ago(ts: number): string {
                      restores it under a process that is still editing. The
                      way to stop a turn is the Stop under the box; once it
                      lands, both come back. Copy of what *you* wrote stays —
-                     nothing it does touches the tree. -->
+                     nothing it does touches the tree. Nor on a removed
+                     conversation, which is only there to be read. -->
                 <!-- A Redo that brings turns back lives on their fold, where
                      they are; this one is for an undo that moved files only. -->
                 <button
-                  v-if="x.turn.redoable && !x.turn.forgettable && !x.turn.undoneBy && !queueing"
+                  v-if="x.turn.redoable && !x.turn.forgettable && !x.turn.undoneBy && !queueing && selected.hiddenAt === null"
                   class="act"
                   title="Redo — bring back what the undo discarded"
                   aria-label="Redo this turn"
@@ -1593,7 +1586,7 @@ function ago(ts: number): string {
                      to, whether or not it touched a file: taking back a
                      question is most of what undo means here. -->
                 <button
-                  v-if="(x.turn.restorable || x.turn.forgettable) && !x.turn.undoneBy && !queueing"
+                  v-if="(x.turn.restorable || x.turn.forgettable) && !x.turn.undoneBy && !queueing && selected.hiddenAt === null"
                   class="act"
                   :title="
                     x.turn.forgettable
@@ -1775,9 +1768,18 @@ function ago(ts: number): string {
         <!-- Over whatever is selected in the thread: the passage goes into the
              box below as a `#ref` chip, the way a screenshot goes in as one. -->
         <ReferenceSelection :root="scrollEl" @reference="refer" />
+
+        <!-- §6 — opened from a memory note: removed, and kept only because
+             the note names it. Nothing is said into it from here, so there is
+             no box: the thread fades out into the one thing left to do. -->
+        <div v-if="selected.hiddenAt !== null" class="removed">
+          <EyeOff class="sm" />
+          <span title="Kept because its memory's notes name it — it goes when that memory is erased">Conversation removed</span>
+          <button class="lnk" @click="restoreConversation(selected.id)">Restore</button>
+        </div>
       </div>
 
-      <footer class="foot">
+      <footer v-if="selected.hiddenAt === null" class="foot">
         <!-- §6 — "vider devient gratuit : la conversation part, la mémoire
              reste". The one moment that sentence is actionable is this one, so
              it is said here rather than in a document. -->
@@ -2479,6 +2481,40 @@ function ago(ts: number): string {
   color: var(--text-muted);
 }
 .jump:hover { color: var(--text); border-color: var(--accent); }
+
+/* Where the box would be, for a conversation that takes no more turns: the
+   thread runs out under a fade to the panel's own surface, and the line sits
+   on the part that is already opaque. The fade lets clicks through; only the
+   line itself is there to be pressed. */
+.removed {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 6px;
+  height: 120px;
+  padding-bottom: 26px;
+  background: linear-gradient(to bottom, transparent, var(--surface-work) 62%);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.removed > * { pointer-events: auto; }
+.removed .lucide { flex: none; width: 12px; height: 12px; margin-bottom: 3px; }
+.removed .lnk {
+  margin: 0 0 -2px 4px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  font-size: inherit;
+  color: var(--text-muted);
+  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
+}
+.removed .lnk:hover { color: var(--text); background: var(--hover); }
+/* Room for the last answer to scroll clear of the fade, and "Latest" above it. */
+.scroller.gone .thread { padding-bottom: 120px; }
+.scroller.gone .jump { bottom: 64px; }
 
 /* What the agent said: plain text at the left margin, no gutter and no glyph.
    The badge that used to sit here is gone — see the template. */
