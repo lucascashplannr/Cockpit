@@ -304,6 +304,15 @@ export const state = reactive({
   },
 
   /**
+   * Who approves a tool call, per conversation and keyed like `drafts`.
+   *
+   * One mode for the whole window meant Plan picked in one conversation was
+   * Plan in every other one opened after it. `engineOptions.permissionMode`
+   * is only what a conversation with no choice of its own starts from.
+   */
+  modes: {} as Record<string, PermissionMode>,
+
+  /**
    * §6 — what has been asked here before, newest first. `↑` in an empty
    * composer walks it, which is the cheapest possible way to re-run a prompt
    * with one word changed.
@@ -1168,14 +1177,16 @@ export async function startAgentIn(
   scope: AgentScope,
   prompt: string,
   files: DraftFile[] = [],
+  /** The box it was asked in — a thread's own, when that thread cannot go on. */
+  key = draftKey(scope, null),
 ): Promise<boolean> {
-  if (stopAgentOnProtected(scopeCheckouts(scope))) return false
+  if (stopAgentOnProtected(scopeCheckouts(scope), key)) return false
   const res = await guard(() =>
     client.call('agent.start', {
       engine,
       scope,
       prompt,
-      options: engineOptions(),
+      options: engineOptions(key),
       attachments: wire(files),
       memory: memoryChoiceFor(scope),
     }),
@@ -1195,6 +1206,11 @@ export async function startAgentIn(
   // in the composer is how the next question sends them a second time.
   delete state.drafts[draftKey(scope, null)]
   delete state.attachments[draftKey(scope, null)]
+  // The mode goes with the conversation it started; the next one on this
+  // scope starts from the default again.
+  state.modes[draftKey(scope, res.sessionId)] = modeFor(key)
+  delete state.modes[draftKey(scope, null)]
+  saveComposer()
   // The thread that was just opened is the one to land in, and the panel must
   // still be on it after a detour through three other projects (§6).
   pinThread(scope, res.sessionId)
@@ -1700,12 +1716,17 @@ const HISTORY_MAX = 60
  * posture for one piece of work, and inheriting it silently is how a session
  * that was meant to write quietly does nothing.
  */
+function kept(m: unknown): m is PermissionMode {
+  return m === 'auto' || m === 'manual' || m === 'acceptEdits' || m === 'dontAsk'
+}
+
 function loadComposer(): void {
   try {
     const raw = JSON.parse(localStorage.getItem(COMPOSER_KEY) ?? 'null') as {
       model?: string
       effort?: string
       permissionMode?: string
+      modes?: Record<string, string>
       history?: string[]
       defaults?: number
     } | null
@@ -1719,11 +1740,8 @@ function loadComposer(): void {
       state.engineOptions.effort = raw.effort
     // Plan is a decision about one question and bypassPermissions one about
     // one sitting; neither is restored into a window opened tomorrow.
-    if (
-      raw.permissionMode === 'auto' || raw.permissionMode === 'manual' ||
-      raw.permissionMode === 'acceptEdits' || raw.permissionMode === 'dontAsk'
-    )
-      state.engineOptions.permissionMode = raw.permissionMode
+    if (kept(raw.permissionMode)) state.engineOptions.permissionMode = raw.permissionMode
+    for (const [k, m] of Object.entries(raw.modes ?? {})) if (kept(m)) state.modes[k] = m
     if (Array.isArray(raw.history)) state.promptHistory = raw.history.filter((x) => typeof x === 'string')
   } catch {
     /* a corrupt entry is a default, not a crash */
@@ -1731,12 +1749,21 @@ function loadComposer(): void {
 }
 
 export function saveComposer(): void {
+  // Threads only: a mode picked for a question not yet asked is not worth a
+  // restart, and a conversation that is gone has no mode to remember.
+  const known = new Set(state.agents.map((c) => 'thread:' + c.id))
+  const modes = Object.fromEntries(
+    Object.entries(state.modes).filter(
+      ([k, m]) => k.startsWith('thread:') && kept(m) && (!known.size || known.has(k)),
+    ),
+  )
   localStorage.setItem(
     COMPOSER_KEY,
     JSON.stringify({
       model: state.engineOptions.model,
       effort: state.engineOptions.effort,
       permissionMode: state.engineOptions.permissionMode,
+      modes,
       history: state.promptHistory.slice(0, HISTORY_MAX),
       // Marks a blob written since the effort default moved, so the migration
       // above runs once and never second-guesses a later choice of `high`.
@@ -3286,8 +3313,8 @@ const titleOf = (hits: Workspace[]) =>
  * An agent about to run on a protected branch: stopped, with the one way on
  * that protection allows — Plan mode, which only reads. True when it stopped.
  */
-function stopAgentOnProtected(ws: Workspace[]): boolean {
-  if (state.engineOptions.permissionMode === 'plan') return false
+function stopAgentOnProtected(ws: Workspace[], key: string): boolean {
+  if (modeFor(key) === 'plan') return false
   const hits = onProtected(ws)
   if (!hits.length) return false
   state.pendingConfirm = {
@@ -3301,7 +3328,7 @@ function stopAgentOnProtected(ws: Workspace[]): boolean {
     done: 'Plan mode — the agent only reads',
     danger: false,
     run: async () => {
-      state.engineOptions.permissionMode = 'plan'
+      state.modes[key] = 'plan'
       return true
     },
   }
@@ -5513,12 +5540,13 @@ export async function sendTurn(
   files: DraftFile[] = [],
 ): Promise<boolean> {
   const c = state.agents.find((x) => x.id === sessionId)
-  if (c && stopAgentOnProtected(state.workspaces.filter((w) => c.workspaceIds.includes(w.id)))) return false
+  const key = draftKey(null, sessionId)
+  if (c && stopAgentOnProtected(state.workspaces.filter((w) => c.workspaceIds.includes(w.id)), key)) return false
   rememberPrompt(prompt)
   if (c && isLive(c)) {
     const res = await guard(() =>
       client.call('agent.send', {
-        sessionId, prompt, attachments: wire(files), options: engineOptions(),
+        sessionId, prompt, attachments: wire(files), options: engineOptions(key),
       }),
     )
     if (!res) return false
@@ -5542,7 +5570,7 @@ export async function sendTurn(
 export async function switchMode(sessionId: string, mode: PermissionMode, was: PermissionMode): Promise<void> {
   const res = await guard(() => client.call('agent.mode', { sessionId, mode }))
   if (!res || res.ok) return
-  state.engineOptions.permissionMode = was
+  state.modes[draftKey(null, sessionId)] = was
   saveComposer()
   toast('error', res.reason)
 }
@@ -5712,10 +5740,26 @@ export function engineName(id: string): string {
   return id.charAt(0).toUpperCase() + id.slice(1)
 }
 
-/** What the composer currently says, in the shape the core takes. */
-export function engineOptions(): EngineOptions {
+/** The mode of one box: its own, or the one a new conversation starts from. */
+export function modeFor(key: string): PermissionMode {
+  return state.modes[key] ?? state.engineOptions.permissionMode
+}
+
+/**
+ * Picked in a thread, it is that thread's alone. Picked on the invitation, it
+ * is also what the next conversation starts from — unless it is Plan or
+ * Bypass, which are decisions about one piece of work.
+ */
+export function pickMode(key: string, mode: PermissionMode): void {
+  state.modes[key] = mode
+  if (key.startsWith('new:') && kept(mode)) state.engineOptions.permissionMode = mode
+  saveComposer()
+}
+
+/** What the composer of one box currently says, in the shape the core takes. */
+export function engineOptions(key: string): EngineOptions {
   const o = state.engineOptions
-  return { model: o.model, effort: o.effort, permissionMode: o.permissionMode }
+  return { model: o.model, effort: o.effort, permissionMode: modeFor(key) }
 }
 
 export async function resumeSession(
@@ -5727,7 +5771,7 @@ export async function resumeSession(
     client.call('agent.resume', {
       sessionId,
       prompt,
-      options: engineOptions(),
+      options: engineOptions(draftKey(null, sessionId)),
       attachments: wire(files),
     }),
   )

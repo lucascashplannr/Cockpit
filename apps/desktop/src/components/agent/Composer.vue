@@ -5,8 +5,8 @@ import {
 } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachConversation, attachFiles, attachText, chooseMemory, client, dataUrl, detachFile,
-  engineName, guard, isLive, isLongPaste, lastActivityAt, memoryChoiceFor, memoryLabel, openDraftFiles, placedHandles,
-  projectOfConversation, saveComposer, state, switchMode,
+  draftKey, engineName, guard, isLive, isLongPaste, lastActivityAt, memoryChoiceFor, memoryLabel, modeFor, openDraftFiles,
+  pickMode, placedHandles, projectOfConversation, saveComposer, state, switchMode,
 } from '../../core/store.js'
 import {
   AGENT_COMMANDS, ANCHOR_PAD, CLAUDE_MODELS, COMMAND_ENGINES, anchorOf, anchorWritten, splitPrompt,
@@ -587,17 +587,18 @@ const PERMISSIONS: Option[] = [
   { id: 'dontAsk', label: 'Don’t ask', hint: 'Refuse anything that would need asking' },
   { id: 'bypassPermissions', label: 'Bypass', hint: 'Run everything without asking' },
 ]
-const plan = computed(() => state.engineOptions.permissionMode === 'plan')
+/** The mode is this conversation's own, like its draft. */
+const modeKey = computed(() => draftKey(props.scope ?? null, props.session?.id ?? null))
+const permission = computed(() => modeFor(modeKey.value))
+const plan = computed(() => permission.value === 'plan')
 /**
  * Applies to the open conversation straight away, turn in flight included —
- * not with the next question. The box is global; the process is not, so a
- * conversation opened later picks the mode up on its next turn.
+ * not with the next question.
  */
 function pickPermission(id: string): void {
-  const was = state.engineOptions.permissionMode
+  const was = permission.value
   const mode = id as PermissionMode
-  state.engineOptions.permissionMode = mode
-  saveComposer()
+  pickMode(modeKey.value, mode)
   if (props.session && isLive(props.session) && mode !== was) void switchMode(props.session.id, mode, was)
 }
 
@@ -1037,7 +1038,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
       <!-- Who approves a tool call. Plan is one of the four — §3.7, the plan
            before the change, applied to the agent itself — and still lights
            the whole box, because it changes what pressing Start does. -->
-      <Picker :options="PERMISSIONS" :model-value="state.engineOptions.permissionMode" @update:model-value="pickPermission" />
+      <Picker :options="PERMISSIONS" :model-value="permission" @update:model-value="pickPermission" />
 
 
       <!-- §6 + §16 — how full the window is and what this has cost, at the far
@@ -1078,7 +1079,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
 .send .ic { width: 15px; height: 15px; }
 /* Plan mode changes what pressing Start *does*, so it is worth a whole-box
    signal rather than one lit chip among eleven. */
-.composer.planning .well { border-color: var(--accent); }
+.composer.planning .well { border-color: var(--accent); border-style: dashed; }
 
 /* ── the box, and the two layers that share its geometry ────────────────
  *

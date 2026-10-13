@@ -21,7 +21,7 @@ import QuestionAsk from '../agent/QuestionAsk.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, agentDraft, agentFiles, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
+  activeAgentScope, activeDraftKey, agentDraft, agentFiles, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, forgetMemoryChoice, memoryLabel, renameConversation, restoreConversation,
@@ -775,7 +775,7 @@ async function send(): Promise<void> {
     }
   } else if (scope.value) {
     // `startAgentIn` opens the new thread on this scope; nothing to do here.
-    await startAgentIn(engine.value, scope.value, text, files)
+    await startAgentIn(engine.value, scope.value, text, files, activeDraftKey.value)
   }
   busy.value = false
 }
@@ -1369,10 +1369,6 @@ function ago(ts: number): string {
           @update:engine="engine = $event"
           @send="send"
         />
-
-        <p v-if="state.engineOptions.permissionMode === 'plan'" class="guard">
-          Plan mode — it reads and proposes, and writes nothing
-        </p>
       </div>
     </div>
 
@@ -1934,7 +1930,6 @@ function ago(ts: number): string {
 }
 .invite .target { color: var(--accent); font-weight: 550; }
 
-.guard { margin: 12px 2px 0; text-align: center; font-size: 10px; color: var(--text-dim); }
 
 /* ── a thread ────────────────────────────────────────────────────────────
  *
