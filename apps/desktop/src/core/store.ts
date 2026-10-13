@@ -3,7 +3,7 @@ import type {
   AddRepoSource, AgentAnswers, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
-  DatabasePlan, DocsInfo, DocsProposalSet, MemorySummary, Topic,
+  DatabasePlan, DocsInfo, DocsProposalSet, ErasedMemory, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, QuoteSource, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
@@ -252,6 +252,8 @@ export const state = reactive({
   commitAsked: false,
   /** §6 — each project's memories, and which one the next conversation on a scope uses. */
   memories: {} as Record<string, MemorySummary[]>,
+  /** §6 — the erased ones the service still keeps, per project. */
+  erasedMemories: {} as Record<string, ErasedMemory[]>,
   memoryChoice: {} as Record<string, string>,
   /** §9 — each project's linked docs, and the proposals still waiting on someone. */
   docsInfo: {} as Record<string, DocsInfo | null>,
@@ -3742,7 +3744,7 @@ export async function saveDeclaration(
  */
 /**
  * §6 — starting a memory over. Asked, because it is everything every
- * conversation here has written down; to the Trash rather than gone.
+ * conversation here has written down; kept for a while rather than gone.
  */
 export function askEraseMemory(workspaceId: string, doc: { id: string; name: string; kind: string }): void {
   state.pendingConfirm = {
@@ -3751,14 +3753,21 @@ export function askEraseMemory(workspaceId: string, doc: { id: string; name: str
       doc.kind === 'topic'
         ? "Every note in it goes — the topic's agents start from nothing next time."
         : 'Every note in it goes, and it leaves the list of memories.',
-      'Conversations you removed that were kept for its notes are deleted with it.',
-      'The file goes to the Trash, so it can still be brought back from there.',
+      'It can be restored from the Memory tab for 30 days.',
     ],
     verb: 'Erase',
     done: 'memory erased',
     danger: true,
-    run: async () =>
-      !!(await guard(() => client.call('memory.erase', { workspaceId, memoryId: doc.id }))),
+    run: async () => {
+      if (!(await guard(() => client.call('memory.erase', { workspaceId, memoryId: doc.id })))) return false
+      // A composer still set to it would offer a memory that is not there.
+      if (doc.kind === 'named') {
+        for (const k of Object.keys(state.memoryChoice)) if (state.memoryChoice[k] === doc.id) delete state.memoryChoice[k]
+      }
+      const projectId = state.workspaces.find((w) => w.id === workspaceId)?.projectId
+      if (projectId) await refreshMemories(projectId)
+      return true
+    },
   }
 }
 
@@ -3921,8 +3930,39 @@ watch(() => state.activeProjectId, (id) => {
  * the next conversation defaults to the one the last was using.
  */
 export async function refreshMemories(projectId: string): Promise<void> {
-  const list = await client.call('memory.list', { projectId }).catch(() => null)
+  const [list, erased] = await Promise.all([
+    client.call('memory.list', { projectId }).catch(() => null),
+    client.call('memory.erased', { projectId }).catch(() => null),
+  ])
   if (list) state.memories[projectId] = list
+  if (erased) state.erasedMemories[projectId] = erased
+}
+
+/** An erased memory back in the list. Answers which memory it is now. */
+export async function restoreMemory(projectId: string, key: string): Promise<string | null> {
+  const r = await guard(() => client.call('memory.restore', { projectId, key }), 'memory restored')
+  if (!r) return null
+  await refreshMemories(projectId)
+  return r.memoryId
+}
+
+/** An erased memory gone for good — asked, because this one is not undone from here. */
+export function askPurgeMemory(projectId: string, m: ErasedMemory): void {
+  state.pendingConfirm = {
+    title: 'Delete "' + m.name + '" for good?',
+    body: [
+      'It can no longer be restored from here.',
+      'Conversations you removed that were kept for its notes are deleted with it.',
+    ],
+    verb: 'Delete',
+    done: 'memory deleted',
+    danger: true,
+    run: async () => {
+      if (!(await guard(() => client.call('memory.purge', { projectId, key: m.key })))) return false
+      await refreshMemories(projectId)
+      return true
+    },
+  }
 }
 
 let memoriesTimer: ReturnType<typeof setTimeout> | null = null

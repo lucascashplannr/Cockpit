@@ -138,6 +138,19 @@ export function pushAgents(): void {
  * while one was plainly running (§3.3 — the window shows the last push, so the
  * last push has to be complete).
  */
+/**
+ * §6 — memories gone for good take the hidden conversations they were keeping
+ * with them: nothing names those any more. Not while the same memory is still
+ * there, or erased and kept — started again, or erased twice.
+ */
+function letGo(projectId: string, memoryIds: string[]): void {
+  let n = 0
+  for (const id of new Set(memoryIds)) {
+    if (!memory.known(projectId, id)) n += agents.purgeHidden(projectId, id)
+  }
+  if (n) pushAgentActivity()
+}
+
 function pushAgentActivity(): void {
   registry.refreshAgentActivity()
   pushAgents()
@@ -1014,12 +1027,29 @@ const handlers: Record<string, Handler> = {
     return { ...doc, sources: agents.sourcesFor(registry.requireWorkspace(p.workspaceId).projectId, doc.content) }
   },
   'memory.erase': async (p: { workspaceId: string; memoryId?: string }) => {
-    const r = await memory.erase(p.workspaceId, p.memoryId)
-    // The conversations it was keeping out of sight go with it: nothing names them now.
-    const ws = registry.requireWorkspace(p.workspaceId)
-    const id = p.memoryId ?? (ws.topicId ? topicMemoryId(ws.topicId) : PROJECT_MEMORY)
-    if (agents.purgeHidden(ws.projectId, id)) pushAgentActivity()
+    // The conversations it was keeping out of sight stay while it can still
+    // be restored: its notes lead back to them. They go when it does (`letGo`).
+    return memory.erase(p.workspaceId, p.memoryId)
+  },
+  'memory.erased': async (p: { projectId: string }) => {
+    letGo(p.projectId, await memory.expire(p.projectId))
+    return memory.erased(p.projectId)
+  },
+  'memory.readErased': (p: { projectId: string; key: string }) => {
+    const doc = memory.readErased(p.projectId, p.key)
+    return doc && { ...doc, sources: agents.sourcesFor(p.projectId, doc.content) }
+  },
+  'memory.restore': async (p: { projectId: string; key: string }) => {
+    const r = memory.restore(p.projectId, p.key)
+    // A topic's checkouts say whether their memory has anything in it.
+    await Promise.all(registry.allWorkspaces(p.projectId).map((w) => registry.probeWorkspace(w.id)))
+    pushWorkspaces()
     return r
+  },
+  'memory.purge': async (p: { projectId: string; key: string }) => {
+    const id = await memory.purge(p.projectId, p.key)
+    if (id) letGo(p.projectId, [id])
+    return { ok: true as const }
   },
   'memory.write': (p: { workspaceId: string; content: string; memoryId?: string }) => {
     memory.write(p.workspaceId, p.content, p.memoryId)

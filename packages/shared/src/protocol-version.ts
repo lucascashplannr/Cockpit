@@ -83,8 +83,12 @@
  * falls back to the labels the graph has for that commit.
  *
  * 2.28 — `agent.rename`, behind a double-click on a conversation's title.
+ *
+ * 2.29 — `memory.erased`, `memory.readErased`, `memory.restore`, `memory.purge`. `memory.erase`
+ * keeps the file instead of sending it to the Trash; against an older core the
+ * window lists nothing under Erased.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 28 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 29 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

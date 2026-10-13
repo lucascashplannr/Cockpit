@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, ChevronDown } from '@lucide/vue'
 
 /**
@@ -28,6 +28,8 @@ const emit = defineEmits<{ 'update:modelValue': [string] }>()
 
 const open = ref(false)
 const root = ref<HTMLElement | null>(null)
+const menu = ref<HTMLElement | null>(null)
+const room = ref(0)
 
 const current = computed(
   () => props.options.find((o) => o.id === props.modelValue) ?? props.options[0],
@@ -51,8 +53,28 @@ function onKey(ev: KeyboardEvent): void {
   if (ev.key === 'Escape') open.value = false
 }
 
+/**
+ * How far up the menu may grow: to the nearest ancestor that clips, or the
+ * window. A list of memories is as long as the project is old, and a menu
+ * taller than that loses its first rows — the ones that matter — off the top.
+ */
+function measure(): void {
+  const el = root.value
+  if (!el) return
+  let ceiling = 0
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    if (getComputedStyle(p).overflowY !== 'visible') {
+      ceiling = Math.max(ceiling, p.getBoundingClientRect().top)
+      break
+    }
+  }
+  room.value = Math.max(120, el.getBoundingClientRect().top - ceiling - 13)
+}
+
 watch(open, (isOpen) => {
   if (isOpen) {
+    measure()
+    void nextTick(() => menu.value?.querySelector('.item.on')?.scrollIntoView({ block: 'nearest' }))
     document.addEventListener('mousedown', onDocDown)
     document.addEventListener('keydown', onKey)
   } else {
@@ -76,7 +98,7 @@ onBeforeUnmount(() => {
 
     <!-- Upward: the composer sits at the foot of the window, and a menu that
          opens downward would be clipped by it. -->
-    <ul v-if="open" class="menu">
+    <ul v-if="open" ref="menu" class="menu" :style="{ maxHeight: room + 'px' }">
       <li v-for="o in options" :key="o.id">
         <button
           class="item"
@@ -134,6 +156,8 @@ onBeforeUnmount(() => {
   width: max-content;
   min-width: 150px;
   max-width: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   list-style: none;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);

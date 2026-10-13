@@ -1217,6 +1217,18 @@ export interface MemorySummary {
   updatedAt: number
 }
 
+/** §6 — a memory that was erased, while Cockpit still keeps it. */
+export interface ErasedMemory {
+  /** Which erasing this is: one memory can be erased more than once. */
+  key: string
+  /** The memory it was. */
+  id: string
+  name: string
+  kind: 'topic' | 'named' | 'project'
+  entries: number
+  erasedAt: number
+}
+
 export interface MemoryDoc {
   /** Which memory this is, for everything that edits it. */
   id: string

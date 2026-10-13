@@ -1,4 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
   MEMORY_NEW, MEMORY_OFF, MEMORY_SECTIONS, PROJECT_MEMORY, RULED_OUT_SECTION, STATE_SECTION, canonicalSection,
@@ -6,11 +8,12 @@ import {
   slugify, splitSignature, topicMemoryId,
 } from '@cockpit/shared'
 import type { MemoryKind } from '@cockpit/shared'
-import type { Actor, Conversation, MemoryDoc, MemorySummary } from '@cockpit/shared'
+import type { Actor, Conversation, ErasedMemory, MemoryDoc, MemorySummary } from '@cockpit/shared'
 import { allTopics, getProject, getTopic, getWorkspace, requireWorkspace, topicMemoryFile } from './registry.js'
 import { append } from './journal.js'
 import { getDb } from './db.js'
 import { moveToTrash } from './files.js'
+import { COCKPIT_HOME } from './config.js'
 
 /**
  * §6 — three distinct layers, and conflating them is the mistake to avoid:
@@ -319,18 +322,131 @@ function backfillRefs(home: MemoryHome): void {
   utimesSync(home.file, atime, mtime)
 }
 
+/* ── §16 — erased, and kept for a while ────────────────────────────────
+ *
+ * An erased memory leaves the project and waits in Cockpit's own folder, where
+ * the Memory tool can list it and put it back. The system Trash could do
+ * neither: nothing there says which file was a memory, or of which project.
+ * Outside the project's tree on purpose — memories are versioned (§15), and a
+ * bin beside them would be committed with them.
+ *
+ * `<home>/erased-memories/<project>/<when>.<id>.md`, the `:` of a topic's id
+ * written `~`. After `ERASED_DAYS` one goes on to the Trash by itself.
+ */
+const ERASED_DAYS = 30
+
+function erasedDir(projectId: string): string {
+  return join(COCKPIT_HOME, 'erased-memories', projectId)
+}
+
+/** A rename where it can be one; the project may be on another volume than the home. */
+function move(from: string, to: string): void {
+  mkdirSync(dirname(to), { recursive: true })
+  try {
+    renameSync(from, to)
+  } catch {
+    copyFileSync(from, to)
+    unlinkSync(from)
+  }
+}
+
+export function erased(projectId: string): ErasedMemory[] {
+  let files: string[]
+  try {
+    files = readdirSync(erasedDir(projectId))
+  } catch {
+    return []
+  }
+  const out: ErasedMemory[] = []
+  for (const f of files) {
+    const m = /^(\d+)\.(.+)\.md$/.exec(f)
+    if (!m) continue
+    const id = m[2]!.replace('~', ':')
+    const file = join(erasedDir(projectId), f)
+    const kind: MemoryKind = id.startsWith('topic:') ? 'topic' : id === PROJECT_MEMORY ? 'project' : 'named'
+    const entries = (contentAt(file, kind) ?? '').split('\n').filter((l) => /^\s*[-*+]\s+/.test(l)).length
+    const name =
+      kind === 'project'
+        ? (getProject(projectId)?.name ?? id)
+        : ((kind === 'topic' ? getTopic(id.slice(6))?.name : null) ?? nameIn(file) ?? id)
+    out.push({ key: f.slice(0, -3), id, name, kind, entries, erasedAt: Number(m[1]) })
+  }
+  return out.sort((a, b) => b.erasedAt - a.erasedAt)
+}
+
+/** An erased one as it was, to be read — never written: it is not in the project any more. */
+export function readErased(projectId: string, key: string): Omit<MemoryDoc, 'sources'> | null {
+  const item = erased(projectId).find((e) => e.key === key)
+  if (!item) return null
+  const path = join(erasedDir(projectId), key + '.md')
+  const content = contentAt(path, item.kind) ?? ''
+  return { id: item.id, name: item.name, kind: item.kind, path, content, sections: parseSections(content), updatedAt: item.erasedAt }
+}
+
+/** Whether anything still goes by this id — there to be read, or erased and kept. */
+export function known(projectId: string, memoryId: string): boolean {
+  const home = homeFor(projectId, memoryId)
+  return (!!home && existsSync(home.file)) || erased(projectId).some((e) => e.id === memoryId)
+}
+
 /**
- * Erased by hand: to the Trash — recoverable from there, like everything else
- * Cockpit removes (§16). A topic's is re-created empty at once, so every topic
- * keeps a memory; a named one is simply gone, and a conversation still pointed
- * at it starts it again with its next note.
+ * Back where it was. A named one whose name was taken meanwhile comes back
+ * beside it; a topic's or the project's has only the one place, and is not
+ * put over notes written since.
+ */
+export function restore(projectId: string, key: string): { ok: true; memoryId: string } {
+  const item = erased(projectId).find((e) => e.key === key)
+  if (!item) throw new Error('that memory is no longer kept')
+  let home = homeFor(projectId, item.id)
+  if (!home) throw new Error(item.kind === 'topic' ? 'its topic is gone' : 'it has nowhere to go back to')
+  if (existsSync(home.file)) {
+    if (item.kind === 'named') {
+      for (let n = 2; existsSync(home.file); n++) home = homeFor(projectId, item.id + '-' + n)!
+    } else if (hasMemoryEntries(readFileSync(home.file, 'utf8'))) {
+      throw new Error('"' + home.label + '" has notes again — erase those first')
+    }
+  }
+  move(join(erasedDir(projectId), key + '.md'), home.file)
+  // Restored now, so it leads the list — where the eye is after asking for it.
+  const now = new Date()
+  utimesSync(home.file, now, now)
+  append({ type: 'memory.written', projectId, payload: { restored: home.id } })
+  return { ok: true, memoryId: home.id }
+}
+
+/** An erased one gone for good — to the Trash, as everything that leaves does (§16). Answers which memory it was. */
+export async function purge(projectId: string, key: string): Promise<string | null> {
+  const item = erased(projectId).find((e) => e.key === key)
+  if (!item) return null
+  await moveToTrash(join(erasedDir(projectId), key + '.md'))
+  append({ type: 'memory.written', projectId, payload: { purged: item.id } })
+  return item.id
+}
+
+/** The ones kept past their time, let go. Answers which memories they were. */
+export async function expire(projectId: string): Promise<string[]> {
+  const before = Date.now() - ERASED_DAYS * 86_400_000
+  const out: string[] = []
+  for (const e of erased(projectId)) {
+    if (e.erasedAt >= before) continue
+    const id = await purge(projectId, e.key).catch(() => null)
+    if (id) out.push(id)
+  }
+  return out
+}
+
+/**
+ * Erased by hand: out of the project and kept (see above), so it can be put
+ * back. A topic's is re-created empty at once, so every topic keeps a memory;
+ * a named one is simply gone, and a conversation still pointed at it starts
+ * it again with its next note.
  */
 export async function erase(workspaceId: string, memoryId?: string): Promise<{ ok: true; erased: boolean }> {
   const home = homeAt(workspaceId, memoryId)
   if (!existsSync(home.file)) return { ok: true, erased: false }
-  await moveToTrash(home.file)
-  if (home.kind === 'topic') writeFileSync(home.file, memoryTemplate('topic', home.label), 'utf8')
   const ws = requireWorkspace(workspaceId)
+  move(home.file, join(erasedDir(ws.projectId), Date.now() + '.' + home.id.replace(':', '~') + '.md'))
+  if (home.kind === 'topic') writeFileSync(home.file, memoryTemplate('topic', home.label), 'utf8')
   if (ws.topicId && home.kind === 'topic') ws.hasMemory = false
   append({ type: 'memory.written', workspaceId, payload: { erased: true, memory: home.id } })
   return { ok: true, erased: true }

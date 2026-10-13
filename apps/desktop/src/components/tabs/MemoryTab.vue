@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { OPEN_QUESTIONS_SECTION, RULED_OUT_SECTION, sectionsFor, signatureAlone, splitSignature } from '@cockpit/shared'
-import type { MemoryDoc, MemorySigned, Workspace } from '@cockpit/shared'
+import type { ErasedMemory, MemoryDoc, MemorySigned, Workspace } from '@cockpit/shared'
 import {
-  BookDashed, BookX, Check, ChevronDown, ChevronRight, Copy, CornerDownLeft, Info, MessageSquare, Pencil, Save, Trash2,
+  BookDashed, BookX, Check, ChevronDown, ChevronRight, Copy, CornerDownLeft, Info, MessageSquare, Pencil, Save, RotateCcw, Trash2,
   X,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, activeAgentScope, askEraseMemory, client, guard, layout, memoryChoiceFor, memoryLabel,
-  openConversationByRef, openThreadFor, resetColumnWidth, resetMemorySideHeight, saveLayout,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, activeAgentScope, askEraseMemory, askPurgeMemory, client, guard, layout, memoryChoiceFor, memoryLabel,
+  openConversationByRef, openThreadFor, resetColumnWidth, resetMemorySideHeight, restoreMemory, saveLayout,
   setColumnWidth, setMemorySideHeight, state, toast,
 } from '../../core/store.js'
 import { createMarked } from '../../core/markdown.js'
@@ -41,17 +41,64 @@ const viewing = ref<string | null>(null)
 const shownId = computed(() => viewing.value ?? bound.value)
 /** A memory with a file behind it, rather than "new" or "off". */
 const real = computed(() => !!shownId.value && shownId.value !== 'new' && shownId.value !== 'off')
+/**
+ * A named memory whose file is no longer there — erased. The service would
+ * still answer with an empty form titled by the file's slug, which reads as
+ * the memory having survived its own erasing; it is shown as what it is, one
+ * that starts over with the next note.
+ */
+const gone = ref(false)
+/**
+ * An erased memory being read — to see what it was before putting it back or
+ * letting it go. Read only: it is in no project, and nothing writes to it.
+ */
+const past = ref<ErasedMemory | null>(null)
+/** One with a form to draw and to write into. */
+const there = computed(() => !!past.value || (real.value && !gone.value))
 const memories = computed(() => state.memories[props.workspace.projectId] ?? [])
+/** Erased, and still kept by the service: listed under the others, to be put back. */
+const erased = computed(() => state.erasedMemories[props.workspace.projectId] ?? [])
+/** Folded at the foot of the menu, in view however long the list above is. */
+const erasedOpen = ref(false)
+const menuEl = ref<HTMLElement | null>(null)
+async function toggleErased(): Promise<void> {
+  erasedOpen.value = !erasedOpen.value
+  if (!erasedOpen.value) return
+  // They unfold under the foot of a list that may already be scrolled full.
+  await nextTick()
+  menuEl.value?.scrollTo({ top: menuEl.value.scrollHeight })
+}
+async function restore(key: string): Promise<void> {
+  const id = await restoreMemory(props.workspace.projectId, key)
+  if (id) view(id)
+}
+function viewErased(e: ErasedMemory): void {
+  past.value = e
+  switcherOpen.value = false
+}
+watch(() => props.workspace.projectId, () => {
+  past.value = null
+})
+// Restored or deleted for good, from here or from another window: no longer one to read.
+watch(erased, (list) => {
+  if (past.value && !list.some((e) => e.key === past.value!.key)) past.value = null
+})
 const shownName = computed(() =>
-  doc.value && real.value ? doc.value.name : memoryLabel(props.workspace.projectId, shownId.value ?? 'new'),
+  past.value
+    ? past.value.name
+    : doc.value && real.value
+      ? doc.value.name
+      : memoryLabel(props.workspace.projectId, gone.value ? 'new' : (shownId.value ?? 'new')),
 )
 const switcherOpen = ref(false)
 const switcherRoot = ref<HTMLElement | null>(null)
 function view(id: string | null): void {
+  past.value = null
   viewing.value = id === bound.value ? null : id
   switcherOpen.value = false
 }
 watch(bound, () => {
+  past.value = null
   viewing.value = null
 })
 const draft = ref('')
@@ -313,7 +360,18 @@ function cancelEdit() {
 
 async function load() {
   editing.value = false
+  if (past.value) {
+    const key = past.value.key
+    const d = await guard(() => client.call('memory.readErased', { projectId: props.workspace.projectId, key }))
+    if (past.value?.key !== key) return
+    gone.value = false
+    doc.value = d ?? null
+    draft.value = ''
+    if (!d) past.value = null
+    return
+  }
   if (!real.value) {
+    gone.value = false
     doc.value = null
     draft.value = ''
     return
@@ -321,7 +379,15 @@ async function load() {
   const id = shownId.value!
   const d = await guard(() => client.call('memory.read', { workspaceId: props.workspace.id, memoryId: id }))
   // Only if it is still the one asked for: switching fast must not land on the last answer.
-  if (shownId.value !== id) return
+  if (shownId.value !== id || past.value) return
+  gone.value = !!d && d.kind === 'named' && d.updatedAt === null
+  if (gone.value) {
+    doc.value = null
+    draft.value = ''
+    // One that was only being looked at: back to the conversation's own.
+    if (viewing.value) viewing.value = null
+    return
+  }
   doc.value = d ?? null
   draft.value = d?.content ?? ''
 }
@@ -377,12 +443,12 @@ const PLACEHOLDER: Record<string, string> = {
 watch(
   () => state.events[state.events.length - 1],
   (e) => {
-    if (!e || editing.value) return
+    if (!e || editing.value || past.value) return
     if (e.type === 'memory.promoted' || e.type === 'memory.written') void load()
   },
 )
 
-watch([() => props.workspace.id, shownId], load, { immediate: true })
+watch([() => props.workspace.id, shownId, past], load, { immediate: true })
 </script>
 
 <template>
@@ -393,33 +459,55 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
     :style="{ '--side-w': sideW + 'px', '--side-h': sideH === null ? 'auto' : sideH + 'px' }"
   >
     <div class="main">
-      <!-- Only over a memory there is: with none, a name and a menu of other
-           memories is a question the empty screen below already answers. -->
-      <div v-if="real" ref="head" class="ehead">
+      <!-- Over no memory too: the tab is also where one is read, or an erased
+           one put back, with no conversation open. -->
+      <div ref="head" class="ehead">
         <div ref="switcherRoot" class="switcher">
           <button
             class="mname"
-            :class="{ open: switcherOpen, other: !!viewing }"
-            :title="viewing ? 'Another memory than this conversation\'s' : 'This conversation\'s memory — every memory of the project is here'"
+            :class="{ open: switcherOpen }"
+            :title="past ? 'An erased memory' : viewing ? 'Another memory than this conversation\'s' : there ? 'This conversation\'s memory — every memory of the project is here' : 'Every memory of the project'"
             @click="switcherOpen = !switcherOpen"
           >
             <span class="mn">{{ shownName }}</span>
             <ChevronDown class="mchev" />
           </button>
-          <ul v-if="switcherOpen" class="menu mmenu">
-            <li v-if="viewing && bound">
-              <button @click="view(bound)"><ChevronRight class="back" />Back to this conversation's</button>
-            </li>
+          <ul v-if="switcherOpen" ref="menuEl" class="menu mmenu">
             <li v-for="m in memories" :key="m.id">
               <button @click="view(m.id)">
-                <Check class="tick" :class="{ hidden: m.id !== shownId }" />
+                <Check class="tick" :class="{ hidden: !!past || m.id !== shownId }" />
                 <span class="mnm">{{ m.name }}</span>
                 <span class="mhint">{{ m.entries }} {{ m.entries === 1 ? 'note' : 'notes' }} · {{ since(m.updatedAt) }}</span>
               </button>
             </li>
             <li v-if="!memories.length" class="mnone">No memory in this project yet.</li>
+            <!-- Only when there is something behind it, as in the conversation drawer. -->
+            <li v-if="erased.length" class="mgroup">
+              <button title="Kept for 30 days" :aria-expanded="erasedOpen" @click="toggleErased">
+                <span>{{ erasedOpen ? 'Hide' : 'Show' }} erased memories</span>
+                <span class="mcount num">{{ erased.length }}</span>
+                <ChevronDown class="mfold" :class="{ open: erasedOpen }" />
+              </button>
+            </li>
+            <li v-for="e in erasedOpen ? erased : []" :key="e.key" class="mgone">
+              <button class="mopen" @click="viewErased(e)">
+                <Check class="tick" :class="{ hidden: past?.key !== e.key }" />
+                <span class="mnm">{{ e.name }}</span>
+                <span class="mhint">{{ e.entries }} {{ e.entries === 1 ? 'note' : 'notes' }} · {{ since(e.erasedAt) }}</span>
+              </button>
+              <button title="Restore" aria-label="Restore" @click="restore(e.key)"><RotateCcw /></button>
+              <button
+                class="mpurge"
+                title="Delete for good"
+                aria-label="Delete for good"
+                @click="askPurgeMemory(workspace.projectId, e)"
+              >
+                <Trash2 />
+              </button>
+            </li>
           </ul>
         </div>
+        <span v-if="past" class="ep">erased {{ since(past.erasedAt) }}</span>
         <div v-if="doc" ref="detailRoot" class="ename">
           <span v-if="dirty" class="edirty" title="Unsaved changes" aria-label="Unsaved changes" />
           <button
@@ -458,6 +546,19 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
             <Save />
           </button>
         </template>
+        <template v-else-if="past">
+          <button class="icon-btn eact" title="Restore" aria-label="Restore" @click="restore(past.key)">
+            <RotateCcw />
+          </button>
+          <button
+            class="icon-btn eact erase"
+            title="Delete for good"
+            aria-label="Delete for good"
+            @click="askPurgeMemory(workspace.projectId, past)"
+          >
+            <Trash2 />
+          </button>
+        </template>
         <template v-else-if="doc">
           <!-- Only when there is something to lose: an empty form has nothing to erase. -->
           <button
@@ -479,7 +580,7 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
            and the empty form is what says where things go. -->
       <!-- A conversation with no memory yet, or none at all: said plainly,
            with the way to another one right above it. -->
-      <div v-if="!real" class="nomem">
+      <div v-if="!there" class="nomem">
         <template v-if="shownId === 'off'">
           <BookX />
           <strong>No memory</strong>
@@ -557,7 +658,7 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
     </div>
 
     <Splitter
-      v-if="real && !stacked"
+      v-if="there && !past && !stacked"
       :style="{ left: panelW - sideW - 3 + 'px' }"
       :size="sideW"
       :min="LAYOUT_LIMITS.memorySide.min"
@@ -570,7 +671,7 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
       @reset="resetColumnWidth('memorySide')"
     />
     <Splitter
-      v-else-if="real"
+      v-else-if="there && !past"
       :size="sideH ?? sideMeasured"
       :min="LAYOUT_LIMITS.memorySideHeight.min"
       :max="sideHMax"
@@ -582,7 +683,7 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
       @reset="resetMemorySideHeight"
     />
 
-    <aside v-show="real" ref="side" class="side">
+    <aside v-show="there && !past" ref="side" class="side">
       <!-- The composer's shape, at the size of a note: what you write, the
            section it goes into, and the one act. -->
       <div class="well">
@@ -657,8 +758,6 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
   color: var(--text);
 }
 .mname:hover, .mname.open { background: var(--hover); }
-/* Reading another memory than the conversation's: said by the name itself. */
-.mname.other .mn { color: var(--accent); }
 .mn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mchev { flex: none; width: 14px; height: 14px; color: var(--text-dim); }
 .mmenu {
@@ -672,12 +771,54 @@ watch([() => props.workspace.id, shownId], load, { immediate: true })
   padding: 5px;
 }
 .mmenu .tick { width: 12px; height: 12px; color: var(--accent); }
-.mmenu .tick.hidden { visibility: hidden; }
-.mmenu .back { transform: rotate(180deg); }
+.mmenu .tick.hidden { display: none; }
 .mmenu button { display: flex; align-items: center; gap: 7px; width: 100%; }
 .mnm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mhint { flex: none; margin-left: auto; padding-left: 14px; font-size: 10px; color: var(--text-dim); white-space: nowrap; }
 .mnone { padding: 6px 9px; font-size: var(--fs-xs); color: var(--text-dim); }
+/* The erased ones: not something to open, so a row and its two verbs rather
+   than a button the width of the menu. */
+/* Held at the foot while the list scrolls under it: the way to them is not
+   something to scroll nineteen memories to find. Drawn as the conversation
+   drawer's "Show removed conversations" is — the same kind of way in. */
+.mgroup {
+  position: sticky;
+  bottom: -5px;
+  margin-top: 4px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  background: var(--overlay);
+}
+.mmenu .mgroup button {
+  gap: 7px;
+  height: 28px;
+  padding: 0 8px 0 9px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
+}
+.mmenu .mgroup button:hover { background: var(--hover); color: var(--text-muted); }
+.mcount { font-size: 11px; color: var(--text-dim); }
+.mmenu .mgroup .mfold {
+  width: 13px;
+  height: 13px;
+  margin-left: auto;
+  color: var(--text-dim);
+  transition: transform var(--dur-1) var(--ease-soft);
+}
+.mmenu .mgroup .mfold.open { transform: rotate(180deg); }
+.mgone {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding-right: 3px;
+}
+.mmenu .mgone button { flex: none; justify-content: center; width: 24px; height: 24px; padding: 0; }
+/* The memory itself, to be read: the row less its two verbs. */
+.mmenu .mgone .mopen { flex: 1; min-width: 0; justify-content: flex-start; height: 30px; padding: 0 6px 0 9px; color: var(--text-dim); }
+.mmenu .mgone .mpurge:hover { color: var(--danger); }
 
 /* The Docs and Diff tabs' empty screen: the thing that is missing, drawn
    quietly, what it is, and one sentence on how it comes to be. */

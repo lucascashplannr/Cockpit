@@ -632,7 +632,7 @@ async function clearThread(handoff = false, confirmed = false): Promise<void> {
       body: [
         (others.length === 1 ? 'Another conversation uses' : others.length + ' other conversations use') +
           ' this memory, and every note in it goes.',
-        'The file goes to the Trash, so it can still be brought back from there.',
+        'It can be restored from the Memory tab for 30 days.',
       ],
       verb: 'Erase',
       done: 'memory erased',

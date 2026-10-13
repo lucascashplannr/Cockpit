@@ -12,7 +12,7 @@ import type {
   DeclaredServer,
   DatabasePlan,
   DiffFile, Topic,
-  DocsInfo, DocsProposalSet, FileDiff, GitOperation, MemoryDoc, MemorySummary, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
+  DocsInfo, DocsProposalSet, ErasedMemory, FileDiff, GitOperation, MemoryDoc, MemorySummary, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
   ProjectSettings, SearchHit, SeedProposal, StashEntry,
   Workspace,
 } from './model.js'
@@ -1050,8 +1050,16 @@ export interface Rpc {
   'memory.list': { params: { projectId: string }; result: MemorySummary[] }
   'memory.read': { params: { workspaceId: string; memoryId?: string }; result: MemoryDoc | null }
   'memory.write': { params: { workspaceId: string; content: string; memoryId?: string }; result: { ok: true } }
-  /** The memory to the Trash. A topic's is re-created empty; a named one is gone. */
+  /** Out of the list, kept for a while (`memory.erased`). A topic's is re-created empty; a named one is gone. */
   'memory.erase': { params: { workspaceId: string; memoryId?: string }; result: { ok: true; erased: boolean } }
+  /** The erased ones still kept, most recently erased first. */
+  'memory.erased': { params: { projectId: string }; result: ErasedMemory[] }
+  /** One of them, to be read before deciding. Null once it is no longer kept. */
+  'memory.readErased': { params: { projectId: string; key: string }; result: MemoryDoc | null }
+  /** Back where it was — or, its name taken since, beside it. Answers which memory it is now. */
+  'memory.restore': { params: { projectId: string; key: string }; result: { ok: true; memoryId: string } }
+  /** An erased one gone for good: its file to the Trash. */
+  'memory.purge': { params: { projectId: string; key: string }; result: { ok: true } }
   'memory.promote': {
     params: { workspaceId: string; section: string; text: string; memoryId?: string }
     result: { ok: true }
