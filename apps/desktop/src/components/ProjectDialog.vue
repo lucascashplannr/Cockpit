@@ -366,7 +366,7 @@ async function browse() {
           </button>
         </div>
         <span class="help">
-          Agents read it. Changes to it are only proposed — on /clear and /document — and you accept each one.
+          Agents read it. Changes to it are only proposed — on /next and /document — and you accept each one.
         </span>
       </div>
 

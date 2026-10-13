@@ -1043,7 +1043,7 @@ export interface Conversation {
   topicId: string | null
   /**
    * §6 — the memory this conversation reads and writes: `off`, `new` (created
-   * on its first note), or a memory's id. Chosen when it starts; a `/clear`
+   * on its first note), or a memory's id. Chosen when it starts; a `/next`
    * hands the next conversation the same one.
    */
   memory: string

@@ -1182,7 +1182,7 @@ export async function startAgentIn(
   )
   if (!res) return false
   // Said once, for the conversation it was said for: the next one on this
-  // scope starts from the default again, unless a `/clear` says otherwise.
+  // scope starts from the default again, unless a `/next` says otherwise.
   delete state.memoryChoice[scopeKey(scope)]
   if ('denied' in res) {
     // §7 — a refusal explains itself; a silent no is worse than a blocked run.
@@ -3880,7 +3880,7 @@ watch(() => state.activeProjectId, (id) => {
  * A project has one memory per piece of work. A conversation is pointed at
  * one when it starts — a new one (created with its first note), an existing
  * one, or none — and the composer's Memory chip is where that is said. A topic
- * defaults to its own; anywhere else defaults to a new one; after a `/clear`
+ * defaults to its own; anywhere else defaults to a new one; after a `/next`
  * the next conversation defaults to the one the last was using.
  */
 export async function refreshMemories(projectId: string): Promise<void> {
@@ -3904,6 +3904,11 @@ export function memoryChoiceFor(scope: AgentScope): string {
 
 export function chooseMemory(scope: AgentScope, memoryId: string): void {
   state.memoryChoice[scopeKey(scope)] = memoryId
+}
+
+/** Back to the scope's default — what `/clear` leaves behind. */
+export function forgetMemoryChoice(scope: AgentScope): void {
+  delete state.memoryChoice[scopeKey(scope)]
 }
 
 /** What to call a memory choice anywhere it is shown. */

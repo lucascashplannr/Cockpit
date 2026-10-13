@@ -31,7 +31,7 @@ export const SECTIONS = MEMORY_SECTIONS
  * A project has as many memories as the work in it: one per piece of work,
  * named after the conversation that started writing it, kept until a person
  * erases it or it empties into the docs. A conversation is pointed at one of
- * them when it starts — a new one, an existing one, or none — and a `/clear`
+ * them when it starts — a new one, an existing one, or none — and a `/next`
  * hands the next conversation the same one. A topic keeps its own, as ever.
  *
  * Ids, as stored on the conversation:

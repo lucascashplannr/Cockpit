@@ -871,7 +871,7 @@ const handlers: Record<string, Handler> = {
   'agent.memorize': async (p: { sessionId: string }) => {
     const c = agents.get(p.sessionId)
     if (!c) throw new Error('unknown session: ' + p.sessionId)
-    // Said rather than skipped: unlike `/clear`, nothing else happens here, so
+    // Said rather than skipped: unlike `/next`, nothing else happens here, so
     // a silent no-op would read as a command that did not take.
     if (c.engine !== 'claude') return { ok: false as const, reason: '/memorize needs a Claude conversation' }
     if (c.memory === MEMORY_OFF) return { ok: false as const, reason: 'this conversation keeps no memory' }

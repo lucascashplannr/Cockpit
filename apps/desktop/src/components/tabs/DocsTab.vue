@@ -118,7 +118,7 @@ async function acceptAll(s: DocsProposalSet): Promise<void> {
         <strong>Nothing waiting</strong>
         <span>
           <span class="mono">/document</span> in a conversation drafts proposals to the docs here —
-          and so does <span class="mono">/clear</span>. Nothing reaches the docs until you accept it.
+          and so does <span class="mono">/next</span>. Nothing reaches the docs until you accept it.
         </span>
       </div>
 

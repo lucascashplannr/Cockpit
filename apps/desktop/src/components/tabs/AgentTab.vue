@@ -4,7 +4,7 @@ import type {
   // Aliased: the component that draws one is `Attachment` too, and the file
   // needs both in the same scope.
   Attachment as AttachedFile,
-  AgentAnswers, AgentQuestion, AgentScopePreview, Conversation, AgentTurn, PermissionMode, QuoteSource, Workspace,
+  AgentAnswers, AgentQuestion, AgentScope, AgentScopePreview, Conversation, AgentTurn, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
   ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, Hand, Paperclip,
@@ -24,7 +24,7 @@ import {
   activeAgentScope, agentDraft, agentFiles, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
-  chooseMemory, deleteConversation, renameConversation, restoreConversation,
+  chooseMemory, deleteConversation, forgetMemoryChoice, memoryLabel, renameConversation, restoreConversation,
   threadScrollOf, toast, transcriptOf, type ThreadScroll,
 } from '../../core/store.js'
 import {
@@ -594,40 +594,62 @@ const canSend = computed(() => {
 const queueing = computed(() => !!selected.value && isBusy(selected.value))
 
 /**
- * `/clear` — the same scope, an empty thread, and this one removed.
+ * `/clear` and `/next` — the same scope, an empty thread, and this one removed.
  *
- * Removed the way the drawer's Remove removes it: gone when it has no memory,
- * out of the list but kept when it has one — the memory's notes name it — and
- * gone with that memory. Its journal never goes either way.
+ * `/next` has the agent bring the memory up to date first, and the new
+ * conversation starts on that memory. `/clear` asks nothing of the agent and
+ * erases the memory too: the next conversation knows nothing of this one.
  *
- * Its engine is let go first, if it is sitting open: an open conversation
- * holds the lock on the scope, and the new one would be refused by the old.
+ * Removed the way the drawer's Remove removes it; its journal never goes. Its
+ * engine is let go first, if it is sitting open: an open conversation holds
+ * the lock on the scope, and the new one would be refused by the old.
  */
-async function clearThread(): Promise<void> {
+async function clearThread(handoff = false, confirmed = false): Promise<void> {
   const s = selected.value
-  // A second `/clear` during the handoff is "skip it": the person has decided
+  if (handoff && (!s || !continuing.value)) {
+    toast('info', 'there is no conversation to carry on from yet')
+    return
+  }
+  const on = scope.value
+  // Either one during the handoff is "skip it": the person has decided
   // the memory is good enough, and waiting on the agent to agree is friction.
   if (s && isBusy(s) && handingOff.value === s.id) {
     handingOff.value = null
     agentDraft.value = ''
     await guard(() => client.call('agent.stop', { sessionId: s.id }))
-    const now = state.agents.find((c) => c.id === s.id)
-    if (scope.value && now) chooseMemory(scope.value, now.memory)
-    if (now) await deleteConversation(now.id, { letGo: true })
-    if (scope.value) startFresh(scope.value)
+    await leave(s.id, on, true)
     return
   }
   if (s && isBusy(s)) {
     toast('info', 'it is still on a turn — stop it first, or let it finish')
     return
   }
+  // A memory other conversations are writing to is theirs as well: asked.
+  const others = s && !handoff && hasFile(s.memory) ? state.agents.filter((c) => c.id !== s.id && c.memory === s.memory) : []
+  if (others.length && !confirmed) {
+    state.pendingConfirm = {
+      title: 'Erase "' + memoryLabel(props.workspace.projectId, s!.memory) + '"?',
+      body: [
+        (others.length === 1 ? 'Another conversation uses' : others.length + ' other conversations use') +
+          ' this memory, and every note in it goes.',
+        'The file goes to the Trash, so it can still be brought back from there.',
+      ],
+      verb: 'Erase',
+      done: 'memory erased',
+      danger: true,
+      run: async () => {
+        await clearThread(false, true)
+        return true
+      },
+    }
+    return
+  }
   agentDraft.value = ''
   agentFiles.value = []
-  const on = scope.value
   // §6 — "vider devient gratuit" only if what the conversation understood is
   // somewhere the next one reads. One turn, in this thread, before it goes —
   // and with docs linked, the same turn drafts proposals to them (§9).
-  if (s) {
+  if (s && handoff) {
     handingOff.value = s.id
     const r = await guard(() => client.call('agent.handoff', { sessionId: s.id }))
     if (r && !r.ok) toast('info', 'no handoff — ' + r.reason)
@@ -644,15 +666,32 @@ async function clearThread(): Promise<void> {
     if (skipped) return
     if (r?.ok && r.docsSetId) toast('ok', 'docs proposals are waiting in the Docs tool')
   }
-  // Asked of the store as it is now: `s` is the row as it was before the
-  // handoff, and a conversation let go meanwhile has nothing to stop.
-  const now = state.agents.find((c) => c.id === s?.id)
-  // §6 — the next conversation carries on with the same memory: that is what
-  // clearing *is*. The chip shows it, and one click changes it.
-  if (on && now) chooseMemory(on, now.memory)
+  await leave(s?.id, on, handoff)
+}
+
+/** A memory with a file behind it, rather than "new" or "off". */
+const hasFile = (memory: string): boolean => memory !== 'new' && memory !== 'off'
+
+/**
+ * The conversation goes and an empty thread takes its place — on the same
+ * memory (`keep`), or with that memory erased and the scope's default back.
+ */
+async function leave(id: string | undefined, on: AgentScope | null, keep: boolean): Promise<void> {
+  // Asked of the store as it is now: a conversation let go meanwhile has
+  // nothing to stop.
+  const now = state.agents.find((c) => c.id === id)
+  if (on && now && keep) chooseMemory(on, now.memory)
   // Let go and removed in one call: the service waits for the process to go
   // before it takes the row, so the new conversation is not refused by the old.
-  if (now) await deleteConversation(now.id, { letGo: true })
+  const removed = !!now && (await deleteConversation(now.id, { letGo: true }))
+  if (now && removed && !keep) {
+    // After the conversation: one kept out of sight for this memory's notes
+    // goes with the memory.
+    if (hasFile(now.memory)) {
+      await guard(() => client.call('memory.erase', { workspaceId: props.workspace.id, memoryId: now.memory }))
+    }
+    if (on) forgetMemoryChoice(on)
+  }
   if (on) startFresh(on)
 }
 
@@ -675,7 +714,7 @@ async function documentThread(): Promise<void> {
 }
 
 /**
- * `/memorize` — what `/clear` asks of the agent first, and nothing after it:
+ * `/memorize` — what `/next` asks of the agent first, and nothing after it:
  * the memory is brought up to date, in this thread, and the thread stays.
  */
 async function memorizeThread(): Promise<void> {
@@ -693,7 +732,7 @@ async function memorizeThread(): Promise<void> {
   if (r && !r.ok) toast('info', r.reason)
 }
 
-/** The conversation `/clear` is waiting on, while it writes its handoff. */
+/** The conversation `/next` is waiting on, while it writes its handoff. */
 const handingOff = ref<string | null>(null)
 
 /**
@@ -716,6 +755,7 @@ async function send(): Promise<void> {
   const cmd = commandIn(text)
   if (cmd) {
     if (cmd.command.name === 'clear') return clearThread()
+    if (cmd.command.name === 'next') return clearThread(true)
     if (cmd.command.name === 'document') return documentThread()
     if (cmd.command.name === 'memorize') return memorizeThread()
     const no = refuseCommand(cmd.command.name, cmd.command.run, !!cmd.command.thread)
@@ -757,9 +797,10 @@ async function send(): Promise<void> {
  * always looked like.
  */
 function bubble(turn: AgentTurn): ({ text: string } | { file: AttachedFile })[] {
-  // `/memorize` is a turn the person asked for by name, unlike `/clear`'s
-  // handoff: the bubble says what they typed, not what the window sent for it.
+  // `/memorize` and `/next` are turns the person asked for by name: the
+  // bubble says what they typed, not what the window sent for it.
   if (isMemorize(turn.prompt)) return [{ text: '/memorize' }]
+  if (isHandoff(turn.prompt)) return [{ text: '/next' }]
   const files = turn.attachments ?? []
   const byHandle = new Map(files.filter((f) => f.handle).map((f) => [f.handle, f]))
   // `readPrompt` rather than `splitPrompt`: the chip here is an element with
@@ -1463,13 +1504,7 @@ function ago(ts: number): string {
                  hover over the whole turn lit both — so reaching for the copy
                  under an answer also offered an Undo belonging to the question
                  three lines up. -->
-            <!-- §6 — `/clear`'s handoff is a turn the window sent, not one the
-                 person typed: a line, never a bubble in their name. -->
-            <p v-if="isHandoff(x.turn.prompt)" class="undone compacted handoff">
-              <BookMarked class="sm" />
-              Handoff — bringing the memory up to date before a fresh conversation
-            </p>
-            <p v-else-if="isDocument(x.turn.prompt)" class="undone compacted handoff">
+            <p v-if="isDocument(x.turn.prompt)" class="undone compacted handoff">
               <BookOpen class="sm" />
               Documentation step — drafting proposals to the docs, for you to accept in the Docs tool
             </p>

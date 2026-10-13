@@ -1,7 +1,7 @@
 /**
  * The commands the composer answers to — a `/word` at the start of the box.
  *
- * Three, on purpose. `claude` itself knows sixty-odd, and most of them are
+ * A handful, on purpose. `claude` itself knows sixty-odd, and most of them are
  * either a control this window already has in the row under the box (model,
  * effort, permissions), a figure it already shows (context, cost), or a
  * terminal's business (config, doctor, color). What is left is the handful
@@ -30,7 +30,8 @@ export interface AgentCommand {
 }
 
 export const AGENT_COMMANDS: AgentCommand[] = [
-  { name: 'clear', hint: 'New conversation on this scope', run: 'window' },
+  { name: 'clear', hint: 'Erase the memory and start a new conversation', run: 'window' },
+  { name: 'next', hint: 'Bring the memory up to date, then a new conversation on it', run: 'window', thread: true },
   { name: 'compact', args: 'what to keep', hint: 'Summarise the conversation to free up context', run: 'engine', thread: true },
   { name: 'init', hint: 'Write a CLAUDE.md that describes this repository', run: 'engine' },
   { name: 'memorize', hint: 'Bring the memory up to date, and carry on here', run: 'window', thread: true },
@@ -53,7 +54,7 @@ export function commandIn(prompt: string): { command: AgentCommand; args: string
 }
 
 /**
- * §6 — what `/clear` asks of a conversation before letting it go: the memory
+ * §6 — what `/next` asks of a conversation before letting it go: the memory
  * brought up to date, so the fresh one that starts on the same scope — or an
  * agent in another repository — knows what this one knew.
  *
@@ -77,7 +78,7 @@ export function isHandoff(prompt: string | null | undefined): boolean {
 }
 
 /**
- * `/memorize` — the handoff's note-taking without the goodbye: the memory is
+ * `/memorize` — `/next`'s note-taking without the goodbye: the memory is
  * brought up to date and the conversation carries on. For the moment something
  * is worth keeping and nothing is worth clearing — before handing a piece to an
  * agent in another repository, or ahead of a long stretch of work.
@@ -128,7 +129,7 @@ export function documentPrompt(dir: string, memoryCopy?: string | null): string 
   return lines.join(' ')
 }
 
-/** `/clear` with docs linked: the handoff and the proposals in one turn. */
+/** `/next` with docs linked: the handoff and the proposals in one turn. */
 export function handoffPrompt(docsDir: string | null, memoryCopy?: string | null): string {
   if (!docsDir) return HANDOFF_PROMPT
   return HANDOFF_PROMPT.replace(/ Reply with one\s+short line\.$/, '') +

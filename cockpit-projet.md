@@ -311,7 +311,8 @@ documentation est éternelle : rien n'y entre sans qu'une personne l'accepte.
 |---|---|
 | lancement | la mémoire (topic ou projet) + le guide de la doc ouvrent le premier message |
 | chaque tour | ce que les *autres* conversations ont ajouté à la mémoire depuis le dernier tour |
-| `/clear` | un tour de **handoff** : la mémoire mise à jour, et — si une doc est liée — des propositions |
+| `/next` | un tour de **handoff** : la mémoire mise à jour, et — si une doc est liée — des propositions ; puis une conversation neuve sur la même mémoire |
+| `/clear` | la conversation retirée et sa mémoire effacée (à la Corbeille), sans rien demander à l'agent ; la suivante part d'une mémoire neuve |
 | `/document` | des propositions à la doc, depuis cette conversation |
 
 Les propositions sont écrites dans une copie de travail de la doc ; l'écart devient une liste, page
@@ -319,8 +320,8 @@ par page, dans l'outil **Docs** : une carte par page, son diff et sa raison, *Ac
 *Reject*. (Une seconde façon — tout écrire d'un coup et relire hunk par hunk dans le Diff — a été
 essayée à côté et écartée le 2026-09-30 : les cartes suffisent.)
 
-Mots de l'interface : **Docs** (l'outil), **Document** (le verbe), **Handoff** (le tour avant un
-`/clear`). Un wiki alimenté séparément meurt en trois mois, toujours. Un wiki alimenté par le résidu naturel du travail survit.
+Mots de l'interface : **Docs** (l'outil), **Document** (le verbe), **Handoff** (le tour de
+`/next`). Un wiki alimenté séparément meurt en trois mois, toujours. Un wiki alimenté par le résidu naturel du travail survit.
 
 ## 10. Portabilité
 

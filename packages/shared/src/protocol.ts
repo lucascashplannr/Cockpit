@@ -893,7 +893,7 @@ export interface Rpc {
   'agent.summary': { params: { sessionId: string }; result: ConversationSummary | null }
   'agent.stop': { params: { sessionId: string }; result: { ok: true } }
   /**
-   * §6 — before `/clear`: one turn in which the agent brings the shared memory
+   * §6 — `/next`: one turn in which the agent brings the shared memory
    * up to date. Answers once that turn has landed. `skipped` when there was
    * nothing to hand off — no turn yet, or the last one already was a handoff.
    */
@@ -932,7 +932,7 @@ export interface Rpc {
    * A conversation with a memory is *hidden* instead (`kept`): the memory's
    * notes name it, and it goes for good when that memory is erased.
    *
-   * `letGo` is `/clear`'s: an open conversation between turns is let go first
+   * `letGo` is `/clear`'s and `/next`'s: an open conversation between turns is let go first
    * rather than refused — clearing is the decision to let it go.
    */
   'agent.delete': {
