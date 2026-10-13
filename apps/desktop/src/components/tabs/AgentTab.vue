@@ -15,7 +15,7 @@ import ToolCall from '../agent/ToolCall.vue'
 import ToolGroup from '../agent/ToolGroup.vue'
 import Attachment from '../agent/Attachment.vue'
 import Composer from '../agent/Composer.vue'
-import ReferenceSelection from '../agent/ReferenceSelection.vue'
+import SelectionActions from '../agent/SelectionActions.vue'
 import PermissionAsk from '../agent/PermissionAsk.vue'
 import QuestionAsk from '../agent/QuestionAsk.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
@@ -1763,7 +1763,7 @@ function ago(ts: number): string {
 
         <!-- Over whatever is selected in the thread: the passage goes into the
              box below as a `#ref` chip, the way a screenshot goes in as one. -->
-        <ReferenceSelection :root="scrollEl" @reference="refer" />
+        <SelectionActions :root="scrollEl" @reference="refer" />
 
         <!-- §6 — opened from a memory note: removed, and kept only because
              the note names it. Nothing is said into it from here, so there is

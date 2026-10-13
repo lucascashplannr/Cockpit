@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { TextQuote } from '@lucide/vue'
+import { Check, Copy, Highlighter } from '@lucide/vue'
 import type { QuoteSource } from '@cockpit/shared'
+import { toast } from '../../core/store.js'
 
 /**
- * A passage selected in the thread, and the one thing to do with it.
+ * A passage selected in the thread, and the two things to do with it.
  *
  * "This part, here" used to be said by copying the passage, pasting it into
  * the box and writing around it — three gestures to point at something already
@@ -12,6 +13,10 @@ import type { QuoteSource } from '@cockpit/shared'
  * words back to it as though they were new. Selecting is the pointing; this is
  * the button that appears where the selection is, and what it hands the box is
  * a reference rather than a copy.
+ *
+ * Copy sits beside it for the passage that is going somewhere else: the same
+ * words, read the same way, so what lands on the clipboard is what a reference
+ * would have quoted.
  *
  * It is drawn inside the scroller it is given rather than fixed to the window:
  * the selection scrolls with the thread, and so does this.
@@ -33,9 +38,17 @@ let dragging = false
 /** The gap between the button and the line it belongs to. */
 const GAP = 6
 
+/** Just copied, so the button says so where it was pressed. */
+const copied = ref(false)
+let copiedTimer = 0
+/** Put away after a copy: this selection has been dealt with, until it changes. */
+let dismissed = false
+
 function hide(): void {
   at.value = null
   from = null
+  copied.value = false
+  window.clearTimeout(copiedTimer)
 }
 
 /**
@@ -98,6 +111,7 @@ function read(): void {
   const root = props.root
   const me = el.value
   const host = me?.offsetParent
+  if (dismissed) return
   if (!sel || sel.isCollapsed || !sel.rangeCount || !root || !me || !host) return hide()
   const range = sel.getRangeAt(0)
   const node = range.commonAncestorContainer
@@ -139,6 +153,7 @@ function onDown(ev: MouseEvent): void {
   // Pressing the button is not starting a new selection.
   if (el.value?.contains(ev.target as Node)) return
   dragging = true
+  dismissed = false
   at.value = null
 }
 function onUp(): void {
@@ -150,6 +165,7 @@ function onUp(): void {
 }
 /** Shift and the arrows select too; a drag in progress is left alone until it ends. */
 function onSelection(): void {
+  dismissed = false
   if (!dragging) read()
 }
 
@@ -162,6 +178,29 @@ function refer(): void {
   // It has been taken: leaving it lit would offer the same passage twice.
   window.getSelection()?.removeAllRanges()
   hide()
+}
+
+/**
+ * The selection stays lit, as it does after ⌘C: it has been copied, not used.
+ * The buttons go once they have said so — there is nothing left to press.
+ */
+async function copy(): Promise<void> {
+  const sel = window.getSelection()
+  const root = props.root
+  if (!root || !sel?.rangeCount) return
+  const text = selectedText(sel.getRangeAt(0), root)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    copied.value = true
+    window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      hide()
+      dismissed = true
+    }, 1000)
+  } catch {
+    toast('error', 'could not copy')
+  }
 }
 
 onMounted(() => {
@@ -192,48 +231,61 @@ onBeforeUnmount(() => props.root?.removeEventListener('scroll', read))
   <!-- Always in the page and only sometimes visible, so its size can be read
        before it is placed. `mousedown.prevent` is what keeps the selection —
        and the caret in the box below — where they were while it is pressed. -->
-  <button
+  <div
     ref="el"
-    class="refsel"
+    class="selacts"
     :class="{ on: at }"
     :style="at ? { left: at.x + 'px', top: at.y + 'px' } : undefined"
-    :tabindex="at ? 0 : -1"
-    title="Refer to this passage in your message"
     @mousedown.prevent
-    @click="refer"
   >
-    <TextQuote class="ic" />
-    Reference
-  </button>
+    <button
+      :tabindex="at ? 0 : -1"
+      title="Refer to this passage in your message"
+      @click="refer"
+    >
+      <Highlighter class="ic" />
+      Reference
+    </button>
+    <button :class="{ done: copied }" :tabindex="at ? 0 : -1" @click="copy">
+      <Check v-if="copied" class="ic" />
+      <Copy v-else class="ic" />
+      Copy
+    </button>
+  </div>
 </template>
 
 <style scoped>
 /* The weight of "Latest", which floats over the same thread: a raised panel
    and a word. No motion on the way in — it is where the selection is, and
    anything that travelled there would be the window performing. */
-.refsel {
+.selacts {
   position: absolute;
   left: 0;
   top: 0;
   z-index: 3;
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   background: var(--panel-raised);
   box-shadow: var(--shadow-md);
-  font-size: var(--fs-xs);
-  color: var(--text);
-  white-space: nowrap;
+  overflow: hidden;
   visibility: hidden;
   pointer-events: none;
 }
-.refsel.on { visibility: visible; pointer-events: auto; }
-/* `--hover` is a tint, not a surface: on its own it replaces the panel and the
-   thread shows through. Laid over the panel, it tints it. */
-.refsel:hover { background: linear-gradient(var(--hover), var(--hover)), var(--panel-raised); }
+.selacts.on { visibility: visible; pointer-events: auto; }
+.selacts button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  white-space: nowrap;
+}
+.selacts button + button { border-left: 1px solid var(--line); }
+/* `--hover` is a tint, not a surface: laid over the panel, it tints it. */
+.selacts button:hover { background: var(--hover); }
 .ic { width: 13px; height: 13px; flex: none; color: var(--text-muted); }
+.done .ic { color: var(--ok); }
 </style>
