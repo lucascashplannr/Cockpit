@@ -16,6 +16,8 @@ export interface RunOptions {
   input?: string
   env?: Record<string, string>
   maxBuffer?: number
+  /** Windows: start the child hidden (default). GUI apps honour it too. */
+  windowsHide?: boolean
 }
 
 const IS_WIN = process.platform === 'win32'
@@ -89,7 +91,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env, GIT_TERMINAL_PROMPT: '0' },
       stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
+      windowsHide: opts.windowsHide ?? true,
       windowsVerbatimArguments: target.windowsVerbatimArguments,
     }
     const child = spawn(target.command, target.args, spawnOpts)

@@ -308,8 +308,13 @@ const detailRoot = ref<HTMLElement | null>(null)
 const detailOpen = ref(false)
 const detail = ref<{ lines: number; bytes: number } | null>(null)
 
+/** Last separator in a tree path — `\` on a Windows core, `/` elsewhere. */
+function lastSep(path: string): number {
+  return Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+}
+
 function baseName(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1)
+  return path.slice(lastSep(path) + 1)
 }
 
 function toggleDetail() {
@@ -346,7 +351,8 @@ async function revealFolder() {
   const path = openPath.value
   if (!path) return
   detailOpen.value = false
-  const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : undefined
+  const cut = lastSep(path)
+  const dir = cut > 0 ? path.slice(0, cut) : undefined
   await guard(() =>
     client.call('workspace.openIn', {
       workspaceId: props.workspace.id,
