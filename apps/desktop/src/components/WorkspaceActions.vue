@@ -2,12 +2,12 @@
 import { computed } from 'vue'
 import {
   AppWindow, ArrowDownToLine, ArrowUpFromLine, ChevronDown, CirclePlay, CircleStop, ExternalLink,
-  FileCode, Check, GitCommitHorizontal, GitCompareArrows, SlidersHorizontal, Terminal, Undo2,
+  FileCode, Check, GitCommitHorizontal, GitCompareArrows, LoaderCircle, SlidersHorizontal, Terminal, Undo2,
 } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
 import {
   activeWorkspace, askCommand, chooseCommand, chooseServer, chosenCommand, chosenServer, client,
-  gitBusy, guard, openCommit, openDeclarations, requestPlan, runningServers, state, toggleWorkspaceRuntime,
+  gitBusy, guard, openCommit, openDeclarations, requestPlan, runningServers, runtimeBusy, state, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -275,8 +275,15 @@ const running = computed(() =>
     : w.value?.runtime?.status === 'up' || w.value?.runtime?.status === 'starting',
 )
 
+/**
+ * Pressed and not answered yet — see `runtimeBusy`. The switch is off and says
+ * which way it is going, instead of sitting there looking unpressed.
+ */
+const pending = computed(() => (w.value ? (runtimeBusy[w.value.id] ?? null) : null))
+
 /** What the left half says: the server it is pointed at, or the plain verb. */
 const switchLabel = computed(() => {
+  if (pending.value) return pending.value === 'start' ? 'Starting…' : 'Stopping…'
   if (target.value) return target.value
   // "all" only where there is a menu to have picked one from: the plain
   // button has one opaque set of servers, and "all" of one thing says nothing.
@@ -453,25 +460,27 @@ async function undo() {
       <button
         v-if="w.runtime && !pickable && !openable"
         class="btn ghost sw solo"
-        :class="{ on: running, guessed: !!guess }"
-        :disabled="busy"
+        :class="{ on: running, guessed: !!guess, working: pending }"
+        :disabled="busy || !!pending"
         :title="switchTitle"
         @click="toggleRuntime"
       >
-        <i v-if="running" class="live" :class="{ starting }" />
+        <LoaderCircle v-if="pending" class="spin" />
+        <i v-else-if="running" class="live" :class="{ starting }" />
         <CirclePlay v-else />
         <span class="vl">{{ switchLabel }}</span>
       </button>
       <!-- The same switch while there is an address to open: a chip of two
            halves, the switch and the way to what it is serving. -->
-      <div v-else-if="w.runtime && !pickable" class="split" :class="{ off: busy }">
+      <div v-else-if="w.runtime && !pickable" class="split" :class="{ off: busy, working: pending }">
         <button
           class="btn ghost run sw"
-          :disabled="busy"
+          :disabled="busy || !!pending"
           :title="switchTitle"
           @click="toggleRuntime"
         >
-          <i v-if="running" class="live" :class="{ starting }" />
+          <LoaderCircle v-if="pending" class="spin" />
+          <i v-else-if="running" class="live" :class="{ starting }" />
           <CirclePlay v-else />
           <span class="vl">{{ switchLabel }}</span>
         </button>
@@ -492,7 +501,7 @@ async function undo() {
            `start:` until you pick one. Right half: each of them, with its own
            dot and its own switch — including the ones off `start:`, which had
            no way in at all before this. -->
-      <div v-else-if="w.runtime" class="split" :class="{ off: busy }">
+      <div v-else-if="w.runtime" class="split" :class="{ off: busy, working: pending }">
         <!-- `sw` is what drops the label first on a narrow column, and it is
              only right while the label is the word `Start`: its icon is a play
              triangle and nothing else on the bar is. Pointed at a named server
@@ -502,11 +511,12 @@ async function undo() {
         <button
           class="btn ghost run"
           :class="{ on: running, sw: !target }"
-          :disabled="busy"
+          :disabled="busy || !!pending"
           :title="switchTitle"
           @click="toggleRuntime"
         >
-          <i v-if="running" class="live" :class="{ starting }" />
+          <LoaderCircle v-if="pending" class="spin" />
+          <i v-else-if="running" class="live" :class="{ starting }" />
           <CirclePlay v-else />
           <span class="vl">{{ switchLabel }}</span>
         </button>
@@ -526,7 +536,7 @@ async function undo() {
           </button>
         </template>
         <span class="div" />
-        <OverflowMenu class="pick" label="Pick what this switch starts" :disabled="busy">
+        <OverflowMenu class="pick" label="Pick what this switch starts" :disabled="busy || !!pending">
           <template #trigger><ChevronDown /></template>
           <!-- First, and separated: it is not one of the servers, it is all of
                them, and it is what the button does by default. Only where
@@ -770,4 +780,9 @@ async function undo() {
   .verbs .split .btn.run .vl { display: none; }
   .verbs .split .btn.run { padding: 0 6px; }
 }
+/* Pressed and on its way (`runtimeBusy`): off, but not dimmed — a dimmed
+   spinner reads as "not available", and this is the opposite. */
+.verbs .split.working :deep(.btn:disabled),
+.verbs .btn.working:disabled { opacity: 1; cursor: progress; }
+.verbs .btn .spin { color: var(--accent); }
 </style>

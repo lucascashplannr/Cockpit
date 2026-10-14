@@ -5315,7 +5315,31 @@ function reportStart(res: { servers: { name: string; ok: boolean; status: string
   toast('ok', up.length > 1 ? up.length + ' servers up' : 'up', { icon: 'server' })
 }
 
-export async function startTopic(topicId: string): Promise<void> {
+/**
+ * §8 — the switches mid-act, by workspace or topic id, and which way.
+ *
+ * `up` answers once the server has answered or died, which is a second or two
+ * of a button that looked as if it had not been pressed — so it was pressed
+ * again. While an id is here its switch is off and says what it is doing, and
+ * every other way in (the row, the menus, the palette) is a no-op.
+ */
+export const runtimeBusy = reactive<Record<string, 'start' | 'stop'>>({})
+
+async function switching(id: string, way: 'start' | 'stop', fn: () => Promise<void>): Promise<void> {
+  if (runtimeBusy[id]) return
+  runtimeBusy[id] = way
+  try {
+    await fn()
+  } finally {
+    delete runtimeBusy[id]
+  }
+}
+
+export function startTopic(topicId: string): Promise<void> {
+  return switching(topicId, 'start', () => startTopicNow(topicId))
+}
+
+async function startTopicNow(topicId: string): Promise<void> {
   const res = await guard(() => client.call('topic.start', { topicId, force: false }))
   if (!res) return
   if (!res.ok && res.conflicts.length) {
@@ -5329,16 +5353,18 @@ export async function startTopic(topicId: string): Promise<void> {
       done: 'started',
       danger: false,
       async run() {
-        const forced = await guard(() => client.call('topic.start', { topicId, force: true }))
-        if (!forced) return false
-        await refreshTopics()
-        await refreshBoard()
-        if (forced.stoppedTopics.length)
-          toast('info', 'stopped ' + forced.stoppedTopics.join(', '), { icon: 'stop' })
-        reportStart(forced)
-        // `reportStart` says what came up, in more detail than a toast saying
-        // "started" would, so the dialog's own word is not wanted on top of it.
-        state.pendingConfirm = null
+        await switching(topicId, 'start', async () => {
+          const forced = await guard(() => client.call('topic.start', { topicId, force: true }))
+          if (!forced) return
+          await refreshTopics()
+          await refreshBoard()
+          if (forced.stoppedTopics.length)
+            toast('info', 'stopped ' + forced.stoppedTopics.join(', '), { icon: 'stop' })
+          reportStart(forced)
+          // `reportStart` says what came up, in more detail than a toast saying
+          // "started" would, so the dialog's own word is not wanted on top of it.
+          state.pendingConfirm = null
+        })
         return false
       },
     }
@@ -5387,12 +5413,14 @@ function dropLiveOutput(workspaceId: string): void {
   for (const [id, o] of Object.entries(state.procOutput)) if (o.workspaceId === workspaceId) delete state.procOutput[id]
 }
 
-export async function stopTopic(topicId: string): Promise<void> {
-  const res = await guard(() => client.call('topic.stop', { topicId }))
-  if (!res) return
-  await refreshTopics()
-  await refreshBoard()
-  toast('info', 'stopped — the branches stay exactly where they are', { icon: 'stop' })
+export function stopTopic(topicId: string): Promise<void> {
+  return switching(topicId, 'stop', async () => {
+    const res = await guard(() => client.call('topic.stop', { topicId }))
+    if (!res) return
+    await refreshTopics()
+    await refreshBoard()
+    toast('info', 'stopped — the branches stay exactly where they are', { icon: 'stop' })
+  })
 }
 
 /**
@@ -5416,15 +5444,19 @@ export async function toggleWorkspaceRuntime(w: Workspace, name?: string | null)
   const running = name ? runningServers(w).has(name) : w.runtime.status === 'up' || w.runtime.status === 'starting'
 
   if (running) {
-    const res = await guard(() => client.call('runtime.down', { workspaceId: w.id, ...(names ? { names } : {}) }))
-    await refreshBoard()
-    if (res) toast('info', name ? 'stopped ' + name : 'stopped', { icon: 'stop' })
+    await switching(w.id, 'stop', async () => {
+      const res = await guard(() => client.call('runtime.down', { workspaceId: w.id, ...(names ? { names } : {}) }))
+      await refreshBoard()
+      if (res) toast('info', name ? 'stopped ' + name : 'stopped', { icon: 'stop' })
+    })
     return
   }
-  const res = await guard(() => client.call('runtime.up', { workspaceId: w.id, ...(names ? { names } : {}) }))
-  await refreshBoard()
-  if (!res) return
-  reportStart({ servers: [{ name: label, ok: res.ok, status: res.status, log: res.log }] })
+  await switching(w.id, 'start', async () => {
+    const res = await guard(() => client.call('runtime.up', { workspaceId: w.id, ...(names ? { names } : {}) }))
+    await refreshBoard()
+    if (!res) return
+    reportStart({ servers: [{ name: label, ok: res.ok, status: res.status, log: res.log }] })
+  })
 }
 
 /**

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
-  ArrowUp, Check, ChevronDown, ExternalLink, GitCompareArrows, GitMerge, Play,
+  ArrowUp, Check, ChevronDown, ExternalLink, GitCompareArrows, GitMerge, LoaderCircle, Play,
 } from '@lucide/vue'
 import type { DeclaredServer, Workspace } from '@cockpit/shared'
 import OverflowMenu from './OverflowMenu.vue'
 import type { ListGroup } from '../core/store.js'
 import {
-  client, guard, mergeTopic, pushTopic, rebaseTopic, refreshCommands, runningServers, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
+  client, guard, mergeTopic, pushTopic, rebaseTopic, refreshCommands, runningServers, runtimeBusy, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -189,7 +189,16 @@ const running = computed(
     f.value?.state === 'running' ||
     hosts.value.some((w) => w.runtime?.status === 'up' || w.runtime?.status === 'starting'),
 )
-const switchLabel = computed(() => (running.value ? 'Stop' : 'Start'))
+/**
+ * Pressed and not answered yet — the topic's own switch, or one of its
+ * servers by name, which holds its checkout (see `runtimeBusy`).
+ */
+const pending = computed(
+  () => (f.value && runtimeBusy[f.value.id]) || hosts.value.map((h) => runtimeBusy[h.id]).find(Boolean) || null,
+)
+const switchLabel = computed(() =>
+  pending.value ? (pending.value === 'start' ? 'Starting…' : 'Stopping…') : running.value ? 'Stop' : 'Start',
+)
 const switchTitle = computed(() => {
   if (running.value) return 'Stop the servers — the branches stay where they are'
   const names = servers.value.filter((s) => s.inStart).map((s) => s.name)
@@ -302,19 +311,22 @@ const startTitle = (s: Row) =>
     <button
       v-if="!servers.length && !openable"
       class="btn ghost sw solo"
-      :class="{ on: running }"
+      :class="{ on: running, working: pending }"
+      :disabled="!!pending"
       :title="switchTitle"
       @click="toggle"
     >
-      <i v-if="running" class="live" />
+      <LoaderCircle v-if="pending" class="spin" />
+      <i v-else-if="running" class="live" />
       <Play v-else />
       <span class="vl">{{ switchLabel }}</span>
     </button>
     <!-- While the servers answer somewhere, the way there is a half of the
          switch's own chip — see WorkspaceActions. -->
-    <div v-else-if="!servers.length" class="split">
-      <button class="btn ghost run sw" :title="switchTitle" @click="toggle">
-        <i v-if="running" class="live" />
+    <div v-else-if="!servers.length" class="split" :class="{ working: pending }">
+      <button class="btn ghost run sw" :disabled="!!pending" :title="switchTitle" @click="toggle">
+        <LoaderCircle v-if="pending" class="spin" />
+        <i v-else-if="running" class="live" />
         <Play v-else />
         <span class="vl">{{ switchLabel }}</span>
       </button>
@@ -328,9 +340,10 @@ const startTitle = (s: Row) =>
         <ExternalLink />
       </button>
     </div>
-    <div v-else class="split">
-      <button class="btn ghost run sw" :class="{ on: running }" :title="switchTitle" @click="toggle">
-        <i v-if="running" class="live" />
+    <div v-else class="split" :class="{ working: pending }">
+      <button class="btn ghost run sw" :class="{ on: running }" :disabled="!!pending" :title="switchTitle" @click="toggle">
+        <LoaderCircle v-if="pending" class="spin" />
+        <i v-else-if="running" class="live" />
         <Play v-else />
         <span class="vl">{{ switchLabel }}</span>
       </button>
@@ -346,7 +359,7 @@ const startTitle = (s: Row) =>
         </button>
       </template>
       <span class="div" />
-      <OverflowMenu class="pick" label="The servers of this topic">
+      <OverflowMenu class="pick" label="The servers of this topic" :disabled="!!pending">
         <template #trigger><ChevronDown /></template>
         <div v-for="s in servers" :key="s.ws.id + s.name" class="srow">
           <button
@@ -472,4 +485,9 @@ const startTitle = (s: Row) =>
   .verbs .btn.sw .vl { display: none; }
   .verbs .btn { padding: 0 6px; }
 }
+/* Pressed and on its way (`runtimeBusy`): off, but not dimmed — a dimmed
+   spinner reads as "not available", and this is the opposite. */
+.verbs .split.working :deep(.btn:disabled),
+.verbs .btn.working:disabled { opacity: 1; cursor: progress; }
+.verbs .btn .spin { color: var(--accent); }
 </style>

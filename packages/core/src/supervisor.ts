@@ -64,18 +64,56 @@ export interface StartOptions {
   env?: Record<string, string>
 }
 
+/**
+ * Windows only: a hop between the core and the server, so the server gets a
+ * console nobody sees.
+ *
+ * `detached` is what lets a server outlive the core (§13): without it libuv
+ * puts the child in a job that is killed with the core. But on Windows it also
+ * means DETACHED_PROCESS — no console at all — and `windowsHide` cannot help,
+ * since CREATE_NO_WINDOW is ignored beside it. `cmd.exe` gets by without one;
+ * the `node.exe` it starts for `npm`, and the `next-server` under that, are
+ * console programs with no console to inherit, so Windows opens a fresh,
+ * visible one for each. One window per process in the tree.
+ *
+ * So the detached child is this: a node that has no console either, and
+ * spawns the real command *not* detached, with every stdio piped. That is the
+ * case where libuv adds CREATE_NO_WINDOW, so the command gets a hidden console
+ * and everything under it inherits that one instead of making its own. The
+ * pipes are copied straight through, and the exit code with them. It stays the
+ * recorded pid, so `taskkill /T` and adoption at boot work as before.
+ */
+const HIDDEN_CONSOLE = `
+const { spawn } = require('node:child_process')
+const [cmd, verbatim, ...args] = process.argv.slice(1)
+const c = spawn(cmd, args, {
+  stdio: ['ignore', 'pipe', 'pipe'],
+  windowsHide: true,
+  windowsVerbatimArguments: verbatim === '1',
+})
+c.stdout.pipe(process.stdout)
+c.stderr.pipe(process.stderr)
+c.on('error', (e) => { process.stderr.write(String(e.message || e) + '\\n'); process.exitCode = 127 })
+c.on('exit', (code) => { process.exitCode = code ?? 1 })
+`
+
 export function start(opts: StartOptions): SupervisedProcess {
   const id = newId('proc_')
   const target = spawnable(opts.command, opts.args)
-  const child = spawn(target.command, target.args, {
-    cwd: opts.cwd,
-    env: { ...process.env, ...opts.env, FORCE_COLOR: '1' },
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    // `detached` on Windows means a console of its own; this keeps it unseen.
-    windowsHide: true,
-    windowsVerbatimArguments: target.windowsVerbatimArguments,
-  })
+  const win = process.platform === 'win32'
+  const child = spawn(
+    win ? process.execPath : target.command,
+    win
+      ? ['-e', HIDDEN_CONSOLE, target.command, target.windowsVerbatimArguments ? '1' : '0', ...target.args]
+      : target.args,
+    {
+      cwd: opts.cwd,
+      env: { ...process.env, ...opts.env, FORCE_COLOR: '1' },
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  )
 
   const managed: Managed = {
     id,
