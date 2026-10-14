@@ -27,6 +27,16 @@ const termId = ref<string | null>(null)
 const error = ref<string | null>(null)
 /** The shell ended on its own; the next Enter starts another in its place. */
 const exited = ref(false)
+/** The shell has drawn its first prompt, so what is typed now reaches its line editor. */
+const listening = ref(false)
+/**
+ * The shell reports to the core (`terminalHistory.ts`): it marks each prompt,
+ * and has the key that runs a line as it was written.
+ */
+let integrated = false
+let patience: number | undefined
+/** Bound by the integration to accept the line without history expansion. */
+const RUN_KEY = '\x1b[7717~'
 const q = ref('')
 const hits = ref<{ index: number; count: number } | null>(null)
 let unsubscribe: (() => void) | null = null
@@ -152,6 +162,8 @@ async function boot() {
   if (!el) return
   error.value = null
   exited.value = false
+  listening.value = false
+  integrated = false
 
   const t = new Terminal({
     fontFamily: readVar('--mono', 'monospace'),
@@ -177,6 +189,23 @@ async function boot() {
     hits.value = { index: resultIndex, count: resultCount }
   })
   t.attachCustomKeyEventHandler(onKey)
+  // The integration's report that a command ended, written just before each
+  // prompt. Just before: the rest of the prompt hooks still run after it, and
+  // only then does the line editor start and turn bracketed paste on — the
+  // one thing that keeps a command of several lines a single line to accept.
+  // So the mark arms, and the paste mode (or a moment, for an editor that
+  // never asks for it) opens.
+  let marked = false
+  t.parser.registerOscHandler(7717, (data) => {
+    if (data.startsWith('D;') && !listening.value && !marked) {
+      marked = true
+      window.setTimeout(() => { listening.value = true }, 400)
+    }
+    return true
+  })
+  t.onWriteParsed(() => {
+    if (marked && t.modes.bracketedPasteMode) listening.value = true
+  })
   t.open(el)
   f.fit()
   term.value = t
@@ -195,7 +224,17 @@ async function boot() {
     return
   }
   termId.value = res.termId
-  unsubscribe = onTermData(res.termId, (d) => t.write(d))
+  integrated = !!res.integrated
+  unsubscribe = onTermData(res.termId, (d) => {
+    t.write(d)
+    // A shell without the integration never says its prompt is up. Typed
+    // before it, a line can be swallowed with the rc files' own output, so
+    // such a shell is given a moment past the first thing it prints — and an
+    // integrated one whose mark never comes, a longer one.
+    if (!listening.value && patience === undefined) {
+      patience = window.setTimeout(() => { listening.value = true }, integrated ? 5000 : 800)
+    }
+  })
   unsubscribeExit = onTermExit(res.termId, () => {
     termId.value = null
     exited.value = true
@@ -219,6 +258,8 @@ async function boot() {
 }
 
 async function teardown() {
+  window.clearTimeout(patience)
+  patience = undefined
   ro?.disconnect()
   ro = null
   unsubscribe?.()
@@ -403,6 +444,25 @@ function onHistoryKey(e: KeyboardEvent) {
 }
 
 watch(hq, () => void loadHistory())
+
+/* ── a command sent from the conversation ─────────────────────────── */
+
+/**
+ * `runInTerminal` leaves it on the store and opens this tab, which may still
+ * be booting — so it is taken whenever both are true: something waiting and
+ * a shell listening. Pasted, then Enter, as the history does it.
+ */
+function takeSent() {
+  const c = state.terminalSend
+  const t = term.value
+  if (!c || !t || !termId.value || !listening.value) return
+  state.terminalSend = null
+  t.paste(c)
+  send(integrated ? RUN_KEY : '\r')
+  t.focus()
+}
+
+watch([() => state.terminalSend, listening], takeSent)
 
 /** Where a run was, when the history spans more than the checkout in front of you. */
 function place(c: TerminalCommand): string {

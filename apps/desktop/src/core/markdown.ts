@@ -34,12 +34,43 @@ function safeHref(href: string): string | null {
   }
 }
 
+/** The fences a shell can run as they stand. */
+const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'shellsession'])
+
+const svg = (body: string) =>
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+  body + '</svg>'
+const COPY = svg('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>')
+const CHECK = svg('<path d="M20 6 9 17l-5-5"/>')
+const PLAY = svg('<polygon points="6 3 20 12 6 21 6 3"/>')
+
+/**
+ * A fence's buttons, written as markup because the block itself is: the
+ * transcript renders through `v-html`, so the clicks are caught by the
+ * component that holds it (`data-act`), not bound here.
+ */
+function codeActions(lang: string): string {
+  const btn = (act: string, title: string, icons: string) =>
+    '<button type="button" class="cm-act" data-act="' + act + '" title="' + title + '" aria-label="' + title + '">' +
+    icons + '</button>'
+  return (
+    '<span class="cm-acts">' +
+    (SHELL_LANGS.has(lang.toLowerCase()) ? btn('run', 'Run in the Terminal', PLAY) : '') +
+    btn('copy', 'Copy', '<span class="cm-i">' + COPY + '</span><span class="cm-ok">' + CHECK + '</span>') +
+    '</span>'
+  )
+}
+
 /**
  * `breaks` is the one difference between the two readers. A model's reply
  * means its newlines; a file on disk is hard-wrapped at 80 columns and means
  * paragraphs, the way every other markdown renderer reads it.
+ *
+ * `actions` puts Copy — and Run, on a shell fence — on each code block. Only
+ * the transcript asks: a command there is one to use, while in a file it is
+ * one to read.
  */
-export function createMarked(opts: { breaks: boolean }): Marked {
+export function createMarked(opts: { breaks: boolean; actions?: boolean }): Marked {
   const md = new Marked({ gfm: true, breaks: opts.breaks })
   md.use({
     renderer: {
@@ -49,10 +80,11 @@ export function createMarked(opts: { breaks: boolean }): Marked {
       },
       code({ text, lang }: { text: string; lang?: string }) {
         const l = (lang ?? '').split(/\s+/)[0] ?? ''
-        return (
+        const pre =
           '<pre class="cm-code"' + (l ? ' data-lang="' + escapeHtml(l) + '"' : '') +
           '><code>' + escapeHtml(text) + '</code></pre>'
-        )
+        if (!opts.actions) return pre
+        return '<div class="cm-block">' + pre + codeActions(l) + '</div>'
       },
       codespan({ text }: { text: string }) {
         return '<code class="cm-inline">' + escapeHtml(text) + '</code>'

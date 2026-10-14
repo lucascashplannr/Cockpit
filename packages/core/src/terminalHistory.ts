@@ -37,6 +37,17 @@ const CARRY_MAX = 64 * 1024
  *
  * A line starting with a space is not reported: that is how one keeps a
  * command out of a history, and it should work on this one as well.
+ *
+ * `__cockpit_run` is how a command sent from the conversation is entered. It
+ * was written to be run by a script, where a `!` is a `!` — typed into zsh,
+ * `echo "Hello, world!"` loses its closing quote to history expansion and
+ * waits at `dquote>`. zsh decides on expansion when it starts reading a line,
+ * so turning `banghist` off from the editor is already too late; its own
+ * escape is a leading `!"`, which stops expansion for the rest of the line
+ * and is itself dropped (the history keeps the line as `\!`, so it runs
+ * again from there). It shows on the prompt line, so it is only written when
+ * there is a `!` to protect. The key is bound from the first prompt rather
+ * than here, so that it lands after the user's own rc has chosen its keymaps.
  */
 const ZSHENV = String.raw`# Written by Cockpit; rewritten on every terminal it opens.
 if [[ -n "\${COCKPIT_USER_ZDOTDIR+x}" ]]; then
@@ -48,6 +59,10 @@ unset COCKPIT_USER_ZDOTDIR
 [[ -f "\${ZDOTDIR:-$HOME}/.zshenv" ]] && builtin source "\${ZDOTDIR:-$HOME}/.zshenv"
 
 if [[ -o interactive ]]; then
+  __cockpit_run() {
+    [[ -o banghist && "$BUFFER" == *'!'* ]] && BUFFER='!"'"$BUFFER"
+    builtin zle .accept-line
+  }
   __cockpit_preexec() {
     builtin local c="\${1:-$3}"
     [[ -z "$c" || "$c" == ' '* ]] && builtin return
@@ -59,6 +74,12 @@ if [[ -o interactive ]]; then
   }
   __cockpit_precmd() {
     builtin local s=$?
+    if [[ -z "\${__cockpit_bound-}" ]]; then
+      __cockpit_bound=1
+      builtin zle -N __cockpit_run
+      builtin bindkey -M emacs $'\e[7717~' __cockpit_run
+      builtin bindkey -M viins $'\e[7717~' __cockpit_run
+    fi
     builtin print -rn -- $'\e]7717;D;'"$s"$'\a'
   }
   builtin typeset -ga preexec_functions precmd_functions

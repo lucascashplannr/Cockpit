@@ -239,6 +239,8 @@ export const state = reactive({
    */
   view: 'agent' as ShellView,
   reviewTool: 'diff' as ReviewTool,
+  /** A command on its way to the Terminal, typed and run there once its shell is up — see `runInTerminal`. */
+  terminalSend: null as string | null,
   /**
    * §2 — the Diff is two readings of one repository: what is not committed
    * yet, and what was committed and pushed. The second is reached from the
@@ -770,6 +772,18 @@ export function goTo(id: TabId): void {
   // take the conversation off the screen, because only they are about the
   // window rather than about a tool.
   if (state.view === 'agent') state.view = 'split'
+}
+
+/**
+ * A command from the conversation, run in this checkout's Terminal — in the
+ * shell you would have typed it into, so its output, its history and whatever
+ * it leaves running are where every other command's are. The Terminal takes
+ * it off `terminalSend` once its shell is listening.
+ */
+export function runInTerminal(command: string): void {
+  if (!activeWorkspace.value) return
+  state.terminalSend = command
+  goTo('terminal')
 }
 
 /** The changes, with the caret in the commit message — the review and the commit are one place (§16). */

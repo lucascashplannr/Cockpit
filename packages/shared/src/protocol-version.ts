@@ -90,8 +90,13 @@
  *
  * 2.30 — `git.blame`, and `git.graph` takes `path`. An older core has no
  * blame to give, and ignores `path`: the file's commits are the whole graph.
+ *
+ * 2.31 — `terminal.open` says whether the shell is `integrated`, and an
+ * integrated zsh binds the key a command sent from the conversation is run
+ * with. Against an older core the window waits a moment and presses Enter, and
+ * zsh's history expansion gets at any `!` in the command.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 30 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 31 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

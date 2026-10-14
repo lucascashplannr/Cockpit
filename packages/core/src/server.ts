@@ -1074,9 +1074,8 @@ const handlers: Record<string, Handler> = {
     return { ok: true }
   },
 
-  'terminal.open': (p: { workspaceId?: string; projectId?: string; cols: number; rows: number; shell?: string }) => ({
-    termId: terminals.open({ workspaceId: p.workspaceId, projectId: p.projectId }, p.cols, p.rows, p.shell),
-  }),
+  'terminal.open': (p: { workspaceId?: string; projectId?: string; cols: number; rows: number; shell?: string }) =>
+    terminals.open({ workspaceId: p.workspaceId, projectId: p.projectId }, p.cols, p.rows, p.shell),
   'terminal.write': (p: { termId: string; data: string }) => {
     terminals.write(p.termId, p.data)
     return { ok: true }

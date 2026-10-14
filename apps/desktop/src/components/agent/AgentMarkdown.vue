@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { createMarked } from '../../core/markdown.js'
+import { runInTerminal, toast } from '../../core/store.js'
 
 /**
  * What the engine wrote, as it meant it to read.
@@ -20,7 +21,7 @@ import { createMarked } from '../../core/markdown.js'
  */
 const props = defineProps<{ text: string; live?: boolean }>()
 
-const md = createMarked({ breaks: true })
+const md = createMarked({ breaks: true, actions: true })
 
 /**
  * Half of a marker is not emphasis yet.
@@ -121,10 +122,41 @@ const blocks = computed<string[]>(() => {
  * arriving at a readable rate instead of in slabs.
  */
 
+/* ── a fence's Copy and Run ───────────────────────────────────────────
+ *
+ * The buttons arrive inside the rendered HTML (`core/markdown.ts`), so the
+ * clicks are caught here, on the message, and read the block they sit in. */
+
+/** A `console` fence writes its prompt; the shell would read `$` as a command. */
+function command(code: string): string {
+  const lines = code.split('\n')
+  const typed = lines.filter((l) => l.trim())
+  return typed.length && typed.every((l) => /^\s*\$ /.test(l))
+    ? lines.map((l) => l.replace(/^\s*\$ /, '')).join('\n')
+    : code
+}
+
+async function onClick(ev: MouseEvent): Promise<void> {
+  const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('button.cm-act')
+  const code = btn?.closest('.cm-block')?.querySelector('pre code')?.textContent
+  if (!btn || code == null) return
+  if (btn.dataset.act === 'run') {
+    runInTerminal(command(code))
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(code)
+    btn.classList.add('done')
+    window.setTimeout(() => btn.classList.remove('done'), 1400)
+  } catch {
+    toast('error', 'could not copy')
+  }
+}
+
 </script>
 
 <template>
-  <div class="md selectable" :class="{ live }">
+  <div class="md selectable" :class="{ live }" @click="onClick">
     <div v-for="(b, i) in blocks" :key="i" class="blk" v-html="b" />
   </div>
 </template>
@@ -209,6 +241,36 @@ const blocks = computed<string[]>(() => {
   color: var(--text);
   white-space: pre;
 }
+/* The buttons share the language's line, at the other end of it. They stand
+   outside the `pre`, which scrolls sideways, so a long line never carries
+   them off the card. */
+.md :deep(.cm-block) { position: relative; margin: 0 0 10px; }
+.md :deep(.cm-block > pre.cm-code) { margin: 0; }
+.md :deep(.cm-acts) {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+}
+.md :deep(.cm-act) {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: var(--text-dim);
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
+}
+.md :deep(.cm-act:hover) { background: var(--hover); color: var(--text); }
+.md :deep(.cm-act svg) { width: 13px; height: 13px; display: block; }
+.md :deep(.cm-act .cm-ok) { display: none; }
+.md :deep(.cm-act.done .cm-i) { display: none; }
+.md :deep(.cm-act.done .cm-ok) { display: block; color: var(--ok); }
+/* A fence with no language has no label line to share: room for the buttons
+   is made on the first line instead, so they never sit on the code. */
+.md :deep(.cm-block > pre.cm-code:not([data-lang])) { padding-right: 36px; }
+
 /* The language, where a fence declared one — small, and out of the way. */
 .md :deep(pre.cm-code[data-lang])::before {
   content: attr(data-lang);

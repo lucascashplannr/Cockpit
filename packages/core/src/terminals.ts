@@ -68,7 +68,16 @@ function defaultShell(): string {
 /** Where a shell opens: one checkout, or the root folder of a project. */
 export type TerminalTarget = { workspaceId?: string; projectId?: string }
 
-export function open(target: TerminalTarget, cols: number, rows: number, shell?: string): string {
+/**
+ * `integrated`: the shell reports its commands and prompts to the core
+ * (`terminalHistory.ts`), and has the key that runs a line as it was written.
+ */
+export function open(
+  target: TerminalTarget,
+  cols: number,
+  rows: number,
+  shell?: string,
+): { termId: string; integrated: boolean } {
   const mod = loadPty()
   if (!mod) throw new Error('node-pty unavailable: ' + ptyError)
 
@@ -93,12 +102,13 @@ export function open(target: TerminalTarget, cols: number, rows: number, shell?:
   const file = shell ?? defaultShell()
 
   // Login shell: the user's aliases, PATH and prompt must be there (§2).
+  const integration = integrationEnv(file, process.env)
   const p = mod.spawn(file, ['-l'], {
     name: 'xterm-256color',
     cols,
     rows,
     cwd: ws.path,
-    env: { ...process.env, ...integrationEnv(file, process.env), COCKPIT_WORKSPACE: ws.name, TERM: 'xterm-256color' },
+    env: { ...process.env, ...integration, COCKPIT_WORKSPACE: ws.name, TERM: 'xterm-256color' },
   })
   const history = recorder(projectId, workspaceId)
 
@@ -118,7 +128,7 @@ export function open(target: TerminalTarget, cols: number, rows: number, shell?:
   })
 
   append({ type: 'terminal.opened', workspaceId, payload: { termId: id, shell: file, cwd: ws.path } })
-  return id
+  return { termId: id, integrated: 'ZDOTDIR' in integration }
 }
 
 export function write(termId: string, data: string): void {

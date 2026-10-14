@@ -1079,7 +1079,8 @@ export interface Rpc {
   /** In a checkout — or, given `projectId` instead, at the project's root folder. */
   'terminal.open': {
     params: { workspaceId?: string; projectId?: string; cols: number; rows: number; shell?: string }
-    result: { termId: string }
+    /** `integrated`: the shell marks its prompts (OSC 7717) and binds the key a sent command is run with. */
+    result: { termId: string; integrated?: boolean }
   }
   'terminal.write': { params: { termId: string; data: string }; result: { ok: true } }
   'terminal.resize': { params: { termId: string; cols: number; rows: number }; result: { ok: true } }

@@ -962,7 +962,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
           ref="box"
           v-model="agentDraft"
           class="input prompt selectable"
-          :rows="big ? 3 : 2"
+          rows="1"
           :placeholder="placeholder"
           @keydown="onKey"
           @keyup="track"
@@ -1075,11 +1075,11 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface-input);
-  padding: 8px 8px 8px 10px;
+  padding: 6px 6px 6px 8px;
 }
 .well > .files { grid-column: 1 / -1; }
-.send { display: flex; align-items: center; gap: 6px; padding-bottom: 2px; }
-.send .go { width: 32px; padding: 0; }
+.send { display: flex; align-items: center; gap: 6px; padding-bottom: 1px; }
+.send .go { width: 30px; height: 30px; padding: 0; }
 .send .ic { width: 15px; height: 15px; }
 /* Plan mode changes what pressing Start *does*, so it is worth a whole-box
    signal rather than one lit chip among eleven. */
@@ -1095,7 +1095,9 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
 .prompt,
 .mirror {
   width: 100%;
-  padding: 4px 4px 8px;
+  /* Even above and below, so a single line sits on the middle of the well and
+     level with the send button beside it. */
+  padding: 4px;
   border: none;
   font: inherit;
   font-size: var(--fs-sm);
@@ -1112,7 +1114,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
   overflow-wrap: break-word;
   word-break: normal;
   tab-size: 4;
-  /* The box is two or three rows and scrolls past that, and the moment it does
+  /* The box grows to ten rows and scrolls past that, and the moment it does
      the textarea grows a scrollbar that takes `--sbw` out of its line length.
      The mirror never scrolls on its own, so it kept the full width, broke its
      lines a word later, and every pill after the first wrap slid off its word —
@@ -1128,6 +1130,12 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
   z-index: 1;
   background: transparent;
   resize: none;
+  /* As tall as what is written: one line empty, a line more for each line
+     typed, and a scroll from the eleventh on. `lh` is the 1.85 above, so the
+     bounds stay whole lines whatever the font size; the 8px is the padding. */
+  field-sizing: content;
+  min-height: calc(1lh + 8px);
+  max-height: calc(10lh + 8px);
   /* A textarea is inline-level, so it sits on a text baseline and the block
      around it keeps 6px of descender space underneath. The mirror is sized to
      that block, so it was six pixels taller than the thing it mirrors — which
@@ -1363,11 +1371,11 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
 /* An escape hatch, not a call to action: it is offered at the weight of the
    controls around it, and only turns red under the cursor — the moment it is
    about to be used. */
-/* The send button's twin: the same 32px square, one glyph, the verb in the
+/* The send button's twin: the same 30px square, one glyph, the verb in the
    tooltip. A filled square is the stop sign every player has taught. */
 .btn.stop {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
