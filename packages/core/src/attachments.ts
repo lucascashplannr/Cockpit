@@ -193,6 +193,7 @@ const QUOTED_FROM: Record<QuoteSource, string> = {
   user: "the user's earlier message in this conversation",
   thread: 'earlier in this conversation',
   conversation: 'another conversation in this project',
+  terminal: "the user's terminal",
 }
 
 /**
@@ -226,6 +227,18 @@ function pastedBlock(file: Attachment): string {
       'not its transcript: take it as context for what is asked here.\n\n' +
       body +
       '\n</conversation-summary>'
+    )
+  }
+  // A command run in the Terminal from one of this conversation's code cards:
+  // new to the engine — it could not watch it run — so it keeps its path, and
+  // says what it is, or a log reads as something the user wrote.
+  if (file.quoted === 'terminal') {
+    return (
+      '<terminal-output name="' + file.handle + '" path="' + file.path + '">\n' +
+      'The user ran this in their terminal, from a command you gave: the command, ' +
+      'what it printed, and its exit status.\n\n' +
+      body +
+      '\n</terminal-output>'
     )
   }
   if (file.quoted) {

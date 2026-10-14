@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import {
-  BookMarked, CornerDownLeft, FileCode, FileText, Loader, MessageSquare, Paperclip, Square, SquareSlash, UnfoldVertical, X,
+  BookMarked, CornerDownLeft, FileCode, FileText, Loader, MessageSquare, Paperclip, Square, SquareSlash, SquareTerminal,
+  UnfoldVertical, X,
 } from '@lucide/vue'
 import {
   agentDraft, agentFiles, attachConversation, attachFiles, attachText, chooseMemory, client, dataUrl, detachFile,
@@ -888,8 +889,8 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
           :key="f.id"
           :class="{
             pic: f.mediaType.startsWith('image/'),
-            text: f.pasted && f.quoted !== 'conversation',
-            quote: f.quoted && f.quoted !== 'conversation',
+            text: f.pasted && f.quoted !== 'conversation' && f.quoted !== 'terminal',
+            quote: f.quoted && f.quoted !== 'conversation' && f.quoted !== 'terminal',
             conv: f.quoted === 'conversation',
             pending: f.pending,
             loose: !placedHandles.has(f.handle),
@@ -919,6 +920,13 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
             <MessageSquare v-else class="glyph" />
             <span class="fname title">{{ f.name }}</span>
             <span class="fsize">{{ f.pending ? 'Summarising…' : words(f.text) }}</span>
+          </template>
+          <!-- A command's run, brought back: which command, and how it ended.
+               What it printed is one click away, in the viewer. -->
+          <template v-else-if="f.quoted === 'terminal'">
+            <SquareTerminal class="glyph" />
+            <span class="fname cmd">{{ f.name }}</span>
+            <span class="fsize" :class="{ failed: f.exit }">exit {{ f.exit }}</span>
           </template>
           <template v-else-if="f.pasted">
             <pre class="snip">{{ head(f.text) }}</pre>
@@ -1342,6 +1350,10 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
    is not yet a thing to open. */
 .files .fname.title { word-break: normal; overflow-wrap: anywhere; }
 .files li.pending { cursor: progress; border-style: dashed; }
+/* A command is code: its own face, and a failed run says so in the one colour
+   that means it. */
+.files .fname.cmd { font-family: var(--mono); font-size: 8.5px; }
+.files .fsize.failed { color: var(--danger); }
 .files li.pending .fname { color: var(--text-dim); }
 .files li.pending .fsize { color: var(--accent); }
 

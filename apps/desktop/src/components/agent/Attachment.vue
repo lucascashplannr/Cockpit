@@ -46,7 +46,7 @@ watch(
 </script>
 
 <template>
-  <li class="tile" :class="{ pic: file.image && src, text: file.pasted && text && !conv, quote: file.quoted && !conv }" :title="tip">
+  <li class="tile" :class="{ pic: file.image && src, text: file.pasted && text && !conv, quote: file.quoted && !conv && file.quoted !== 'terminal' }" :title="tip">
     <img v-if="file.image && src" :src="src" :alt="file.name" />
     <!-- A tagged conversation, as the composer drew it: named, not excerpted. -->
     <template v-else-if="conv">

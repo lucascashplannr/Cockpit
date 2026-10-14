@@ -240,7 +240,7 @@ export const state = reactive({
   view: 'agent' as ShellView,
   reviewTool: 'diff' as ReviewTool,
   /** A command on its way to the Terminal, typed and run there once its shell is up — see `runInTerminal`. */
-  terminalSend: null as string | null,
+  terminalSend: null as TerminalSend | null,
   /**
    * §2 — the Diff is two readings of one repository: what is not committed
    * yet, and what was committed and pushed. The second is reached from the
@@ -462,6 +462,14 @@ export const state = reactive({
 export const termOutput = shallowRef(new Map<string, string[]>())
 const termListeners = new Map<string, ((d: string) => void)[]>()
 const termExitListeners = new Map<string, (() => void)[]>()
+
+/*
+ * The window's one connection and its one state, so never hot-swapped: a new
+ * copy of this module opens a second socket beside the old one, which stays
+ * open, and every push arrives twice — a terminal draws each keystroke twice.
+ * A change here reloads the page instead.
+ */
+if (import.meta.hot) import.meta.hot.accept(() => window.location.reload())
 
 export const client = new CoreClient(CORE_URL, {
   onState(s, detail) {
@@ -774,16 +782,72 @@ export function goTo(id: TabId): void {
   if (state.view === 'agent') state.view = 'split'
 }
 
+export interface TerminalSend {
+  command: string
+  /** The draft of the conversation it came from: where what it prints goes back to. */
+  replyTo: string
+}
+
 /**
  * A command from the conversation, run in this checkout's Terminal — in the
  * shell you would have typed it into, so its output, its history and whatever
  * it leaves running are where every other command's are. The Terminal takes
- * it off `terminalSend` once its shell is listening.
+ * it off `terminalSend` once its shell is listening, and hands what it printed
+ * back to `terminalRan`.
  */
 export function runInTerminal(command: string): void {
   if (!activeWorkspace.value) return
-  state.terminalSend = command
+  state.terminalSend = { command, replyTo: activeDraftKey.value }
   goTo('terminal')
+}
+
+/** Kept from the end of a long output: the end is where a command says how it went. */
+const OUTPUT_MAX_LINES = 400
+const OUTPUT_MAX_CHARS = 40_000
+
+/**
+ * What a command sent from the conversation printed, back on that
+ * conversation's box: a tile over it, about the whole message, so the next
+ * thing said is said with the result in hand — and it can be removed first.
+ * By draft key rather than through `agentFiles`: the window may be on another
+ * conversation by the time a long command ends.
+ */
+export function terminalRan(r: { command: string; output: string; code: number; replyTo: string }): void {
+  const files = state.attachments[r.replyTo] ?? []
+  if (files.length >= MAX_FILES) {
+    toast('error', MAX_FILES + ' files is the limit for one turn — the output was not attached')
+    return
+  }
+  let lines = r.output.split('\n')
+  let cut = 0
+  if (lines.length > OUTPUT_MAX_LINES) {
+    cut = lines.length - OUTPUT_MAX_LINES
+    lines = lines.slice(cut)
+  }
+  let output = lines.join('\n')
+  if (output.length > OUTPUT_MAX_CHARS) output = output.slice(-OUTPUT_MAX_CHARS)
+  const text =
+    '$ ' + r.command + '\n' +
+    (cut ? '[the first ' + cut + ' lines are left out]\n' : '') +
+    (output ? output + '\n' : '') +
+    '[exit ' + r.code + ']'
+  const handle = handleFor('output', files.map((f) => f.handle))
+  const bytes = new TextEncoder().encode(text)
+  state.attachments[r.replyTo] = [
+    ...files,
+    {
+      id: 'df_' + Math.random().toString(36).slice(2, 10),
+      name: r.command.replace(/\s*\n\s*/g, ' ⏎ ').slice(0, 120),
+      handle,
+      mediaType: 'text/plain',
+      bytes: bytes.length,
+      data: base64(bytes.buffer),
+      pasted: true,
+      text,
+      quoted: 'terminal',
+      exit: r.code,
+    },
+  ]
 }
 
 /** The changes, with the caret in the commit message — the review and the commit are one place (§16). */
@@ -2399,6 +2463,8 @@ export interface DraftFile {
   quoted?: QuoteSource
   /** A tagged conversation whose summary is still being written; see `attachConversation`. */
   pending?: boolean
+  /** How a command's run ended, for a `terminal` one; see `terminalRan`. */
+  exit?: number
 }
 
 /** What the thumbnail's `src` is. Built here so nothing has to be revoked. */

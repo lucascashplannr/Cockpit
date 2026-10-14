@@ -879,8 +879,12 @@ export interface Attachment {
  * summary of another conversation in the same project, tagged with `@` so
  * this one starts from where that one got to. The attachment's `name` is that
  * conversation's title.
+ *
+ * `terminal` is a command this conversation suggested, run from its code card
+ * in the Terminal: the line, what it printed and how it ended. The
+ * attachment's `name` is the command.
  */
-export type QuoteSource = 'agent' | 'user' | 'thread' | 'conversation'
+export type QuoteSource = 'agent' | 'user' | 'thread' | 'conversation' | 'terminal'
 
 /** What `agent.summary` answers: another conversation, as context for this one. */
 export interface ConversationSummary {

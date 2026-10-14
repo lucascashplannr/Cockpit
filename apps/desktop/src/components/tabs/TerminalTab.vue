@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { ChevronDown, ChevronUp, Copy, Eraser, History, RotateCcw, Search, X } from '@lucide/vue'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type IMarker } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalCommand, Workspace } from '@cockpit/shared'
-import { client, guard, onTermData, onTermExit, state, toast } from '../../core/store.js'
+import { client, guard, onTermData, onTermExit, state, terminalRan, toast } from '../../core/store.js'
 
 /**
  * §2 — "Il en embarque un, indispensable comme porte de sortie."
@@ -37,6 +37,12 @@ let integrated = false
 let patience: number | undefined
 /** Bound by the integration to accept the line without history expansion. */
 const RUN_KEY = '\x1b[7717~'
+/**
+ * A command sent from the conversation, followed from the integration's
+ * report that it started (`C;`, written just before it runs) to the one that
+ * it ended (`D;`), so what it printed can go back to where it was asked for.
+ */
+let follow: { command: string; replyTo: string; start: IMarker | null } | null = null
 const q = ref('')
 const hits = ref<{ index: number; count: number } | null>(null)
 let unsubscribe: (() => void) | null = null
@@ -197,9 +203,15 @@ async function boot() {
   // never asks for it) opens.
   let marked = false
   t.parser.registerOscHandler(7717, (data) => {
-    if (data.startsWith('D;') && !listening.value && !marked) {
-      marked = true
-      window.setTimeout(() => { listening.value = true }, 400)
+    if (data.startsWith('C;') && follow && !follow.start) {
+      follow.start = t.registerMarker(0) ?? null
+    }
+    if (data.startsWith('D;')) {
+      if (follow?.start) finish(t, follow, Number(data.slice(2)))
+      if (!listening.value && !marked) {
+        marked = true
+        window.setTimeout(() => { listening.value = true }, 400)
+      }
     }
     return true
   })
@@ -260,6 +272,7 @@ async function boot() {
 async function teardown() {
   window.clearTimeout(patience)
   patience = undefined
+  follow = null
   ro?.disconnect()
   ro = null
   unsubscribe?.()
@@ -457,9 +470,45 @@ function takeSent() {
   const t = term.value
   if (!c || !t || !termId.value || !listening.value) return
   state.terminalSend = null
-  t.paste(c)
+  // Only a shell that reports its commands can say where this one's output
+  // starts and stops; anywhere else it is run and left at that.
+  follow?.start?.dispose()
+  follow = integrated ? { ...c, start: null } : null
+  t.paste(c.command)
   send(integrated ? RUN_KEY : '\r')
   t.focus()
+}
+
+/**
+ * What the followed command printed, read off the screen rather than out of
+ * the stream: the screen is what it looks like once the escapes have done
+ * their work — colours gone, a progress bar's last frame rather than its
+ * hundred redraws. From the line it started on to the cursor, which the end
+ * report finds still on the last line of output, before the prompt is drawn.
+ */
+function finish(t: Terminal, f: NonNullable<typeof follow>, code: number) {
+  follow = null
+  const start = f.start!
+  const b = t.buffer.active
+  const end = b.baseY + b.cursorY
+  const lines: string[] = []
+  // A marker whose line scrolled out of the scrollback is gone, and so is the
+  // start of the output: what is left is still the end of it.
+  for (let y = start.isDisposed ? 0 : start.line; y <= end; y++) {
+    const line = b.getLine(y)
+    if (!line) continue
+    const text = y === end ? line.translateToString(true, 0, b.cursorX) : line.translateToString(true)
+    // A long line the terminal wrapped is still one line of output.
+    if (line.isWrapped && lines.length) lines[lines.length - 1] += text
+    else lines.push(text)
+  }
+  start.dispose()
+  terminalRan({
+    command: f.command,
+    output: lines.join('\n').replace(/\s+$/, ''),
+    code: Number.isFinite(code) ? code : -1,
+    replyTo: f.replyTo,
+  })
 }
 
 watch([() => state.terminalSend, listening], takeSent)

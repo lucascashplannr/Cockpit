@@ -95,8 +95,12 @@
  * integrated zsh binds the key a command sent from the conversation is run
  * with. Against an older core the window waits a moment and presses Enter, and
  * zsh's history expansion gets at any `!` in the command.
+ *
+ * 2.32 — the `terminal` quote: a command's output brought back to the
+ * conversation that gave it. An older core drops the kind and hands it over as
+ * a plain paste, so the engine is not told it is the command's own output.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 31 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 32 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major
