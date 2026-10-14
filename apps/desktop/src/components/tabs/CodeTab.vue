@@ -21,7 +21,7 @@ import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import type { BlameCommit, FileEntry, Workspace } from '@cockpit/shared'
 import {
-  ChevronDown, ChevronRight, Code, Copy, Eye, File, FileCode, Folder, FolderOpen, GitCommitVertical, Info, Save, Search,
+  ChevronDown, ChevronRight, Code, Copy, Eye, FileCode, Folder, FolderOpen, GitCommitVertical, Info, Save, Search,
   UserPen,
 } from '@lucide/vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
@@ -32,6 +32,7 @@ import {
 } from '../../core/store.js'
 import { cockpitTheme, languageFor } from '../../core/editor.js'
 import { blameGutter, blameMarks, blameOn } from '../../core/blame.js'
+import FileIcon from '../FileIcon.vue'
 
 /**
  * §12 — "Périmètre assumé : voir, naviguer, éditer manuellement. Pas de
@@ -97,14 +98,6 @@ const blameCompartment = new Compartment()
 /** Bumped on every edit and every open, so what reads the document follows it. */
 const docTick = ref(0)
 
-const CODE_EXT = new Set([
-  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'vue', 'json', 'css', 'html', 'php', 'yml', 'yaml',
-])
-
-/** Files that hold code get the marked icon; everything else stays quiet. */
-function fileIcon(name: string) {
-  return CODE_EXT.has(name.split('.').pop()?.toLowerCase() ?? '') ? FileCode : File
-}
 
 async function loadDir(rel: string): Promise<FileEntry[]> {
   const r = await guard(() => client.call('fs.list', { workspaceId: props.workspace.id, rel }))
@@ -580,10 +573,9 @@ onBeforeUnmount(() => {
               class="sm"
             />
           </span>
-          <component
-            :is="n.entry.kind === 'dir' ? Folder : fileIcon(n.entry.name)"
-            class="fi sm"
-          />
+          <Folder v-if="n.entry.kind === 'dir'" class="fi sm" />
+          <!-- The open file keeps the accent; every other wears its language. -->
+          <FileIcon v-else class="fi" :name="n.entry.name" :plain="n.entry.path === openPath" />
           <span class="nm">{{ n.entry.name }}</span>
           <span v-if="n.entry.gitStatus" class="gs" :class="n.entry.gitStatus">{{ n.entry.gitStatus }}</span>
         </button>

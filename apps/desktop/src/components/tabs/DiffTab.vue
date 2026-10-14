@@ -10,6 +10,8 @@ import {
 import Splitter from '../Splitter.vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
 import FileChanges from '../FileChanges.vue'
+import Painted from '../Painted.vue'
+import { paintDiff } from '../../core/editor.js'
 import {
   LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
   resetCommitHeight, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
@@ -309,7 +311,8 @@ const marks = computed(() => {
   return { changed, cut }
 })
 
-type Cell = { num: number | null; kind: 'context' | 'add' | 'del' | 'blank'; text: string }
+/** `at` is the line's index in the diff — what its colour is kept under; -1 for a blank. */
+type Cell = { num: number | null; kind: 'context' | 'add' | 'del' | 'blank'; text: string; at: number }
 type SplitRow = { meta: string; hunk: number } | { left: Cell; right: Cell }
 
 /**
@@ -320,7 +323,7 @@ type SplitRow = { meta: string; hunk: number } | { left: Cell; right: Cell }
 const splitRows = computed<SplitRow[]>(() => {
   const lines = current.value?.lines ?? []
   const rows: SplitRow[] = []
-  const blank: Cell = { num: null, kind: 'blank', text: '' }
+  const blank: Cell = { num: null, kind: 'blank', text: '', at: -1 }
   let i = 0
   let hunk = -1
   const at = (k: number, kind: string) => lines[k]?.kind === kind
@@ -331,27 +334,29 @@ const splitRows = computed<SplitRow[]>(() => {
       i++
     } else if (l.kind === 'context') {
       rows.push({
-        left: { num: l.oldLine, kind: 'context', text: l.text },
-        right: { num: l.newLine, kind: 'context', text: l.text },
+        left: { num: l.oldLine, kind: 'context', text: l.text, at: i },
+        right: { num: l.newLine, kind: 'context', text: l.text, at: i },
       })
       i++
     } else {
-      const dels: typeof lines = []
-      const adds: typeof lines = []
-      while (at(i, 'del')) dels.push(lines[i++]!)
-      while (at(i, 'add')) adds.push(lines[i++]!)
+      const dels: number[] = []
+      const adds: number[] = []
+      while (at(i, 'del')) dels.push(i++)
+      while (at(i, 'add')) adds.push(i++)
       for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
-        const d = dels[k]
-        const a = adds[k]
+        const d = dels[k] === undefined ? null : lines[dels[k]!]!
+        const a = adds[k] === undefined ? null : lines[adds[k]!]!
         rows.push({
-          left: d ? { num: d.oldLine, kind: 'del', text: d.text } : blank,
-          right: a ? { num: a.newLine, kind: 'add', text: a.text } : blank,
+          left: d ? { num: d.oldLine, kind: 'del', text: d.text, at: dels[k]! } : blank,
+          right: a ? { num: a.newLine, kind: 'add', text: a.text, at: adds[k]! } : blank,
         })
       }
     }
   }
   return rows
 })
+/** The diff's lines in the editor's colours, or null for a language with no parser here. */
+const painted = computed(() => (current.value && selected.value ? paintDiff(selected.value, current.value.lines) : null))
 const loading = ref(false)
 
 /* ── §16 — discarding, and never for good ─────────────────────────────────
@@ -1560,7 +1565,7 @@ const mark: Record<string, Component> = {
         @saved="afterSave"
       />
 
-      <div class="hunks mono split" v-else-if="split && current && current.lines.length">
+      <div class="hunks mono split" :class="{ painted }" v-else-if="split && current && current.lines.length">
         <template v-for="(r, i) in splitRows" :key="i">
           <div v-if="'meta' in r" class="line meta">
             <span class="txt">{{ r.meta }}</span>
@@ -1582,7 +1587,7 @@ const mark: Record<string, Component> = {
                 @click="editable && editHere(nearestNew(splitNew, i))"
               >{{ r.left.num ?? '' }}</span>
               <span class="sign">{{ r.left.kind === 'del' ? '−' : ' ' }}</span>
-              <span class="txt">{{ r.left.text }}</span>
+              <span class="txt"><Painted :segs="painted?.[r.left.at]" :text="r.left.text" /></span>
             </div>
             <div class="line" :class="r.right.kind">
               <span
@@ -1592,13 +1597,13 @@ const mark: Record<string, Component> = {
                 @click="editable && editHere(nearestNew(splitNew, i))"
               >{{ r.right.num ?? '' }}</span>
               <span class="sign">{{ r.right.kind === 'add' ? '+' : ' ' }}</span>
-              <span class="txt">{{ r.right.text }}</span>
+              <span class="txt"><Painted :segs="painted?.[r.right.at]" :text="r.right.text" /></span>
             </div>
           </div>
         </template>
       </div>
 
-      <div class="hunks mono" v-else-if="current && current.lines.length">
+      <div class="hunks mono" :class="{ painted }" v-else-if="current && current.lines.length">
         <div v-for="(l, i) in current.lines" :key="i" class="line" :class="l.kind">
           <template v-if="l.kind === 'meta'">
             <span v-if="sides.old" class="gutter num" />
@@ -1621,7 +1626,7 @@ const mark: Record<string, Component> = {
             >{{ l.newLine ?? '' }}</span>
           </template>
           <span class="sign">{{ l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' ' }}</span>
-          <span class="txt">{{ l.text }}</span>
+          <span class="txt"><Painted :segs="painted?.[i]" :text="l.text" /></span>
           <button
             v-if="l.kind === 'meta'"
             class="hdisc"
@@ -2200,6 +2205,9 @@ const mark: Record<string, Component> = {
 .sign { flex: none; width: 14px; text-align: center; user-select: none; }
 .line.add .sign, .line.add .txt { color: var(--diff-add-text); }
 .line.del .sign, .line.del .txt { color: var(--diff-del-text); }
+/* Coloured, the words take the syntax's inks as in the File view; the sign
+   and the ground still say added or removed. */
+.painted .line.add .txt, .painted .line.del .txt { color: var(--text); }
 .txt { flex: 1; padding-right: 16px; }
 
 /* A hunk's own discard, on its header line: out of the way until the

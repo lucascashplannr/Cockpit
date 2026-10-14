@@ -7,6 +7,8 @@ import {
 } from '@lucide/vue'
 import { client, guard, openFileAt, state, toast, undoCommit } from '../../core/store.js'
 import { layout } from '../../core/graph.js'
+import { paintDiff } from '../../core/editor.js'
+import Painted from '../Painted.vue'
 import type { LaidRow } from '../../core/graph.js'
 
 /**
@@ -365,6 +367,13 @@ function fileDiff(hash: string, path: string): FileDiff | 'loading' | undefined 
   return diffs.get(fileKey(hash, path))
 }
 
+/** A file's diff in the editor's colours — worked out once per diff, which never changes. */
+const paints = new WeakMap<FileDiff, ReturnType<typeof paintDiff>>()
+function paintOf(fd: FileDiff, path: string) {
+  if (!paints.has(fd)) paints.set(fd, paintDiff(path, fd.lines.slice(0, MAX_LINES)))
+  return paints.get(fd) ?? null
+}
+
 async function jump(hash: string) {
   if (!index.value.has(hash)) {
     toast('info', short(hash) + ' is further back than this page — show older commits to reach it.')
@@ -665,11 +674,16 @@ watch(
                         <div v-else-if="fd.binary" class="hnote">Binary file — no lines to show.</div>
                         <div v-else-if="!fd.lines.length" class="hnote">No textual change.</div>
                         <template v-else>
-                          <div v-for="(l, i) in fd.lines.slice(0, MAX_LINES)" :key="i" class="line" :class="l.kind">
+                          <div
+                            v-for="(l, i) in fd.lines.slice(0, MAX_LINES)"
+                            :key="i"
+                            class="line"
+                            :class="[l.kind, { painted: !!paintOf(fd, f.path) }]"
+                          >
                             <span class="gn num">{{ l.kind === 'meta' ? '' : (l.oldLine ?? '') }}</span>
                             <span class="gn num">{{ l.kind === 'meta' ? '' : (l.newLine ?? '') }}</span>
                             <span class="sign">{{ l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' ' }}</span>
-                            <span class="txt">{{ l.text }}</span>
+                            <span class="txt"><Painted :segs="paintOf(fd, f.path)?.[i]" :text="l.text" /></span>
                           </div>
                           <div v-if="fd.lines.length > MAX_LINES" class="hnote">
                             {{ fd.lines.length - MAX_LINES }} more lines not shown.
@@ -1137,6 +1151,8 @@ watch(
 .sign { flex: none; width: 14px; text-align: center; color: var(--text-dim); user-select: none; }
 .line.add .sign, .line.add .txt { color: var(--diff-add-text); }
 .line.del .sign, .line.del .txt { color: var(--diff-del-text); }
+/* Coloured, the words take the syntax's inks; the sign and the ground say added or removed. */
+.line.painted.add .txt, .line.painted.del .txt { color: var(--text); }
 .txt { white-space: pre; padding-right: 12px; color: var(--text-muted); }
 .hnote { padding: 6px 8px; font-size: var(--fs-xs); color: var(--text-dim); }
 

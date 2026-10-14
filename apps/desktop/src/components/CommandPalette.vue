@@ -18,6 +18,7 @@ import {
   SHELL_VIEWS, setView, viewKey, openCommits, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, layout, mergeTopic, markResolved, newProject, onProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state, toggleList,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
+import FileIcon from './FileIcon.vue'
 
 /**
  * §12 — "L'objectif « 1 à 3 clics » est en réalité un objectif zéro clic :
@@ -48,6 +49,8 @@ interface Item {
   hint?: string
   group: string
   icon: Component
+  /** A file: drawn with its language's icon instead of `icon`. */
+  file?: string
   /** Words it is found by without showing them — above all the ones the
    *  lexicon retired: fingers still type "rebase" and "archive". */
   keywords?: string
@@ -893,6 +896,7 @@ const fileItems = computed<Item[]>(() => {
         path: true,
         group: 'Files',
         icon: FileCode,
+        file: f.slice(Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\')) + 1),
         run: act(() => openFileAt(w.id, f)),
       })
     }
@@ -1231,7 +1235,8 @@ onMounted(() => {
             @mousemove="cursor = indexOfItem(entry.item)"
             @click="run(entry.item)"
           >
-            <component :is="entry.item.icon" class="icon sm" />
+            <FileIcon v-if="entry.item.file" class="icon" :name="entry.item.file" />
+            <component :is="entry.item.icon" v-else class="icon sm" />
             <span v-if="entry.item.path" class="lbl">
               <template v-for="parts in [pathParts(entry.item.label, entry.positions)]" :key="0">
                 <span v-for="(part, i) in parts.name" :key="'n' + i" :class="{ hit: part.hit }">{{ part.text }}</span>
