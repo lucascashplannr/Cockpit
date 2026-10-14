@@ -2,8 +2,7 @@
 import { computed, ref } from 'vue'
 import { Activity, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
 import {
-  activityFor, client, guard, layout, newProject, selectProject, serviceStale, state,
-  toggleList,
+  activityFor, client, guard, layout, newProject, onProject, pressProject, serviceStale, state,
 } from '../core/store.js'
 
 /**
@@ -21,13 +20,11 @@ function monogram(name: string): string {
 }
 
 /**
- * A tile takes you to its project; the tile of the project you are already in
- * has nowhere to take you, so pressing it narrows the list to its strip or
- * widens it again (§12, ⌘B).
+ * A tile takes you to its project, where you last stood in it; the tile of the
+ * project you are already in takes you up to the project itself (pressProject).
  */
 function pick(projectId: string): void {
-  if (projectId !== state.activeProjectId) selectProject(projectId)
-  else toggleList()
+  pressProject(projectId)
 }
 
 /**
@@ -93,7 +90,7 @@ function tileTitle(name: string, root: string, projectId: string): string {
   if (c.dirty) lines.push('● ' + c.dirty + ' checkout(s) with uncommitted changes')
   if (c.attention !== 'none') lines.push(ATTENTION_TEXT[c.attention] ?? '')
   if (projectId === state.activeProjectId) {
-    lines.push(layout.listOpen ? 'Click to narrow the list' : 'Click to widen the list')
+    if (!onProject.value) lines.push('Click to stand on the whole project')
   }
   lines.push('Right-click for settings')
   return lines.filter(Boolean).join('\n')

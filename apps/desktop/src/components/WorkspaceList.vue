@@ -3,7 +3,7 @@ import { attentionIcon } from './agent/attention.js'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
-  ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, Plus, Sparkles,
+  ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, Plus,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import ListToggle from './ListToggle.vue'
@@ -285,14 +285,14 @@ const ATTENTION_TEXT: Record<string, string> = {
       </template>
     </div>
 
-    <!-- The foot: the two acts that are about the project as a whole, under
-         everything the project holds. Always here, wide or narrow, so neither
-         has to be looked for after ⌘B.
+    <!-- The foot: the act that is about the project as a whole, under
+         everything the project holds. Always here, wide or narrow, so it
+         never has to be looked for after ⌘B.
 
          §4 — a new topic: one named branch across every repository it
-         touches. §7 — and the widest scope, from the thing it is scoped to:
-         every repository in the project, at its main checkout. Last, because
-         it is the one of the two you reach for most.
+         touches. The project's own agent was beside it ("Ask across the
+         project"); the project is stood on from its tile in the rail now, or
+         from its name above, as any other place is — not from a verb.
 
          Adding a repository was here too, and before that in the header. It
          is in the project's settings now (ProjectDialog): it changes what the
@@ -306,15 +306,6 @@ const ATTENTION_TEXT: Record<string, string> = {
       >
         <Plus class="sm" />
         <span v-if="!narrow" class="lbl">Open a topic</span>
-      </button>
-      <button
-        class="add go"
-        :class="{ selected: onProject }"
-        title="Ask the agent across the whole project — every repository, on its default branch"
-        @click="openAgentOn({ kind: 'project', projectId: activeProject.id })"
-      >
-        <Sparkles class="sm" />
-        <span v-if="!narrow" class="lbl">Ask across the project</span>
       </button>
     </footer>
   </section>
@@ -392,11 +383,6 @@ const ATTENTION_TEXT: Record<string, string> = {
 }
 .add:hover { background: var(--hover); color: var(--text); }
 /* The one verb here that is not git: it gets the accent that means agent. */
-.add.go:hover { color: var(--agent); background: var(--agent-soft); }
-/* Standing on the project: the foot is where it was selected from, so the foot
-   is what is lit — the list's own selected tint, as a topic's header takes. */
-.add.go.selected { background: var(--selected); color: var(--text); }
-.add.go.selected .lucide { color: var(--agent); }
 .add .lucide { flex: none; margin: 0 1px; }
 
 /* ── the strip (§12, ⌘B) ─────────────────────────────────────────────── */

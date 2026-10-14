@@ -28,13 +28,15 @@ const selected = computed(
 
 /* ── §7 — the project, narrowed ───────────────────────────────────────────
  * Standing on the project, this row is one of the repositories a conversation
- * there runs in — or one that was left out. The ones that are in are lit, and
- * a ⌘-click puts this one in or takes it out, as it does in any list that
- * holds more than one selection.
+ * there runs in — or one that was left out. A ⌘-click puts this one in or
+ * takes it out, as it does in any list that holds more than one selection.
+ *
+ * Lit only once narrowed: the whole project is every row, and every row lit
+ * said nothing but put a selection on the list that nobody had made.
  */
 const lit = computed(() => {
   const n = projectNarrowing.value
-  return !!n && n.every.some((x) => x.id === w.value.id) && n.picked.includes(w.value.id)
+  return !!n && n.narrowed && n.picked.includes(w.value.id)
 })
 
 function press(e: MouseEvent): void {

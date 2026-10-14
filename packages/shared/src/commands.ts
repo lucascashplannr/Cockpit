@@ -30,13 +30,27 @@ export interface AgentCommand {
 }
 
 export const AGENT_COMMANDS: AgentCommand[] = [
-  { name: 'clear', hint: 'Erase the memory and start a new conversation', run: 'window' },
+  { name: 'clear', hint: 'Erase the memory and start a new conversation', run: 'window', thread: true },
   { name: 'next', hint: 'Bring the memory up to date, then a new conversation on it', run: 'window', thread: true },
   { name: 'compact', args: 'what to keep', hint: 'Summarise the conversation to free up context', run: 'engine', thread: true },
   { name: 'init', hint: 'Write a CLAUDE.md that describes this repository', run: 'engine' },
   { name: 'memorize', hint: 'Bring the memory up to date, and carry on here', run: 'window', thread: true },
   { name: 'document', hint: 'Propose documentation updates from this conversation', run: 'window', thread: true },
 ]
+
+/**
+ * Why a command that is offered here would do nothing, if it would: listed
+ * all the same, so it is where it is looked for, but not run.
+ *
+ * `/next` and `/memorize` on a conversation with no memory have nothing to
+ * write to. `/clear` with no conversation yet has nothing to clear — not
+ * offered there at all (`thread`), and refused here if typed out in full.
+ */
+export function commandOff(name: string, empty: boolean, memory: string | null): string | null {
+  if (name === 'clear' && empty) return 'Nothing to clear yet'
+  if ((name === 'next' || name === 'memorize') && memory === 'off') return 'This conversation has no memory'
+  return null
+}
 
 /** The engines that read `/word` as a command rather than as prose. */
 export const COMMAND_ENGINES = ['claude']

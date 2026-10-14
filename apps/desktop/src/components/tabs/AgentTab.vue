@@ -28,7 +28,7 @@ import {
   threadScrollOf, toast, transcriptOf, type ThreadScroll,
 } from '../../core/store.js'
 import {
-  COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, isDocument, isHandoff, isMemorize,
+  COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, commandOff, isDocument, isHandoff, isMemorize,
   questionsIn, readPrompt,
 } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
@@ -754,6 +754,11 @@ async function send(): Promise<void> {
   const files = agentFiles.value
   const cmd = commandIn(text)
   if (cmd) {
+    const off = commandOff(cmd.command.name, !continuing.value, continuing.value ? (selected.value?.memory ?? null) : null)
+    if (off) {
+      toast('info', off)
+      return
+    }
     if (cmd.command.name === 'clear') return clearThread()
     if (cmd.command.name === 'next') return clearThread(true)
     if (cmd.command.name === 'document') return documentThread()

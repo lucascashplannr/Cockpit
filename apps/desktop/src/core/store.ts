@@ -94,19 +94,19 @@ export const revealLabel =
 const PORT = host?.corePort ?? 7717
 const CORE_URL = 'ws://127.0.0.1:' + PORT
 
-export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'docs' | 'output' | 'journal' | 'terminal' | 'ticket'
+export type TabId = 'code' | 'diff' | 'agent' | 'memory' | 'docs' | 'output' | 'terminal' | 'ticket'
 
 /**
  * The four roles, in the order they are used.
  *
  *   1. navigate  — projects, repos, worktrees, branches: what you aim at
  *   2. agent     — the act, working on (1), with the memory as its tool
- *   3. review    — Diff, Code, Journal: reading what came out of (2)
+ *   3. review    — Diff, Code, Output: reading what came out of (2)
  *   4. run       — the runtime and the terminal: seeing it work
  *
  * The Agent owns the panel permanently; these are what open beside it.
  */
-export type ReviewTool = 'diff' | 'code' | 'output' | 'journal' | 'terminal' | 'memory' | 'docs'
+export type ReviewTool = 'diff' | 'code' | 'output' | 'terminal' | 'memory' | 'docs'
 
 /**
  * §12 — how the window is divided between the two things it can show on the
@@ -278,6 +278,11 @@ export const state = reactive({
    * remembered from last week is a project that quietly is not one.
    */
   projectOnly: {} as Record<string, string[]>,
+  /**
+   * §7 — on the project, the Diff and the Code are still about one repository
+   * at a time: which one, by project id. Absent means the first with changes.
+   */
+  projectRepo: {} as Record<string, string>,
   /**
    * What is being written, per conversation.
    *
@@ -680,7 +685,10 @@ function ensureSelection(): void {
   }
   const inProject = state.workspaces.filter((w) => w.projectId === state.activeProjectId)
   if (!state.activeWorkspaceId || !inProject.some((w) => w.id === state.activeWorkspaceId)) {
-    state.activeWorkspaceId = inProject[0]?.id ?? null
+    // Where you last stood there, as the rail would take you — not its first
+    // row, which on a fresh window would also be recorded as the place.
+    if (inProject.length) selectProject(state.activeProjectId)
+    else state.activeWorkspaceId = null
   }
 }
 
@@ -702,12 +710,16 @@ export const projectWorkspaces = computed(() =>
 export function reviewToolsFor(w: Workspace | null, wholeProject = false): ReviewTool[] {
   if (!w) return []
   // §7 — standing on the project there is no one checkout to read. The Diff
-  // and the Code are each about a single repository, and drawn here they could
-  // only be about the anchor — the first one, which nobody chose. The rest
-  // widen instead: the Output is every repository's, the Journal the
-  // project's, and the Terminal opens at the project's root folder.
+  // and the Code are each about a single repository, so here they name which
+  // one they are on and let it be changed (`projectRepo`) — never the anchor,
+  // the first one, which nobody chose. The rest widen instead: the Output is
+  // every repository's, and the Terminal opens at
+  // the project's root folder.
   if (wholeProject) {
-    const ids: ReviewTool[] = ['output', 'journal', 'terminal', 'memory']
+    const ids: ReviewTool[] = []
+    if (projectScopeWorkspaces.value.some((x) => x.git)) ids.push('diff')
+    if (projectScopeWorkspaces.value.length) ids.push('code')
+    ids.push('output', 'terminal', 'memory')
     if (state.docsInfo[w.projectId]) ids.push('docs')
     return ids
   }
@@ -719,7 +731,7 @@ export function reviewToolsFor(w: Workspace | null, wholeProject = false): Revie
   // A tool that comes and goes with the declarations is a tool nobody finds
   // on the one repository that needs it.
   ids.push('output')
-  ids.push('journal', 'terminal')
+  ids.push('terminal')
   // §6 — the memory, last.
   //
   // It was an overlay *over* the conversation, on the rule that the chat gets
@@ -1168,6 +1180,49 @@ export const projectScopeWorkspaces = computed<Workspace[]>(() => {
   const n = projectNarrowing.value
   if (n) return n.every.filter((w) => n.picked.includes(w.id))
   return state.activeProjectId ? projectCheckouts(state.activeProjectId) : []
+})
+
+/** Uncommitted changes in a checkout: what the Diff's badge counts. */
+export function changeCount(w: Workspace): number {
+  const g = w.git
+  return g ? g.staged + g.unstaged + g.untracked : 0
+}
+
+/**
+ * §7 — the repository the project's Diff and Code are on, of those it is
+ * standing on: the one picked, else the first with something to read.
+ */
+export const projectRepo = computed<Workspace | null>(() => {
+  if (!onProject.value || !state.activeProjectId) return null
+  const ws = projectScopeWorkspaces.value
+  const picked = ws.find((w) => w.id === state.projectRepo[state.activeProjectId!])
+  return picked ?? ws.find((w) => changeCount(w) > 0) ?? ws[0] ?? null
+})
+
+export function pickProjectRepo(workspaceId: string): void {
+  const w = state.workspaces.find((x) => x.id === workspaceId)
+  if (w) state.projectRepo[w.projectId] = w.id
+}
+
+/**
+ * The repositories the project's Diff offers: the ones with something to
+ * read. A clean one has no diff to show, only its history — so it is offered
+ * only when every one is clean, and the Diff is then the way to their commits.
+ */
+export const projectDiffRepos = computed<Workspace[]>(() => {
+  const ws = projectScopeWorkspaces.value.filter((w) => w.git)
+  const changed = ws.filter((w) => changeCount(w) > 0)
+  return changed.length ? changed : ws
+})
+
+/**
+ * Which of them the Diff is on: the one picked, if it is still offered — one
+ * committed clean drops out, and the Diff moves on to the next with changes.
+ */
+export const projectDiffRepo = computed<Workspace | null>(() => {
+  if (!onProject.value || !state.activeProjectId) return null
+  const ws = projectDiffRepos.value
+  return ws.find((w) => w.id === state.projectRepo[state.activeProjectId!]) ?? ws[0] ?? null
 })
 
 function setProjectOnly(projectId: string, ids: string[]): void {
@@ -3171,18 +3226,39 @@ async function selectCreatedProject(id: string): Promise<void> {
  * `ensureSelection` and snap the selection somewhere else, which makes it look
  * intermittent rather than wrong.
  *
- * Where it lands: the last workspace touched in that project, so coming back
- * to one resumes it rather than restarting it; failing that, its first.
+ * Where it lands: the place you last stood in that project — a repository, a
+ * topic, or the project itself — so coming back to one resumes it rather than
+ * restarting it. A project you have not stood anywhere in yet opens on itself:
+ * no row is yours yet, so none is lit.
  */
 export function selectProject(id: string): void {
   state.activeProjectId = id
+  // Cleared first: a project with no checkout at all must not go on showing
+  // the previous project's under its own name.
+  state.activeWorkspaceId = null
   const inProject = state.workspaces.filter((w) => w.projectId === id)
-  const last = recentIds.value.find((rid) => inProject.some((w) => w.id === rid))
-  state.activeWorkspaceId = last ?? inProject[0]?.id ?? null
-  // A conversation opened on another project — from a toast, say — must not
-  // follow you here: the chat is about where you are standing.
-  const w = state.workspaces.find((x) => x.id === state.activeWorkspaceId)
-  if (state.agentScope && (!w || !scopeCovers(state.agentScope, w))) state.agentScope = null
+  const place = lastPlace.value[id]
+  if (place?.startsWith('topic:')) {
+    const topicId = place.slice('topic:'.length)
+    if (anchorFor({ kind: 'topic', topicId })) return openAgentOn({ kind: 'topic', topicId }, { reveal: false })
+  }
+  if (place === 'project') return openAgentOn({ kind: 'project', projectId: id }, { reveal: false })
+  const wid = place?.startsWith('workspace:') ? place.slice('workspace:'.length) : null
+  // Before places were kept, the recent list was all there was: it still
+  // answers for a project last visited then.
+  const last = [wid, ...(place ? [] : recentIds.value)].find((rid) => rid && inProject.some((w) => w.id === rid))
+  if (last) return selectWorkspace(last)
+  openAgentOn({ kind: 'project', projectId: id }, { reveal: false })
+}
+
+/**
+ * The tile of the project you are already in: from a repository or a topic of
+ * it, back up to the project itself; on the project already, nothing — the
+ * list is sized from its own header (⌘B), never from a tile pressed twice.
+ */
+export function pressProject(id: string): void {
+  if (id !== state.activeProjectId) selectProject(id)
+  else if (!onProject.value) openAgentOn({ kind: 'project', projectId: id }, { reveal: false })
 }
 
 /** The scope reaches this checkout: it is the checkout, or holds it. */
@@ -3661,13 +3737,19 @@ export function selectWorkspace(id: string): void {
  *
  * Not `selectWorkspace`: that drops a topic standing selected, and opening a
  * file in one of the topic's own repositories is still working on the topic.
- * A scope the file falls outside of is dropped, as a click on the row would —
- * and so is the project's: it has no Code tool to open the file in, so asking
- * for a file from there is going to that file's repository.
+ * A scope the file falls outside of is dropped, as a click on the row would.
+ * On the project, a file in one of the repositories it stands on opens in the
+ * project's own Code, turned to that repository.
  */
 export function openFileAt(workspaceId: string, path: string, line: number | null = null): void {
   const w = state.workspaces.find((x) => x.id === workspaceId)
   if (!w) return
+  if (onProject.value && projectScopeWorkspaces.value.some((x) => x.id === w.id)) {
+    pickProjectRepo(w.id)
+    state.codeRequest = { workspaceId, path, line }
+    goTo('code')
+    return
+  }
   if (state.agentScope && (state.agentScope.kind === 'project' || !scopeCovers(state.agentScope, w))) state.agentScope = null
   if (w.projectId !== state.activeProjectId) state.activeProjectId = w.projectId
   if (state.activeWorkspaceId !== w.id) {
@@ -4261,6 +4343,45 @@ function remember(id: string): void {
   recentIds.value = next
   localStorage.setItem(RECENT_KEY, JSON.stringify(next))
 }
+
+/**
+ * And where you stood in it, per project: `project`, `topic:<id>` or
+ * `workspace:<id>`. The recent list above only knows rows, and a topic or the
+ * project itself is as much a place to come back to as a row is.
+ *
+ * Recorded on the tick, like the view of a place: a move lands in two
+ * assignments, and the place passed through between them is not one you stood.
+ */
+const PLACE_KEY = 'cockpit.place'
+
+export const lastPlace = ref<Record<string, string>>(readPlaces())
+
+function readPlaces(): Record<string, string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PLACE_KEY) ?? '{}')
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  } catch {
+    return {}
+  }
+}
+
+watch(activeAgentScope, (scope) => {
+  const projectId = state.activeProjectId
+  if (!scope || !projectId) return
+  const place =
+    scope.kind === 'project'
+      ? scope.projectId === projectId ? 'project' : null
+      : scope.kind === 'topic'
+        ? 'topic:' + scope.topicId
+        : 'workspace:' + scope.workspaceId
+  if (!place || lastPlace.value[projectId] === place) return
+  lastPlace.value = { ...lastPlace.value, [projectId]: place }
+  try {
+    localStorage.setItem(PLACE_KEY, JSON.stringify(lastPlace.value))
+  } catch {
+    // A place not kept is a project that opens on itself next time; no more.
+  }
+})
 
 export function applyTheme(): void {
   const el = document.documentElement

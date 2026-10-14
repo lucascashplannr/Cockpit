@@ -10,7 +10,7 @@ import {
   pickMode, placedHandles, projectOfConversation, saveComposer, state, switchMode,
 } from '../../core/store.js'
 import {
-  AGENT_COMMANDS, ANCHOR_PAD, CLAUDE_MODELS, COMMAND_ENGINES, anchorOf, anchorWritten, splitPrompt,
+  AGENT_COMMANDS, ANCHOR_PAD, CLAUDE_MODELS, COMMAND_ENGINES, anchorOf, anchorWritten, commandOff, splitPrompt,
 } from '@cockpit/shared'
 import type { AgentCommand, AgentScope, Conversation, PermissionMode, QuoteSource } from '@cockpit/shared'
 import type { DraftFile } from '../../core/store.js'
@@ -262,6 +262,8 @@ interface Row {
   pic?: string
   /** A `/` row: accepting it can run it rather than only write it. */
   command?: AgentCommand
+  /** Listed but not runnable here, and why — said in the row's tooltip. */
+  off?: string
   /** An `@` row that is a conversation rather than a file: accepting it tags it. */
   conversation?: Conversation
 }
@@ -340,7 +342,14 @@ const commandRows = computed<Row[]>(() => {
   return AGENT_COMMANDS.filter(
     (c) =>
       (c.run === 'window' || COMMAND_ENGINES.includes(engine)) && (!c.thread || props.mode !== 'start'),
-  ).map((c) => ({ key: '/' + c.name, label: '/' + c.name, hint: c.hint, insert: c.name, command: c }))
+  ).map((c) => ({
+    key: '/' + c.name,
+    label: '/' + c.name,
+    hint: c.hint,
+    insert: c.name,
+    command: c,
+    off: commandOff(c.name, props.mode === 'start', props.session?.memory ?? null) ?? undefined,
+  }))
 })
 
 const matches = computed<Row[]>(() => {
@@ -367,9 +376,21 @@ const matches = computed<Row[]>(() => {
 })
 
 const cursor = ref(0)
-watch(matches, () => {
-  cursor.value = 0
+watch(matches, (rows) => {
+  cursor.value = Math.max(0, rows.findIndex((r) => !r.off))
 })
+
+/** The next row that can be taken, `by` one way or the other — past the ones that cannot. */
+function step(by: 1 | -1): void {
+  const n = matches.value.length
+  for (let i = 1; i <= n; i++) {
+    const at = (cursor.value + by * i + n * n) % n
+    if (!matches.value[at]!.off) {
+      cursor.value = at
+      return
+    }
+  }
+}
 const picking = computed(() => matches.value.length > 0 && (mention.value !== null || slash.value !== null))
 
 function track(): void {
@@ -397,6 +418,7 @@ function acceptCommand(r: Row, run: boolean): void {
 }
 
 function accept(r: Row | undefined, run = false): void {
+  if (r?.off) return
   if (r?.command) return acceptCommand(r, run)
   const m = mention.value
   if (!m || !r) return
@@ -520,12 +542,12 @@ function onKey(ev: KeyboardEvent): void {
   if (picking.value) {
     if (ev.key === 'ArrowDown') {
       ev.preventDefault()
-      cursor.value = (cursor.value + 1) % matches.value.length
+      step(1)
       return
     }
     if (ev.key === 'ArrowUp') {
       ev.preventDefault()
-      cursor.value = (cursor.value - 1 + matches.value.length) % matches.value.length
+      step(-1)
       return
     }
     if (ev.key === 'Enter' || ev.key === 'Tab') {
@@ -862,7 +884,8 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
         <li
           v-for="(m, i) in matches"
           :key="m.key"
-          :class="{ on: i === cursor }"
+          :class="{ on: i === cursor, off: m.off }"
+          :title="m.off"
           @mousedown.prevent="accept(m, true)"
         >
           <!-- An attached picture shows itself: `#` is answered by looking. -->
@@ -1405,7 +1428,9 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
   position: absolute;
   left: 10px;
   right: 10px;
-  bottom: calc(100% - 6px);
+  /* Above the box, never over it: tucked into its top edge, it sat on the
+     send button wherever the box is one line tall. */
+  bottom: calc(100% + 6px);
   z-index: 5;
   margin: 0;
   padding: 4px;
@@ -1432,6 +1457,8 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
   cursor: pointer;
 }
 .mentions li.on { background: var(--selected); color: var(--text); }
+/* Listed so the command is still where it is looked for; the tooltip says why it cannot run. */
+.mentions li.off { opacity: 0.4; cursor: default; }
 .mentions .from {
   margin-left: auto;
   padding-left: 10px;

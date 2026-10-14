@@ -29,7 +29,7 @@ import type { ShellView } from '../core/store.js'
 const META: Record<ShellView, { label: string; hint: string }> = {
   agent: { label: 'Agent', hint: 'Agent only — the conversation takes the width' },
   split: { label: 'Split', hint: 'Agent and review side by side' },
-  review: { label: 'Review', hint: 'Review only — diff, code, journal, terminal' },
+  review: { label: 'Review', hint: 'Review only — diff, code, output, terminal' },
 }
 
 function title(v: ShellView): string {

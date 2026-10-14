@@ -7,7 +7,6 @@ import {
   Columns2, FileCode,
   FolderOpen,
   FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitGraph, GitMerge, Globe, History, Layers, PanelLeftClose, PanelLeftOpen, Pause, Play, RefreshCw,
-  ScrollText,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, Stamp, TextSearch,
   Terminal, Trash2, Undo2,
   RotateCcw, Archive, Zap, Activity,
@@ -40,7 +39,7 @@ import FileIcon from './FileIcon.vue'
 const VIEW_LABELS: Record<ShellView, { label: string; hint: string }> = {
   agent: { label: 'Agent only', hint: 'the conversation takes the window' },
   split: { label: 'Agent and review side by side', hint: 'the two columns' },
-  review: { label: 'Review only', hint: 'diff, code, journal, terminal across the window' },
+  review: { label: 'Review only', hint: 'diff, code, output, terminal across the window' },
 }
 
 interface Item {
@@ -456,7 +455,6 @@ function buildCommands(lvl: Level): Item[] {
     }
     tab('agent', 'Agent', Sparkles)
     tab('memory', 'Memory', BookMarked)
-    tab('journal', 'Journal', ScrollText)
     tab('terminal', 'Terminal', SquareTerminal)
 
     // §12 — the same three the switcher draws. A tool says *what* to show;

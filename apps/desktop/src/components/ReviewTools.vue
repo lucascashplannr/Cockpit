@@ -2,21 +2,21 @@
 import { computed } from 'vue'
 import type { Component } from 'vue'
 import type { Workspace } from '@cockpit/shared'
-import { BookMarked, BookOpen, FileCode, GitCompareArrows, Logs, ScrollText, SquareTerminal } from '@lucide/vue'
+import { BookMarked, BookOpen, FileCode, GitCompareArrows, Logs, SquareTerminal } from '@lucide/vue'
 import CodeTab from './tabs/CodeTab.vue'
 import MemoryTab from './tabs/MemoryTab.vue'
 import DocsTab from './tabs/DocsTab.vue'
 import DiffTab from './tabs/DiffTab.vue'
 import CommitsTab from './tabs/CommitsTab.vue'
-import JournalTab from './tabs/JournalTab.vue'
 import OutputTab from './tabs/OutputTab.vue'
 import TerminalTab from './tabs/TerminalTab.vue'
-import { goTo, onProject, reviewTools, shownReviewTool, state } from '../core/store.js'
+import ProjectRepoMenu from './ProjectRepoMenu.vue'
+import { changeCount, goTo, onProject, projectDiffRepo, projectRepo, projectScopeWorkspaces, reviewTools, shownReviewTool, state } from '../core/store.js'
 import type { ReviewTool } from '../core/store.js'
 
 /**
  * Layer 3 — reading what came out of the run: the diff, the code around it,
- * the journal, and the terminal you check it in. Secondary by definition, and
+ * what the servers wrote, and the terminal you check it in. Secondary by definition, and
  * closed by default: the chat gets the width until there is something to read.
  *
  * Open, it is either a column beside the conversation or the whole right of
@@ -38,16 +38,25 @@ const META: Record<ReviewTool, { label: string; icon: Component }> = {
   diff: { label: 'Diff', icon: GitCompareArrows },
   code: { label: 'Code', icon: FileCode },
   output: { label: 'Output', icon: Logs },
-  journal: { label: 'Journal', icon: ScrollText },
   terminal: { label: 'Terminal', icon: SquareTerminal },
   memory: { label: 'Memory', icon: BookMarked },
   docs: { label: 'Docs', icon: BookOpen },
 }
 
-const changed = computed(() => {
-  const g = props.workspace.git
-  return g ? g.staged + g.unstaged + g.untracked : 0
-})
+// On the project, every repository it stands on: the Diff there is any of them.
+const changed = computed(() =>
+  onProject.value
+    ? projectScopeWorkspaces.value.reduce((n, w) => n + changeCount(w), 0)
+    : changeCount(props.workspace),
+)
+
+/**
+ * §7 — what the Diff and the Code are on. A checkout is itself; the project is
+ * one of its repositories, named by the strip above the tool.
+ */
+const repo = computed(() => (onProject.value ? projectRepo.value : null) ?? props.workspace)
+const diffRepo = computed(() => (onProject.value ? projectDiffRepo.value : null) ?? props.workspace)
+
 
 const docsWaiting = computed(() =>
   (state.docsPending[props.workspace.projectId] ?? []).reduce(
@@ -84,18 +93,23 @@ const tools = computed(() =>
         <span v-if="t.badge !== undefined" class="tbadge num">{{ t.badge }}</span>
         <span v-else-if="t.pip" class="tpip" />
       </button>
+      <!-- §7 — on the project, which repository these three are on. -->
+      <template v-if="onProject && (shownReviewTool === 'diff' || shownReviewTool === 'code' || shownReviewTool === 'terminal')">
+        <span class="grow" />
+        <ProjectRepoMenu :diff="shownReviewTool === 'diff'" />
+      </template>
     </nav>
+
 
     <div class="body" data-tool>
       <!-- The Diff's other reading, in its place: see `diffMode`. -->
-      <CommitsTab v-if="shownReviewTool === 'diff' && state.diffMode === 'commits'" :workspace="workspace" />
-      <DiffTab v-else-if="shownReviewTool === 'diff'" :workspace="workspace" />
+      <CommitsTab v-if="shownReviewTool === 'diff' && state.diffMode === 'commits'" :workspace="diffRepo" />
+      <DiffTab v-else-if="shownReviewTool === 'diff'" :workspace="diffRepo" />
       <MemoryTab v-else-if="shownReviewTool === 'memory'" :workspace="workspace" />
       <DocsTab v-else-if="shownReviewTool === 'docs'" :workspace="workspace" />
-      <CodeTab v-else-if="shownReviewTool === 'code'" :workspace="workspace" />
+      <CodeTab v-else-if="shownReviewTool === 'code'" :workspace="repo" />
       <OutputTab v-else-if="shownReviewTool === 'output'" :workspace="workspace" :whole-project="onProject" />
-      <JournalTab v-else-if="shownReviewTool === 'journal'" :workspace="workspace" :whole-project="onProject" />
-      <TerminalTab v-else-if="shownReviewTool === 'terminal'" :workspace="workspace" :whole-project="onProject" />
+      <TerminalTab v-else-if="shownReviewTool === 'terminal'" :workspace="repo" />
     </div>
   </div>
 </template>
@@ -157,6 +171,7 @@ const tools = computed(() =>
 }
 .tool:hover { color: var(--text-muted); background: var(--hover); }
 .tool.on { color: var(--text); }
+.tools .grow { flex: 1; min-width: 8px; }
 .tool.on::after {
   content: '';
   position: absolute;
