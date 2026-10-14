@@ -7,7 +7,7 @@ import type { DeclaredServer, Workspace } from '@cockpit/shared'
 import OverflowMenu from './OverflowMenu.vue'
 import type { ListGroup } from '../core/store.js'
 import {
-  client, guard, mergeTopic, pushTopic, rebaseTopic, refreshCommands, runningServers, runtimeBusy, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
+  busyAmong, busyVerb, busyWord, client, guard, mergeTopic, pushTopic, rebaseTopic, refreshCommands, runningServers, runtimeBusy, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -27,6 +27,14 @@ const props = defineProps<{ group: ListGroup }>()
 
 const f = computed(() => props.group.topic)
 const ws = computed(() => props.group.workspaces)
+
+/**
+ * A plan running aside in any of the topic's repositories — a commit in one of
+ * them, or the topic's own push. Its verbs are off for as long as it takes,
+ * and the one that is running says so on its own button.
+ */
+const busyOp = computed(() => busyAmong(ws.value.map((w) => w.id)))
+const op = computed(() => busyVerb(busyOp.value ?? undefined))
 
 const ahead = computed(() => ws.value.reduce((n, w) => n + (w.git?.ahead ?? 0), 0))
 /**
@@ -258,39 +266,57 @@ const startTitle = (s: Row) =>
     <!-- The counterpart of a per-repository commit: nothing about a push is
          specific to one repository's diff, so it is one act across all of
          them. -->
-    <button v-if="canPush" class="btn ghost nudge" :title="pushTitle" @click="pushTopic(f!.id)">
-      <ArrowUp /><span class="vl">Push</span>
-      <span v-if="ahead" class="cnt">{{ ahead }}</span>
+    <button
+      v-if="canPush || op === 'push'"
+      class="btn ghost nudge"
+      :class="{ working: op === 'push' }"
+      :disabled="!!busyOp"
+      :title="op === 'push' ? 'Pushing…' : pushTitle"
+      @click="pushTopic(f!.id)"
+    >
+      <template v-if="op === 'push'"><LoaderCircle class="spin" /><span class="vl">Pushing…</span></template>
+      <template v-else>
+        <ArrowUp /><span class="vl">Push</span>
+        <span v-if="ahead" class="cnt">{{ ahead }}</span>
+      </template>
     </button>
 
     <!-- §4 — the step the lifecycle was missing: the branch goes onto the
          base, in every repository the topic spans. Green once there is
          something committed to send and nothing in the way of sending it. -->
     <button
-      v-if="canMerge"
+      v-if="canMerge || op === 'merge'"
       class="btn ghost"
-      :class="{ ready: !dirty }"
-      :title="mergeTitle"
+      :class="{ ready: !dirty, working: op === 'merge' }"
+      :disabled="!!busyOp"
+      :title="op === 'merge' ? 'Merging…' : mergeTitle"
       @click="mergeTopic(f!.id, false)"
     >
-      <GitMerge /><span class="vl">{{ sendLabel }}</span>
-      <span v-if="toLand" class="cnt">{{ toLand }}</span>
+      <template v-if="op === 'merge'"><LoaderCircle class="spin" /><span class="vl">Merging…</span></template>
+      <template v-else>
+        <GitMerge /><span class="vl">{{ sendLabel }}</span>
+        <span v-if="toLand" class="cnt">{{ toLand }}</span>
+      </template>
     </button>
     <!-- One plan across every repository it spans, stopping at the first
          conflict and keeping what already replayed. -->
     <button
       class="btn ghost"
-      :class="{ nudge: behind > 0 }"
-      :title="catchUpTitle"
+      :class="{ nudge: behind > 0, working: op === 'rebase' }"
+      :disabled="!!busyOp"
+      :title="busyOp ? busyWord(busyOp) + '…' : catchUpTitle"
       @click="rebaseTopic(f!.id)"
     >
-      <GitCompareArrows /><span class="vl">Catch up</span>
-      <span v-if="behind" class="cnt">{{ behind }}</span>
+      <template v-if="op === 'rebase'"><LoaderCircle class="spin" /><span class="vl">Catching up…</span></template>
+      <template v-else>
+        <GitCompareArrows /><span class="vl">Catch up</span>
+        <span v-if="behind" class="cnt">{{ behind }}</span>
+      </template>
     </button>
     <!-- Every verb the topic has, always and in one order, off while it has
          nothing to act on — so a bar that hides Push and Send never leaves
          you wondering whether they exist. -->
-    <OverflowMenu label="Everything you can do on this topic">
+    <OverflowMenu label="Everything you can do on this topic" :disabled="!!busyOp">
       <button :disabled="!canPush" @click="pushTopic(f!.id)">
         <ArrowUp /> Push
       </button>

@@ -7,7 +7,8 @@ import {
 import OverflowMenu from './OverflowMenu.vue'
 import {
   activeWorkspace, askCommand, chooseCommand, chooseServer, chosenCommand, chosenServer, client,
-  gitBusy, guard, openCommit, openDeclarations, requestPlan, runningServers, runtimeBusy, state, toggleWorkspaceRuntime,
+  busyVerb, busyWord, gitBusy, guard, openCommit, openDeclarations, requestPlan, runningServers, runtimeBusy, state, stillBusy,
+  toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -34,6 +35,19 @@ const w = computed(() => activeWorkspace.value)
  * that is mid-switch reads whichever half of the branch it happens to catch.
  */
 const busy = computed(() => !!(w.value && gitBusy[w.value.id]))
+
+/**
+ * Which verb is running, so its own button can say so. A commit is answered
+ * the moment it is confirmed and then runs behind the window; the button that
+ * started it is where you look to see it is still going, and it stays on the
+ * bar for as long as it does — even once the count that put it there is gone.
+ */
+const op = computed(() => (w.value ? busyVerb(gitBusy[w.value.id]) : undefined))
+const committing = computed(() => op.value === 'commit' || op.value === 'amend')
+/** A verb with no button of its own here — the branch chip carries a switch. */
+const elsewhere = computed(
+  () => !!op.value && !['commit', 'amend', 'push', 'pull', 'rebase', 'switch', 'branch', 'worktree'].includes(op.value),
+)
 
 /**
  * The repository's own checkout, not a topic's worktree of it. Declarations
@@ -334,6 +348,7 @@ async function openPreview() {
 async function undo() {
   const ws = w.value
   if (!ws) return
+  if (stillBusy([ws.id])) return
   await guard(() => client.call('git.undo', { workspaceId: ws.id }))
 }
 </script>
@@ -345,14 +360,20 @@ async function undo() {
          the review comes first (§16), so it opens the changes with the caret
          in the message. -->
     <button
-      v-if="git && uncommitted"
+      v-if="git && (uncommitted || committing)"
       class="btn ghost nudge"
+      :class="{ working: committing }"
       :disabled="busy"
-      :title="'Commit — ' + uncommitted + ' uncommitted change(s)'"
+      :title="committing ? busyWord(op) + '…' : 'Commit — ' + uncommitted + ' uncommitted change(s)'"
       @click="openCommit()"
     >
-      <GitCommitHorizontal /><span class="vl">Commit</span>
-      <span class="cnt">{{ uncommitted }}</span>
+      <template v-if="committing">
+        <LoaderCircle class="spin" /><span class="vl">{{ busyWord(op) }}…</span>
+      </template>
+      <template v-else>
+        <GitCommitHorizontal /><span class="vl">Commit</span>
+        <span class="cnt">{{ uncommitted }}</span>
+      </template>
     </button>
     <!-- §3.9 — only while there is something to send. It stood here inert for
          a while, so that it would never move; a greyed verb on a clean branch
@@ -362,42 +383,55 @@ async function undo() {
          send and it cannot go yet: origin has commits to pull first. The
          tooltip is on the wrapper because a disabled button fires no mouse
          events, so a `title` on it is a reason nobody can read. -->
-    <span v-if="git && hasPush" class="verb" :title="pushTitle">
+    <span v-if="git && (hasPush || op === 'push')" class="verb" :title="op === 'push' ? 'Pushing…' : pushTitle">
       <button
         class="btn ghost"
-        :class="{ ready: canPush }"
+        :class="{ ready: canPush, working: op === 'push' }"
         :disabled="busy || !canPush"
         @click="requestPlan(w.id, 'push')"
       >
-        <ArrowUpFromLine /><span class="vl">Push</span>
-        <span v-if="git.ahead" class="cnt">{{ git.ahead }}</span>
+        <template v-if="op === 'push'"><LoaderCircle class="spin" /><span class="vl">Pushing…</span></template>
+        <template v-else>
+          <ArrowUpFromLine /><span class="vl">Push</span>
+          <span v-if="git.ahead" class="cnt">{{ git.ahead }}</span>
+        </template>
       </button>
     </span>
     <button
-      v-if="git && canCatchUp"
+      v-if="git && (canCatchUp || op === 'rebase')"
       class="btn ghost"
-      :class="{ nudge: behindBase > 0 }"
+      :class="{ nudge: behindBase > 0, working: op === 'rebase' }"
       :disabled="busy"
-      :title="catchUpTitle"
+      :title="op === 'rebase' ? 'Catching up…' : catchUpTitle"
       @click="requestPlan(w.id, 'rebase')"
     >
-      <GitCompareArrows /><span class="vl">Catch up</span>
-      <span v-if="behindBase" class="cnt">{{ behindBase }}</span>
+      <template v-if="op === 'rebase'"><LoaderCircle class="spin" /><span class="vl">Catching up…</span></template>
+      <template v-else>
+        <GitCompareArrows /><span class="vl">Catch up</span>
+        <span v-if="behindBase" class="cnt">{{ behindBase }}</span>
+      </template>
     </button>
     <!-- §3.9 — beside Catch up, and only while there is something to pull:
          nobody decides to pull, you pull *because* something arrived. Absent
          rather than inert, and its number is the whole of its reason for
          being on the bar. -->
     <button
-      v-if="git && canPull"
+      v-if="git && (canPull || op === 'pull')"
       class="btn ghost nudge"
+      :class="{ working: op === 'pull' }"
       :disabled="busy"
-      :title="pullTitle"
+      :title="op === 'pull' ? 'Pulling…' : pullTitle"
       @click="requestPlan(w.id, 'pull')"
     >
-      <ArrowDownToLine /><span class="vl">Pull</span>
-      <span class="cnt">{{ git.incoming }}</span>
+      <template v-if="op === 'pull'"><LoaderCircle class="spin" /><span class="vl">Pulling…</span></template>
+      <template v-else>
+        <ArrowDownToLine /><span class="vl">Pull</span>
+        <span class="cnt">{{ git.incoming }}</span>
+      </template>
     </button>
+    <!-- The rest of what runs aside — a stash, an undo — has no button of its
+         own to turn, so it says so where the buttons are. -->
+    <span v-if="elsewhere" class="working-note"><LoaderCircle class="spin" />{{ busyWord(op) }}…</span>
 
     <!-- The tail of the git verbs, and the end of that group: everything
          this repository can do, before the separator and the things it runs.
@@ -640,6 +674,17 @@ async function undo() {
   color: var(--ok);
 }
 .verbs .nudge .cnt { color: var(--warn); }
+/* A verb running aside with no button of its own to turn — see `elsewhere`. */
+.working-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.working-note .lucide { width: 14px; height: 14px; color: var(--accent); }
 
 /* Behind its base is the one state where rebasing is the next thing to do,
    and committed-and-ahead is the one where pushing is. Same two colours the

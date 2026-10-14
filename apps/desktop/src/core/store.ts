@@ -4330,6 +4330,103 @@ function isTrivial(plan: PlanPreview): boolean {
  */
 export const gitBusy = reactive<Record<string, string>>({})
 
+/** What a busy control says, in the words of the verb running — keyed by the plan's operation. */
+const BUSY_WORDS: Record<string, string> = {
+  commit: 'Committing',
+  amend: 'Amending',
+  push: 'Pushing',
+  pull: 'Pulling',
+  rebase: 'Catching up',
+  merge: 'Merging',
+  switch: 'Switching branch',
+  branch: 'Creating the branch',
+  worktree: 'Creating the worktree',
+  sync: 'Syncing',
+  stash: 'Setting aside',
+  'stash pop': 'Putting back',
+  'stash apply': 'Putting back',
+  'stash drop': 'Dropping',
+  'undo commit': 'Undoing the commit',
+  open: 'Opening the topic',
+  close: 'Closing the topic',
+  delete: 'Deleting the topic',
+}
+/** A topic's plans are named `topic.<verb>`; the verb is the same act. */
+export function busyVerb(op: string | undefined): string | undefined {
+  return op?.replace(/^topic\./, '')
+}
+export function busyWord(op: string | undefined): string {
+  const v = busyVerb(op)
+  return (v && BUSY_WORDS[v]) || 'Working'
+}
+
+/** The verb in flight on any of these checkouts, or null. */
+export function busyAmong(ids: string[]): string | null {
+  for (const id of ids) if (gitBusy[id]) return gitBusy[id]!
+  return null
+}
+
+/**
+ * Refused rather than queued. A second plan built against a checkout that is
+ * mid-commit reads a tree half-way through changing, and its steps were
+ * written for a state that will not be there when they run. The controls
+ * already say so by being off; this is for the ways in that are not a button
+ * on the bar — a key, the palette, the commit box of another tab.
+ */
+export function stillBusy(ids: string[]): boolean {
+  const op = busyAmong(ids)
+  if (!op) return false
+  toast('info', 'Still ' + busyWord(op).toLowerCase() + ' — try again when it is done')
+  return true
+}
+
+function topicWorkspaceIds(topicId: string): string[] {
+  return state.workspaces.filter((w) => w.topicId === topicId).map((w) => w.id)
+}
+
+/** The checkouts a plan runs in, read off the folders its steps run from. */
+function planWorkspaces(plan: PlanPreview): string[] {
+  const cwds = new Set(plan.steps.map((s) => s.cwd))
+  return state.workspaces.filter((w) => cwds.has(w.path)).map((w) => w.id)
+}
+
+/**
+ * An answered plan, run behind the window rather than in front of it.
+ *
+ * The dialog used to stay up until git came back, its button reading
+ * "Working…" — so a commit with a slow hook, or a push to a slow remote, held
+ * the whole window for as long as it took. The question is answered the
+ * moment the button is pressed; what is left is waiting, and waiting belongs
+ * on the controls it affects, not in front of everything else. So the dialog
+ * goes, and every checkout the plan touches is marked in `gitBusy` — which the
+ * bar, the branch chip and the commit box already read as "not now".
+ *
+ * A plan that touches no checkout on screen — a topic being opened has none
+ * yet — has nowhere to show that it is running, so it keeps the dialog as its
+ * busy state, as every plan used to.
+ *
+ * `undefined` when it never ran: something else is already in flight there,
+ * and the question stays open on screen to be answered again.
+ */
+async function applyAside(plan: PlanPreview, close: () => void): Promise<ApplyResult | null | undefined> {
+  const ids = planWorkspaces(plan)
+  if (stillBusy(ids)) return undefined
+  if (!ids.length) {
+    state.planBusy = true
+    const res = await guard(() => client.call('git.apply', { planId: plan.planId }))
+    state.planBusy = false
+    close()
+    return res
+  }
+  close()
+  for (const id of ids) gitBusy[id] = plan.operation
+  try {
+    return await guard(() => client.call('git.apply', { planId: plan.planId }))
+  } finally {
+    for (const id of ids) delete gitBusy[id]
+  }
+}
+
 export async function requestPlan(
   workspaceId: string,
   operation: 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'pull' | 'sync',
@@ -4345,6 +4442,7 @@ export async function requestPlan(
   // From asking for the plan, not from applying it: building one shells out to
   // git too, and the gap between the click and the dialog is exactly as long
   // as the gap between the click and the switch.
+  if (stillBusy([workspaceId])) return
   gitBusy[workspaceId] = operation
   try {
     const plan = await guard(() => client.call('git.plan', { workspaceId, operation, args }))
@@ -4530,27 +4628,31 @@ export async function applyPendingConfirm(): Promise<void> {
     toast(c.danger ? 'info' : 'ok', c.done, c.danger ? { icon: 'discard' } : undefined)
     return
   }
-  state.planBusy = true
-  const res = await guard(() => client.call('git.apply', { planId: c.plan.planId }))
-  state.planBusy = false
-  state.pendingConfirm = null
   // §4 — it belonged to the question, and the question is answered.
   const from = state.pendingPlanFrom
-  state.pendingPlanFrom = null
+  const res = await applyAside(c.plan, () => {
+    if (state.pendingConfirm === c) state.pendingConfirm = null
+    if (state.pendingPlanFrom === from) state.pendingPlanFrom = null
+  })
+  if (res === undefined) return
   // Its own wording rather than settlePlan's "<operation> applied": the button
   // said "Put it back", and the toast that follows should agree with it.
   const ok = await settlePlan(c.plan, res, c.done)
-  if (ok && from) await offerPush(from.scope)
+  // Run aside, so the window may be asking something else by now; the offer
+  // would take that question's place, and it is the one that can wait.
+  if (ok && from && !state.pendingConfirm && !state.pendingPlan) await offerPush(from.scope)
 }
 
 export async function applyPendingPlan(): Promise<void> {
   const plan = state.pendingPlan
   if (!plan) return
-  state.planBusy = true
-  const res = await guard(() => client.call('git.apply', { planId: plan.planId }))
-  state.planBusy = false
-  state.pendingPlan = null
-  state.pendingPlanFrom = null
+  const res = await applyAside(plan, () => {
+    if (state.pendingPlan === plan) {
+      state.pendingPlan = null
+      state.pendingPlanFrom = null
+    }
+  })
+  if (res === undefined) return
   await settlePlan(plan, res)
 }
 
@@ -4584,6 +4686,7 @@ export async function commit(
   all: boolean,
   opts: { paths?: string[]; amend?: boolean; push?: boolean } = {},
 ): Promise<boolean> {
+  if (stillBusy(topicId ? topicWorkspaceIds(topicId) : [workspaceId])) return false
   const res = await guard(() =>
     client.call('git.commit', {
       ...(topicId ? { topicId } : { workspaceIds: [workspaceId] }),
@@ -4759,6 +4862,7 @@ export async function discard(params: {
   paths?: string[]
   hunk?: { path: string; index: number; lines: { kind: 'context' | 'add' | 'del'; text: string }[] }
 }): Promise<boolean> {
+  if (stillBusy([params.workspaceId])) return false
   const res = await guard(() => client.call('git.discard', params))
   if (!res) return false
   if (!res.ok) {
@@ -4798,6 +4902,7 @@ export async function stash(
   },
 ): Promise<boolean> {
   const { topicId, workspaceId, action, label, ...rest } = params
+  if (stillBusy(action === 'push' && topicId ? topicWorkspaceIds(topicId) : [workspaceId])) return false
   const res = await guard(() =>
     client.call('git.stash', {
       // push sweeps the whole topic; pop, apply and drop name one entry in one
@@ -4834,6 +4939,7 @@ export async function stash(
  * dialog: this is the step that leaves the machine.
  */
 export async function pushTopic(topicId: string): Promise<void> {
+  if (stillBusy(topicWorkspaceIds(topicId))) return
   const res = await guard(() => client.call('topic.push', { topicId }))
   if (!res) return
   if (!res.ok || !res.plan) {
@@ -4978,6 +5084,7 @@ function askPull(plan: PlanPreview, branch: string): void {
  * base in each repository's main checkout, as one `--no-ff` merge.
  */
 export async function mergeTopic(topicId: string, push: boolean): Promise<void> {
+  if (stillBusy(topicWorkspaceIds(topicId))) return
   const res = await guard(() => client.call('topic.merge', { topicId, push }))
   if (!res) return
   if (!res.ok || !res.plan) {
@@ -5048,6 +5155,7 @@ export async function rebaseTopic(
   base?: string,
   bases: Record<string, string> = {},
 ): Promise<void> {
+  if (stillBusy(topicWorkspaceIds(topicId))) return
   const res = await guard(() =>
     client.call('topic.rebase', { topicId, base, ...(Object.keys(bases).length ? { bases } : {}) }),
   )

@@ -15,7 +15,7 @@ import FindBar from '../FindBar.vue'
 import { paintDiff } from '../../core/editor.js'
 import { useFindKey, useTextFind } from '../../core/find.js'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, busyVerb, busyWord, gitBusy, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
   resetCommitHeight, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
@@ -528,6 +528,13 @@ type Include = 'all' | 'staged' | 'picked'
 const include = ref<Include>('all')
 const stageAll = computed(() => include.value === 'all')
 const committing = ref(false)
+/**
+ * A plan running aside on this checkout — usually the commit this box just
+ * sent, confirmed and gone from the screen. The box stays usable to write in,
+ * but it cannot send a second one into a tree the first is still changing.
+ */
+const running = computed(() => busyVerb(gitBusy[props.workspace.id]))
+const sending = computed(() => running.value === 'commit' || running.value === 'amend')
 
 // Ticking a file is choosing what to commit; clearing the ticks gives it back.
 watch(
@@ -649,7 +656,8 @@ const canCommit = computed(
     // An amend with nothing new is a message rewrite, and still an amend.
     (fileCount.value > 0 || amending.value) &&
     !blocked.value.length &&
-    !committing.value,
+    !committing.value &&
+    !running.value,
 )
 
 /** Where it lands, said before the button rather than after it. */
@@ -732,6 +740,7 @@ onBeforeUnmount(() => {
 
 const commitLabel = computed(() => {
   if (committing.value) return 'Planning…'
+  if (sending.value) return busyWord(running.value) + '…'
   const n = fileCount.value
   const files = n + ' file' + (n === 1 ? '' : 's')
   if (amending.value) return n ? 'Amend with ' + files : 'Amend message'
@@ -867,6 +876,18 @@ function since(ts: number): string {
  */
 watch(
   () => !!state.pendingPlan || !!state.pendingConfirm,
+  (now, before) => {
+    if (before && !now) {
+      void refreshStashes()
+      void refreshCommit()
+      void load()
+    }
+  },
+)
+
+/** The same moment for a plan that ran aside: the dialog closed before it finished. */
+watch(
+  () => gitBusy[props.workspace.id],
   (now, before) => {
     if (before && !now) {
       void refreshStashes()
@@ -1369,17 +1390,19 @@ const mark: Record<string, Component> = {
             <div ref="menuRoot" class="csplit">
               <button
                 class="btn primary cmain"
+                :class="{ sending }"
                 :disabled="!canCommit"
                 :title="'⌘⏎'"
                 @click="doCommit()"
               >
-                <component :is="amending ? PencilLine : GitCommitHorizontal" />
+                <LoaderCircle v-if="sending" class="spin" />
+                <component :is="amending ? PencilLine : GitCommitHorizontal" v-else />
                 {{ commitLabel }}
               </button>
               <button
                 class="btn primary cmore"
                 :class="{ open: menuOpen, dim: !canCommit && !menuOpen }"
-                :disabled="committing"
+                :disabled="committing || !!running"
                 title="More ways to commit"
                 @click="menuOpen = !menuOpen"
               >
@@ -1830,6 +1853,9 @@ const mark: Record<string, Component> = {
 .csplit > .btn { box-shadow: none; }
 .csplit > .btn:active:not(:disabled) { transform: none; }
 .cmain { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+/* Off because it is busy, not because it is unavailable: a dimmed spinner
+   reads as the second. */
+.cmain.sending:disabled { opacity: 0.75; cursor: progress; }
 .cmore {
   flex: none;
   width: 32px;

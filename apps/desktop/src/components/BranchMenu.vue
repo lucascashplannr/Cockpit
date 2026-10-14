@@ -4,7 +4,7 @@ import type { BranchRef } from '@cockpit/shared'
 import { ChevronDown, Cloud, GitBranch, LoaderCircle, Lock, Plus, ShieldCheck, ShieldOff } from '@lucide/vue'
 import { matchesBranch } from '@cockpit/shared'
 import {
-  client, gitBusy, guard, protectedFor, requestPlan, setBranchProtected, state,
+  busyVerb, busyWord, client, gitBusy, guard, protectedFor, requestPlan, setBranchProtected, state,
 } from '../core/store.js'
 
 /**
@@ -38,6 +38,13 @@ const field = ref<HTMLInputElement | null>(null)
  * switch — the working tree is mid-change and the branch list is already stale.
  */
 const busy = computed(() => !!gitBusy[props.workspaceId])
+/**
+ * Spinning only for the verbs that move the branch. A commit or a push runs
+ * aside and keeps this chip off too — the branch under a commit is not one
+ * to change — but its own button is the one turning, and two spinners on one
+ * bar read as two things happening.
+ */
+const moving = computed(() => ['switch', 'branch', 'worktree'].includes(busyVerb(gitBusy[props.workspaceId]) ?? ''))
 
 /**
  * §16 — whether this repository protects the branch, and by what. The shield
@@ -181,11 +188,11 @@ function noteOf(b: BranchRef): string {
       :class="{ on: open, busy }"
       :disabled="busy"
       :title="busy
-        ? 'Switching branch…'
+        ? busyWord(gitBusy[workspaceId]) + '…'
         : 'On ' + branch + (guarded ? ', protected — no commits here' : '') + ' — switch branch'"
       @click="toggle"
     >
-      <LoaderCircle v-if="busy" class="sm spin" />
+      <LoaderCircle v-if="moving" class="sm spin" />
       <ShieldCheck v-else-if="guarded" class="sm guard" />
       <GitBranch v-else class="sm" />
       <span class="bn">{{ branch }}</span>
@@ -303,7 +310,7 @@ function noteOf(b: BranchRef): string {
    says otherwise. */
 .chip:disabled { cursor: default; }
 .chip.busy .bn { color: var(--text-dim); }
-.chip.busy .lucide { color: var(--accent); opacity: 1; }
+.chip.busy .spin { color: var(--accent); opacity: 1; }
 .chip .lucide { flex: none; width: 12px; height: 12px; opacity: 0.85; }
 /* The shield carries the name's ink rather than the glyph's: it is the one
    thing on the chip worth reading before the name. */
