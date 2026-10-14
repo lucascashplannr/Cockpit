@@ -242,6 +242,21 @@ const isMarkdown = computed(() => {
 })
 const previewing = computed(() => isMarkdown.value && mdView.value === 'preview')
 
+/** The diff can be read three ways only when it has lines to read. */
+const hasDiff = computed(() => !!current.value?.lines.length)
+const readings = computed(
+  () => (hasDiff.value ? 1 + (narrow.value ? 0 : 1) + (editable.value ? 1 : 0) : 0) + (isMarkdown.value ? 1 : 0),
+)
+/** Preview and the diffs are one choice now: leaving the editor for any of them asks first. */
+function readAs(v: DiffView | 'preview'): void {
+  if (v === 'preview') {
+    if (!previewing.value) leaveEdit(() => setMdView('preview'))
+    return
+  }
+  if (previewing.value) setMdView('code')
+  setView(v)
+}
+
 const preview = ref<{ path: string; content: string; truncated: boolean } | null>(null)
 
 /**
@@ -938,6 +953,7 @@ async function revealFolder() {
 
 async function openInIde() {
   if (!selected.value) return
+  detailOpen.value = false
   await guard(() =>
     client.call('workspace.openIn', {
       workspaceId: props.workspace.id,
@@ -1463,6 +1479,7 @@ const mark: Record<string, Component> = {
             </dl>
             <div class="rule" />
             <button @click="copyPath"><Copy />Copy path</button>
+            <button @click="openInIde"><SquareArrowOutUpRight />Open in IDE</button>
             <button @click="revealFolder"><FolderOpen />Open folder</button>
           </div>
         </div>
@@ -1471,6 +1488,32 @@ const mark: Record<string, Component> = {
         <!-- Each carries its icon and its word; when the column cannot spare
              the room, the words go and the path keeps it. The title and the
              aria-label still say what the icon means. -->
+        <!-- One switch for every way the file is read — the three diffs, and
+             a markdown file drawn — then what can be done to it. Narrow, there
+             is no room for Split; a deleted file has no whole to show; with one
+             reading left there is nothing to choose and no switch. -->
+        <div v-if="readings > 1" class="seg" role="group" aria-label="File view">
+          <template v-if="hasDiff">
+            <button :class="{ on: !previewing && !whole && !split }" title="Unified" aria-label="Unified" @click="readAs('unified')">
+              <Rows2 /><span class="vlabel">Unified</span>
+            </button>
+            <button v-if="!narrow" :class="{ on: !previewing && split && !whole }" title="Split" aria-label="Split" @click="readAs('split')">
+              <Columns2 /><span class="vlabel">Split</span>
+            </button>
+            <button
+              v-if="editable"
+              :class="{ on: !previewing && whole }"
+              title="Whole file, with the changes marked"
+              aria-label="Whole file"
+              @click="readAs('file')"
+            >
+              <FileText /><span class="vlabel">File</span>
+            </button>
+          </template>
+          <button v-if="isMarkdown" :class="{ on: previewing }" title="Preview" aria-label="Preview" @click="readAs('preview')">
+            <Eye /><span class="vlabel">Preview</span>
+          </button>
+        </div>
         <!-- One Edit, meaning one thing: this file, here. From a hunk view
              it opens the whole file to type in. -->
         <button
@@ -1485,53 +1528,17 @@ const mark: Record<string, Component> = {
         >
           <FilePen /><span class="vlabel">Edit</span>
         </button>
+        <!-- Only when there is something to write, as in the Code tab: the dot
+             on the name already says so, and ⌘S works either way. -->
         <button
-          v-if="whole && !previewing && editing"
-          class="icon-btn vsave"
-          :class="{ due: unsaved }"
-          :disabled="!unsaved"
+          v-if="whole && !previewing && editing && unsaved"
+          class="icon-btn vsave due"
           title="Save (⌘S)"
           aria-label="Save"
           @click="fileView?.save()"
         >
           <Save />
         </button>
-        <button class="btn ghost vbtn" title="Open in IDE" aria-label="Open in IDE" @click="openInIde">
-          <SquareArrowOutUpRight /><span class="vlabel">Open in IDE</span>
-        </button>
-        <div v-if="isMarkdown" class="seg" role="group" aria-label="Markdown view">
-          <button :class="{ on: mdView === 'code' }" title="Code" aria-label="Code" @click="setMdView('code')">
-            <Code /><span class="vlabel">Code</span>
-          </button>
-          <button :class="{ on: mdView === 'preview' }" title="Preview" aria-label="Preview" @click="setMdView('preview')">
-            <Eye /><span class="vlabel">Preview</span>
-          </button>
-        </div>
-        <!-- Narrow, there is no room for Split and it is not offered; a
-             deleted file has no whole to show. With neither, there is no
-             choice to make and no switch. -->
-        <div
-          v-if="!previewing && current && current.lines.length && (!narrow || editable)"
-          class="seg"
-          role="group"
-          aria-label="Diff view"
-        >
-          <button :class="{ on: !whole && !split }" title="Unified" aria-label="Unified" @click="setView('unified')">
-            <Rows2 /><span class="vlabel">Unified</span>
-          </button>
-          <button v-if="!narrow" :class="{ on: split && !whole }" title="Split" aria-label="Split" @click="setView('split')">
-            <Columns2 /><span class="vlabel">Split</span>
-          </button>
-          <button
-            v-if="editable"
-            :class="{ on: whole }"
-            title="Whole file, with the changes marked"
-            aria-label="Whole file"
-            @click="setView('file')"
-          >
-            <FileText /><span class="vlabel">File</span>
-          </button>
-        </div>
         </div>
       </div>
 
@@ -2147,9 +2154,6 @@ const mark: Record<string, Component> = {
   .vlabel { display: none; }
   /* Square, and as tall as the switches beside it. */
   .vhead .vbtn { flex: none; width: 28px; height: 28px; padding: 0; }
-  /* Two bare icons already carry their own inset; the set's gap on top of it
-     pushed them apart. */
-  .vhead .vbtn + .vbtn { margin-left: -4px; }
   .vhead .seg > button { padding: 0 6px; }
 }
 

@@ -1175,6 +1175,8 @@ export interface GraphCommit {
    * that ref's reflog (`update by push`). Git keeps no other record of a push.
    */
   pushes: { ref: string; ts: number }[]
+  /** On a file's commits: the name the file had after this one. */
+  path?: string
 }
 
 export interface CommitGraph {
@@ -1204,6 +1206,27 @@ export interface CommitDetail {
    * Absent from a core older than 2.27.
    */
   branches?: GraphRef[]
+}
+
+export interface BlameCommit {
+  hash: string
+  author: string
+  email: string
+  /** Author time, ms. */
+  ts: number
+  subject: string
+  /** False for the lines on disk that no commit has yet. */
+  committed: boolean
+  /** A co-author trailer names an agent, as on the Commits tool's rows. */
+  agent: boolean
+}
+
+export interface FileBlame {
+  /** False when git has no history for the file — untracked, or no commit yet. */
+  tracked: boolean
+  commits: BlameCommit[]
+  /** One per line of the file: an index into `commits`. */
+  lines: number[]
 }
 
 export interface SearchHit {

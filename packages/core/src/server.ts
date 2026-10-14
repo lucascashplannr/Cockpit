@@ -675,8 +675,9 @@ const handlers: Record<string, Handler> = {
     return log(ws.path, p.limit ?? 40)
   },
   /** §2 — the Commits tool. Read-only, and probed on every call (§3.4). */
-  'git.graph': (p: { workspaceId: string; scope: 'branch' | 'all'; limit?: number }) =>
-    history.graph(p.workspaceId, p.scope === 'all' ? 'all' : 'branch', p.limit),
+  'git.graph': (p: { workspaceId: string; scope: 'branch' | 'all'; limit?: number; path?: string | null }) =>
+    history.graph(p.workspaceId, p.scope === 'all' ? 'all' : 'branch', p.limit, p.path),
+  'git.blame': (p: { workspaceId: string; path: string }) => history.blame(p.workspaceId, p.path),
   'git.show': (p: { workspaceId: string; hash: string }) => history.show(p.workspaceId, p.hash),
   'git.showFile': (p: { workspaceId: string; hash: string; path: string; oldPath?: string | null }) =>
     history.showFile(p.workspaceId, p.hash, p.path, p.oldPath),

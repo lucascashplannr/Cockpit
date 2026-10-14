@@ -87,8 +87,11 @@
  * 2.29 — `memory.erased`, `memory.readErased`, `memory.restore`, `memory.purge`. `memory.erase`
  * keeps the file instead of sending it to the Trash; against an older core the
  * window lists nothing under Erased.
+ *
+ * 2.30 — `git.blame`, and `git.graph` takes `path`. An older core has no
+ * blame to give, and ignores `path`: the file's commits are the whole graph.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 29 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 30 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

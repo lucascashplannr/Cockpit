@@ -2,9 +2,10 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import type { CommitDetail, CommitGraph, FileDiff, GraphCommit, GraphRef, Workspace } from '@cockpit/shared'
 import {
-  ArrowLeft, ArrowUpFromLine, ChevronRight, Cloud, Copy, GitBranch, GitCommitVertical, GitGraph, Search, Sparkles, Tag, Undo2, X,
+  ArrowLeft, ArrowUpFromLine, ChevronRight, Cloud, Copy, FileCode, GitBranch, GitCommitVertical, GitGraph, Search, Sparkles, Tag,
+  Undo2, X,
 } from '@lucide/vue'
-import { client, guard, state, toast, undoCommit } from '../../core/store.js'
+import { client, guard, openFileAt, state, toast, undoCommit } from '../../core/store.js'
 import { layout } from '../../core/graph.js'
 import type { LaidRow } from '../../core/graph.js'
 
@@ -68,11 +69,20 @@ const list = ref<HTMLElement | null>(null)
 
 const head = computed(() => props.workspace.git?.lastCommit?.hash ?? null)
 
+/**
+ * One file's commits, asked for from the Code tab: HEAD's, followed across
+ * renames, drawn as one line. Opening one goes straight to what it did to the
+ * file — that is the question that brought you here.
+ */
+const file = computed(() => state.commitsFile)
+
 let seq = 0
 async function load() {
   const mine = ++seq
   const res = await guard(() =>
-    client.call('git.graph', { workspaceId: props.workspace.id, scope: scope.value, limit: limit.value }),
+    client.call('git.graph', {
+      workspaceId: props.workspace.id, scope: scope.value, limit: limit.value, path: file.value,
+    }),
   )
   if (mine !== seq) return
   failed.value = !res
@@ -85,7 +95,7 @@ watch(
   () => {
     const g = props.workspace.git
     return [
-      props.workspace.id, scope.value, limit.value,
+      props.workspace.id, scope.value, limit.value, file.value,
       g?.lastCommit?.hash, g?.branch, g?.upstream, g?.ahead, g?.behind, g?.behindBase,
     ].join('|')
   },
@@ -95,13 +105,14 @@ watch(
 
 // A different repository, or a different reading of this one, is a new page.
 watch(
-  () => props.workspace.id + '|' + scope.value,
+  () => props.workspace.id + '|' + scope.value + '|' + file.value,
   () => {
     limit.value = PAGE
     opened.value = null
     cursor.value = null
     details.clear()
     diffs.clear()
+    shownTheFile.clear()
     openFiles.clear()
   },
 )
@@ -119,12 +130,12 @@ const uncommitted = computed(() => {
   return g ? g.staged + g.unstaged + g.untracked : 0
 })
 const showWorktree = computed(
-  () => uncommitted.value > 0 && !!head.value && commits.value.some((c) => c.hash === head.value),
+  () => !file.value && uncommitted.value > 0 && !!head.value && commits.value.some((c) => c.hash === head.value),
 )
 const laid = computed(() =>
   showWorktree.value
     ? layout([{ hash: WORKTREE, parents: [head.value!], virtual: true }, ...commits.value], WORKTREE)
-    : layout(commits.value, head.value),
+    : layout(commits.value, file.value ? (commits.value[0]?.hash ?? null) : head.value),
 )
 const worktreeRow = computed(() => (showWorktree.value ? laid.value.rows[0]! : null))
 const lanes = computed(() => Math.min(Math.max(laid.value.width, 1), MAX_LANES))
@@ -281,10 +292,29 @@ function nameOf(p: string): string {
 async function open(hash: string) {
   opened.value = hash
   cursor.value = hash
-  if (details.has(hash) && details.get(hash) !== 'failed') return
-  details.set(hash, 'loading')
-  const d = await guard(() => client.call('git.show', { workspaceId: props.workspace.id, hash }))
-  details.set(hash, d ?? 'failed')
+  if (!details.has(hash) || details.get(hash) === 'failed') {
+    details.set(hash, 'loading')
+    const d = await guard(() => client.call('git.show', { workspaceId: props.workspace.id, hash }))
+    details.set(hash, d ?? 'failed')
+  }
+  openTheFile(hash)
+}
+
+/** On a file's commits, the file's own diff opens with the commit — once; closed, it stays closed. */
+const shownTheFile = new Set<string>()
+function openTheFile(hash: string) {
+  const d = details.get(hash)
+  if (!file.value || typeof d !== 'object' || shownTheFile.has(hash)) return
+  const name = commits.value.find((c) => c.hash === hash)?.path ?? file.value
+  const f = d.files.find((x) => x.path === name) ?? d.files.find((x) => x.path === file.value)
+  if (!f || f.binary) return
+  shownTheFile.add(hash)
+  if (!openFiles.has(fileKey(hash, f.path))) void toggleFile(hash, f.path, f.oldPath)
+}
+
+function isTheFile(hash: string, path: string): boolean {
+  if (!file.value) return false
+  return path === (commits.value.find((c) => c.hash === hash)?.path ?? file.value)
 }
 
 function toggle(hash: string) {
@@ -387,7 +417,13 @@ function more() {
 }
 
 function back() {
-  state.diffMode = 'changes'
+  // Back to where it was asked for: the file, in the Code tab.
+  if (file.value) openFileAt(props.workspace.id, file.value)
+  else state.diffMode = 'changes'
+}
+
+function nameOfFile(p: string): string {
+  return p.slice(Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')) + 1)
 }
 
 // Opened from the last commit at the foot of the Diff: open on it, once the
@@ -410,12 +446,21 @@ watch(
 <template>
   <div class="commits" :style="{ '--gutter': gutter + 'px' }">
     <div class="bar">
-      <button class="icon-btn" title="Back to the changes" aria-label="Back to the changes" @click="back">
+      <button
+        class="icon-btn"
+        :title="file ? 'Back to the file' : 'Back to the changes'"
+        :aria-label="file ? 'Back to the file' : 'Back to the changes'"
+        @click="back"
+      >
         <ArrowLeft class="sm" />
       </button>
+      <span v-if="file" class="fchip" :title="file">
+        <FileCode /><span class="fcn mono">{{ nameOfFile(file) }}</span>
+        <button title="Every file" aria-label="Every file" @click="state.commitsFile = null"><X /></button>
+      </span>
       <!-- Two icons, one line against several: the same drawing as the graph
            below, so the switch reads as what it will show. -->
-      <div class="seg icons" role="group" aria-label="Which commits">
+      <div v-else class="seg icons" role="group" aria-label="Which commits">
         <button
           :class="{ on: scope === 'branch' }"
           title="This branch — with its upstream and the base"
@@ -601,7 +646,7 @@ watch(
                   <template v-for="f in d.files" :key="f.path">
                     <button
                       class="file"
-                      :class="{ on: openFiles.has(fileKey(d.hash, f.path)) }"
+                      :class="{ on: openFiles.has(fileKey(d.hash, f.path)), the: isTheFile(d.hash, f.path) }"
                       :title="f.oldPath ? f.oldPath + ' → ' + f.path : f.path"
                       @click="toggleFile(d.hash, f.path, f.oldPath)"
                     >
@@ -656,6 +701,11 @@ watch(
       <button v-if="data?.more && !narrowed" class="btn ghost older" @click="more">Show older commits</button>
     </div>
 
+    <div v-else-if="data && file" class="empty">
+      <FileCode />
+      <strong>No commits yet</strong>
+      <span>This file has not been committed on this branch.</span>
+    </div>
     <div v-else-if="data" class="empty">
       <GitGraph />
       <strong>No commits yet</strong>
@@ -729,6 +779,35 @@ watch(
 /* Square cells: an icon in a cell shaped for a word is a word missing. */
 .seg.icons > button { width: 28px; padding: 0; justify-content: center; }
 .seg.icons .lucide { width: 14px; height: 14px; }
+
+/* The file the list is narrowed to, where the scope switch was: it is what
+   the list is of, and the × gives the whole repository back. */
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 50%;
+  height: 28px;
+  padding: 0 3px 0 9px;
+  border-radius: var(--radius-sm);
+  background: var(--active);
+  color: var(--text);
+  font-size: var(--fs-xs);
+}
+.fchip > .lucide { flex: none; width: 13px; height: 13px; color: var(--text-dim); }
+.fcn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fchip button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: var(--text-dim);
+}
+.fchip button:hover { background: var(--hover); color: var(--text); }
+.fchip button .lucide { width: 12px; height: 12px; }
 
 .find {
   display: flex;
@@ -1027,6 +1106,8 @@ watch(
   text-align: left;
 }
 .file:hover { background: var(--hover); color: var(--text); }
+/* On a file's commits, the file itself among the others the commit touched. */
+.file.the { color: var(--text); font-weight: 500; }
 .file .ch { flex: none; width: 12px; height: 12px; color: var(--text-dim); transition: transform var(--dur-2) var(--ease); }
 .file.on .ch { transform: rotate(90deg); }
 .st { flex: none; width: 12px; font-family: var(--mono); font-weight: 600; font-size: 11px; color: var(--text-dim); }

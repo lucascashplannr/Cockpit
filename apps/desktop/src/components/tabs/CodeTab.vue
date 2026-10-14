@@ -1,19 +1,37 @@
+<script lang="ts">
+/**
+ * Per workspace: the file the Code tab had open, where the caret and the
+ * scroll were, and — if it was not saved — what had been typed. Leaving the
+ * tab or the workspace is looking elsewhere, not closing the file: it is all
+ * there on the way back. Kept for as long as the window, not past it.
+ */
+interface Left {
+  path: string
+  anchor: number
+  scroll: number
+  draft: { content: string; mtimeMs: number | null } | null
+}
+const left = new Map<string, Left>()
+</script>
+
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import type { FileEntry, Workspace } from '@cockpit/shared'
+import type { BlameCommit, FileEntry, Workspace } from '@cockpit/shared'
 import {
-  ChevronDown, ChevronRight, Code, Copy, Eye, File, FileCode, Folder, FolderOpen, Info, Save, Search,
+  ChevronDown, ChevronRight, Code, Copy, Eye, File, FileCode, Folder, FolderOpen, GitCommitVertical, Info, Save, Search,
+  UserPen,
 } from '@lucide/vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
 import Splitter from '../Splitter.vue'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, client, guard, layout, resetPlaceWidth, savePlaceWidth, setColumnWidth, state,
-  stopSaveOnProtected, toast,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, client, goTo, guard, layout, openCommits, resetPlaceWidth, savePlaceWidth,
+  setColumnWidth, state, stopSaveOnProtected, toast,
 } from '../../core/store.js'
 import { cockpitTheme, languageFor } from '../../core/editor.js'
+import { blameGutter, blameMarks, blameOn } from '../../core/blame.js'
 
 /**
  * §12 — "Périmètre assumé : voir, naviguer, éditer manuellement. Pas de
@@ -75,6 +93,7 @@ const dirty = ref(false)
 const host = ref<HTMLElement | null>(null)
 const view = shallowRef<EditorView | null>(null)
 const langCompartment = new Compartment()
+const blameCompartment = new Compartment()
 /** Bumped on every edit and every open, so what reads the document follows it. */
 const docTick = ref(0)
 
@@ -92,6 +111,19 @@ async function loadDir(rel: string): Promise<FileEntry[]> {
   return r ?? []
 }
 
+/** Where this workspace's file was left, kept for the way back. */
+function leave(workspaceId: string) {
+  const v = view.value
+  const path = openPath.value
+  if (!path) return
+  left.set(workspaceId, {
+    path,
+    anchor: v?.state.selection.main.head ?? 0,
+    scroll: v?.scrollDOM.scrollTop ?? 0,
+    draft: v && dirty.value ? { content: v.state.doc.toString(), mtimeMs: openMtime.value } : null,
+  })
+}
+
 async function loadRoot() {
   openPath.value = null
   dirty.value = false
@@ -100,6 +132,10 @@ async function loadRoot() {
   view.value = null
   const entries = await loadDir('.')
   roots.value = entries.map((e) => ({ entry: e, depth: 0, expanded: false, children: null }))
+  // Back where it was left — first, so that an edit kept there is on screen
+  // before anything asked for meanwhile can ask to replace it.
+  const was = left.get(props.workspace.id)
+  if (was) await openFile(was.path)
   takeRequest()
 }
 
@@ -108,12 +144,46 @@ function takeRequest() {
   const r = state.codeRequest
   if (!r || r.workspaceId !== props.workspace.id) return
   state.codeRequest = null
-  void openFile(r.path, r.line)
+  goToFile(r.path, r.line)
+}
+
+/**
+ * Every way of opening a file comes through here. The file already open is
+ * not read again — that would put the disk's copy over what was typed — and
+ * another one, over an edit not saved, is asked for first: nothing else keeps
+ * that edit, as the Diff's question says.
+ */
+function goToFile(path: string, line: number | null = null) {
+  if (path === openPath.value && view.value) {
+    if (line) toLine(view.value, line)
+    return
+  }
+  if (!dirty.value) return void openFile(path, line)
+  state.pendingConfirm = {
+    title: 'Drop your edit?',
+    body: ['What you typed in ' + baseName(openPath.value ?? '') + ' is not saved, and nothing keeps a copy of it.'],
+    verb: 'Drop the edit',
+    cancel: 'Keep editing',
+    done: 'Edit dropped',
+    danger: true,
+    run: async () => {
+      void openFile(path, line)
+      return true
+    },
+  }
+}
+
+/** A search hit is a line, not a file: land on it, in the middle of the
+ *  screen, where the eye is already going. */
+function toLine(v: EditorView, line: number) {
+  const at = v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines))
+  v.dispatch({ selection: { anchor: at.from }, effects: EditorView.scrollIntoView(at.from, { y: 'center' }) })
+  v.focus()
 }
 
 async function toggle(node: Node) {
   if (node.entry.kind !== 'dir') {
-    await openFile(node.entry.path)
+    goToFile(node.entry.path)
     return
   }
   node.expanded = !node.expanded
@@ -147,6 +217,7 @@ function isImage(path: string): boolean {
 async function openImage(path: string) {
   const r = await guard(() => client.call('fs.readImage', { workspaceId: props.workspace.id, rel: path }))
   if (!r) return
+  if (!left.get(props.workspace.id)?.draft) left.delete(props.workspace.id)
   openPath.value = path
   openMtime.value = r.mtimeMs
   dirty.value = false
@@ -159,12 +230,18 @@ async function openFile(path: string, line: number | null = null) {
   if (isImage(path)) return openImage(path)
   const r = await guard(() => client.call('fs.read', { workspaceId: props.workspace.id, rel: path }))
   if (!r) return
+  // What was left here unsaved goes back over the disk's copy, with the
+  // mtime it was opened at — so a save still refuses if the file moved since.
+  const was = left.get(props.workspace.id)
+  const kept = was?.path === path ? was : null
+  // Another file's kept edit is not this one to drop.
+  if (kept || !was?.draft) left.delete(props.workspace.id)
   openPath.value = path
-  openMtime.value = r.mtimeMs
+  openMtime.value = kept?.draft ? kept.draft.mtimeMs : r.mtimeMs
   dirty.value = false
   image.value = null
 
-  const doc = r.binary ? '' : r.content
+  const doc = kept?.draft ? kept.draft.content : r.binary ? '' : r.content
   const el = host.value
   if (!el) return
   view.value?.destroy()
@@ -173,6 +250,8 @@ async function openFile(path: string, line: number | null = null) {
     state: EditorState.create({
       doc,
       extensions: [
+        // Before the numbers: who, then which line, then the line.
+        blameCompartment.of(blameOn.value ? blameExt : []),
         lineNumbers(),
         history(),
         highlightActiveLine(),
@@ -193,13 +272,16 @@ async function openFile(path: string, line: number | null = null) {
     }),
   })
   docTick.value++
-  // A search hit is a line, not a file: land on it, in the middle of the
-  // screen, where the eye is already going.
-  if (line) {
+  if (kept?.draft) dirty.value = true
+  // Blame reads the disk; over a kept edit its lines would be off by what was typed.
+  if (blameOn.value && !dirty.value) void loadBlame()
+  if (line) toLine(view.value, line)
+  else if (kept) {
     const v = view.value
-    const at = v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines))
-    v.dispatch({ selection: { anchor: at.from }, effects: EditorView.scrollIntoView(at.from, { y: 'center' }) })
-    v.focus()
+    v.dispatch({ selection: { anchor: Math.min(kept.anchor, v.state.doc.length) } })
+    requestAnimationFrame(() => {
+      if (view.value === v) v.scrollDOM.scrollTop = kept.scroll
+    })
   }
 }
 
@@ -226,9 +308,84 @@ async function save() {
   openMtime.value = res.mtimeMs
   dirty.value = false
   toast('ok', 'saved ' + openPath.value, { icon: 'save' })
+  // What was saved is what the next blame reads: the edited lines become
+  // not committed, and the ones around them find their commits again.
+  if (blameOn.value) void loadBlame()
 }
 
-watch(() => props.workspace.id, loadRoot, { immediate: true })
+/* ── who wrote it ──────────────────────────────────────────────────────────
+ *
+ * §2 — git's answer, beside each line: the commit that last touched it. A
+ * click on it opens this file's commits on that one, where the change it made
+ * can be read; on a line not committed yet, the changes themselves.
+ */
+const blameExt = blameGutter(openBlamed)
+/** False when git knows nothing of the file — the toggle says so and draws nothing. */
+const blameTracked = ref(true)
+
+let blameSeq = 0
+async function loadBlame() {
+  const path = openPath.value
+  const v = view.value
+  if (!path || !v || image.value) return
+  const mine = ++blameSeq
+  const r = await guard(() => client.call('git.blame', { workspaceId: props.workspace.id, path }))
+  if (mine !== blameSeq || view.value !== v || openPath.value !== path || !r) return
+  blameTracked.value = r.tracked
+  blameMarks(v, r)
+}
+
+function setBlame(on: boolean) {
+  if (blameOn.value === on) return
+  blameOn.value = on
+  view.value?.dispatch({ effects: blameCompartment.reconfigure(on ? blameExt : []) })
+  if (on) void loadBlame()
+}
+
+/**
+ * One switch for the three ways a file is read: as code, as code with who
+ * wrote each line beside it, and drawn. Authors is code with a column more,
+ * so it takes Preview's place when chosen and gives it back to Code.
+ */
+type Reading = 'code' | 'authors' | 'preview'
+const reading = computed<Reading>(() => (previewing.value ? 'preview' : blameOn.value ? 'authors' : 'code'))
+function read(r: Reading) {
+  if (r === 'preview') return setPreviewView('preview')
+  if (previewKind.value) setPreviewView('code')
+  setBlame(r === 'authors')
+}
+
+function openBlamed(c: BlameCommit) {
+  if (!c.committed) {
+    goTo('diff')
+    return
+  }
+  if (openPath.value) openCommits(c.hash, openPath.value)
+}
+
+function fileCommits() {
+  if (!openPath.value) return
+  detailOpen.value = false
+  openCommits(null, openPath.value)
+}
+
+// A commit moves the lines it took from not committed to its own; a switch
+// of branch can move every one of them.
+watch(
+  () => [props.workspace.git?.lastCommit?.hash, props.workspace.git?.branch].join('|'),
+  () => {
+    if (blameOn.value && !dirty.value) void loadBlame()
+  },
+)
+
+watch(
+  () => props.workspace.id,
+  (_id, old) => {
+    if (old) leave(old)
+    void loadRoot()
+  },
+  { immediate: true },
+)
 watch(() => state.codeRequest, takeRequest)
 
 /* ── a file that is drawn, read as it is drawn ───────────────────────────
@@ -387,7 +544,10 @@ function openFinder() {
   state.paletteSeed = '/'
   state.paletteOpen = true
 }
-onBeforeUnmount(() => view.value?.destroy())
+onBeforeUnmount(() => {
+  leave(props.workspace.id)
+  view.value?.destroy()
+})
 </script>
 
 <template>
@@ -498,30 +658,42 @@ onBeforeUnmount(() => view.value?.destroy())
               </template>
             </dl>
             <div class="rule" />
+            <button v-if="workspace.repo && !image" @click="fileCommits"><GitCommitVertical />Commits</button>
             <button @click="copyPath"><Copy />Copy path</button>
             <button @click="revealFolder"><FolderOpen />Open folder</button>
           </div>
         </div>
         <span class="grow" />
-        <div v-if="previewKind" class="seg" role="group" aria-label="File view">
-          <button :class="{ on: previewView === 'code' }" title="Code" aria-label="Code" @click="setPreviewView('code')">
+        <div class="etools">
+        <div v-if="!image && (previewKind || workspace.repo)" class="seg" role="group" aria-label="File view">
+          <button :class="{ on: reading === 'code' }" title="Code" aria-label="Code" @click="read('code')">
             <Code /><span class="vlabel">Code</span>
           </button>
-          <button :class="{ on: previewView === 'preview' }" title="Preview" aria-label="Preview" @click="setPreviewView('preview')">
+          <button
+            v-if="workspace.repo"
+            :class="{ on: reading === 'authors' }"
+            :title="reading === 'authors' && !blameTracked ? 'Not committed yet — git has no history for it' : 'Who wrote each line'"
+            aria-label="Authors"
+            @click="read('authors')"
+          >
+            <UserPen /><span class="vlabel">Authors</span>
+          </button>
+          <button v-if="previewKind" :class="{ on: reading === 'preview' }" title="Preview" aria-label="Preview" @click="read('preview')">
             <Eye /><span class="vlabel">Preview</span>
           </button>
         </div>
+        <!-- Only when there is something to write: the dot on the name already
+             says so, and ⌘S works either way. -->
         <button
-          v-if="!image"
-          class="icon-btn esave"
-          :class="{ due: dirty }"
-          :disabled="!dirty"
+          v-if="!image && dirty"
+          class="icon-btn esave due"
           title="Save (⌘S)"
           aria-label="Save"
           @click="save"
         >
           <Save />
         </button>
+        </div>
       </div>
       <div v-show="openPath && !previewing && !image" ref="host" class="cm" />
       <div v-if="openPath && previewing && previewKind === 'markdown' && !image" class="preview">
@@ -667,9 +839,11 @@ onBeforeUnmount(() => view.value?.destroy())
   border-radius: 50%;
   background: var(--warn);
 }
+/* The switch and Save are one set, closer to each other than to the name. */
+.etools { flex: none; display: flex; align-items: center; gap: 4px; }
 .esave { width: 26px; height: 26px; }
 .esave .lucide { width: 14px; height: 14px; }
-/* Only worth pressing when there is something to write; then it says so. */
+/* Shown only when there is something to write, and then it says so. */
 .esave.due { color: var(--accent); }
 .cm { flex: 1; min-height: 0; overflow: hidden; }
 .preview { flex: 1; min-height: 0; overflow: auto; }

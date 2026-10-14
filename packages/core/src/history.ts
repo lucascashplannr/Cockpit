@@ -1,4 +1,5 @@
-import type { CommitDetail, CommitGraph, DiffFile, FileDiff, GraphCommit, GraphRef } from '@cockpit/shared'
+import type { BlameCommit, CommitDetail, CommitGraph, DiffFile, FileBlame, FileDiff, GraphCommit, GraphRef } from '@cockpit/shared'
+import { safeResolve } from './config.js'
 import { parseUnified } from './diff.js'
 import { defaultBranch, git } from './git.js'
 import { requireWorkspace } from './registry.js'
@@ -29,37 +30,60 @@ const HASH = /^[0-9a-f]{7,64}$/i
  */
 const AGENT = /\b(claude|anthropic|codex|openai|copilot|cursor|devin|aider)\b/i
 
+/** A record, in the one log that interleaves its own lines with a file list. */
+const RS = '\u001e'
+
+const FORMAT = ['%H', '%P', '%an', '%ae', '%at', '%D', '%(trailers:key=Co-authored-by,valueonly,separator=%x1d)', '%s'].join('%x1f')
+
+/**
+ * The path as git wants it: relative to the repository and with `/`, which is
+ * what a Windows core's tree does not give (`relative()` answers with `\`).
+ * Resolved first, so a path that leaves the workspace is refused here rather
+ * than handed to git.
+ */
+function gitPath(root: string, rel: string): string {
+  safeResolve(root, rel)
+  return rel.replace(/\\/g, '/').replace(/^\.\//, '')
+}
+
 export async function graph(
   workspaceId: string,
   scope: 'branch' | 'all',
   limit = 300,
+  path?: string | null,
 ): Promise<CommitGraph> {
   const ws = requireWorkspace(workspaceId)
   const empty: CommitGraph = { commits: [], more: false, hasRemote: false }
   if (!ws.repo) return empty
   const cwd = ws.path
   const n = Math.max(1, Math.min(5000, Math.floor(limit)))
+  const file = path ? gitPath(cwd, path) : null
 
   const remotes = await git(cwd, ['for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes'])
   const hasRemote = remotes.ok && remotes.stdout.trim().length > 0
 
-  const { revs, watched } = scope === 'all' ? { revs: ['--branches', '--remotes', '--tags', 'HEAD'], watched: [] } : await branchRevs(cwd)
+  // One file's commits are the ones that made it what it is here: HEAD's,
+  // whatever the scope. The other branches' are other versions of the file,
+  // and drawn on one line with these they would read as its past.
+  const { revs, watched } = file
+    ? { revs: (await resolves(cwd, 'HEAD')) ? ['HEAD'] : [], watched: (await branchRevs(cwd)).watched }
+    : scope === 'all'
+      ? { revs: ['--branches', '--remotes', '--tags', 'HEAD'], watched: [] }
+      : await branchRevs(cwd)
   if (!revs.length) return { ...empty, hasRemote }
 
-  const F = ['%H', '%P', '%an', '%ae', '%at', '%D', '%(trailers:key=Co-authored-by,valueonly,separator=%x1d)', '%s'].join('%x1f')
-  const [log, unpushed] = await Promise.all([
-    git(cwd, ['log', '--date-order', '--decorate=full', '-n', String(n + 1), '--format=' + F, ...revs, '--']),
+  const [entries, unpushed] = await Promise.all([
+    file ? fileLog(cwd, revs, file, n + 1) : repoLog(cwd, revs, n + 1),
     hasRemote
       ? git(cwd, ['rev-list', '-n', '5000', ...revs, '--not', '--remotes', '--'])
       : Promise.resolve(null),
   ])
   // A repository with no commit yet answers with an error, and that is an
   // empty history rather than a failure.
-  if (!log.ok) return { ...empty, hasRemote }
+  if (!entries) return { ...empty, hasRemote }
 
   const local = new Set((unpushed?.stdout ?? '').split('\n').filter(Boolean))
-  const lines = log.stdout.split('\n').filter(Boolean)
-  const commits: GraphCommit[] = lines.slice(0, n).map((line) => {
+  const commits: GraphCommit[] = entries.slice(0, n).map(({ line, path }) => {
     const [hash = '', parents = '', author = '', email = '', at = '0', deco = '', trailers = '', ...rest] =
       line.split(US)
     return {
@@ -73,8 +97,18 @@ export async function graph(
       pushed: hasRemote && !local.has(hash),
       agent: trailers.split(GS).some((t) => AGENT.test(t)),
       pushes: [],
+      ...(path ? { path } : {}),
     }
   })
+  // Followed across renames, a file's commits are a line, not a graph: git
+  // gives each its real parents, which are mostly commits that did not touch
+  // the file and are not on the page. Each is drawn as coming from the next.
+  if (file) {
+    commits.forEach((c, i) => {
+      const next = commits[i + 1]
+      c.parents = next ? [next.hash] : entries.length > n ? c.parents.slice(0, 1) : []
+    })
+  }
 
   // The refs whose reflog is worth reading: the ones on screen. In `all` that
   // is every remote branch the page decorates, capped — a repository with four
@@ -91,7 +125,98 @@ export async function graph(
     for (const c of commits) c.pushes.sort((a, b) => b.ts - a.ts)
   }
 
-  return { commits, more: lines.length > n, hasRemote }
+  return { commits, more: entries.length > n, hasRemote }
+}
+
+async function repoLog(cwd: string, revs: string[], n: number): Promise<{ line: string; path?: string }[] | null> {
+  const log = await git(cwd, ['log', '--date-order', '--decorate=full', '-n', String(n), '--format=' + FORMAT, ...revs, '--'])
+  if (!log.ok) return null
+  return log.stdout.split('\n').filter(Boolean).map((line) => ({ line }))
+}
+
+/**
+ * `--follow`, so a file's commits go on past the one that renamed it — and
+ * with each, the name the file had in it, which is what `git.showFile` has to
+ * be asked for. Under `-z` a record is `RS fields NUL LF status NUL path NUL`,
+ * with a second path after a rename's.
+ */
+async function fileLog(cwd: string, revs: string[], file: string, n: number): Promise<{ line: string; path?: string }[] | null> {
+  const log = await git(cwd, [
+    'log', '--follow', '-M', '--decorate=full', '-z', '--name-status', '-n', String(n),
+    '--format=' + RS + FORMAT, ...revs, '--', file,
+  ])
+  if (!log.ok) return null
+  const out: { line: string; path?: string }[] = []
+  for (const rec of log.stdout.split(RS)) {
+    if (!rec) continue
+    const [line = '', ...rest] = rec.split('\0')
+    const fields = rest.map((f) => f.replace(/^\n/, '')).filter(Boolean)
+    // The last path of the record is the file's name after this commit.
+    const path = fields.length > 1 ? fields[fields.length - 1] : undefined
+    out.push({ line, path })
+  }
+  return out
+}
+
+/**
+ * §2 — who wrote each line, as git knows it: the commit that last touched it.
+ * Read off the file on disk, so lines not committed yet come back as such
+ * rather than shifting everything under them onto the wrong commit.
+ */
+export async function blame(workspaceId: string, path: string): Promise<FileBlame> {
+  const ws = requireWorkspace(workspaceId)
+  const none: FileBlame = { tracked: false, commits: [], lines: [] }
+  if (!ws.repo) return none
+  const cwd = ws.path
+  const file = gitPath(cwd, path)
+  const r = await git(cwd, ['blame', '--porcelain', '--', file], 60_000)
+  // Untracked, ignored, or a repository with no commit: nothing to say.
+  if (!r.ok) return none
+
+  const commits: BlameCommit[] = []
+  const at = new Map<string, number>()
+  const lines: number[] = []
+  let cur: BlameCommit | null = null
+  for (const row of r.stdout.split('\n')) {
+    if (row.startsWith('\t')) continue
+    const head = /^([0-9a-f]{40}) \d+ (\d+)/.exec(row)
+    if (head) {
+      const hash = head[1]!
+      let i = at.get(hash)
+      if (i === undefined) {
+        i = commits.length
+        at.set(hash, i)
+        commits.push({ hash, author: '', email: '', ts: 0, subject: '', committed: !/^0+$/.test(hash), agent: false })
+      }
+      cur = commits[i]!
+      lines[Number(head[2]) - 1] = i
+      continue
+    }
+    if (!cur) continue
+    const sp = row.indexOf(' ')
+    const key = sp === -1 ? row : row.slice(0, sp)
+    const val = sp === -1 ? '' : row.slice(sp + 1)
+    if (key === 'author') cur.author = val
+    else if (key === 'author-mail') cur.email = val.replace(/^<|>$/g, '')
+    else if (key === 'author-time') cur.ts = Number(val) * 1000
+    else if (key === 'summary') cur.subject = val
+  }
+
+  // The agent mark, as the Commits tool reads it: a co-author trailer.
+  const hashes = commits.filter((c) => c.committed).map((c) => c.hash).slice(0, 2000)
+  if (hashes.length) {
+    const t = await git(cwd, [
+      'show', '-s', '--no-walk=unsorted', '--format=%H%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1d)', ...hashes, '--',
+    ])
+    if (t.ok) {
+      for (const row of t.stdout.split('\n')) {
+        const [hash = '', trailers = ''] = row.split(US)
+        const c = commits[at.get(hash) ?? -1]
+        if (c) c.agent = trailers.split(GS).some((x) => AGENT.test(x))
+      }
+    }
+  }
+  return { tracked: true, commits, lines }
 }
 
 /**

@@ -248,6 +248,8 @@ export const state = reactive({
   diffMode: 'changes' as 'changes' | 'commits',
   /** The commit Commits opens on, once, then forgets. */
   commitsFocus: null as string | null,
+  /** Commits narrowed to one file — opened from the Code tab, `null` for the whole repository. */
+  commitsFile: null as string | null,
   /** The bar's Commit was pressed: the commit box takes the caret, once, then forgets. */
   commitAsked: false,
   /** §6 — each project's memories, and which one the next conversation on a scope uses. */
@@ -776,11 +778,12 @@ export function openCommit(): void {
   state.commitAsked = true
 }
 
-/** The commit graph, in the Diff's place — open on `focus` when given. */
-export function openCommits(focus: string | null = null): void {
+/** The commit graph, in the Diff's place — open on `focus` when given, narrowed to `file` when given. */
+export function openCommits(focus: string | null = null, file: string | null = null): void {
   goTo('diff')
   state.diffMode = 'commits'
   state.commitsFocus = focus
+  state.commitsFile = file
 }
 
 /** Which of the two right-hand columns is on screen, for the shell to draw. */

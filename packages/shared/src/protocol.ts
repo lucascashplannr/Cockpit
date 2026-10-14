@@ -8,7 +8,7 @@ import type { CockpitEvent } from './events.js'
 import type {
   AddRepoSource, AgentAnswers, AgentScope, AttachmentInput, BranchRef, Conversation, ConversationSummary, PermissionMode,
   CockpitSettings,
-  CommandRunResult, CommitDetail, CommitGraph, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
+  CommandRunResult, CommitDetail, CommitGraph, FileBlame, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DeclaredServer,
   DatabasePlan,
   DiffFile, Topic,
@@ -722,9 +722,12 @@ export interface Rpc {
    * against the two things it is measured by; `all` is every branch and tag.
    */
   'git.graph': {
-    params: { workspaceId: string; scope: 'branch' | 'all'; limit?: number }
+    /** `path` narrows it to one file's commits, followed across renames, on HEAD. */
+    params: { workspaceId: string; scope: 'branch' | 'all'; limit?: number; path?: string | null }
     result: CommitGraph
   }
+  /** §2 — the commit that last touched each line of a file, as it is on disk. */
+  'git.blame': { params: { workspaceId: string; path: string }; result: FileBlame }
   'git.show': { params: { workspaceId: string; hash: string }; result: CommitDetail }
   'git.showFile': {
     params: { workspaceId: string; hash: string; path: string; oldPath?: string | null }
