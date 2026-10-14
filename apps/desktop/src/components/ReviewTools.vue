@@ -86,7 +86,7 @@ const tools = computed(() =>
       </button>
     </nav>
 
-    <div class="body">
+    <div class="body" data-tool>
       <!-- The Diff's other reading, in its place: see `diffMode`. -->
       <CommitsTab v-if="shownReviewTool === 'diff' && state.diffMode === 'commits'" :workspace="workspace" />
       <DiffTab v-else-if="shownReviewTool === 'diff'" :workspace="workspace" />

@@ -561,3 +561,8 @@ input[type='checkbox']:indeterminate::after {
 .menu .rule + .rule {
   display: none;
 }
+
+/* Find over rows of text (the Diff's Unified and Split, see `useTextFind`):
+   the tint the editors and the Terminal give a match, and the one you are on. */
+::highlight(find) { background-color: color-mix(in srgb, var(--warn) 20%, transparent); }
+::highlight(find-on) { background-color: color-mix(in srgb, var(--warn) 45%, transparent); }

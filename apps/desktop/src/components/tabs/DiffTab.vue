@@ -11,7 +11,9 @@ import Splitter from '../Splitter.vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
 import FileChanges from '../FileChanges.vue'
 import Painted from '../Painted.vue'
+import FindBar from '../FindBar.vue'
 import { paintDiff } from '../../core/editor.js'
+import { useFindKey, useTextFind } from '../../core/find.js'
 import {
   LAYOUT_DEFAULTS, LAYOUT_LIMITS, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
   resetCommitHeight, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
@@ -357,6 +359,12 @@ const splitRows = computed<SplitRow[]>(() => {
 })
 /** The diff's lines in the editor's colours, or null for a language with no parser here. */
 const painted = computed(() => (current.value && selected.value ? paintDiff(selected.value, current.value.lines) : null))
+
+/* ⌘F over the rows, Unified or Split; the File view has its editor's own. */
+const hunksEl = ref<HTMLElement | null>(null)
+const finder = useTextFind(hunksEl)
+useFindKey(finder.target)
+watch(selected, () => void nextTick(finder.rewind))
 const loading = ref(false)
 
 /* ── §16 — discarding, and never for good ─────────────────────────────────
@@ -1547,6 +1555,16 @@ const mark: Record<string, Component> = {
         </div>
       </div>
 
+      <FindBar
+        v-if="finder.open.value && !previewing && !whole && current && current.lines.length"
+        :ref="(c) => (finder.bar.value = c as InstanceType<typeof FindBar> | null)"
+        v-model="finder.q.value"
+        class="vfind"
+        :hits="finder.hits.value"
+        @step="finder.step"
+        @close="finder.close"
+      />
+
       <div v-if="previewing" class="preview">
         <template v-if="preview && preview.path === selected">
           <p v-if="preview.truncated" class="ptrunc">Only the start of this file is shown — it is too large to read in full here.</p>
@@ -1565,7 +1583,7 @@ const mark: Record<string, Component> = {
         @saved="afterSave"
       />
 
-      <div class="hunks mono split" :class="{ painted }" v-else-if="split && current && current.lines.length">
+      <div ref="hunksEl" class="hunks mono split" :class="{ painted }" v-else-if="split && current && current.lines.length">
         <template v-for="(r, i) in splitRows" :key="i">
           <div v-if="'meta' in r" class="line meta">
             <span class="txt">{{ r.meta }}</span>
@@ -1603,7 +1621,7 @@ const mark: Record<string, Component> = {
         </template>
       </div>
 
-      <div class="hunks mono" :class="{ painted }" v-else-if="current && current.lines.length">
+      <div ref="hunksEl" class="hunks mono" :class="{ painted }" v-else-if="current && current.lines.length">
         <div v-for="(l, i) in current.lines" :key="i" class="line" :class="l.kind">
           <template v-if="l.kind === 'meta'">
             <span v-if="sides.old" class="gutter num" />
@@ -2095,6 +2113,7 @@ const mark: Record<string, Component> = {
 /* Only worth pressing when there is something to write; then it says so. */
 .vsave.due { color: var(--accent); }
 
+.vfind { flex: none; border-bottom: 1px solid var(--line); }
 .hunks {
   flex: 1;
   overflow: auto;

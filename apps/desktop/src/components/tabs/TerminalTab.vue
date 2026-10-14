@@ -575,9 +575,11 @@ watch(() => state.theme, () => void nextTick(repaint))
           <span class="count num">{{
             !hits || !hits.count ? 'none' : hits.index < 0 ? hits.count + '+' : hits.index + 1 + ' of ' + hits.count
           }}</span>
-          <button class="wipe" title="Previous  ⇧↵" :disabled="!hits?.count" @click="find(-1)"><ChevronUp /></button>
-          <button class="wipe" title="Next  ↵" :disabled="!hits?.count" @click="find(1)"><ChevronDown /></button>
-          <button class="wipe" title="Close  Esc" @click="closeFind"><X /></button>
+          <span class="steps">
+            <button class="wipe" title="Previous  ⇧↵" :disabled="!hits?.count" @click="find(-1)"><ChevronUp /></button>
+            <button class="wipe" title="Next  ↵" :disabled="!hits?.count" @click="find(1)"><ChevronDown /></button>
+            <button class="wipe" title="Close  Esc" @click="closeFind"><X /></button>
+          </span>
         </template>
       </label>
       <span class="tools">
@@ -702,6 +704,8 @@ watch(() => state.theme, () => void nextTick(repaint))
 }
 .find input::placeholder { color: var(--text-dim); }
 .count { flex: none; font-size: 11px; color: var(--text-dim); padding-right: 2px; }
+/* Three buttons, one set: closer to each other than to the count. */
+.steps { display: flex; flex: none; }
 .wipe {
   display: grid;
   place-items: center;

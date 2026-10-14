@@ -10,6 +10,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import type { DiffHunkLine, Workspace } from '@cockpit/shared'
 import { client, guard, stopSaveOnProtected, toast } from '../core/store.js'
 import { cockpitTheme, languageFor } from '../core/editor.js'
+import { editorFind, findInEditor, useFindKey } from '../core/find.js'
 
 /**
  * The Diff's third reading: the file as it stands, whole, with what changed
@@ -38,6 +39,7 @@ const emit = defineEmits<{ saved: [] }>()
 const host = ref<HTMLElement | null>(null)
 const view = shallowRef<EditorView | null>(null)
 const dirty = ref(false)
+useFindKey(() => editorFind(view.value))
 /** Only the start of the file came over: shown, never written back. */
 const truncated = ref(false)
 const unreadable = ref(false)
@@ -180,6 +182,7 @@ function create(doc: string): EditorView {
         languageFor(props.path),
         cockpitTheme,
         diffTheme,
+        findInEditor,
         marksField,
         EditorView.updateListener.of((u) => {
           if (u.docChanged && !quiet) dirty.value = true

@@ -31,6 +31,7 @@ import {
   setColumnWidth, state, stopSaveOnProtected, toast,
 } from '../../core/store.js'
 import { cockpitTheme, languageFor } from '../../core/editor.js'
+import { editorFind, findInEditor, useFindKey } from '../../core/find.js'
 import { blameGutter, blameMarks, blameOn } from '../../core/blame.js'
 import FileIcon from '../FileIcon.vue'
 
@@ -94,6 +95,7 @@ const dirty = ref(false)
 const host = ref<HTMLElement | null>(null)
 const view = shallowRef<EditorView | null>(null)
 const langCompartment = new Compartment()
+useFindKey(() => editorFind(view.value))
 const blameCompartment = new Compartment()
 /** Bumped on every edit and every open, so what reads the document follows it. */
 const docTick = ref(0)
@@ -256,6 +258,7 @@ async function openFile(path: string, line: number | null = null) {
         ]),
         langCompartment.of(languageFor(path)),
         cockpitTheme,
+        findInEditor,
         EditorView.updateListener.of((u) => {
           if (!u.docChanged) return
           dirty.value = true
