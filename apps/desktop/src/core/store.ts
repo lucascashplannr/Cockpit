@@ -458,6 +458,11 @@ export const state = reactive({
   /** The project `declarations` were read for — two sheets can ask for two. */
   declarationsFor: null as string | null,
   planBusy: false,
+  /**
+   * §4 — a topic whose plan is running and which has no row yet. The list
+   * draws it where it will land, folded, with a spinner for a lid.
+   */
+  openingTopic: null as { projectId: string; name: string } | null,
   toasts: [] as ToastItem[],
   theme: (localStorage.getItem('cockpit.theme') ?? 'system') as 'system' | 'dark' | 'light',
   /** What earns a system notification while the window is in the background. */
@@ -4468,7 +4473,7 @@ const BUSY_WORDS: Record<string, string> = {
   'stash apply': 'Putting back',
   'stash drop': 'Dropping',
   'undo commit': 'Undoing the commit',
-  open: 'Opening the topic',
+  open: 'Creating the topic',
   close: 'Closing the topic',
   delete: 'Deleting the topic',
 }
@@ -4532,6 +4537,29 @@ function planWorkspaces(plan: PlanPreview): string[] {
 async function applyAside(plan: PlanPreview, close: () => void): Promise<ApplyResult | null | undefined> {
   const ids = planWorkspaces(plan)
   if (stillBusy(ids)) return undefined
+  const opening = openingNames.get(plan.planId)
+  if (opening) {
+    openingNames.delete(plan.planId)
+    // Cleared once git.apply answers: the core pushes the new topic before
+    // it does, so the real row is already there to take its place.
+    state.openingTopic = opening
+    try {
+      return await applyAsideNow(plan, ids, close)
+    } finally {
+      state.openingTopic = null
+    }
+  }
+  return applyAsideNow(plan, ids, close)
+}
+
+/** The name a `topic.open` plan is opening, by plan id, for the list's placeholder. */
+const openingNames = new Map<string, { projectId: string; name: string }>()
+
+async function applyAsideNow(
+  plan: PlanPreview,
+  ids: string[],
+  close: () => void,
+): Promise<ApplyResult | null | undefined> {
   if (!ids.length) {
     state.planBusy = true
     const res = await guard(() => client.call('git.apply', { planId: plan.planId }))
@@ -5566,17 +5594,30 @@ export async function openTopic(input: {
   // headed "Open topic" with an Apply button and a line about restore points,
   // none of which was what had just been asked for.
   const branch = input.branch ?? slugify(input.name)
+  const name = input.name || branch
   const n = res.plan.repos?.length ?? input.repoWorkspaceIds?.length ?? 1
+  // "Open s?" read as opening a folder called s. The question is about making
+  // something: a topic, by its name, and then what that does to the code.
+  const onBranch = (input.branch ? 'the branch ' : 'a new branch ') + branch
+  openingNames.set(res.plan.planId, { projectId: state.activeProjectId!, name })
   state.pendingConfirm = {
-    title: 'Open ' + (input.name || branch) + '?',
+    title: 'Create the topic "' + name + '"?',
     body: [
       input.setup === 'branch'
-        ? (n === 1 ? 'The repository switches' : n + ' repositories switch') + ' to ' + branch + '.'
-        : (n === 1 ? 'A new folder' : n + ' new folders') + ' on ' + branch + '. The repositories themselves are not touched.',
+        ? (n === 1
+            ? 'The repository switches to ' + onBranch + '.'
+            : 'Each of the ' + n + ' repositories switches to ' + onBranch + '.')
+        : (n === 1
+            ? 'The repository gets ' + onBranch + ', checked out in a folder of its own. The repository itself is not touched.'
+            : 'Each of the ' + n + ' repositories gets ' + onBranch + ', checked out in a folder of its own. The repositories themselves are not touched.'),
       ...res.plan.warnings,
+      // §7 — said once here; the lines themselves are under the commands.
+      ...(res.plan.after?.length
+        ? ['Then ' + res.plan.after.length + ' setup command' + (res.plan.after.length === 1 ? '' : 's') + ' from cockpit.yaml.']
+        : []),
     ],
-    verb: 'Open',
-    done: 'topic opened',
+    verb: 'Create topic',
+    done: 'topic created',
     danger: false,
     plan: res.plan,
   }
@@ -5723,6 +5764,20 @@ export async function clearRuntimeLogs(workspaceId: string): Promise<boolean> {
 
 function dropLiveOutput(workspaceId: string): void {
   for (const [id, o] of Object.entries(state.procOutput)) if (o.workspaceId === workspaceId) delete state.procOutput[id]
+}
+
+/** §7 — `worktrees.setup` again, where it failed. Its output goes to the log pane. */
+export async function rerunTopicSetup(topicId: string): Promise<void> {
+  const res = await guard(() => client.call('topic.setup', { topicId }))
+  if (!res) return
+  if (!res.ok) toast('error', res.detail)
+  showSetupLog()
+}
+
+/** Where a topic's setup writes: the log pane, beside the conversation. */
+export function showSetupLog(): void {
+  state.reviewTool = 'output'
+  if (state.view === 'agent') state.view = 'split'
 }
 
 export function stopTopic(topicId: string): Promise<void> {

@@ -5,6 +5,7 @@ import type {
   Capability, ManifestV1, ProjectSettings, Setup, Topic, Project, Workspace, WorkspaceDetails,
 } from '@cockpit/shared'
 import * as topicStore from './topics/store.js'
+import * as preparing from './topics/preparing.js'
 import { loadConfig, migrateLegacyLocks, updateConfig, projectSettings, setProjectSettings } from './config.js'
 import { childRepos, detectCapabilities, findManifest, projectNameFor, readManifest } from './detect.js'
 import { fetchRemote, git, isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
@@ -104,6 +105,8 @@ function withRecord(f: Topic): Topic {
     state: rec.state,
     ticket: rec.ticket,
     review: rec.review,
+    // Read here, not at reconcile: it moves line by line while nothing else does.
+    preparing: preparing.get(rec.id, rec.rootPath),
     updatedAt: rec.updatedAt,
   }
 }

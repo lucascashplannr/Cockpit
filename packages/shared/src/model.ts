@@ -625,10 +625,32 @@ export interface Topic {
   ticket: TicketRef | null
   review: ReviewRef | null
   setup: Setup
+  /**
+   * §7 — `worktrees.setup` running in its new worktrees, or what failed
+   * there. Null once every line exited cleanly, and for a topic with none.
+   */
+  preparing?: TopicPreparation | null
   /** Inferred from matching branch names rather than opened deliberately. */
   derived: boolean
   createdAt: number
   updatedAt: number
+}
+
+/** One repository's `worktrees.setup` list, as it stands. */
+export interface PreparationStep {
+  repo: string
+  /** Where its output is: the checkout it runs in. */
+  workspaceId: string | null
+  state: 'running' | 'failed' | 'done'
+  /** The line running now, or the one that failed. */
+  command: string
+  /** How it failed — the last lines it wrote. */
+  detail?: string
+}
+
+export interface TopicPreparation {
+  state: 'running' | 'failed'
+  steps: PreparationStep[]
 }
 
 export interface TicketRef {

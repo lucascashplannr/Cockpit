@@ -3,7 +3,7 @@ import { attentionIcon } from './agent/attention.js'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
-  ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, Plus,
+  ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, LoaderCircle, Plus,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import ListToggle from './ListToggle.vue'
@@ -22,6 +22,25 @@ import {
  */
 
 const groups = computed(() => workspaceGroups.value)
+
+/**
+ * §4 — the topic being created, until its row exists: drawn where it will
+ * land (topics sort by name, loose repositories last) so nothing moves when
+ * the real one replaces it. Folded, with a spinner where the lid will be.
+ */
+const opening = computed(() => {
+  const o = state.openingTopic
+  if (!o || o.projectId !== state.activeProjectId) return null
+  // The core pushes the new topic a moment before the plan answers: once its
+  // row is here, two rows of the same name would be one too many.
+  return groups.value.some((g) => g.topicId && g.title === o.name) ? null : o
+})
+const openingAt = computed(() => {
+  const o = opening.value
+  if (!o) return -1
+  const at = groups.value.findIndex((g) => !g.topicId || (g.title ?? '').localeCompare(o.name) > 0)
+  return at < 0 ? groups.value.length : at
+})
 
 const hasProjects = computed(() => state.projects.length > 0)
 
@@ -175,7 +194,19 @@ const ATTENTION_TEXT: Record<string, string> = {
       </div>
 
       <template v-else>
-        <div v-for="(g, i) in groups" :key="g.topicId ?? 'loose-' + i" class="group" :class="{ topic: !!(g.title && g.topicId) }">
+        <template v-for="(g, i) in groups" :key="g.topicId ?? 'loose-' + i">
+          <!-- The topic being created, in the place it will take. -->
+          <div v-if="opening && i === openingAt" class="group topic opening" :title="'Creating ' + opening.name + '…'">
+            <span v-if="narrow" class="group-tile">
+              <span class="lead"><LoaderCircle class="sm spin" /></span>
+              <span class="title">{{ opening.name }}</span>
+            </span>
+            <div v-else class="group-head">
+              <span class="twist"><LoaderCircle class="sm spin" /></span>
+              <span class="pick"><span class="title">{{ opening.name }}</span></span>
+            </div>
+          </div>
+        <div class="group" :class="{ topic: !!(g.title && g.topicId) }">
           <!-- A topic is a decoration (§4): no topic, no header. And a
                header you can stand on: selecting it is selecting its scope. -->
           <!-- On the strip the header is one tile: what it leads with, and
@@ -282,6 +313,17 @@ const ATTENTION_TEXT: Record<string, string> = {
             :narrow="narrow"
           />
         </div>
+        </template>
+        <div v-if="opening && openingAt === groups.length" class="group topic opening" :title="'Creating ' + opening.name + '…'">
+            <span v-if="narrow" class="group-tile">
+              <span class="lead"><LoaderCircle class="sm spin" /></span>
+              <span class="title">{{ opening.name }}</span>
+            </span>
+            <div v-else class="group-head">
+              <span class="twist"><LoaderCircle class="sm spin" /></span>
+              <span class="pick"><span class="title">{{ opening.name }}</span></span>
+            </div>
+          </div>
       </template>
     </div>
 
@@ -301,11 +343,11 @@ const ATTENTION_TEXT: Record<string, string> = {
     <footer v-if="activeProject && hasProjects" class="foot">
       <button
         class="add"
-        title="Open a topic — one named branch across every repository it touches"
+        title="New topic — one named branch across every repository it touches"
         @click="state.topicDialogOpen = true"
       >
         <Plus class="sm" />
-        <span v-if="!narrow" class="lbl">Open a topic</span>
+        <span v-if="!narrow" class="lbl">New topic</span>
       </button>
     </footer>
   </section>
@@ -572,6 +614,12 @@ const ATTENTION_TEXT: Record<string, string> = {
 .group-head.selected .gi,
 .group-head.holding .gi { color: var(--accent); }
 .gi { color: var(--text-dim); }
+/* Not a place to stand yet: it has no scope until the plan has run. */
+.opening .group-head, .opening .group-tile { cursor: default; }
+.opening .group-head:hover { background: none; }
+.opening .twist:hover { background: none; }
+.opening .spin { color: var(--accent); }
+.opening .title { color: var(--text-muted); }
 .title {
   flex: 1;
   min-width: 0;

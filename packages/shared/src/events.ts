@@ -86,6 +86,8 @@ export type EventType =
   | 'git.discard_undone'
   // §7 — the gitignored local config carried into a new worktree
   | 'worktree.seeded'
+  // §7 — `worktrees.setup`, run in a new worktree once its files are there
+  | 'worktree.setup'
   // runtime
   | 'runtime.provision'
   | 'runtime.up'

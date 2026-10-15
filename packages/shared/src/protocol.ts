@@ -262,6 +262,12 @@ export interface PlanPreview {
    * would throw away the work the user is about to finish.
    */
   onFailure?: 'rollback' | 'halt'
+  /**
+   * §7 — `worktrees.setup`, resolved: what runs in the new worktrees once
+   * the plan has applied. Not steps, because a failed `composer install` is
+   * no reason to take the worktrees back — the topic stays, and says so.
+   */
+  after?: PlanStep[]
 }
 
 /**
@@ -492,6 +498,8 @@ export interface Rpc {
   }
   /** Take its runtimes down and free the exclusive resources. Worktrees stay. */
   'topic.stop': { params: { topicId: string }; result: { ok: boolean; detail: string } }
+  /** §7 — run `worktrees.setup` again where it failed, read afresh from the manifest. */
+  'topic.setup': { params: { topicId: string }; result: { ok: boolean; detail: string } }
   'topic.rename': { params: { topicId: string; name: string }; result: Topic }
   /**
    * §16 — closing refuses over unpushed commits and live work; removing the

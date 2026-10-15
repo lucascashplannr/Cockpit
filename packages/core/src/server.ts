@@ -27,6 +27,7 @@ import * as agents from './agents.js'
 import * as attachments from './attachments.js'
 import * as summary from './summary.js'
 import * as topics from './topics/index.js'
+import * as preparing from './topics/preparing.js'
 import * as conflict from './conflict.js'
 import * as seed from './seed.js'
 import * as database from './database.js'
@@ -479,6 +480,11 @@ const handlers: Record<string, Handler> = {
   'topic.start': async (p: { topicId: string; force?: boolean }) => {
     const res = await topics.start(p.topicId, p.force ?? false)
     pushWorkspaces()
+    pushTopics()
+    return res
+  },
+  'topic.setup': async (p: { topicId: string }) => {
+    const res = await topics.rerunSetup(p.topicId)
     pushTopics()
     return res
   },
@@ -1178,6 +1184,8 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
    * journal rather than through it. Without this the supervisor's ring buffer
    * was write-only and a server that failed to boot said nothing at all.
    */
+  // §7 — a topic's setup starting, moving to its next line, failing or done.
+  preparing.onChange(() => pushTopics())
   supervisor.onOutput(({ procId, workspaceId, label, chunk }) => {
     broadcast({ t: 'runtime-log', workspaceId, procId, label, chunk })
   })

@@ -147,7 +147,7 @@ watch(
         <summary>
           <ChevronRight class="chev sm" />
           <span>
-            {{ c.plan.steps.length }} command{{ c.plan.steps.length === 1 ? '' : 's' }}
+            {{ c.plan.steps.length + (c.plan.after?.length ?? 0) }} command{{ c.plan.steps.length + (c.plan.after?.length ?? 0) === 1 ? '' : 's' }}
           </span>
           <span class="dim">— what this runs</span>
         </summary>
@@ -158,6 +158,16 @@ watch(
             <span v-if="c.plan.steps.length > 1" class="ct">{{ s.title }}</span>
             <code class="mono cc selectable">{{ s.command }}</code>
           </li>
+          <!-- §7 — not plan steps: they run once the folders exist, and a
+               failure there leaves the topic open rather than undoing it.
+               In the same list, so the list stays the one scroller. -->
+          <template v-if="c.plan.after?.length">
+            <li class="then">Then, in the new folders</li>
+            <li v-for="(s, i) in c.plan.after" :key="'a' + i">
+              <span class="ct">{{ s.title }}</span>
+              <code class="mono cc selectable">{{ s.command }}</code>
+            </li>
+          </template>
         </ol>
       </details>
 
@@ -333,6 +343,10 @@ watch(
   flex-direction: column;
   margin: 0 12px 12px;
   border-radius: var(--radius-sm);
+  /* The scroller is the disclosure itself, not the list in it: Chromium puts
+     the list inside a \`::details-content\` box, the \`min-height: 0\` chain
+     stops there, and a long plan pushed Open off the bottom of the dialog. */
+  overflow-y: auto;
 }
 .what summary {
   display: flex;
@@ -364,8 +378,19 @@ watch(
   overflow-y: auto;
   list-style: none;
 }
-.what summary { flex: none; }
+.what summary {
+  flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--overlay);
+}
 .cmds li + li { margin-top: 9px; }
+.cmds li.then {
+  margin-top: 14px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
 .ct { display: block; font-size: var(--fs-xs); color: var(--text-muted); }
 .cc {
   display: block;

@@ -474,7 +474,7 @@ async function submit() {
 <template>
   <DialogShell
     v-if="state.topicDialogOpen"
-    title="Open a topic"
+    title="New topic"
     :dismissible="!busy"
     :on-escape="close"
     @close="close"

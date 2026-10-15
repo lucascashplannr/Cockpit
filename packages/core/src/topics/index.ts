@@ -28,9 +28,11 @@ async function baseFor(path: string): Promise<string> {
 }
 import * as database from '../database.js'
 import * as seed from '../seed.js'
+import * as setupRunner from './setup.js'
 import * as store from './store.js'
 
 export * from './store.js'
+export { rerun as rerunSetup } from './setup.js'
 
 /**
  * §4 — the topic, promoted from an inference to an object.
@@ -269,6 +271,17 @@ export async function openPlan(
     }
   }
 
+  // §7 — `worktrees.setup`, resolved now so the question shows what will run.
+  // Only for new folders: a branch switched in place is a checkout already set up.
+  const setupLines =
+    input.setup !== 'branch' && setupRunner.declared(project.id)
+      ? await setupRunner.resolve(project.id, slug, [
+          ...repos.map((r) => ({ repoName: r.repoName, cwd: join(rootPath!, basename(r.path)), mainPath: r.path })),
+          { repoName: '', cwd: rootPath!, mainPath: null },
+        ])
+      : { lines: [], warnings: [] }
+  warnings.push(...setupLines.warnings)
+
   if (input.setup !== 'branch') {
     warnings.push(
       'Under ' + rootPath + '. They take disk until the topic is closed.',
@@ -288,6 +301,7 @@ export async function openPlan(
     warnings,
     capturesRestorePoint: false,
     repos: repos.map((r) => r.name),
+    ...(setupLines.lines.length ? { after: setupRunner.asSteps(setupLines.lines) } : {}),
   }
 
   plans.register(preview, {
@@ -325,6 +339,9 @@ export async function openPlan(
         payload: { topicId, name, slug, setup: input.setup, repos: repos.map((r) => r.name), rootPath },
       })
       await registry.reconcile(project.id)
+      // Last, and not awaited: the worktrees are workspaces now, so the output
+      // lands in their logs, and the topic is usable while it runs.
+      void setupRunner.begin(topicId, project.id, rootPath, setupLines.lines)
     },
   })
 
@@ -516,6 +533,10 @@ export async function start(topicId: string, force = false): Promise<StartResult
       servers: [],
     }
   }
+
+  // §7 — a server started over a half-run `composer install` dies on
+  // `vendor/autoload.php`; the setup is what makes the worktree startable.
+  await setupRunner.settled(topicId)
 
   const targets = workspacesOf(topicId).filter((w) => w.runtime)
   if (!targets.length) {

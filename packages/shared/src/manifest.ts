@@ -118,6 +118,14 @@ export interface ManifestV1 {
     root?: string
     /** §7 — the gitignored local config a new worktree cannot check out. */
     seed?: WorktreeSeed[]
+    /**
+     * §7 — what a new worktree still needs once its files are there, keyed
+     * by repository folder name (`.` is the topic's own folder): `composer
+     * install`, `herd link {{scoped}}`. Run in order after the seed, one
+     * program per line like a command (no shell); the list stops at the first
+     * that fails. Placeholders are the seed's.
+     */
+    setup?: Record<string, string[]>
   }
   /** §8 — what stays up. The list Start reads. */
   servers?: Record<string, ServerDecl>
@@ -207,7 +215,7 @@ export function validateManifest(raw: unknown): ParsedManifest {
       })
     }
   }
-  const wt = o.worktrees as { seed?: unknown } | undefined
+  const wt = o.worktrees as { seed?: unknown; setup?: unknown } | undefined
   if (wt?.seed !== undefined) {
     if (!Array.isArray(wt.seed)) {
       issues.push({ path: 'worktrees.seed', message: 'must be a list', severity: 'warning' })
@@ -226,6 +234,31 @@ export function validateManifest(raw: unknown): ParsedManifest {
         }
         return ok
       })
+    }
+  }
+
+  if (wt?.setup !== undefined) {
+    const st = wt.setup as Record<string, unknown> | null
+    if (!st || typeof st !== 'object' || Array.isArray(st)) {
+      issues.push({ path: 'worktrees.setup', message: 'must be a mapping of repo -> [command]', severity: 'warning' })
+      delete wt.setup
+    } else {
+      // A single line is a list of one; anything else is dropped and named,
+      // and every other repository still sets up.
+      for (const [repo, lines] of Object.entries(st)) {
+        const list = typeof lines === 'string' ? [lines] : lines
+        const ok = Array.isArray(list) && list.every((l) => typeof l === 'string' && !!l.trim())
+        if (ok) {
+          st[repo] = list
+          continue
+        }
+        issues.push({
+          path: 'worktrees.setup.' + repo,
+          message: 'must be a list of command lines',
+          severity: 'warning',
+        })
+        delete st[repo]
+      }
     }
   }
 
@@ -351,6 +384,10 @@ export const MANIFEST_TEMPLATE = [
   '# worktrees:',
   '#   seed:',
   '#     - copy: [.env, auth.json]',
+  '#   # Then run in each new worktree, by repository folder (§7)',
+  '#   setup:',
+  '#     api: [composer install, herd link {{scoped}}]',
+  '#     web: [pnpm install]',
   '',
   '# tickets: { provider: github, repo: owner/name }',
   '# docs: docs/',

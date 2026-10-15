@@ -46,7 +46,8 @@ const op = computed(() => (w.value ? busyVerb(gitBusy[w.value.id]) : undefined))
 const committing = computed(() => op.value === 'commit' || op.value === 'amend')
 /** A verb with no button of its own here — the branch chip carries a switch. */
 const elsewhere = computed(
-  () => !!op.value && !['commit', 'amend', 'push', 'pull', 'rebase', 'switch', 'branch', 'worktree'].includes(op.value),
+  // `open` too: a topic being created is drawn in the list, where it will be.
+  () => !!op.value && !['commit', 'amend', 'push', 'pull', 'rebase', 'switch', 'branch', 'worktree', 'open'].includes(op.value),
 )
 
 /**

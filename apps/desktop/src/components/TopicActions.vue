@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
-  ArrowUp, Check, ChevronDown, ExternalLink, GitCompareArrows, GitMerge, LoaderCircle, Play,
+  ArrowUp, Check, ChevronDown, ExternalLink, GitCompareArrows, GitMerge, LoaderCircle, Play, TriangleAlert,
 } from '@lucide/vue'
 import type { DeclaredServer, Workspace } from '@cockpit/shared'
 import OverflowMenu from './OverflowMenu.vue'
 import type { ListGroup } from '../core/store.js'
 import {
-  busyAmong, busyVerb, busyWord, client, guard, mergeTopic, pushTopic, rebaseTopic, refreshCommands, runningServers, runtimeBusy, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
+  busyAmong, busyVerb, busyWord, client, guard, mergeTopic, pushTopic, rebaseTopic, refreshCommands, rerunTopicSetup, runningServers, runtimeBusy, showSetupLog, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -207,8 +207,29 @@ const pending = computed(
 const switchLabel = computed(() =>
   pending.value ? (pending.value === 'start' ? 'Starting…' : 'Stopping…') : running.value ? 'Stop' : 'Start',
 )
+/* ── the worktrees' setup (§7) ─────────────────────────────────────────
+ *
+ * `worktrees.setup` runs once the topic's folders exist. While it runs the
+ * bar says so, and Start waits for it; when a line fails the topic stays, and
+ * the chip is the way to run it again once the line is fixed.
+ */
+const prep = computed(() => f.value?.preparing ?? null)
+const prepTitle = computed(() => {
+  const p = prep.value
+  if (!p) return ''
+  // A repository can fail while another is still installing: both are said.
+  const lines = [
+    ...p.steps.filter((s) => s.state === 'running').map((s) => s.repo + ': ' + s.command),
+    ...p.steps
+      .filter((s) => s.state === 'failed')
+      .map((s) => s.repo + ': ' + s.command + ' failed' + (s.detail ? '\n' + s.detail : '')),
+  ]
+  return lines.join('\n\n') + '\n\n' + (p.state === 'running' ? 'Click to see its output' : 'Click to run it again')
+})
+
 const switchTitle = computed(() => {
   if (running.value) return 'Stop the servers — the branches stay where they are'
+  if (prep.value?.state === 'running') return 'Start waits for the setup to finish'
   const names = servers.value.filter((s) => s.inStart).map((s) => s.name)
   return names.length ? 'Start ' + names.join(', ') : 'Start the servers for every repository in this topic'
 })
@@ -332,6 +353,23 @@ const startTitle = (s: Row) =>
          label and its chevron read as one control and not as a word with a
          stray arrow beside it. -->
     <i class="sep" />
+    <!-- §7 — present only while `worktrees.setup` runs, or after it failed. -->
+    <button
+      v-if="prep?.state === 'running'"
+      class="btn ghost working"
+      :title="prepTitle"
+      @click="showSetupLog"
+    >
+      <LoaderCircle class="spin" /><span class="vl">Setting up…</span>
+    </button>
+    <button
+      v-else-if="prep?.state === 'failed'"
+      class="btn ghost failed"
+      :title="prepTitle"
+      @click="rerunTopicSetup(f!.id)"
+    >
+      <TriangleAlert /><span class="vl">Retry setup</span>
+    </button>
     <!-- Always: it is the switch, and always the whole topic's. Split once
          there are servers to name: the menu is the stack, one row each. -->
     <button
@@ -444,6 +482,8 @@ const startTitle = (s: Row) =>
    Committed and ahead is the one where merging is. */
 .nudge { color: var(--warn); }
 .ready { color: var(--ok); }
+/* A setup that failed is in the way of Start, so it is the one amber word. */
+.verbs .btn.failed { color: var(--warn); }
 
 /* Running is one dot in the glyph's slot, not a green switch — the repository
    bar's reasoning, drawn the same. */

@@ -1057,7 +1057,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
            what the conversation *is*, where the rest say how it answers.
            Chosen before it starts; after that, said. -->
       <span v-if="session && mode !== 'start'" class="opt mem" :title="'This conversation\'s memory: ' + sessionMemory">
-        <BookMarked class="xs" />{{ sessionMemory }}
+        <BookMarked class="xs" /><span class="nm">{{ sessionMemory }}</span>
       </span>
       <MemoryPicker
         v-else-if="scope"
@@ -1260,9 +1260,9 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
   align-items: center;
   gap: 5px;
   max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
+/* A flex box's bare text can't take an ellipsis; its own span can. */
+.opt.mem .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .opt.mem:hover { background: var(--inset, var(--bg)); color: var(--text-muted); }
 .opt.mem .xs { flex: none; width: 11px; height: 11px; color: var(--text-dim); }
 .opt.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }

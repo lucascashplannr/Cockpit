@@ -38,7 +38,7 @@ const TITLES: Record<string, string> = {
   switch: 'Switch branch',
   branch: 'New branch',
   worktree: 'New branch folder',
-  'topic.open': 'Open topic',
+  'topic.open': 'Create topic',
   'topic.close': 'Close topic',
   'topic.delete': 'Delete topic',
   sync: 'Sync',
@@ -148,7 +148,7 @@ function cancel() {
         >
           <summary>
             <ChevronRight class="chev sm" />
-            <span>{{ plan.steps.length }} command{{ plan.steps.length === 1 ? '' : 's' }}</span>
+            <span>{{ plan.steps.length + (plan.after?.length ?? 0) }} command{{ plan.steps.length + (plan.after?.length ?? 0) === 1 ? '' : 's' }}</span>
             <span class="dim">— what this runs</span>
           </summary>
           <ol class="cmds">
@@ -156,7 +156,17 @@ function cancel() {
               <span v-if="plan.steps.length > 1" class="ct">{{ s.title }}</span>
               <code class="mono cc selectable">{{ s.command }}</code>
             </li>
-          </ol>
+            <!-- §7 — not plan steps: they run once the folders exist, and a
+               failure there leaves the topic open rather than undoing it.
+               In the same list, so the list stays the one scroller. -->
+          <template v-if="plan.after?.length">
+            <li class="then">Then, in the new folders</li>
+            <li v-for="(s, i) in plan.after" :key="'a' + i">
+              <span class="ct">{{ s.title }}</span>
+              <code class="mono cc selectable">{{ s.command }}</code>
+            </li>
+          </template>
+        </ol>
         </details>
       </div>
 
@@ -295,6 +305,11 @@ function cancel() {
 
 .cmds { margin: 2px 0; padding: 0 8px 0 28px; list-style: none; }
 .cmds li + li { margin-top: 9px; }
+.cmds li.then {
+  margin-top: 14px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
 .ct { display: block; font-size: var(--fs-xs); color: var(--text-muted); }
 .bad .ct { color: var(--danger); }
 .cc {

@@ -309,7 +309,7 @@ function buildCommands(lvl: Level): Item[] {
   if (project && lvl !== 'repo') {
     out.push({
       id: 'topic:open',
-      label: 'Open a topic',
+      label: 'New topic',
       hint: 'one named branch across every repository it touches',
       group: 'Topic',
       icon: Layers,
