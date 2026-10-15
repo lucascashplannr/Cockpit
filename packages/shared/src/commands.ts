@@ -68,6 +68,22 @@ export function commandIn(prompt: string): { command: AgentCommand; args: string
 }
 
 /**
+ * Both ask for a rewrite toward what is true now, not for additions. Asked to
+ * "note every decision not in it yet", agents logged each review round as its
+ * own entries, later ones contradicting earlier ones still there, and a topic
+ * memory reached 26 KB — every preamble after paying for all of it.
+ */
+const TIDY_WORDS = [
+  'Read it first, then make it say what is true now, in as few lines as that takes:',
+  'note what this conversation settled that is missing — a decision and its reason, a contract,',
+  'a constraint, a dropped approach, an open question — one short line per fact; where an entry is',
+  'superseded, rewrite it (`replaces`) rather than adding beside it; merge entries that say one thing',
+  'twice; move to Past (`memory_outdate`, with why) what is no longer true, what is done with, and what',
+  'the code or git already shows. Then set the state against the goal (done, in progress, next, and the files',
+  'that matter) — not whether anything is committed or pushed, which is shown live and goes stale.',
+].join(' ')
+
+/**
  * §6 — what `/next` asks of a conversation before letting it go: the memory
  * brought up to date, so the fresh one that starts on the same scope — or an
  * agent in another repository — knows what this one knew.
@@ -79,10 +95,9 @@ export function commandIn(prompt: string): { command: AgentCommand; args: string
 const HANDOFF_WORDS = [
   'Handoff: this conversation is about to be cleared, and the next one starts from the memory alone.',
   'Bring the memory up to date for whoever picks this up — the next conversation here, or an agent in',
-  'another repository: note every decision, contract, constraint, dropped approach or open question',
-  'from this conversation that is not in it yet (replacing the entries they supersede), then set the',
-  'state (done, in progress, next, and the files that matter). Do not change any code. Reply with one',
-  'short line.',
+  'another repository.',
+  TIDY_WORDS,
+  'Do not change any code. Reply with one short line.',
 ].join(' ')
 
 export const HANDOFF_PROMPT = HANDOFF_WORDS
@@ -101,10 +116,9 @@ export function isHandoff(prompt: string | null | undefined): boolean {
  */
 export const MEMORIZE_PROMPT = [
   'Memorize: bring the memory up to date with this conversation so far, for whoever reads it next — a',
-  'later conversation here, or an agent in another repository: note every decision, contract,',
-  'constraint, dropped approach or open question that is not in it yet (replacing the entries they',
-  'supersede), then set the state (done, in progress, next, and the files that matter). Do not change',
-  'any code. This conversation carries on afterwards. Reply with one short line.',
+  'later conversation here, or an agent in another repository.',
+  TIDY_WORDS,
+  'Do not change any code. This conversation carries on afterwards. Reply with one short line.',
 ].join(' ')
 
 export function isMemorize(prompt: string | null | undefined): boolean {

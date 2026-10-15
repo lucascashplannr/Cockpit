@@ -12,10 +12,11 @@
  * In the order a fresh conversation needs them: what this is for, where it
  * stands and what is waiting on a person — then what is settled, relied on,
  * guarded and rejected. State and Open questions were once last or absent,
- * and they are the first thing a handoff has to say.
+ * and they are the first thing a handoff has to say. Past is last: it is the
+ * history, read by a person, not handed to the engine.
  */
 export const MEMORY_SECTIONS = [
-  'Goal', 'State', 'Open questions', 'Decisions', 'Contracts', 'Constraints', 'Ruled out',
+  'Goal', 'State', 'Open questions', 'Decisions', 'Contracts', 'Constraints', 'Ruled out', 'Past',
 ] as const
 export type MemorySection = (typeof MEMORY_SECTIONS)[number]
 
@@ -99,6 +100,14 @@ export function signatureAlone(line: string): MemorySigned | null {
   return m ? { by: m[1]!.trim(), date: m[2]!, ref: m[3] ?? null } : null
 }
 
+/**
+ * Where an entry goes when it stops being true — superseded, done with, or now
+ * in the code — instead of being deleted: what was tried, changed and why the
+ * work switched stays readable. Kept out of the preamble, so the history costs
+ * nothing to a conversation that does not ask for it.
+ */
+export const PAST_SECTION: MemorySection = 'Past'
+
 const GUIDANCE: Partial<Record<MemorySection, string>> = {
   Goal: '_(what this work is for)_',
   State: '_(done, in progress, next)_',
@@ -107,6 +116,7 @@ const GUIDANCE: Partial<Record<MemorySection, string>> = {
   Contracts: '_(what other code relies on — endpoints, payloads, events, files — and where it lives)_',
   Constraints: '_(what must not break)_',
   'Ruled out': '_(approaches dropped, and why — so no fresh conversation re-proposes them)_',
+  Past: '_(what was true once — outdated or superseded, and why)_',
 }
 
 /** A new memory: every heading, with a line under each that says what goes there. */

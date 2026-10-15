@@ -393,7 +393,7 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
   return buckets
 }
 
-const MEMORY_TOOL = /^mcp__cockpit__memory_(note|state|read)$/
+const MEMORY_TOOL = /^mcp__cockpit__memory_(note|state|read|outdate)$/
 
 function memoryLine(
   tool: string | undefined,
@@ -403,6 +403,7 @@ function memoryLine(
   if (!m) return null
   if (m[1] === 'read') return 'read'
   const text = typeof input?.text === 'string' ? input.text.trim() : ''
+  if (m[1] === 'outdate') return { section: 'Past', text: typeof input?.entry === 'string' ? input.entry.trim() : '' }
   if (m[1] === 'state') return { section: 'State', text: text.split('\n').filter(Boolean).length + ' lines — where the work stands' }
   // Through the shared spelling: a conversation from before the headings were
   // English still says "Décisions" in its journal.

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { OPEN_QUESTIONS_SECTION, RULED_OUT_SECTION, sectionsFor, signatureAlone, splitSignature } from '@cockpit/shared'
+import { OPEN_QUESTIONS_SECTION, PAST_SECTION, RULED_OUT_SECTION, sectionsFor, signatureAlone, splitSignature } from '@cockpit/shared'
 import type { ErasedMemory, MemoryDoc, MemorySigned, Workspace } from '@cockpit/shared'
 import {
   BookDashed, BookX, Check, ChevronDown, ChevronRight, Copy, CornerDownLeft, Info, MessageSquare, Pencil, Save, RotateCcw, Trash2,
@@ -215,7 +215,8 @@ const sections = computed<Section[]>(() => (doc.value?.sections ?? []).map((x) =
 /**
  * Which sections are folded, by title, kept across launches: how much of the
  * memory you want in front of you is a habit, not a property of one file.
- * An empty section has nothing to unfold and is always drawn folded.
+ * An empty section has nothing to unfold and is always drawn folded. Past
+ * starts folded: it is the history, there when you go looking for it.
  */
 const FOLD_KEY = 'cockpit.memoryFolds'
 const folded = ref<Record<string, boolean>>(readFolds())
@@ -227,14 +228,15 @@ function readFolds(): Record<string, boolean> {
   }
 }
 function toggle(title: string): void {
-  folded.value = { ...folded.value, [title]: !folded.value[title] }
+  folded.value = { ...folded.value, [title]: !isFolded(title) }
   try {
     localStorage.setItem(FOLD_KEY, JSON.stringify(folded.value))
   } catch {
     /* a preference: forgetting it costs a click */
   }
 }
-const isOpen = (x: Section) => x.entries.length > 0 && !folded.value[x.title]
+const isFolded = (title: string): boolean => folded.value[title] ?? title === PAST_SECTION
+const isOpen = (x: Section) => x.entries.length > 0 && !isFolded(x.title)
 
 /* ── the memory against its side ──────────────────────────────────────────
  *

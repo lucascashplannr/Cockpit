@@ -31,9 +31,18 @@ export const SERVER = 'cockpit'
 const NOTE = 'memory_note'
 const STATE = 'memory_state'
 const READ = 'memory_read'
+const OUTDATE = 'memory_outdate'
 
 /** As the engine names them — what `--tools` and `--allowedTools` list. */
-export const TOOL_NAMES = [NOTE, STATE, READ].map((n) => 'mcp__' + SERVER + '__' + n)
+export const TOOL_NAMES = [NOTE, STATE, READ, OUTDATE].map((n) => 'mcp__' + SERVER + '__' + n)
+
+/**
+ * The longest note taken. Every entry is pasted into every conversation that
+ * opens on this memory, and a paragraph per entry is how one reached 26 KB:
+ * four in five entries over 400 characters, read again on every start. A line
+ * that will not fit is two facts, or a fact and its history.
+ */
+export const NOTE_MAX = 300
 
 /** The `--mcp-config` that declares the server as hosted by this process. */
 export const MCP_CONFIG = JSON.stringify({ mcpServers: { [SERVER]: { type: 'sdk', name: SERVER } } })
@@ -48,17 +57,26 @@ export const MEMORY_RULES = [
   'other agents, possibly in other repositories, read it when they start, and so does the conversation',
   'that picks up after this one is cleared. Its content, when it has any, opens your first message.',
   'Keep it true with the cockpit memory tools, as you work, without being asked:',
-  `${NOTE}: one line, written for a colleague who has not seen this conversation —`,
+  'The memory is a short picture of what is true now, not a log: everything in it is read again by',
+  'every conversation that opens on it. What stops being true is not deleted — it moves to its Past',
+  'section, with why, which is kept for the person and left out of what conversations are handed.',
+  `${NOTE}: one short line (at most ${NOTE_MAX} characters), for a colleague who has not seen this conversation —`,
   'a decision and its reason (Decisions); an approach tried or considered and dropped, and why (Ruled out);',
   'something that must not break (Constraints); an interface other code relies on — endpoint, payload,',
   'event, file — and where it lives (Contracts); a question only the person can answer, and what hangs',
   'on it (Open questions). When a note supersedes one already there — a question answered, a contract',
-  'changed — pass the old one as `replaces` so the memory says one thing about one fact.',
-  `${STATE}: replace where the work stands — done, in progress, next. Call it when you finish a piece of work.`,
+  'changed, a decision revisited — pass the old one as `replaces` so the memory says one thing about one fact;',
+  'the old one moves to Past.',
+  `${OUTDATE}: move an entry that is no longer true, is done with, or that the code or git now shows to Past,`,
+  'with one short line on why — what was tested, what changed, why the work switched.',
+  `${READ} shows Past too, when you need the history.`,
+  `${STATE}: replace where the work stands against its goal — done, in progress, next. Call it when you finish a piece of work.`,
+  'Not the repository\'s status — committed or not, pushed or not, which files changed: Cockpit shows that live,',
+  'and written down it is wrong at the next commit. A choice made along the way is a decision, noted with its reason.',
   'Before you end a turn in which a decision was made — by you or by the person — or an interface',
   'was created or changed, note it: that is the moment it is still in front of you.',
-  'Do not log steps, restate the code, or note what git already shows. Note only what would change',
-  'what the next agent does.',
+  'Do not log steps or review rounds, restate the code, note what git already shows, or copy a fact',
+  'that belongs to the whole project into a topic memory. Note only what would change what the next agent does.',
 ].join(' ')
 
 const NOTE_SECTIONS = memory.SECTIONS.filter((s) => s !== STATE_SECTION)
@@ -69,14 +87,15 @@ const TOOLS = [
     description:
       'Add one line to the shared memory of this topic or project. Other agents and the next conversation read it. ' +
       'Use for decisions with their reason, rejected approaches with why, constraints, contracts other code relies on (with where they live), ' +
-      'and open questions waiting on the person. Pass `replaces` when this supersedes an existing entry.',
+      'and open questions waiting on the person. One short line, at most ' + NOTE_MAX + ' characters. ' +
+      'Pass `replaces` when this supersedes an existing entry.',
     inputSchema: {
       type: 'object',
       properties: {
         section: { type: 'string', enum: NOTE_SECTIONS, description: 'Where it belongs.' },
         replaces: {
           type: 'string',
-          description: 'Optional: the words of an existing entry this one supersedes. It is removed.',
+          description: 'Optional: the words of an existing entry this one supersedes. It moves to Past.',
         },
         text: {
           type: 'string',
@@ -89,14 +108,36 @@ const TOOLS = [
   {
     name: STATE,
     description:
-      'Replace the "State" section of the shared memory: where the work stands now — what is done, what is half-done, what is next. ' +
-      'A few lines, not a log.',
+      'Replace the "State" section of the shared memory: where the work stands against its goal — what is done, what is half-done, what is next. ' +
+      'A few lines, not a log. Leave out the repository\'s status (committed, pushed, changed files): it is shown live and goes stale. ' +
+      'A choice made along the way (a colour, a library, a layout) is a decision: note it in Decisions with its reason.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'The state, as short markdown (a few bullets). Cockpit signs it — add no name or date.' },
       },
       required: ['text'],
+    },
+  },
+  {
+    name: OUTDATE,
+    description:
+      'Move one entry of the shared memory to its Past section: one that is no longer true, is done with, or that the code or git now shows. ' +
+      'Nothing is deleted — Past keeps the history, out of what conversations are handed. ' +
+      'When a new entry takes its place, use ' + NOTE + ' with `replaces` instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entry: {
+          type: 'string',
+          description: 'The words of the entry — enough of them to pick out one entry. Its signature does not count.',
+        },
+        why: {
+          type: 'string',
+          description: 'One short line: why it no longer holds — what was tested, what changed, what the work switched to.',
+        },
+      },
+      required: ['entry', 'why'],
     },
   },
   {
@@ -171,21 +212,31 @@ function call(
   args: Record<string, unknown>,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
   const text = (t: string, isError = false) => ({ content: [{ type: 'text' as const, text: t }], ...(isError ? { isError } : {}) })
+  const str = (k: string): string => (typeof args[k] === 'string' ? (args[k] as string).trim() : '')
+  // Refused before anything is touched: a note too long to keep must not be
+  // what brings a "new" memory into being.
+  if ((name === NOTE || name === OUTDATE) && str(name === NOTE ? 'text' : 'why').length > NOTE_MAX) {
+    return text(
+      'Not noted: ' + str(name === NOTE ? 'text' : 'why').length + ' characters, and a line is at most ' + NOTE_MAX + '. ' +
+        'Say it again as one short line — the fact and its reason, not its history; ' +
+        'if it is two facts, note them separately.',
+      true,
+    )
+  }
   let home = memory.homeOf(c)
   // §6 — "new": the memory comes into being with the first thing worth
   // keeping, named after the conversation, and the conversation is pointed at
   // it from then on (the driver persists the change).
-  if (!home && c.memory === MEMORY_NEW && name !== READ) {
+  if (!home && c.memory === MEMORY_NEW && name !== READ && name !== OUTDATE) {
     const projectId = c.workspaceIds.map((id) => getWorkspace(id)?.projectId).find(Boolean)
     if (projectId) {
       c.memory = memory.createNamed(projectId, c.title || c.prompt.slice(0, 60) || 'Memory')
       home = memory.homeOf(c)
     }
   }
-  if (!home && name === READ) return text('Nothing is written in this memory yet.')
+  if (!home && (name === READ || name === OUTDATE)) return text('Nothing is written in this memory yet.')
   if (!home) return text('This conversation has no memory to write to.', true)
   const actor: Actor = { kind: 'agent', engine: c.engine, sessionId: c.id }
-  const str = (k: string): string => (typeof args[k] === 'string' ? (args[k] as string).trim() : '')
 
   switch (name) {
     case NOTE: {
@@ -195,8 +246,9 @@ function call(
         home, str('section') || 'Decisions', line, signature(c), actor, conversationRef(c.id), str('replaces') || undefined,
       )
       own.add(r.entry)
-      if (str('replaces') && !r.replaced) return text('Noted — but no entry matched `replaces`, so nothing was removed.')
-      return text('Noted in the ' + home.kind + ' memory' + (r.replaced ? ', replacing the old entry.' : '.'))
+      if (r.past) own.add(r.past)
+      if (str('replaces') && !r.replaced) return text('Noted — but no entry matched `replaces`, so nothing moved to Past.')
+      return text('Noted in the ' + home.kind + ' memory' + (r.replaced ? '; the old entry moved to Past.' : '.'))
     }
     case STATE: {
       const body = str('text')
@@ -204,8 +256,17 @@ function call(
       for (const l of memory.setState(home, body, signature(c), actor, conversationRef(c.id))) own.add(l)
       return text('State replaced in the ' + home.kind + ' memory.')
     }
+    case OUTDATE: {
+      const words = str('entry')
+      if (!words) return text('Nothing to move: `entry` is empty.', true)
+      if (!str('why')) return text('Say why it no longer holds: `why` is empty.', true)
+      const past = memory.outdateEntry(home, words, str('why'), actor)
+      if (!past) return text('No entry matched those words, so nothing moved. Read the memory and quote the entry.', true)
+      own.add(past)
+      return text('Moved to Past: ' + past.replace(/^\s*[-*+]\s+/, ''))
+    }
     case READ:
-      return text(memory.contentAt(home.file, home.kind) ?? 'The memory is empty.')
+      return text(memory.forEngine(memory.contentAt(home.file, home.kind) ?? '', true) || 'The memory is empty.')
     default:
       return text('Unknown tool: ' + name, true)
   }

@@ -16,6 +16,7 @@ import type { AgentCommand, AgentScope, Conversation, PermissionMode, QuoteSourc
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
+import MemoryPicker from './MemoryPicker.vue'
 import RepoPicker from './RepoPicker.vue'
 import ContextMeter from './ContextMeter.vue'
 import EffortSlider from './EffortSlider.vue'
@@ -104,6 +105,8 @@ const memoryOptions = computed<Option[]>(() => {
   }
   return out
 })
+/** The leading choices that are not memories: this topic, new, none. */
+const memoryFixed = computed(() => (props.scope?.kind === 'topic' ? 3 : 2))
 function pickMemory(id: string): void {
   if (props.scope) chooseMemory(props.scope, id)
 }
@@ -1056,10 +1059,10 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
       <span v-if="session && mode !== 'start'" class="opt mem" :title="'This conversation\'s memory: ' + sessionMemory">
         <BookMarked class="xs" />{{ sessionMemory }}
       </span>
-      <Picker
+      <MemoryPicker
         v-else-if="scope"
-        label="Memory"
         :options="memoryOptions"
+        :fixed="memoryFixed"
         :model-value="memoryValue"
         @update:model-value="pickMemory"
       />

@@ -3,7 +3,7 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
-  MEMORY_NEW, MEMORY_OFF, MEMORY_SECTIONS, PROJECT_MEMORY, RULED_OUT_SECTION, STATE_SECTION, canonicalSection,
+  MEMORY_NEW, MEMORY_OFF, MEMORY_SECTIONS, PAST_SECTION, PROJECT_MEMORY, RULED_OUT_SECTION, STATE_SECTION, canonicalSection,
   conversationRef, englishMemory, hasMemoryEntries, memorySignature, memoryTemplate, shapedMemory, signatureAlone,
   slugify, splitSignature, topicMemoryId,
 } from '@cockpit/shared'
@@ -162,7 +162,8 @@ export function list(projectId: string): MemorySummary[] {
  */
 export function preamble(home: MemoryHome | null): string {
   if (!home) return ''
-  const content = contentAt(home.file, home.kind)?.trim()
+  const content = forEngine(contentAt(home.file, home.kind) ?? '')
+  // Nothing but Past is nothing to hand over.
   if (!content || !hasMemoryEntries(content)) return ''
   return [
     '# Memory — ' + home.label,
@@ -173,6 +174,39 @@ export function preamble(home: MemoryHome | null): string {
     '',
     content,
   ].join('\n')
+}
+
+/**
+ * The memory as an agent is handed it: what is written, without what is only
+ * there for a person. A signature is who and when — the Memory tool shows it,
+ * and the journal keeps it — and on every line of every preamble it cost more
+ * than some entries (~550 tokens in one memory). The template's guidance says
+ * what goes in a section, which the rules at launch already say; a section with
+ * nothing else in it is left out whole, and so is Past — the history, there
+ * for a person and for `memory_read`. The file is not touched.
+ */
+export function forEngine(content: string, past = false): string {
+  const out: string[] = []
+  let heading: string | null = null
+  let skip = false
+  for (const line of content.split('\n')) {
+    const h = /^##\s+(.+?)\s*$/.exec(line)
+    if (h) {
+      heading = line
+      skip = !past && h[1] === PAST_SECTION
+      continue
+    }
+    const t = line.trim()
+    if (skip || /^_\(.*\)_$/.test(t)) continue
+    if (heading !== null) {
+      if (!t) continue
+      if (out.length && out[out.length - 1]!.trim()) out.push('')
+      out.push(heading, '')
+      heading = null
+    }
+    out.push(splitSignature(line).text.trimEnd())
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 /** Anything written beyond the template — the shared test, under the core's name. */
@@ -492,15 +526,21 @@ export function note(
    * Without it a memory only ever grows, and says two things about one fact.
    */
   replaces?: string,
-): { entry: string; replaced: string | null } {
+): { entry: string; replaced: string | null; past: string | null } {
   let content = ensureAt(home)
   let replaced: string | null = null
+  let past: string | null = null
+  const words = unsigned(oneLine(text))
   if (replaces?.trim()) {
     const r = withoutEntry(content, replaces)
     content = r.content
     replaced = r.removed
+    if (replaced) {
+      past = pastLine(replaced, 'superseded ' + shortDate() + ' by: ' + clip(words, 120))
+      content = withEntry(content, PAST_SECTION, past)
+    }
   }
-  const entry = '- ' + unsigned(oneLine(text)) + ' ' + memorySignature(by, shortDate(), ref)
+  const entry = '- ' + words + ' ' + memorySignature(by, shortDate(), ref)
   writeAt(home, withEntry(content, canonicalSection(section), entry))
   append({
     type: 'memory.promoted',
@@ -508,7 +548,7 @@ export function note(
     workspaceId: home.workspaceId,
     payload: { section: canonicalSection(section), text: text.slice(0, 500), by, ...(replaced ? { replaced } : {}) },
   })
-  return { entry, replaced }
+  return { entry, replaced, past }
 }
 
 /**
@@ -528,12 +568,59 @@ export function forget(home: MemoryHome, lines: string[], actor: Actor): number 
   return removed
 }
 
-/** The first `- ` entry whose words contain `words`, taken out. */
-function withoutEntry(content: string, words: string): { content: string; removed: string | null } {
+/**
+ * An entry an agent says is no longer true — superseded, done with, or now in
+ * the code — moved to Past with why, never deleted: what was tried and why the
+ * work switched is worth keeping, only not in every preamble. Matched the way
+ * `replaces` is, on its words, signature aside. Answers the line as it now
+ * reads in Past, or null when nothing matched.
+ */
+export function outdateEntry(home: MemoryHome, words: string, why: string, actor: Actor): string | null {
+  const content = contentAt(home.file, home.kind)
+  if (!content) return null
+  const r = withoutEntry(content, words)
+  if (!r.removed) return null
+  const past = pastLine(r.removed, 'outdated ' + shortDate() + ': ' + unsigned(oneLine(why)))
+  writeAt(home, withEntry(r.content, PAST_SECTION, past))
+  append({
+    type: 'memory.written',
+    actor,
+    workspaceId: home.workspaceId,
+    payload: { section: PAST_SECTION, text: r.removed.slice(0, 500), why: why.slice(0, 500) },
+  })
+  return past
+}
+
+/**
+ * An entry as Past keeps it: its words, what happened to it and when, and the
+ * signature it had — who wrote it and in which conversation, which is the
+ * part of the history the journal alone would not show at a glance.
+ */
+function pastLine(entry: string, what: string): string {
+  const { text, signed } = splitSignature(entry.replace(/^\s*[-*+]\s+/, ''))
+  const sig = signed ? ' ' + memorySignature(signed.by, signed.date, signed.ref ?? undefined) : ''
+  return '- ' + text.trimEnd().replace(/[.;]$/, '') + ' — ' + what + sig
+}
+
+function clip(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s
+}
+
+/**
+ * The first `- ` entry whose words contain `words`, taken out. Never one from
+ * Past: what is there is already history, and matching it would only move it
+ * to the end of itself.
+ */
+export function withoutEntry(content: string, words: string): { content: string; removed: string | null } {
   const key = (s: string) => unsigned(s.replace(/^\s*[-*+]\s+/, '')).toLowerCase().replace(/\s+/g, ' ').trim()
   const want = key(words)
   const lines = content.split('\n')
-  const i = lines.findIndex((l) => /^\s*[-*+]\s+/.test(l) && (key(l) === want || key(l).includes(want)))
+  let section = ''
+  const i = lines.findIndex((l) => {
+    const h = /^##\s+(.+?)\s*$/.exec(l)
+    if (h) section = h[1]!
+    return section !== PAST_SECTION && /^\s*[-*+]\s+/.test(l) && (key(l) === want || key(l).includes(want))
+  })
   if (i === -1 || !want) return { content, removed: null }
   const [removed] = lines.splice(i, 1)
   return { content: lines.join('\n'), removed: removed ?? null }
@@ -581,7 +668,8 @@ export function newSince(then: string | null, now: string | null, own: Set<strin
       continue
     }
     if (!line.trim() || seen.has(line) || own.has(line) || /^_\(.*\)_$/.test(line.trim())) continue
-    out.push((section ? '[' + section + '] ' : '') + line.replace(/^-\s+/, ''))
+    // Passed on bare, as the preamble is (see `forEngine`).
+    out.push((section ? '[' + section + '] ' : '') + splitSignature(line).text.trimEnd().replace(/^-\s+/, ''))
   }
   return out
 }
