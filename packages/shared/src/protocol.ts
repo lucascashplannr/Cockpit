@@ -12,7 +12,7 @@ import type {
   DeclaredServer,
   DatabasePlan,
   DiffFile, Topic,
-  DocsInfo, DocsProposalSet, ErasedMemory, FileDiff, GitOperation, MemoryDoc, MemorySummary, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
+  DocsInfo, DocsPage, DocsProposalSet, DocsSignals, ErasedMemory, FileDiff, GitOperation, MemoryDoc, MemorySummary, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
   ProjectSettings, SearchHit, SeedProposal, StashEntry,
   Workspace,
 } from './model.js'
@@ -922,6 +922,18 @@ export interface Rpc {
   /** §9 — draft documentation proposals in this conversation. Answers once sent. */
   'docs.document': { params: { sessionId: string }; result: { ok: true; setId: string } | { ok: false; reason: string } }
   'docs.info': { params: { projectId: string }; result: DocsInfo | null }
+  /** §9 — every page, with what it lacks against the contract. */
+  'docs.index': { params: { projectId: string }; result: DocsPage[] }
+  'docs.page': { params: { projectId: string; path: string }; result: string | null }
+  /** §9 — what is waiting to be documented: agents' flags, and offers made at Send and `/next`. */
+  'docs.signals': { params: { projectId: string }; result: DocsSignals }
+  /** Draft an offer's pages in the conversation that did the work. */
+  'docs.draft': { params: { offerId: string }; result: { ok: true; setId: string } | { ok: false; reason: string } }
+  /** "Not now": the offer goes, and the flags it carried with it. */
+  'docs.dismissOffer': { params: { offerId: string }; result: { ok: true } }
+  'docs.dropFlag': { params: { projectId: string; flagId: string }; result: { ok: true } }
+  /** Into `cockpit.yaml` as `{ repo, folder }` when it can be; null unlinks. */
+  'docs.setHome': { params: { projectId: string; path: string | null }; result: DocsInfo | null }
   /** Proposal sets still waiting on a person, newest first. */
   'docs.pending': { params: { projectId: string }; result: DocsProposalSet[] }
   /** One page accepted (written into the docs, `content` if edited) or rejected. */

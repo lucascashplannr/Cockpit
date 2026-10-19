@@ -3,7 +3,7 @@ import type {
   AddRepoSource, AgentAnswers, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
-  DatabasePlan, DocsInfo, DocsProposalSet, ErasedMemory, MemorySummary, Topic,
+  DatabasePlan, DocsInfo, DocsOffer, DocsPage, DocsProposalSet, DocsSignals, ErasedMemory, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
   ProjectSettings, QuoteSource, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
@@ -262,6 +262,12 @@ export const state = reactive({
   /** §9 — each project's linked docs, and the proposals still waiting on someone. */
   docsInfo: {} as Record<string, DocsInfo | null>,
   docsPending: {} as Record<string, DocsProposalSet[]>,
+  /** Every page, as the core indexes them (`docs.index`). */
+  docsIndex: {} as Record<string, DocsPage[]>,
+  /** Agents' flags and the offers made at Send and `/next` (`docs.signals`). */
+  docsSignals: {} as Record<string, DocsSignals>,
+  /** The page the Docs reader shows, per project — null is the index. */
+  docsOpen: {} as Record<string, { path: string; anchor: string | null } | null>,
   /** Every conversation on this scope, over the chat rather than beside it. */
   historyOpen: false,
 
@@ -4076,12 +4082,67 @@ watch(() => state.activeWorkspaceId, () => void refreshCommands())
  * `docs.*` event says a set was drafted or a page decided.
  */
 export async function refreshDocs(projectId: string): Promise<void> {
-  const [info, pending] = await Promise.all([
+  const [info, pending, index, signals] = await Promise.all([
     client.call('docs.info', { projectId }).catch(() => null),
     client.call('docs.pending', { projectId }).catch(() => [] as DocsProposalSet[]),
+    client.call('docs.index', { projectId }).catch(() => [] as DocsPage[]),
+    client.call('docs.signals', { projectId }).catch(() => ({ flags: [], offers: [] }) as DocsSignals),
   ])
   state.docsInfo[projectId] = info
   state.docsPending[projectId] = pending
+  state.docsIndex[projectId] = index
+  state.docsSignals[projectId] = signals
+}
+
+/**
+ * §9 — the one click: an offer's pages drafted in the conversation that did
+ * the work. The proposals arrive in the Docs tool once its turn lands.
+ */
+export async function draftDocsOffer(offer: DocsOffer): Promise<boolean> {
+  const r = await guard(() => client.call('docs.draft', { offerId: offer.id }))
+  if (!r) return false
+  if (!r.ok) {
+    toast('error', r.reason)
+    return false
+  }
+  await refreshDocs(offer.projectId)
+  return true
+}
+
+/** "Not now": the offer goes, and the flags it carried. */
+export async function dismissDocsOffer(offer: DocsOffer): Promise<void> {
+  if (await guard(() => client.call('docs.dismissOffer', { offerId: offer.id }))) await refreshDocs(offer.projectId)
+}
+
+export async function dropDocsFlag(projectId: string, flagId: string): Promise<void> {
+  if (await guard(() => client.call('docs.dropFlag', { projectId, flagId }))) await refreshDocs(projectId)
+}
+
+/** One page's text, read when it is opened: the docs are files anyone edits. */
+export async function docsPageText(projectId: string, path: string): Promise<string | null> {
+  return client.call('docs.page', { projectId, path }).catch(() => null)
+}
+
+/** Show a page in the Docs reader — from a link, a reference, a search. */
+export function openDocsPage(projectId: string, path: string | null, anchor: string | null = null): void {
+  state.docsOpen[projectId] = path ? { path, anchor } : null
+  if (path) goTo('docs')
+}
+
+/**
+ * Point the project at its docs. The core writes `cockpit.yaml` when it can —
+ * a folder of one of its repositories — and this machine's setting otherwise.
+ */
+export async function setDocsHome(projectId: string, path: string | null): Promise<boolean> {
+  // The answer is null when the docs are unlinked, so it cannot be the success.
+  const ok = await guard(async () => {
+    await client.call('docs.setHome', { projectId, path })
+    return true
+  })
+  if (!ok) return false
+  state.docsOpen[projectId] = null
+  await refreshDocs(projectId)
+  return true
 }
 
 watch(() => state.activeProjectId, (id) => {

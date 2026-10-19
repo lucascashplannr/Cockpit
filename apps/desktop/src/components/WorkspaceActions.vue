@@ -320,11 +320,23 @@ const switchTitle = computed(() => {
 /** The state dot in the menu, and the tail that says what it is. */
 function noteOf(s: { name: string; port: number | null; inStart: boolean; unresolved: string[] }): string {
   if (s.unresolved.length) return 'nothing named ' + s.unresolved.map((u) => '{{' + u + '}}').join(', ')
-  if (alive.value.has(s.name)) return s.port ? ':' + s.port : 'running'
   // Said only when it is false, because it is the surprising half: a server
   // off `start:` is one the plain Start will not touch, and until it could be
   // named there was no way to run it at all.
   return s.inStart ? '' : 'not on Start'
+}
+
+type Served = { name: string; port: number | null; url: string | null; open: boolean }
+
+/** The port beside the name, while something is bound to it. */
+const portOf = (s: Served) => (alive.value.has(s.name) && s.port ? s.port : null)
+
+/** A row's own address, while it answers and is a page. */
+const rowUrl = (s: Served) => (s.url && s.open && alive.value.has(s.name) ? s.url : null)
+
+function openRow(s: Served) {
+  const url = rowUrl(s)
+  if (url) window.open(url, '_blank')
 }
 
 /** One path for the bar and the row alike, so they cannot come to disagree
@@ -585,12 +597,25 @@ async function undo() {
             </button>
             <span class="rule" />
           </template>
-          <button v-for="s in servers" :key="s.name" @click="chooseServer(s.name)">
-            <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
-            {{ s.name }}
-            <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
-            <Check v-if="target === s.name" class="tick" aria-label="on the button" />
-          </button>
+          <div v-for="s in servers" :key="s.name" class="srow">
+            <button class="one" @click="chooseServer(s.name)">
+              <i class="sd" :class="{ on: alive.has(s.name), bad: s.unresolved.length }" />
+              {{ s.name }}
+              <span v-if="portOf(s)" class="pt">({{ portOf(s) }})</span>
+              <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
+              <Check v-if="target === s.name" class="tick" aria-label="on the button" />
+            </button>
+            <!-- Where it answers, on its own row — the topic's menu does the same. -->
+            <button
+              v-if="rowUrl(s)"
+              class="go"
+              :title="'Open ' + rowUrl(s)"
+              :aria-label="'Open ' + rowUrl(s)"
+              @click="openRow(s)"
+            >
+              <ExternalLink />
+            </button>
+          </div>
           <!-- Its own half of the sheet. This menu is about servers, so the way
                out of it is about servers: the commands were a second list to
                scroll past on the way to the one thing that had been asked for.
@@ -802,6 +827,14 @@ async function undo() {
    is one, at the right edge when there is not. */
 .menu button .tick { margin-left: auto; width: 13px; height: 13px; color: var(--accent); }
 .menu button .sc + .tick { margin-left: 8px; }
+
+/* A server row is the pick and, while it serves a page, the way to it. */
+.srow { display: flex; align-items: center; gap: 1px; }
+.srow .one { flex: 1; min-width: 0; }
+.menu .srow .go { flex: none; padding: 0 7px; color: var(--text-dim); }
+.menu .srow .go:hover { color: var(--text); }
+.menu .srow .go .lucide { width: 13px; height: 13px; }
+.pt { margin-left: -4px; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
 /* Where a project-level command runs, at the right edge of its own row. The
    menu's `.kb` slot is the same shape, and is the keystroke's — a word that is

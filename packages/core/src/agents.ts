@@ -17,6 +17,7 @@ import * as checkpoints from './checkpoints.js'
 import * as attachments from './attachments.js'
 import { ranUnasked } from './unasked.js'
 import * as memory from './memory.js'
+import * as docsTools from './docsTools.js'
 import * as memoryTools from './memoryTools.js'
 import * as docs from './docs.js'
 import { getTopic, getWorkspace } from './registry.js'
@@ -86,6 +87,8 @@ export interface LaunchContext {
    * nothing should not be invited to.
    */
   memory?: boolean
+  /** §9 — whether the project has docs: the `docs_read` / `docs_search` tools. */
+  docs?: boolean
 }
 
 /**
@@ -362,6 +365,11 @@ const SHELL_RULES = [
   'inner command, then use its output in the next one. Pipes, &&, ; and redirection are all fine.',
 ].join(' ')
 
+/** The tools this process hosts for the conversation: its memory's, and its docs'. */
+function cockpitTools(ctx: LaunchContext): string[] {
+  return [...(ctx.memory ? memoryTools.TOOL_NAMES : []), ...(ctx.docs ? docsTools.TOOL_NAMES : [])]
+}
+
 /** Shared by start and resume, so the two cannot drift apart on permissions. */
 function claudeCommon(ctx: LaunchContext): string[] {
   return [
@@ -376,7 +384,7 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // would swallow the flag that follows them.
     // The question tool goes in whatever the project's own list says: it
     // reaches nothing, and without it an agent that is unsure can only guess.
-    '--tools', [...new Set([...ctx.tools, QUESTION_TOOL]), ...(ctx.memory ? memoryTools.TOOL_NAMES : [])].join(','),
+    '--tools', [...new Set([...ctx.tools, QUESTION_TOOL]), ...cockpitTools(ctx)].join(','),
     ...(ctx.deny.length ? ['--disallowedTools', ctx.deny.join(',')] : []),
     // Chosen in the composer. What the mode does not approve by itself comes
     // back over stdio as a `can_use_tool` request and waits for the window.
@@ -392,7 +400,7 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // §6 — the memory, hosted by this process over the control channel. Not
     // behind a question: a gate on the memory is the separate effort that
     // stops it being written (memoryTools.ts).
-    ...(ctx.memory ? ['--mcp-config', memoryTools.MCP_CONFIG, '--allowedTools', memoryTools.TOOL_NAMES.join(',')] : []),
+    ...(cockpitTools(ctx).length ? ['--mcp-config', memoryTools.MCP_CONFIG, '--allowedTools', cockpitTools(ctx).join(',')] : []),
     // What the two flags above actually forbid, in words the engine reads
     // before it writes its first command rather than after — and when to
     // write the memory, which nothing else would tell it.
@@ -1876,6 +1884,7 @@ async function launch(
     effort: engineEffort(opts?.effort),
     permissionMode: modeOf(opts),
     memory: session.memory !== MEMORY_OFF,
+    docs: !!docsInfo,
   }
   // The turn in the order it was written: the words, each attachment at the
   // point its `#handle` put it, and whatever nobody pointed at at the end.
@@ -1891,7 +1900,7 @@ async function launch(
   // about the memory's rules; the preamble itself is for any engine.
   const home = memory.homeOf(session)
   const memorySeen = home ? memory.contentAt(home.file, home.kind) : null
-  const opening = [memory.preamble(home), docs.preambleBlock(docsInfo), preamble.trim()]
+  const opening = [memory.preamble(home), docs.preambleBlock(docsInfo, !!spec.control?.mcp), preamble.trim()]
     .filter(Boolean)
     .join('\n\n')
   const segs = withUltracode(
@@ -1939,7 +1948,7 @@ async function launch(
   live.set(session.id, l)
 
   if (spec.streaming && spec.encodeTurn) {
-    if (spec.control) child.stdin?.write(spec.control.open(ctx.memory !== false) + '\n')
+    if (spec.control) child.stdin?.write(spec.control.open(ctx.memory !== false || !!ctx.docs) + '\n')
     // The process serves the whole conversation, so its stdin stays open: it
     // is the channel every later turn arrives on.
     child.stdin?.write(spec.encodeTurn(withFiles, segs) + '\n')

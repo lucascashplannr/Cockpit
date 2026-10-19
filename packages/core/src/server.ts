@@ -2,7 +2,7 @@ import { join, relative, resolve, sep } from 'node:path'
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
-  MEMORIZE_PROMPT, MEMORY_NEW, MEMORY_OFF, PROJECT_MEMORY, PROTOCOL_VERSION, documentPrompt, handoffPrompt, isHandoff,
+  MEMORIZE_PROMPT, MEMORY_NEW, MEMORY_OFF, PROJECT_MEMORY, PROTOCOL_VERSION, contractText, documentPrompt, handoffPrompt, isHandoff,
   isMemorize, topicMemoryId,
 } from '@cockpit/shared'
 import type {
@@ -10,7 +10,7 @@ import type {
   Conversation, PermissionMode, ProjectSettings, ServerBoardRow, ServerPush, Workspace,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
-import { bus, countEvents, forSession, tail } from './journal.js'
+import { append, bus, countEvents, forSession, tail, touchedBy } from './journal.js'
 import * as commands from './commands.js'
 import * as declare from './declare.js'
 import * as registry from './registry.js'
@@ -22,6 +22,7 @@ import * as history from './history.js'
 import * as plans from './plans.js'
 import * as memory from './memory.js'
 import * as docs from './docs.js'
+import * as docsSignals from './docsSignals.js'
 import * as leases from './leases.js'
 import * as agents from './agents.js'
 import * as attachments from './attachments.js'
@@ -272,11 +273,11 @@ function projectOfConversation(c: { workspaceIds: string[] }): string | null {
 }
 
 /** A working copy of the docs for this conversation's project, when it has docs. */
-function stageDocsFor(c: Conversation): ReturnType<typeof docs.stage> | null {
+function stageDocsFor(c: Conversation, only?: string[]): ReturnType<typeof docs.stage> | null {
   const projectId = projectOfConversation(c)
   if (!projectId || !docs.docsOf(projectId)) return null
   try {
-    return docs.stage(projectId, c.id, c.title ?? c.prompt.slice(0, 60), memory.homeOf(c))
+    return docs.stage(projectId, c.id, c.title ?? c.prompt.slice(0, 60), memory.homeOf(c), only)
   } catch {
     return null
   }
@@ -870,18 +871,31 @@ const handlers: Record<string, Handler> = {
     if (c.engine !== 'claude' || c.memory === MEMORY_OFF || !last || isHandoff(last.prompt)) {
       return { ok: true as const, skipped: true }
     }
-    // §9 — with docs linked, the same turn drafts the proposals: one turn, not
-    // two, on the one moment the whole conversation is still in front of it.
-    const set = stageDocsFor(c)
+    // §9 — with pages that may be out of date, the same turn drafts them: one
+    // turn, not two, on the one moment the whole conversation is still in
+    // front of it. Only those pages — what this agent changed under a page's
+    // `covers`, what it flagged, what its memory settled — and no docs step
+    // at all when there are none.
+    const touched = touchedBy(c.id).map((t) => docsSignals.projectPath(t.workspaceId, t.path))
+    const offer = docsSignals.forHandoff(c, touched)
+    const info = offer ? docs.docsOf(offer.projectId) : null
+    const set = offer && info ? stageDocsFor(c, docsSignals.pagesToCopy(offer)) : null
     const sent = await sendOnBehalf(
       p.sessionId,
-      handoffPrompt(set ? docs.copyDir(set.id) : null, set?.memory ? docs.memoryCopy(set.id) : null),
+      handoffPrompt(set ? docs.copyDir(set.id) : null, {
+        memoryCopy: set?.memory ? docs.memoryCopy(set.id) : null,
+        contract: info ? contractText(info.contract) : null,
+        scope: offer && info ? docsSignals.scopeOf(offer, info.path) : null,
+      }),
     )
     if (!sent.ok) {
       if (set) docs.fail(set.id, sent.reason)
       return sent
     }
-    if (set) collectWhenSettled(p.sessionId, set.id)
+    if (set && offer) {
+      docsSignals.drafting(offer, set.id)
+      collectWhenSettled(p.sessionId, set.id)
+    }
     return { ok: true as const, skipped: false, docsSetId: set?.id ?? null }
   },
   /**
@@ -917,7 +931,10 @@ const handlers: Record<string, Handler> = {
     const set = docs.stage(projectId, c.id, c.title ?? c.prompt.slice(0, 60), memory.homeOf(c))
     const sent = await sendOnBehalf(
       p.sessionId,
-      documentPrompt(docs.copyDir(set.id), set.memory ? docs.memoryCopy(set.id) : null),
+      documentPrompt(docs.copyDir(set.id), {
+        memoryCopy: set.memory ? docs.memoryCopy(set.id) : null,
+        contract: contractText(docs.docsOf(projectId)!.contract),
+      }),
     )
     if (!sent.ok) {
       docs.fail(set.id, sent.reason)
@@ -926,7 +943,58 @@ const handlers: Record<string, Handler> = {
     collectWhenSettled(p.sessionId, set.id)
     return { ok: true as const, setId: set.id }
   },
+  'docs.signals': (p: { projectId: string }) => docsSignals.signals(p.projectId),
+  /**
+   * §9 — the one click on an offer: its pages drafted in the conversation that
+   * did the work, from a copy of only those pages.
+   */
+  'docs.draft': async (p: { offerId: string }) => {
+    const offer = docsSignals.getOffer(p.offerId)
+    if (!offer || offer.state !== 'open') return { ok: false as const, reason: 'this offer was already drafted or let go' }
+    const c = offer.sessionId ? agents.get(offer.sessionId) : null
+    if (!c) return { ok: false as const, reason: 'the conversation that did this work is gone — use /document in another' }
+    if (c.engine !== 'claude') return { ok: false as const, reason: 'drafting needs a Claude conversation' }
+    if (agents.isBusy(c.id)) return { ok: false as const, reason: 'that conversation is busy — draft once its turn ends' }
+    const info = docs.docsOf(offer.projectId)
+    if (!info) return { ok: false as const, reason: 'this project has no documentation linked' }
+    const set = docs.stage(offer.projectId, c.id, offer.label + ' — ' + (c.title ?? c.prompt.slice(0, 60)), memory.homeOf(c), docsSignals.pagesToCopy(offer))
+    const sent = await sendOnBehalf(
+      c.id,
+      documentPrompt(docs.copyDir(set.id), {
+        memoryCopy: set.memory ? docs.memoryCopy(set.id) : null,
+        contract: contractText(info.contract),
+        scope: docsSignals.scopeOf(offer, info.path),
+      }),
+    )
+    if (!sent.ok) {
+      docs.fail(set.id, sent.reason)
+      return sent
+    }
+    docsSignals.drafting(offer, set.id)
+    collectWhenSettled(c.id, set.id)
+    append({ type: 'docs.offered', projectId: offer.projectId, payload: { offerId: offer.id, state: 'drafting', setId: set.id } })
+    return { ok: true as const, setId: set.id }
+  },
+  'docs.dismissOffer': (p: { offerId: string }) => {
+    const o = docsSignals.getOffer(p.offerId)
+    docsSignals.dismiss(p.offerId)
+    if (o) append({ type: 'docs.offered', projectId: o.projectId, payload: { offerId: o.id, state: 'dismissed' } })
+    return { ok: true as const }
+  },
+  'docs.dropFlag': (p: { projectId: string; flagId: string }) => {
+    docsSignals.dropFlag(p.projectId, p.flagId)
+    append({ type: 'docs.flagged', projectId: p.projectId, payload: { flagId: p.flagId, dropped: true } })
+    return { ok: true as const }
+  },
   'docs.info': (p: { projectId: string }) => docs.docsOf(p.projectId),
+  'docs.index': (p: { projectId: string }) => docs.indexOf(p.projectId),
+  'docs.page': (p: { projectId: string; path: string }) => docs.pageText(p.projectId, p.path),
+  'docs.setHome': async (p: { projectId: string; path: string | null }) => {
+    const info = docs.setHome(p.projectId, p.path)
+    await registry.reconcile(p.projectId)
+    pushAll()
+    return info
+  },
   'docs.pending': (p: { projectId: string }) => docs.pending(p.projectId),
   'docs.resolve': (p: { setId: string; path: string; accept: boolean; content?: string }) =>
     docs.resolvePage(p.setId, p.path, p.accept, p.content),

@@ -140,6 +140,8 @@ export type EventType =
   | 'docs.proposed'
   | 'docs.accepted'
   | 'docs.rejected'
+  | 'docs.flagged'
+  | 'docs.offered'
   // terminal
   | 'terminal.opened'
   | 'terminal.closed'

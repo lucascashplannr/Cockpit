@@ -145,7 +145,14 @@ export interface ManifestV1 {
   guess?: Record<string, boolean>
   tickets?: { provider: string; repo?: string; project?: string; baseUrl?: string }
   review?: { provider: string; repo?: string }
-  docs?: string | { path: string }
+  /**
+   * §9 — the Docs home: a repository of the project, or a folder inside one.
+   * A bare string (or `path:`) is the older form, a folder from the project root.
+   * `contract` is the project's part of the page contract (see `docs.ts`).
+   */
+  docs?:
+    | string
+    | { path?: string; repo?: string; folder?: string; exclude?: string[]; guide?: string; contract?: unknown }
   agents?: { engines?: string[]; instructions?: string; allow?: string[] }
   ports?: Record<string, number | 'auto'>
   /** Runtime-specific block, deliberately not a universal schema (§8). */
@@ -390,6 +397,6 @@ export const MANIFEST_TEMPLATE = [
   '#     web: [pnpm install]',
   '',
   '# tickets: { provider: github, repo: owner/name }',
-  '# docs: docs/',
+  '# docs: { repo: api, folder: docs }   # or a repository of its own: { repo: docs }',
   '',
 ].join('\n')

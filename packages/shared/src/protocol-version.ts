@@ -99,8 +99,16 @@
  * 2.32 — the `terminal` quote: a command's output brought back to the
  * conversation that gave it. An older core drops the kind and hands it over as
  * a plain paste, so the engine is not told it is the command's own output.
+ *
+ * 2.33 — `docs.index`, `docs.page`, `docs.setHome`, and `DocsInfo` says the
+ * repository, folder, exclusions and page contract. An older core has no index
+ * to give, and the Docs reader lists nothing.
+ *
+ * 2.34 — `docs.signals`, `docs.draft`, `docs.dismissOffer`, `docs.dropFlag`: the
+ * flags agents leave on pages and the offers made at Send and `/next`. An older
+ * core offers nothing, and the band says nothing is waiting.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 32 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 34 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

@@ -244,8 +244,11 @@ export function detectCapabilities(
     push({ id: 'review', impl: manifest.review.provider, source: 'manifest', detail: { ...manifest.review } })
   }
   if (manifest?.docs) {
-    const p = typeof manifest.docs === 'string' ? manifest.docs : manifest.docs.path
-    push({ id: 'docs', impl: 'folder', source: 'manifest', detail: { path: p } })
+    // Where it resolves to is `docs.ts`'s to say: a `repo:` names a checkout
+    // this function does not know about.
+    const d = manifest.docs
+    const detail = typeof d === 'string' ? { path: d } : { path: d.path, repo: d.repo, folder: d.folder }
+    push({ id: 'docs', impl: 'folder', source: 'manifest', detail })
   }
 
   if (isRepo(dir)) push({ id: 'vcs', impl: 'git', source: 'detected' })

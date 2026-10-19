@@ -1,3 +1,5 @@
+import type { DocsContract } from './docs.js'
+
 /**
  * §4 — Concepts. Workspace is the primitive; Topic is a decoration.
  */
@@ -427,6 +429,8 @@ export interface DeclaredServer {
   cmd: string
   url: string | null
   port: number | null
+  /** Whether its address is a page — `open: false` is an API, never offered to a browser. */
+  open: boolean
   /** Whether the plain Start starts it. */
   inStart: boolean
   /**
@@ -1318,8 +1322,44 @@ export interface DocsInfo {
   source: 'settings' | 'manifest' | 'detected'
   /** The checkout the path is in, when it is in one — where its Diff lives. */
   workspaceId: string | null
+  /** The repository the docs are in, by folder name, and the folder inside it ('' for all of it). */
+  repo: string | null
+  folder: string
+  /** What under the docs is not a page of them — `Clippings`, `Untitled*`. */
+  exclude: string[]
   /** The page that says how the docs are organised, when there is one. */
   guide: string | null
+  /** Cockpit's page contract with the project's own on top (`docs.contract` in the manifest). */
+  contract: DocsContract
+}
+
+/** One thing a page does not do that the contract asks of it. */
+export interface DocsIssue {
+  code: 'frontmatter' | 'title' | 'summary' | 'type' | 'folder' | 'field' | 'size' | 'link'
+  text: string
+}
+
+/**
+ * §9 — one page, as the index has it: enough to list it, link to it, and say
+ * what it lacks, without its text.
+ */
+export interface DocsPage {
+  /** Relative to the docs folder. */
+  path: string
+  title: string
+  /** `type:`, when the page says one. */
+  kind: string | null
+  /** `summary:`, or the quote under the heading: the page's line in the index. */
+  summary: string | null
+  aliases: string[]
+  covers: string[]
+  updated: string | null
+  words: number
+  /** The pages it links to, resolved. */
+  links: string[]
+  /** Links that name no page. */
+  broken: string[]
+  issues: DocsIssue[]
 }
 
 /**
@@ -1340,6 +1380,59 @@ export interface DocsProposal {
   state: 'pending' | 'accepted' | 'rejected'
   /** The page changed in the docs after the proposal was drafted from it. */
   drifted: boolean
+  /** What the proposed page does not do that the contract asks — shown on its card. */
+  issues?: DocsIssue[]
+}
+
+/**
+ * §9 — a page an agent said is wrong, incomplete or missing, while it worked.
+ * A note, never an edit: it waits for the next moment the work is final.
+ */
+export interface DocsFlag {
+  id: string
+  /** A path from the docs' root — or, when `missing`, the name of a page to write. */
+  page: string
+  missing: boolean
+  text: string
+  sessionId: string | null
+  topicId: string | null
+  createdAt: number
+}
+
+/** One page an offer would bring up to date, and every reason it was picked. */
+export interface DocsOfferPage {
+  path: string
+  missing: boolean
+  reasons: string[]
+}
+
+/**
+ * §9 — "these pages may be out of date", said at the moment the work is final:
+ * after Send to the base, and in a `/next` handoff. Drafting is one click, in
+ * the conversation that did the work, and touches only these pages.
+ */
+export interface DocsOffer {
+  id: string
+  projectId: string
+  /** The conversation that did the work — where the draft is written. Null: none left. */
+  sessionId: string | null
+  topicId: string | null
+  moment: 'send' | 'next'
+  /** What happened, as the line says it: "Sent to dev". */
+  label: string
+  createdAt: number
+  pages: DocsOfferPage[]
+  /** Lasting memory entries (Decisions, Contracts, Constraints) the docs may not say yet. */
+  memory: string[]
+  flagIds: string[]
+  /** `drafting` until its set is decided, then `done`. */
+  state: 'open' | 'drafting' | 'done' | 'dismissed'
+  setId: string | null
+}
+
+export interface DocsSignals {
+  flags: DocsFlag[]
+  offers: DocsOffer[]
 }
 
 export interface DocsProposalSet {

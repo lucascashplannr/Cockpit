@@ -881,6 +881,7 @@ export async function servers(ws: Workspace): Promise<DeclaredServer[]> {
     cmd: s.cmd,
     url: s.url,
     port: s.port,
+    open: s.open,
     inStart: onStart(s.name),
     unresolved: s.unresolved,
   }))

@@ -4,7 +4,7 @@ import { FolderOpen, Plus, ShieldCheck, SlidersHorizontal, Trash2, TriangleAlert
 import DialogShell from './DialogShell.vue'
 import {
   addRepoTo, askTrashProject, askUntrackProject, askUntrackRepo, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
-  renameProject, setProjectSettings, state, trackRepo,
+  refreshDocs, renameProject, setDocsHome, setProjectSettings, state, trackRepo,
 } from '../core/store.js'
 
 /**
@@ -32,7 +32,7 @@ const baseBranch = ref('')
 /** §16 — per repository, keyed by its name. */
 const guarded = ref<Record<string, string[]>>({})
 const drafts = reactive<Record<string, string>>({})
-/** §9 — where the docs are, when this machine says so. */
+/** §9 — the Docs home, as a folder: the core writes it as `{ repo, folder }`. */
 const docsPath = ref('')
 /** Stepped out to add a repository — see `addRepository`. Up here because the watch below runs at once. */
 let addingRepo = false
@@ -48,7 +48,7 @@ watch(
     name.value = proj?.name ?? ''
     root.value = proj?.root ?? ''
     baseBranch.value = proj?.settings.defaultBranch ?? ''
-    docsPath.value = proj?.settings.docsPath ?? ''
+    docsPath.value = linkedDocs(proj?.id)
     guarded.value = Object.fromEntries(
       Object.entries(proj?.settings.protectedBranches ?? {}).map(([k, v]) => [k, [...v]]),
     )
@@ -99,14 +99,32 @@ const settingsChanged = computed(() => {
   if (!s) return false
   return (
     (baseBranch.value.trim() || null) !== s.defaultBranch ||
-    normal(guarded.value) !== normal(s.protectedBranches ?? {}) ||
-    (docsPath.value.trim() || null) !== (s.docsPath ?? null)
+    normal(guarded.value) !== normal(s.protectedBranches ?? {})
   )
 })
 
+/** The folder the docs are linked to on purpose — found ones are a placeholder. */
+function linkedDocs(projectId: string | undefined): string {
+  const info = projectId ? state.docsInfo[projectId] : null
+  return info && info.source !== 'detected' ? info.path : ''
+}
+// The docs are fetched per project, and a sheet opened on another one than the
+// active project gets its answer after it opened: the field follows it until
+// something is typed into it.
+watch(
+  () => (p.value ? linkedDocs(p.value.id) : ''),
+  (now, was) => {
+    if (docsPath.value.trim() === (was ?? '')) docsPath.value = now
+  },
+)
+watch(p, (proj) => {
+  if (proj && !(proj.id in state.docsInfo)) void refreshDocs(proj.id)
+}, { immediate: true })
+const docsChanged = computed(() => !!p.value && docsPath.value.trim() !== linkedDocs(p.value.id))
+
 const nameChanged = computed(() => !!p.value && name.value.trim() !== p.value.name)
 const rootChanged = computed(() => !!p.value && root.value.trim() !== p.value.root)
-const dirty = computed(() => nameChanged.value || rootChanged.value || settingsChanged.value)
+const dirty = computed(() => nameChanged.value || rootChanged.value || settingsChanged.value || docsChanged.value)
 
 /** A project holds repositories and branches of them; the count is what makes
  *  the danger real. */
@@ -198,11 +216,13 @@ async function save() {
         !(await setProjectSettings(proj.id, {
           defaultBranch: baseBranch.value.trim() || null,
           protectedBranches: guarded.value,
-          docsPath: docsPath.value.trim() || null,
         }))
       ) {
         return
       }
+    }
+    if (docsChanged.value) {
+      if (!(await setDocsHome(proj.id, docsPath.value.trim() || null))) return
     }
     if (rootChanged.value) {
       if (!(await moveProject(proj.id, root.value.trim(), moveFiles.value))) return
@@ -212,10 +232,19 @@ async function save() {
   }
 }
 
-/** What the docs resolve to without a setting: the manifest's, or a `docs/` found. */
+/** A `docs/` folder found at the root, used until something else is said. */
 const docsFallback = computed(() => {
   const info = p.value ? state.docsInfo[p.value.id] : null
-  return info && info.source !== 'settings' ? info : null
+  return info && info.source === 'detected' ? info : null
+})
+/** Where the link is kept, said on hover rather than under the field. */
+const docsWhere = computed(() => {
+  const info = p.value ? state.docsInfo[p.value.id] : null
+  if (!info || info.source === 'detected') return 'A folder of one of the repositories is saved in cockpit.yaml'
+  if (info.source === 'manifest' && info.repo) {
+    return 'cockpit.yaml — docs: { repo: ' + info.repo + (info.folder ? ', folder: ' + info.folder : '') + ' }'
+  }
+  return info.source === 'settings' ? 'Saved on this machine only' : 'cockpit.yaml'
 })
 
 async function browseDocs() {
@@ -359,15 +388,13 @@ async function browse() {
             class="input mono"
             type="text"
             spellcheck="false"
-            :placeholder="docsFallback ? docsFallback.path + ' (' + docsFallback.source + ')' : 'a docs folder, or a repository'"
+            :placeholder="docsFallback ? docsFallback.path + ' (found)' : 'a docs folder, or a repository'"
+            :title="docsWhere"
           />
           <button class="btn" title="Choose a folder" @click="browseDocs">
             <FolderOpen />Browse
           </button>
         </div>
-        <span class="help">
-          Agents read it. Changes to it are only proposed — on /next and /document — and you accept each one.
-        </span>
       </div>
 
       <!-- §16 — the rule that used to be hardcoded, handed back, one

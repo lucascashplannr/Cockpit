@@ -12,6 +12,7 @@ import * as registry from '../registry.js'
 import { moveToTrash } from '../files.js'
 import * as runtime from '../runtime/index.js'
 import * as agents from '../agents.js'
+import * as docsSignals from '../docsSignals.js'
 
 /**
  * §15 — the branch this path's project says it works against, and only then
@@ -904,6 +905,9 @@ export async function mergePlan(
   const warnings: string[] = []
   const names: string[] = []
   const blockers: string[] = []
+  /** §9 — what the topic changes, as `covers:` names code; read now, while the base is still behind. */
+  const changed: string[] = []
+  let sentTo: string | null = null
 
   for (const tree of trees) {
     // A worktree's own main checkout is the one with the same folder name; for
@@ -934,6 +938,9 @@ export async function mergePlan(
       continue
     }
     names.push(main.name)
+    sentTo ??= base
+    const diff = await git(main.path, ['diff', '--name-only', base + '...' + branch], 30_000)
+    if (diff.ok) for (const rel of diff.stdout.split('\n').filter(Boolean)) changed.push(docsSignals.projectPath(main.id, rel))
 
     // No remote: the local base is the only one there is, and it is current.
     const remote = main.git?.hasRemote !== false
@@ -1012,7 +1019,24 @@ export async function mergePlan(
     // conflicted, which is a state to finish — not one to undo.
     onFailure: 'halt',
   }
-  plans.register(preview, { workspaceIds: mains.map((m) => m.id) })
+  plans.register(preview, {
+    workspaceIds: mains.map((m) => m.id),
+    // §9 — the work is final now: the pages it may have made untrue are
+    // offered for an update, in the conversation that did it.
+    onApplied: () => {
+      try {
+        docsSignals.offerAfterSend({
+          projectId: f.projectId,
+          topicId,
+          conversations: agents.listForTopic(topicId),
+          changed,
+          label: 'Sent to ' + (sentTo ?? 'the base'),
+        })
+      } catch {
+        /* the docs are a courtesy here: a failure must not fail the Send */
+      }
+    },
+  })
   return { ok: true, detail: 'plan ready', plan: preview }
 }
 

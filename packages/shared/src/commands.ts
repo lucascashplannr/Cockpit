@@ -135,21 +135,71 @@ export function isMemorize(prompt: string | null | undefined): boolean {
  */
 const DOCUMENT_WORDS = 'Documentation step: propose updates to this project\'s documentation'
 
-export function documentPrompt(dir: string, memoryCopy?: string | null): string {
-  const lines = [
-    DOCUMENT_WORDS + ' from what this conversation and the memory established.',
-    'A working copy of the documentation is at ' + dir + ' — read its guide or index first, and follow',
-    'its structure, language and conventions. Edit pages there, or add pages there; write nowhere else,',
-    'and do not change any code. Only lasting knowledge belongs: how things work, contracts, decisions',
-    'and their reasons, constraints. Not progress, not state, not what git already shows. If nothing',
-    'deserves documenting, change nothing. Finish with one line per changed page: its path relative to',
-    'the copy, an em dash, and why.',
-  ]
+/** What a Document step is pointed at, when it is not the whole of the docs. */
+export interface DocumentScope {
+  /** The docs themselves, read there and never written there. */
+  docsRoot: string
+  pages: { path: string; missing: boolean; reasons: string[] }[]
+  /** Lasting memory entries the docs may not say yet. */
+  memory: string[]
+}
+
+export interface DocumentOptions {
+  memoryCopy?: string | null
+  contract?: string | null
+  /**
+   * §9 — only these pages: what the work changed, what an agent flagged, what
+   * the memory settled. Without it, the copy is the whole of the docs.
+   */
+  scope?: DocumentScope | null
+}
+
+export function documentPrompt(dir: string, o: DocumentOptions = {}): string {
+  const sc = o.scope
+  const lines = [DOCUMENT_WORDS + ' from what this conversation and the memory established.']
+  if (sc) {
+    lines.push(
+      'A working copy of the pages that may be out of date is at ' + dir + '. The rest of the documentation',
+      'is at ' + sc.docsRoot + ' — read it there (its guide or index first) and never write there; to change',
+      'another page, copy it into the working copy at the same path first.',
+    )
+    if (sc.pages.length) {
+      lines.push('\n\nPages to check, and why:\n' + sc.pages
+        .map((p) => '- ' + (p.missing ? p.path + ' (no page yet — write it only if it deserves one)' : p.path) +
+          ' — ' + p.reasons.join('; '))
+        .join('\n') + '\n\n')
+    }
+    if (sc.memory.length) {
+      lines.push('\n\nSettled in the memory, which the docs may not say yet:\n' +
+        sc.memory.map((m) => '- ' + m).join('\n') + '\n\n')
+    }
+    lines.push(
+      'Bring each page up to date with what this conversation established — or leave it as it is when it',
+      'is still right. Edit pages in the working copy, or add pages there; write nowhere else, and do not',
+      'change any code.',
+    )
+  } else {
+    lines.push(
+      'A working copy of the documentation is at ' + dir + ' — read its guide or index first, and follow',
+      'its structure, language and conventions. Edit pages there, or add pages there; write nowhere else,',
+      'and do not change any code.',
+    )
+  }
+  lines.push(
+    'Only lasting knowledge belongs: how things work, contracts, decisions and their reasons, constraints.',
+    'Not progress, not state, not what git already shows. If nothing deserves documenting, change nothing.',
+    'Prefer changing the page that already covers a subject to adding one; a page you touch is brought up',
+    'to the contract below. Finish with one line per changed page: its path relative to the copy, an em',
+    'dash, and why.',
+  )
+  // §9 — the page contract, said again here rather than trusted to the
+  // opening: a long conversation may have compacted it away.
+  if (o.contract) lines.push('\n\n' + o.contract + '\n\n')
   // The memory empties into the docs: what a page now says for good, the
   // memory no longer has to carry. Deleting from a copy, so a person decides.
-  if (memoryCopy) {
+  if (o.memoryCopy) {
     lines.push(
-      'Last, a copy of the memory is at ' + memoryCopy + ': delete from it the entries your pages now',
+      'Last, a copy of the memory is at ' + o.memoryCopy + ': delete from it the entries your pages now',
       'cover in full — only those, only whole lines, and change nothing else in it. The rest stays in the',
       'memory.',
     )
@@ -157,12 +207,12 @@ export function documentPrompt(dir: string, memoryCopy?: string | null): string 
   return lines.join(' ')
 }
 
-/** `/next` with docs linked: the handoff and the proposals in one turn. */
-export function handoffPrompt(docsDir: string | null, memoryCopy?: string | null): string {
+/** `/next` with docs to update: the handoff and the proposals in one turn. */
+export function handoffPrompt(docsDir: string | null, o: DocumentOptions = {}): string {
   if (!docsDir) return HANDOFF_PROMPT
   return HANDOFF_PROMPT.replace(/ Reply with one\s+short line\.$/, '') +
     ' Then, as a second step — ' +
-    documentPrompt(docsDir, memoryCopy).replace(DOCUMENT_WORDS, 'propose updates to the documentation')
+    documentPrompt(docsDir, o).replace(DOCUMENT_WORDS, 'propose updates to the documentation')
 }
 
 export function isDocument(prompt: string | null | undefined): boolean {

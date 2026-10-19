@@ -1,5 +1,6 @@
-import { MEMORY_NEW, STATE_SECTION, conversationRef } from '@cockpit/shared'
+import { MEMORY_NEW, MEMORY_OFF, STATE_SECTION, conversationRef } from '@cockpit/shared'
 import type { Actor, Conversation } from '@cockpit/shared'
+import * as docsTools from './docsTools.js'
 import * as memory from './memory.js'
 import { getWorkspace } from './registry.js'
 
@@ -196,10 +197,17 @@ export function handle(c: Conversation, own: Set<string>, msg: JsonRpc): Record<
         capabilities: { tools: {} },
         serverInfo: { name: SERVER, version: '1' },
       })
+    // §9 — the docs tools ride on the same server: one channel, one process
+    // that knows which conversation is asking.
     case 'tools/list':
-      return reply({ tools: TOOLS })
-    case 'tools/call':
-      return reply(call(c, own, msg.params?.name ?? '', msg.params?.arguments ?? {}))
+      return reply({
+        tools: [...(c.memory !== MEMORY_OFF ? TOOLS : []), ...(docsTools.available(c) ? docsTools.TOOLS : [])],
+      })
+    case 'tools/call': {
+      const name = msg.params?.name ?? ''
+      if (docsTools.NAMES.includes(name)) return reply(docsTools.call(c, name, msg.params?.arguments ?? {}))
+      return reply(call(c, own, name, msg.params?.arguments ?? {}))
+    }
     default:
       return fail('not supported: ' + msg.method)
   }

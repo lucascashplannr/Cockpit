@@ -18,6 +18,7 @@ import Composer from '../agent/Composer.vue'
 import SelectionActions from '../agent/SelectionActions.vue'
 import PermissionAsk from '../agent/PermissionAsk.vue'
 import QuestionAsk from '../agent/QuestionAsk.vue'
+import DocsOfferLine from '../docs/DocsOfferLine.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
@@ -192,8 +193,10 @@ type Item =
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
   /** `/compact` — the window before and after the engine summarised it. */
   | { kind: 'compact'; id: string; before: number; after: number }
-  /** §6 — a line the agent put in the shared memory, or the state it set. */
-  | { kind: 'memory'; id: string; section: string; text: string }
+  /** §6 — a line the agent put in the shared memory, or the state it set. §9 — or a docs flag. */
+  | { kind: 'memory'; id: string; section: string; text: string; flag?: boolean }
+  /** §9 — pages offered for an update, once the work was final. */
+  | { kind: 'docsOffer'; id: string; offerId: string }
   /** Something the agent asked a person, and what it was told. */
   | Asked
 
@@ -219,7 +222,8 @@ type Row =
   | { kind: 'group'; id: string; calls: Extract<Item, { kind: 'tool' }>[] }
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
   | { kind: 'compact'; id: string; before: number; after: number }
-  | { kind: 'memory'; id: string; section: string; text: string }
+  | { kind: 'memory'; id: string; section: string; text: string; flag?: boolean }
+  | { kind: 'docsOffer'; id: string; offerId: string }
   | Asked
 
 /**
@@ -254,7 +258,7 @@ function rowsOf(items: Item[]): Row[] {
     // what follows is different from what came before. So does an undo, which
     // is the loudest possible break in what a turn did.
     flush()
-    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'memory' || it.kind === 'question') rows.push({ ...it })
+    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'memory' || it.kind === 'docsOffer' || it.kind === 'question') rows.push({ ...it })
     else rows.push({ kind: 'text', id: it.id, text: it.text })
   }
   flush()
@@ -319,6 +323,11 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
         workspaces: Number(p?.workspaces ?? 0),
         redo: !!p?.redo,
       })
+      continue
+    }
+    if (e.type === 'docs.offered') {
+      const offerId = (e.payload as { offerId?: string })?.offerId
+      if (offerId) into.push({ kind: 'docsOffer', id: e.id, offerId })
       continue
     }
     if (e.type === 'agent.compacted') {
@@ -398,7 +407,13 @@ const MEMORY_TOOL = /^mcp__cockpit__memory_(note|state|read|outdate)$/
 function memoryLine(
   tool: string | undefined,
   input: Record<string, unknown> | undefined,
-): { section: string; text: string } | 'read' | null {
+): { section: string; text: string; flag?: boolean } | 'read' | null {
+  // §9 — a docs flag is the same kind of thing: a note for later, not work.
+  if (tool === 'mcp__cockpit__docs_flag') {
+    const page = typeof input?.page === 'string' ? input.page.trim() : ''
+    const what = typeof input?.what === 'string' ? input.what.trim() : ''
+    return { section: 'Docs', text: page + (what ? ' — ' + what : ''), flag: true }
+  }
   const m = MEMORY_TOOL.exec(tool ?? '')
   if (!m) return null
   if (m[1] === 'read') return 'read'
@@ -1647,12 +1662,13 @@ function ago(ts: number): string {
                 v-else-if="r.kind === 'memory'"
                 class="undone compacted memo"
                 :data-anchor="r.id"
-                :title="'Written into the shared memory, under ' + r.section"
+                :title="r.flag ? 'Flagged — offered for an update when this work is sent or handed off' : 'Written into the shared memory, under ' + r.section"
               >
                 <BookMarked class="sm" />
                 <span class="memo-sec">{{ r.section }}</span>
                 <span class="memo-tx">{{ r.text }}</span>
               </p>
+              <DocsOfferLine v-else-if="r.kind === 'docsOffer'" :data-anchor="r.id" :offer-id="r.offerId" />
               <p v-else-if="r.kind === 'compact'" class="undone compacted" :data-anchor="r.id">
                 <FoldVertical class="sm" />
                 Compacted — {{ k(r.before) }} → {{ k(r.after) }} tokens in context

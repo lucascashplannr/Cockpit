@@ -204,8 +204,9 @@ const running = computed(
 const pending = computed(
   () => (f.value && runtimeBusy[f.value.id]) || hosts.value.map((h) => runtimeBusy[h.id]).find(Boolean) || null,
 )
+/** Always "all": the switch is every server of every repository the topic spans. */
 const switchLabel = computed(() =>
-  pending.value ? (pending.value === 'start' ? 'Starting…' : 'Stopping…') : running.value ? 'Stop' : 'Start',
+  pending.value ? (pending.value === 'start' ? 'Starting…' : 'Stopping…') : running.value ? 'Stop all' : 'Start all',
 )
 /* ── the worktrees' setup (§7) ─────────────────────────────────────────
  *
@@ -234,15 +235,37 @@ const switchTitle = computed(() => {
   return names.length ? 'Start ' + names.join(', ') : 'Start the servers for every repository in this topic'
 })
 
-/** Where the topic's servers answer, while they do — see WorkspaceActions. */
-const openable = computed(() => {
-  const p = folder.value?.runtime?.preview
+const urlOf = (w: Workspace | null | undefined) => {
+  const p = w?.runtime?.preview
   return (p?.kind === 'url' && p.value) || null
+}
+
+/**
+ * Where the topic's servers answer, while they do — see WorkspaceActions.
+ *
+ * The topic's folder first, since that is the project's own. Otherwise the
+ * one repository that serves a page: with a single address there is no
+ * question which one the arrow means. Two or more and the arrow would be a
+ * guess, so it is left to their rows in the menu.
+ */
+const opener = computed(() => {
+  if (urlOf(folder.value)) return folder.value
+  const serving = ws.value.filter((w) => urlOf(w))
+  return serving.length === 1 ? serving[0]! : null
 })
+const openable = computed(() => urlOf(opener.value))
 
 async function openPreview() {
-  const w = folder.value
+  const w = opener.value
   if (w) await guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'browser' }))
+}
+
+/** A row's own address, while it answers and is a page. */
+const rowUrl = (s: Row) => (s.url && s.open && isAlive(s) ? s.url : null)
+
+function openRow(s: Row) {
+  const url = rowUrl(s)
+  if (url) window.open(url, '_blank')
 }
 
 async function toggle() {
@@ -271,9 +294,11 @@ async function setOnStart(s: Row) {
 
 function noteOf(s: Row): string {
   if (s.unresolved.length) return 'nothing named ' + s.unresolved.map((u) => '{{' + u + '}}').join(', ')
-  if (isAlive(s)) return s.port ? ':' + s.port : 'running'
   return ''
 }
+
+/** The port beside the name, while something is bound to it. */
+const portOf = (s: Row) => (isAlive(s) && s.port ? s.port : null)
 
 const startTitle = (s: Row) =>
   s.inStart
@@ -433,7 +458,19 @@ const startTitle = (s: Row) =>
           >
             <i class="sd" :class="{ on: isAlive(s), bad: s.unresolved.length }" />
             {{ s.name }}
+            <span v-if="portOf(s)" class="pt">({{ portOf(s) }})</span>
             <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
+          </button>
+          <!-- Where it answers, on its own row: the bar's arrow is one address,
+               and a topic serving two pages has no single one to give it. -->
+          <button
+            v-if="rowUrl(s)"
+            class="go"
+            :title="'Open ' + rowUrl(s)"
+            :aria-label="'Open ' + rowUrl(s)"
+            @click="openRow(s)"
+          >
+            <ExternalLink />
           </button>
           <!-- Stopped here, so the menu stays open: ticking three of these in
                a row is the ordinary case, and it switches nothing. -->
@@ -535,6 +572,10 @@ const startTitle = (s: Row) =>
   color: var(--text-dim);
 }
 .menu .srow .st.on { color: var(--text); }
+.menu .srow .go { flex: none; padding: 0 7px; color: var(--text-dim); }
+.menu .srow .go:hover { color: var(--text); }
+.menu .srow .go .lucide { width: 13px; height: 13px; }
+.pt { margin-left: -4px; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .menu .srow .st .lucide { width: 12px; height: 12px; color: var(--accent); }
 
 .sc {

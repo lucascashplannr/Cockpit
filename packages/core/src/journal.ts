@@ -159,6 +159,19 @@ export function recordTouch(
     .run(workspaceId, path, actor.kind, sessionId ?? null, Date.now())
 }
 
+/**
+ * §9 — what one conversation's agent changed, by workspace: the code side of
+ * "which pages may be out of date" at a `/next`. Paths outside the workspace
+ * (a docs working copy, an attachment) are not code and are left out.
+ */
+export function touchedBy(sessionId: string): { workspaceId: string; path: string }[] {
+  return (
+    getDb()
+      .prepare("SELECT DISTINCT workspace_id AS workspaceId, path FROM touches WHERE session_id = ? AND actor = 'agent'")
+      .all(sessionId) as { workspaceId: string; path: string }[]
+  ).filter((t) => !t.path.startsWith('/') && !t.path.startsWith('..'))
+}
+
 export function attributionFor(workspaceId: string, paths: string[]): Map<string, string> {
   const out = new Map<string, string>()
   if (!paths.length) return out

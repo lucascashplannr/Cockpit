@@ -1,238 +1,212 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
-import type { DocsProposal, DocsProposalSet, Workspace } from '@cockpit/shared'
-import { BookMarked, BookOpen, Check, CircleAlert, FilePen, FilePlus, FileX, Pencil, X } from '@lucide/vue'
-import { dismissDocsSet, resolveDocsForget, resolveDocsPage, state } from '../../core/store.js'
-import { lineDiff } from '../../core/linediff.js'
-import { createMarked } from '../../core/markdown.js'
+import { computed, nextTick, ref, watch } from 'vue'
+import { resolveLink } from '@cockpit/shared'
+import type { DocsFlag, DocsPage, Workspace } from '@cockpit/shared'
+import { ArrowLeft, BookOpen, CircleAlert, FilePen, Flag, Search, X } from '@lucide/vue'
+import { docsPageText, dropDocsFlag, openDocsPage, refreshDocs, state } from '../../core/store.js'
+import MarkdownPreview from '../MarkdownPreview.vue'
+import DocsProposals from '../docs/DocsProposals.vue'
 
 /**
- * §9 — what the Document step proposed to the docs, waiting on a person.
+ * §9 — the docs, as a person reads them.
  *
- * The memory is written freely, because it is disposable. The docs are
- * forever, so nothing reaches them unseen: every page the agent drafted is a
- * card here — its diff, and why — until it is accepted, edited and accepted,
- * or rejected. (A second way, every page written in at once and read in the
- * Diff, was tried beside this one and dropped on 2026-09-30.)
+ * The index first — every page by what it answers, a folder at a time — and a
+ * page rendered with its `[[links]]` followable and the pages that link to it
+ * underneath, which is how the docs are walked rather than searched. What a
+ * page lacks against the contract is a dot in the index and a line on the
+ * page: the same list a proposal is checked with.
+ *
+ * What the Document step proposed is not the tab any more but a band on it:
+ * reading is what the docs are for most of the time.
  */
 
 const props = defineProps<{ workspace: Workspace }>()
 
-const info = computed(() => state.docsInfo[props.workspace.projectId] ?? null)
-const sets = computed(() => state.docsPending[props.workspace.projectId] ?? [])
+const projectId = computed(() => props.workspace.projectId)
+const info = computed(() => state.docsInfo[projectId.value] ?? null)
+const index = computed(() => state.docsIndex[projectId.value] ?? [])
+const sets = computed(() => state.docsPending[projectId.value] ?? [])
+const opened = computed(() => state.docsOpen[projectId.value] ?? null)
+const page = computed(() => (opened.value ? index.value.find((p) => p.path === opened.value!.path) ?? null : null))
 
-/** Which pages are unfolded, and which are being edited, by `set:path`. */
-const open = reactive<Record<string, boolean>>({})
-const editing = reactive<Record<string, string>>({})
-const busy = ref<string | null>(null)
+void refreshDocs(projectId.value)
 
-const key = (s: DocsProposalSet, f: DocsProposal) => s.id + ':' + f.path
+/* ── the proposals band ─────────────────────────────────────────────────── */
 
-/* ── the memory, emptying into the docs ────────────────────────────────────
- *
- * What the agent took out of its copy of the memory because a page now says
- * it. One card, after the pages, every entry ticked; untick what should stay.
- */
-const md = createMarked({ breaks: false })
-const kept = reactive<Record<string, string[]>>({})
-const pagesOpen = (s: DocsProposalSet) => s.files.some((f) => f.state === 'pending')
-function entryHtml(line: string): string {
-  const text = line
-    .replace(/^\s*[-*+]\s+/, '')
-    .replace(/\s*_\([^()]{1,60},\s*\d{1,2}\s+[A-Za-z]{3,5}\)_\s*$/, '')
-  return md.parseInline(text) as string
-}
-function toggleKeep(s: DocsProposalSet, line: string): void {
-  const list = kept[s.id] ?? []
-  kept[s.id] = list.includes(line) ? list.filter((l) => l !== line) : [...list, line]
-}
-async function forget(s: DocsProposalSet, accept: boolean): Promise<void> {
-  busy.value = s.id + ':forget'
-  try {
-    await resolveDocsForget(s, accept, kept[s.id] ?? [])
-  } finally {
-    busy.value = null
+const signals = computed(() => state.docsSignals[projectId.value] ?? { flags: [], offers: [] })
+/** Drafts waiting on a decision, and offers waiting on a click. */
+const waiting = computed(() => sets.value.length + signals.value.offers.filter((o) => o.state === 'open').length)
+
+const reviewing = ref(waiting.value > 0)
+// A set or an offer that arrives — `/document` was just typed, a Send just
+// went — is what the tab is opened for; one that goes leaves nothing to look at.
+watch(
+  () => waiting.value,
+  (n, was) => {
+    if (n > (was ?? 0)) reviewing.value = true
+    if (!n) reviewing.value = false
+  },
+)
+
+/* ── the index ──────────────────────────────────────────────────────────── */
+
+const query = ref('')
+const shown = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return index.value
+  return index.value.filter((p) =>
+    [p.title, p.path, p.summary ?? '', ...p.aliases].some((s) => s.toLowerCase().includes(q)),
+  )
+})
+
+const groups = computed(() => {
+  const out = new Map<string, DocsPage[]>()
+  for (const p of shown.value) {
+    const dir = p.path.includes('/') ? p.path.slice(0, p.path.lastIndexOf('/')) : ''
+    out.set(dir, [...(out.get(dir) ?? []), p])
   }
+  return [...out].map(([dir, pages]) => ({ dir, pages }))
+})
+
+const issuesText = (p: DocsPage) => p.issues.map((i) => i.text).join('\n')
+
+/* ── flags ──────────────────────────────────────────────────────────────── */
+
+/** What agents said about each page, by path; a missing page by the name it should have. */
+const flagsOf = computed(() => {
+  const out = new Map<string, DocsFlag[]>()
+  for (const f of signals.value.flags) out.set(f.page, [...(out.get(f.page) ?? []), f])
+  return out
+})
+const missing = computed(() => signals.value.flags.filter((f) => f.missing))
+const flagText = (fs: DocsFlag[] | undefined) => (fs ?? []).map((f) => f.text).join('\n')
+
+/* ── a page ─────────────────────────────────────────────────────────────── */
+
+const text = ref<string | null>(null)
+const reader = ref<HTMLElement | null>(null)
+
+watch(
+  opened,
+  async (o) => {
+    text.value = null
+    if (!o) return
+    const t = await docsPageText(projectId.value, o.path)
+    if (opened.value?.path !== o.path) return
+    text.value = t
+    await nextTick()
+    land(o.anchor)
+  },
+  { immediate: true },
+)
+
+function land(anchor: string | null): void {
+  const el = reader.value
+  if (!el) return
+  const target = anchor ? el.querySelector<HTMLElement>('[data-anchor="' + CSS.escape(anchor) + '"]') : null
+  if (target) target.scrollIntoView({ block: 'start' })
+  else el.scrollTop = 0
 }
-const waiting = (s: DocsProposalSet) => s.files.filter((f) => f.state === 'pending')
 
-function tail(path: string): string {
-  const parts = path.split('/').filter(Boolean)
-  return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : path
-}
-
-function ago(ts: number): string {
-  const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
-  if (s < 60) return 'just now'
-  if (s < 3600) return Math.round(s / 60) + ' min ago'
-  if (s < 86400) return Math.round(s / 3600) + ' h ago'
-  return Math.round(s / 86400) + ' d ago'
-}
-
-const KIND = {
-  new: { label: 'New page', icon: FilePlus },
-  changed: { label: 'Changed', icon: FilePen },
-  deleted: { label: 'Delete', icon: FileX },
-} as const
-
-async function decide(s: DocsProposalSet, f: DocsProposal, accept: boolean): Promise<void> {
-  const k = key(s, f)
-  busy.value = k
-  try {
-    const content = k in editing ? editing[k] : undefined
-    await resolveDocsPage(s, f.path, accept, content)
-    delete editing[k]
-  } finally {
-    busy.value = null
+function open(path: string | null, anchor: string | null = null): void {
+  reviewing.value = false
+  if (path && path === opened.value?.path) {
+    state.docsOpen[projectId.value] = { path, anchor }
+    land(anchor)
+    return
   }
+  openDocsPage(projectId.value, path, anchor)
 }
 
-function edit(s: DocsProposalSet, f: DocsProposal): void {
-  editing[key(s, f)] = f.after ?? ''
-  open[key(s, f)] = true
+function resolve(target: string): { path: string; title: string } | null {
+  const from = opened.value?.path ?? ''
+  const path = resolveLink(target, from, index.value)
+  const hit = path ? index.value.find((p) => p.path === path) : null
+  return hit ? { path: hit.path, title: hit.title } : null
 }
 
-async function acceptAll(s: DocsProposalSet): Promise<void> {
-  busy.value = s.id
-  try {
-    for (const f of waiting(s)) await resolveDocsPage(s, f.path, true)
-  } finally {
-    busy.value = null
-  }
-}
+const backlinks = computed(() => (page.value ? index.value.filter((p) => p.links.includes(page.value!.path)) : []))
+
+const where = computed(() => {
+  const i = info.value
+  if (!i) return ''
+  return i.repo ? i.repo + (i.folder ? '/' + i.folder : '') : i.path.split('/').slice(-2).join('/')
+})
 </script>
 
 <template>
   <div class="docs">
     <header class="head">
-      <BookOpen class="sm dim" />
-      <span v-if="info" class="where mono" :title="info.path">{{ tail(info.path) }}</span>
-      <span v-if="info?.guide" class="guide" :title="'Agents are handed ' + info.guide + ' at launch'">
-        guide: {{ info.guide }}
-      </span>
+      <button v-if="opened || reviewing" class="icon-btn back" title="Back to the index" @click="open(null)">
+        <ArrowLeft />
+      </button>
+      <BookOpen v-else class="sm dim" />
+      <span v-if="reviewing" class="where">Proposals</span>
+      <span v-else-if="opened" class="where mono" :title="opened.path">{{ opened.path }}</span>
+      <template v-else>
+        <span class="where mono" :title="info?.path">{{ where }}</span>
+        <label class="find">
+          <Search class="sm dim" />
+          <input v-model="query" class="input" type="text" spellcheck="false" placeholder="Find a page" />
+        </label>
+      </template>
+      <span class="grow" />
+      <button
+        v-if="waiting && !reviewing"
+        class="btn ghost band"
+        title="Offers and drafts waiting on you"
+        @click="reviewing = true"
+      >
+        <FilePen />{{ waiting }} to review
+      </button>
     </header>
 
-    <div class="list">
-      <div v-if="!sets.length" class="empty">
-        <BookOpen />
-        <strong>Nothing waiting</strong>
-        <span>
-          <span class="mono">/document</span> in a conversation drafts proposals to the docs here —
-          and so does <span class="mono">/next</span>. Nothing reaches the docs until you accept it.
-        </span>
-      </div>
+    <DocsProposals v-if="reviewing" :workspace="workspace" />
 
-      <section v-for="s in sets" :key="s.id" class="set">
-        <div class="shead">
-          <strong class="stitle" :title="s.title">{{ s.title }}</strong>
-          <span class="when">{{ ago(s.createdAt) }}</span>
+    <div v-else-if="opened" ref="reader" class="reader">
+      <ul v-if="flagsOf.get(opened.path)?.length" class="flags">
+        <li v-for="f in flagsOf.get(opened.path)" :key="f.id">
+          <Flag class="sm" /><span class="ft">{{ f.text }}</span>
+          <button class="icon-btn drop" title="Not out of date — drop this flag" @click="dropDocsFlag(projectId, f.id)"><X /></button>
+        </li>
+      </ul>
+      <ul v-if="page?.issues.length" class="issues">
+        <li v-for="(i, n) in page.issues" :key="n"><CircleAlert class="sm" />{{ i.text }}</li>
+      </ul>
+      <MarkdownPreview v-if="text !== null" :source="text" :resolve="resolve" @open="open" />
+      <footer v-if="backlinks.length" class="around">
+        <span class="lbl">Linked from</span>
+        <button v-for="b in backlinks" :key="b.path" class="chip" :title="b.path" @click="open(b.path)">
+          {{ b.title }}
+        </button>
+      </footer>
+    </div>
+
+    <div v-else class="index">
+      <p v-if="!index.length" class="nothing">No pages yet.</p>
+      <p v-else-if="!shown.length" class="nothing">No page matches.</p>
+      <!-- Pages an agent looked for and did not find: the docs' own to-do. -->
+      <section v-if="missing.length && !query" class="group">
+        <h4 class="dir">Missing</h4>
+        <div v-for="f in missing" :key="f.id" class="row static" :title="f.text">
+          <span class="line">
+            <Flag class="sm flagged" /><span class="title">{{ f.page }}</span>
+            <button class="icon-btn drop" title="Not needed — drop this flag" @click="dropDocsFlag(projectId, f.id)"><X /></button>
+          </span>
+          <span class="sum">{{ f.text }}</span>
         </div>
-        <!-- Its own row: in a 440px column the title and three buttons on one
-             line left the title a word long. -->
-        <div class="sacts">
-          <button
-            v-if="s.status === 'ready' && waiting(s).length"
-            class="btn"
-            :disabled="busy === s.id"
-            @click="acceptAll(s)"
-          >
-            <Check />Accept all
-          </button>
-          <button class="btn ghost" title="Reject everything in this set" @click="dismissDocsSet(s)">
-            <X />Dismiss
-          </button>
-        </div>
-
-        <!-- No animation: the conversation is where the turn is seen running. -->
-        <p v-if="s.status === 'drafting'" class="state">Drafting in the conversation…</p>
-        <p v-else-if="s.status === 'failed'" class="state bad"><CircleAlert class="sm" />{{ s.detail }}</p>
-        <p v-else-if="!s.files.length" class="state">{{ s.detail ?? 'Nothing worth documenting.' }}</p>
-
-        <!-- One page, its diff, and the decision. -->
-        <article v-for="f in waiting(s)" :key="f.path" class="card">
-            <button class="chead" @click="open[key(s, f)] = !open[key(s, f)]">
-              <component :is="KIND[f.kind].icon" class="sm dim" />
-              <span class="kind">{{ KIND[f.kind].label }}</span>
-              <span class="path mono">{{ f.path }}</span>
-            </button>
-            <p v-if="f.why" class="why">{{ f.why }}</p>
-            <p v-if="f.drifted" class="drift">
-              <CircleAlert class="sm" />This page changed in the docs after the proposal was drafted —
-              accepting replaces what is there now.
-            </p>
-
-            <textarea
-              v-if="key(s, f) in editing"
-              v-model="editing[key(s, f)]"
-              class="editor mono selectable"
-              spellcheck="false"
-            />
-            <div v-else-if="open[key(s, f)] !== false" class="diff mono">
-              <div v-for="(l, i) in lineDiff(f.before, f.after)" :key="i" class="dl" :class="l.kind">
-                <span class="sg">{{ l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : '' }}</span>
-                <span class="tx">{{ l.text }}</span>
-              </div>
-            </div>
-
-            <div class="cfoot">
-              <button class="btn primary" :disabled="busy === key(s, f)" @click="decide(s, f, true)">
-                <Check />{{ key(s, f) in editing ? 'Accept edited' : 'Accept' }}
-              </button>
-              <button v-if="!(key(s, f) in editing) && f.kind !== 'deleted'" class="btn ghost" @click="edit(s, f)">
-                <Pencil />Edit
-              </button>
-              <button v-else-if="key(s, f) in editing" class="btn ghost" @click="delete editing[key(s, f)]">
-                Cancel edit
-              </button>
-              <span class="grow" />
-              <button class="btn ghost" :disabled="busy === key(s, f)" @click="decide(s, f, false)">
-                <X />Reject
-              </button>
-            </div>
-          </article>
-
-        <article v-if="s.forget?.state === 'pending'" class="card">
-          <div class="chead static">
-            <BookMarked class="sm dim" />
-            <span class="kind">Memory</span>
-            <span class="path">
-              {{ s.forget.entries.length }} {{ s.forget.entries.length === 1 ? 'entry' : 'entries' }} the docs now cover
-            </span>
-          </div>
-          <p class="why">
-            {{
-              pagesOpen(s)
-                ? 'Decide the pages first — a note goes only once a page says it for good.'
-                : 'The accepted pages say these for good, so the memory can let them go. Untick what should stay.'
-            }}
-          </p>
-          <ul class="forget selectable">
-            <li v-for="e in s.forget.entries" :key="e">
-              <label>
-                <input
-                  type="checkbox"
-                  :checked="!(kept[s.id] ?? []).includes(e)"
-                  :disabled="pagesOpen(s)"
-                  @change="toggleKeep(s, e)"
-                />
-                <span class="etext" v-html="entryHtml(e)" />
-              </label>
-            </li>
-          </ul>
-          <div class="cfoot">
-            <button
-              class="btn primary"
-              :disabled="pagesOpen(s) || busy === s.id + ':forget' || (kept[s.id]?.length ?? 0) === s.forget.entries.length"
-              @click="forget(s, true)"
-            >
-              <Check />Remove from memory
-            </button>
-            <span class="grow" />
-            <button class="btn ghost" :disabled="busy === s.id + ':forget'" @click="forget(s, false)">
-              <X />Keep all
-            </button>
-          </div>
-        </article>
+      </section>
+      <section v-for="g in groups" :key="g.dir" class="group">
+        <h4 v-if="g.dir" class="dir mono">{{ g.dir }}/</h4>
+        <button v-for="p in g.pages" :key="p.path" class="row" :title="p.path" @click="open(p.path)">
+          <span class="line">
+            <span class="title">{{ p.title }}</span>
+            <span v-if="p.kind" class="kind">{{ p.kind }}</span>
+            <Flag v-if="flagsOf.get(p.path)" class="sm flagged" :title="flagText(flagsOf.get(p.path))" />
+            <span v-if="p.issues.length" class="dot" :title="issuesText(p)" />
+          </span>
+          <span v-if="p.summary" class="sum">{{ p.summary }}</span>
+        </button>
       </section>
     </div>
   </div>
@@ -247,125 +221,91 @@ async function acceptAll(s: DocsProposalSet): Promise<void> {
   align-items: center;
   gap: 8px;
   height: 40px;
-  padding: 0 16px;
+  padding: 0 10px 0 16px;
   border-bottom: 1px solid var(--line);
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
+.head .back { margin-left: -6px; }
 .dim { color: var(--text-dim); }
-.where { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.guide { flex: none; color: var(--text-dim); }
+.where { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .grow { flex: 1; min-width: 0; }
+.find { display: flex; align-items: center; gap: 6px; flex: 1 1 140px; min-width: 0; max-width: 260px; margin-left: 6px; }
+.find .input { width: 100%; height: 26px; font-size: var(--fs-xs); }
+.band { flex: none; color: var(--warn); }
 
-.list { flex: 1; overflow-y: auto; padding: 16px 18px 40px; }
-
-.empty {
+.index { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 10px 10px 40px; }
+.nothing { margin: 40px 0 0; text-align: center; color: var(--text-dim); font-size: var(--fs-sm); }
+.group + .group { margin-top: 14px; }
+.dir {
+  margin: 0 8px 4px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--text-dim);
+}
+.row {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  max-width: 360px;
-  margin: 60px auto 0;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-}
-.empty .lucide { width: 22px; height: 22px; color: var(--text-dim); }
-.empty strong { color: var(--text); }
-
-.set + .set { margin-top: 26px; }
-.shead { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
-.sacts { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
-.stitle {
+  gap: 1px;
+  width: 100%;
   min-width: 0;
+  overflow: hidden;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+}
+.row:hover { background: var(--hover); }
+.line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); color: var(--text); }
+.kind { flex: none; font-size: var(--fs-xs); color: var(--text-dim); }
+.dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+.sum {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fs-md);
-  color: var(--text);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
-.when { flex: none; font-size: var(--fs-xs); color: var(--text-dim); }
 
-.state { margin: 0 0 8px; font-size: var(--fs-sm); color: var(--text-muted); display: flex; gap: 6px; align-items: center; }
-.state.bad { color: var(--danger); }
-
-.why { color: var(--text-dim); }
-
-.card {
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface-review);
-  overflow: hidden;
-}
-.card + .card { margin-top: 10px; }
-.chead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 9px 12px;
-  text-align: left;
-}
-.chead.static { cursor: default; }
-.forget { list-style: none; margin: 0; padding: 2px 12px 8px; font-size: var(--fs-sm); color: var(--text-muted); }
-.forget li + li { margin-top: 4px; }
-.forget label { display: flex; gap: 8px; align-items: flex-start; line-height: 1.5; }
-.forget input { flex: none; margin-top: 3px; }
-.forget .etext :deep(code) { padding: 1px 4px; border-radius: 4px; background: var(--active); font-family: var(--mono); font-size: 0.88em; }
-.kind { flex: none; font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); }
-.path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); color: var(--text); }
-.card > .why { margin: -4px 12px 8px; font-size: var(--fs-xs); line-height: 1.5; }
-.drift {
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
-  margin: 0 12px 8px;
-  padding: 6px 9px;
-  border-radius: var(--radius-sm);
-  background: var(--warn-soft);
-  color: var(--warn);
+.reader { flex: 1; overflow-y: auto; }
+.flagged { flex: none; color: var(--accent); }
+.row.static { cursor: default; }
+.row.static:hover { background: none; }
+.drop { width: 20px; height: 20px; margin-left: auto; }
+.flags {
+  list-style: none;
+  max-width: 780px;
+  margin: 14px auto 0;
+  padding: 0 32px;
   font-size: var(--fs-xs);
   line-height: 1.5;
+  color: var(--accent);
 }
-
-.diff {
-  max-height: 360px;
-  overflow: auto;
-  border-top: 1px solid var(--line);
-  font-size: 11px;
-  line-height: 1.55;
-  padding: 4px 0;
+.flags li { display: flex; gap: 6px; align-items: flex-start; }
+.flags .lucide { flex: none; margin-top: 2px; }
+.flags .ft { min-width: 0; }
+.issues {
+  list-style: none;
+  max-width: 780px;
+  margin: 14px auto 0;
+  padding: 0 32px;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--warn);
 }
-.dl { display: flex; white-space: pre-wrap; word-break: break-word; }
-.dl.add { background: var(--diff-add-bg); }
-.dl.del { background: var(--diff-del-bg); }
-.dl.gap { color: var(--text-dim); font-style: italic; padding: 2px 0; }
-.sg { flex: none; width: 20px; text-align: center; user-select: none; opacity: 0.7; }
-.tx { padding-right: 14px; min-width: 0; }
-.dl.add .sg, .dl.add .tx { color: var(--diff-add-text); }
-.dl.del .sg, .dl.del .tx { color: var(--diff-del-text); }
-
-.editor {
-  display: block;
-  width: calc(100% - 24px);
-  min-height: 220px;
-  margin: 0 12px 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--text);
-  font-size: var(--fs-sm);
-  line-height: 1.55;
-  resize: vertical;
-}
-
-.cfoot {
+.issues li { display: flex; gap: 6px; align-items: flex-start; }
+.issues li + li { margin-top: 2px; }
+.issues .lucide { flex: none; margin-top: 2px; }
+.around {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
-  border-top: 1px solid var(--line);
+  max-width: 780px;
+  margin: -24px auto 0;
+  padding: 0 32px 40px;
 }
+.around .lbl { font-size: var(--fs-xs); color: var(--text-dim); margin-right: 2px; }
+.around .chip:hover { color: var(--text); background: var(--active); }
 </style>

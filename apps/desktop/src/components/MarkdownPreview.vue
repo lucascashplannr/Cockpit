@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { headingAnchor } from '@cockpit/shared'
 import { createMarked, escapeHtml } from '../core/markdown.js'
 
 /**
@@ -21,14 +22,33 @@ const props = defineProps<{
   source: string
   changed?: ReadonlySet<number>
   cut?: ReadonlySet<number>
+  /**
+   * §9 — the docs reader's: the page a link names, or null when none does.
+   * Without it a link has nowhere to go and is shown as the name it points at.
+   */
+  resolve?: (target: string) => { path: string; title: string } | null
 }>()
+
+const emit = defineEmits<{ open: [path: string, anchor: string | null] }>()
 
 const md = createMarked({ breaks: false })
 
+/** A link to a page, when the reader can follow it; a marked name otherwise. */
+function pageLink(target: string, anchor: string | null, label: string | null): string {
+  const hit = props.resolve?.(target) ?? null
+  const shown = label ?? (hit && target ? hit.title : target.split('/').pop()!.replace(/\.md$/i, '')) + (anchor ? (target ? ' › ' : '') + anchor : '')
+  if (!props.resolve) return '<span class="wiki" title="' + escapeHtml(target) + '">' + escapeHtml(shown) + '</span>'
+  if (!hit) return '<span class="wiki broken" title="No page answers to ' + escapeHtml(target) + '">' + escapeHtml(shown) + '</span>'
+  return (
+    '<a class="wiki live" href="#" data-page="' + escapeHtml(hit.path) + '"' +
+    (anchor ? ' data-anchor="' + escapeHtml(headingAnchor(anchor)) + '"' : '') +
+    ' title="' + escapeHtml(hit.path + (anchor ? ' › ' + anchor : '')) + '">' + escapeHtml(shown) + '</a>'
+  )
+}
+
 /**
- * `[[../frontend/naming]]` and `[[naming|the naming rule]]` — the vault's own
- * links. There is nowhere for one to go from here, so it is shown as the name
- * it points at, marked as a reference, with the full target on hover.
+ * `[[../frontend/naming]]`, `[[naming#Rules]]` and `[[naming|the naming rule]]`
+ * — the vault's own links, resolved the way the docs resolve them.
  */
 md.use({
   extensions: [
@@ -37,18 +57,36 @@ md.use({
       level: 'inline',
       start: (src: string) => src.indexOf('[['),
       tokenizer(src: string) {
-        const m = /^\[\[([^\]\n|]+)(?:\|([^\]\n]+))?\]\]/.exec(src)
+        const m = /^\[\[([^[\]|#\n]*)(?:#([^[\]|\n]+))?(?:\|([^[\]\n]+))?\]\]/.exec(src)
         if (!m) return undefined
-        return { type: 'wikilink', raw: m[0], target: m[1]!.trim(), label: m[2]?.trim() }
+        return { type: 'wikilink', raw: m[0], target: m[1]!.trim(), anchor: m[2]?.trim() ?? null, label: m[3]?.trim() ?? null }
       },
       renderer(t) {
-        const target = t.target as string
-        const name = (t.label as string | undefined) ?? target.split('/').pop()!.replace(/\.md$/i, '')
-        return '<span class="wiki" title="' + escapeHtml(target) + '">' + escapeHtml(name) + '</span>'
+        return pageLink(t.target as string, t.anchor as string | null, t.label as string | null)
       },
     },
   ],
+  renderer: {
+    // A relative `.md` link is a page too, in a reader that can follow it.
+    link({ href, tokens }) {
+      const m = /^(?!\w+:)([^#?]*\.(?:md|mdx|markdown))(?:#(.*))?$/i.exec(href)
+      if (!props.resolve || !m) return false
+      return pageLink(decodeURI(m[1]!), m[2] ? decodeURI(m[2]) : null, this.parser.parseInline(tokens))
+    },
+    // Anchors for `[[page#Heading]]` to land on.
+    heading({ tokens, depth, text }) {
+      if (!props.resolve) return false
+      return '<h' + depth + ' data-anchor="' + escapeHtml(headingAnchor(text)) + '">' + this.parser.parseInline(tokens) + '</h' + depth + '>\n'
+    },
+  },
 })
+
+function onClick(e: MouseEvent): void {
+  const a = (e.target as HTMLElement).closest<HTMLElement>('a.wiki.live')
+  if (!a) return
+  e.preventDefault()
+  emit('open', a.dataset.page!, a.dataset.anchor ?? null)
+}
 
 /**
  * YAML frontmatter is metadata, not prose. Rendered as markdown it becomes a
@@ -119,7 +157,7 @@ const frontChanged = computed(() => {
 </script>
 
 <template>
-  <article class="mdp selectable">
+  <article class="mdp selectable" @click="onClick">
     <div v-if="front" class="front" :class="{ chg: frontChanged }">
       <dl v-if="front.rows">
         <template v-for="[k, v] in front.rows" :key="k">
@@ -222,6 +260,9 @@ const frontChanged = computed(() => {
   border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
   cursor: default;
 }
+.mdp :deep(a.wiki.live) { cursor: pointer; border-bottom-style: solid; }
+.mdp :deep(a.wiki.live:hover) { text-decoration: none; border-bottom-color: var(--accent); }
+.mdp :deep(.wiki.broken) { color: var(--warn); border-bottom-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 .mdp :deep(blockquote) {
   margin: 0 0 14px;
   padding: 4px 0 4px 14px;
