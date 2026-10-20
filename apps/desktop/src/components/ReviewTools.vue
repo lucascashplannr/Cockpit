@@ -11,7 +11,7 @@ import CommitsTab from './tabs/CommitsTab.vue'
 import OutputTab from './tabs/OutputTab.vue'
 import TerminalTab from './tabs/TerminalTab.vue'
 import ProjectRepoMenu from './ProjectRepoMenu.vue'
-import { changeCount, goTo, onProject, projectDiffRepo, projectRepo, projectScopeWorkspaces, reviewTools, shownReviewTool, state } from '../core/store.js'
+import { changeCount, goTo, onProject, reviewSpan, reviewTools, shownReviewTool, spanDiffRepo, spanRepo, spanTerminal, state } from '../core/store.js'
 import type { ReviewTool } from '../core/store.js'
 
 /**
@@ -43,19 +43,22 @@ const META: Record<ReviewTool, { label: string; icon: Component }> = {
   docs: { label: 'Docs', icon: BookOpen },
 }
 
-// On the project, every repository it stands on: the Diff there is any of them.
+// On the project, or a topic across repositories, every one it stands on: the Diff there is any of them.
 const changed = computed(() =>
-  onProject.value
-    ? projectScopeWorkspaces.value.reduce((n, w) => n + changeCount(w), 0)
+  reviewSpan.value
+    ? reviewSpan.value.repos.reduce((n, w) => n + changeCount(w), 0)
     : changeCount(props.workspace),
 )
 
 /**
- * §7 — what the Diff and the Code are on. A checkout is itself; the project is
- * one of its repositories, named by the strip above the tool.
+ * §7 — what the Diff, the Code and the Terminal are on. A checkout is itself;
+ * the project, or a topic across repositories, is one of them, named at the
+ * end of the strip above the tool (`reviewSpan`).
  */
-const repo = computed(() => (onProject.value ? projectRepo.value : null) ?? props.workspace)
-const diffRepo = computed(() => (onProject.value ? projectDiffRepo.value : null) ?? props.workspace)
+const repo = computed(() => spanRepo.value ?? props.workspace)
+const diffRepo = computed(() => spanDiffRepo.value ?? props.workspace)
+// The Terminal alone can also stand at the span's folder, in every repository at once.
+const termRepo = computed(() => spanTerminal.value ?? props.workspace)
 
 
 const docsWaiting = computed(() =>
@@ -83,7 +86,8 @@ const tools = computed(() =>
  * with six and the menu the strip ran off the column's edge well above it.
  * So it is measured instead: lay the strip out with every name, and if that is
  * wider than the strip, only the tool you are in keeps its name; at the
- * column's floor, with the repository menu beside them, not even that one.
+ * column's floor, with the repository menu beside them, not even that one —
+ * and past that, the menu is its icon too, never a name cut to "All repo…".
  * Every layout tried happens before the frame is painted, so nothing is seen
  * flipping.
  *
@@ -91,13 +95,24 @@ const tools = computed(() =>
  * to re-patch here, and a reactive one would paint the wrong layout once.
  */
 const strip = ref<HTMLElement>()
+/**
+ * Whether the last thing in the strip ends inside its padding. Not
+ * `scrollWidth`: a flex row's overflow does not count its end padding, so a
+ * menu four pixels too wide read as fitting and then shrank — into "All repo…".
+ */
+function fits(el: HTMLElement): boolean {
+  const last = el.lastElementChild
+  if (!last) return true
+  const edge = el.getBoundingClientRect().right - parseFloat(getComputedStyle(el).paddingRight)
+  return last.getBoundingClientRect().right <= edge + 0.5
+}
 function fit() {
   const el = strip.value
   if (!el) return
-  el.classList.remove('icons', 'tight')
+  el.classList.remove('icons', 'tight', 'bare')
   el.classList.add('measure')
-  for (const step of ['icons', 'tight']) {
-    if (el.scrollWidth <= el.clientWidth + 1) break
+  for (const step of ['icons', 'tight', 'bare']) {
+    if (fits(el)) break
     el.classList.add(step)
   }
   el.classList.remove('measure')
@@ -136,10 +151,10 @@ watch(shownReviewTool, () => nextTick(fit))
         <span v-if="t.badge !== undefined" class="tbadge num">{{ t.badge }}</span>
         <span v-else-if="t.pip" class="tpip" />
       </button>
-      <!-- §7 — on the project, which repository these three are on. -->
-      <template v-if="onProject && (shownReviewTool === 'diff' || shownReviewTool === 'code' || shownReviewTool === 'terminal')">
+      <!-- §7 — on the project or a topic across repositories, which one these three are on. -->
+      <template v-if="reviewSpan && (shownReviewTool === 'diff' || shownReviewTool === 'code' || shownReviewTool === 'terminal')">
         <span class="grow" />
-        <ProjectRepoMenu :diff="shownReviewTool === 'diff'" />
+        <ProjectRepoMenu :diff="shownReviewTool === 'diff'" :terminal="shownReviewTool === 'terminal'" />
       </template>
     </nav>
 
@@ -152,7 +167,7 @@ watch(shownReviewTool, () => nextTick(fit))
       <DocsTab v-else-if="shownReviewTool === 'docs'" :workspace="workspace" />
       <CodeTab v-else-if="shownReviewTool === 'code'" :workspace="repo" />
       <OutputTab v-else-if="shownReviewTool === 'output'" :workspace="workspace" :whole-project="onProject" />
-      <TerminalTab v-else-if="shownReviewTool === 'terminal'" :workspace="repo" />
+      <TerminalTab v-else-if="shownReviewTool === 'terminal'" :workspace="termRepo" />
     </div>
   </div>
 </template>
@@ -255,11 +270,17 @@ watch(shownReviewTool, () => nextTick(fit))
    shrink its name than let the tabs lose theirs, so it is held at full width
    for the one read. Out of room, only the tool you are in keeps its name; the
    rest are their icons, and every one keeps its keystroke (⌘1..⌘n). Then that
-   name too (the underline still says which), and only then does the
-   repository's name ellipsize. */
+   name too (the underline still says which), and last the repository menu's,
+   down to its letters — set in the project's settings, or two taken from its
+   name, and "All" for the folder — with the whole name in its tooltip. A name cut to "All repo…" looks broken; an icon alone says nothing
+   about where you are. */
 .tools.measure > * { flex-shrink: 0; }
 .tools.icons .tool:not(.on) .tl { display: none; }
 .tools.icons .tool:not(.on) { padding: 0 9px; }
 .tools.tight .tool .tl { display: none; }
 .tools.tight .tool, .tools.icons.tight .tool:not(.on) { padding: 0 7px; }
+/* Under an icon alone, the 8px insets left a 14px nub; the icon's width reads as the tab. */
+.tools.tight .tool.on::after { left: 5px; right: 5px; }
+.tools.bare :deep(.repomenu .nm) { display: none; }
+.tools.bare :deep(.repomenu .ini) { display: grid; }
 </style>

@@ -729,6 +729,19 @@ export interface ProjectSettings {
    * them straight back.
    */
   untrackedRepos: string[]
+  /**
+   * How the project is drawn where there is no room for its name — the rail's
+   * tile. `mark` is up to three letters, null for the two Cockpit takes from
+   * the name. `logo` is an image as a `data:` URL, already scaled down to a
+   * tile's size, and wins over both.
+   */
+  mark: string | null
+  logo: string | null
+  /**
+   * The same, per repository, keyed by `Workspace.repoName`: what the
+   * repository menu shows when the tool strip is too narrow for the name.
+   */
+  repoMarks: Record<string, string>
 }
 
 export interface Project {

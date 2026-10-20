@@ -16,7 +16,7 @@ import { paintDiff } from '../../core/editor.js'
 import { useFindKey, useTextFind } from '../../core/find.js'
 import {
   LAYOUT_DEFAULTS, LAYOUT_LIMITS, busyVerb, busyWord, gitBusy, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
-  resetCommitHeight, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
+  pickSpanRepo, resetCommitHeight, reviewSpan, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
 /**
@@ -572,7 +572,12 @@ async function refreshCommit() {
  * Not an action — a door. Closing out a topic still means every repository
  * gets committed, and the thing the topic-wide commit was really buying was
  * not having to hunt for the next one.
+ *
+ * Standing on the topic itself, the door turns this Diff to that repository
+ * (`pickSpanRepo`) rather than going to its row: the conversation is the
+ * topic's, and committing one of its repositories is not leaving it.
  */
+const inSpan = (id: string) => !!reviewSpan.value?.repos.some((w) => w.id === id)
 const elsewhere = computed(() => {
   const t = props.workspace.topicId
   if (!t) return []
@@ -580,7 +585,8 @@ const elsewhere = computed(() => {
     .filter((w) => w.topicId === t && w.id !== props.workspace.id && w.repo && w.kind !== 'group')
     .map((w) => ({
       id: w.id,
-      name: w.name,
+      // On the topic its worktrees share its name; the repository tells them apart.
+      name: inSpan(w.id) ? w.repoName : w.name,
       dirty: (w.git?.staged ?? 0) + (w.git?.unstaged ?? 0) + (w.git?.untracked ?? 0),
       conflicted: w.git?.conflicted ?? 0,
     }))
@@ -1291,8 +1297,8 @@ const mark: Record<string, Component> = {
               v-for="e in elsewhere"
               :key="e.id"
               class="crow"
-              :title="'Go to ' + e.name + ' to commit it'"
-              @click="selectWorkspace(e.id)"
+              :title="inSpan(e.id) ? 'Turn the Diff to ' + e.name : 'Go to ' + e.name + ' to commit it'"
+              @click="inSpan(e.id) ? pickSpanRepo(e.id) : selectWorkspace(e.id)"
             >
               <GitBranch class="sm" />
               <span class="cname">{{ e.name }}</span>

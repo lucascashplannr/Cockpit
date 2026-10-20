@@ -1,24 +1,57 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { Check, ChevronDown, SquareDot } from '@lucide/vue'
+import { Check, ChevronDown, FolderTree, SquareDot } from '@lucide/vue'
 import {
-  activeProject, changeCount, pickProjectRepo, projectDiffRepo, projectDiffRepos, projectRepo, projectScopeWorkspaces, shortName,
+  activeProject, changeCount, pickSpanRepo, repoMark, reviewSpan, shortName, spanDiffRepo, spanDiffRepos, spanFolder, spanRepo, spanTerminal,
 } from '../core/store.js'
+import type { Workspace } from '@cockpit/shared'
 
 /**
- * §7 — on the project, the Diff, the Code and the Terminal are still about one
- * repository: this says which, at the end of the tool strip, and is where
- * another is picked. A row of its own under the strip made the column three
- * bands deep before anything in it could be read.
+ * §7 — on the project, or a topic across repositories, the Diff, the Code and
+ * the Terminal are still about one repository: this says which, at the end of
+ * the tool strip, and is where another is picked — without leaving the scope.
+ * A row of its own under the strip made the column three bands deep before
+ * anything in it could be read.
  *
- * `diff` offers what the Diff offers (`projectDiffRepos`); the others, any.
+ * `diff` offers what the Diff offers (`spanDiffRepos`); the others, any.
+ * `terminal` adds the span's folder above them (`spanFolder`): a shell there is
+ * in every repository at once.
  */
-const props = defineProps<{ diff?: boolean }>()
+const props = defineProps<{ diff?: boolean; terminal?: boolean }>()
 
-const current = computed(() => (props.diff ? projectDiffRepo.value : projectRepo.value))
-const name = (w: { name: string }) => shortName(w.name, activeProject.value?.name)
+const current = computed(() =>
+  props.diff ? spanDiffRepo.value : props.terminal ? spanTerminal.value : spanRepo.value,
+)
+const folder = computed(() => (props.terminal ? spanFolder.value : null))
+const atFolder = computed(() => !!folder.value && current.value?.id === folder.value.id)
+// A topic's worktrees are named for the topic — the same name on every row —
+// so there the repository is what tells them apart.
+const name = (w: { name: string; repoName: string }) =>
+  reviewSpan.value?.topicId ? w.repoName : shortName(w.name, activeProject.value?.name)
+/**
+ * What the trigger can say, and what it says. Every label is laid in the same
+ * cell and only the current one is visible, so the trigger is always as wide
+ * as the longest: picking "cashplannr-v2" after "cashplannr-projects" used to
+ * free just enough room for the strip to put the name back, and the menu
+ * flipped between letters and a name depending on which repository it was on.
+ *
+ * `marks` are the letters shown in the name's place when the strip has no room
+ * for it (`bare` in ReviewTools) — set per repository in the project's
+ * settings (`repoMark`), "All" for the folder.
+ */
+const label = computed(() => (atFolder.value ? 'All repositories' : current.value ? name(current.value) : ''))
+const labels = computed(() => [
+  ...(folder.value ? ['All repositories'] : []),
+  ...(reviewSpan.value?.repos ?? []).map(name),
+])
+const markOf = (w: Workspace) => (w.id === folder.value?.id ? 'All' : repoMark(w, reviewSpan.value?.repos ?? []))
+const mark = computed(() => (current.value ? markOf(current.value) : ''))
+const marks = computed(() => [
+  ...(folder.value ? ['All'] : []),
+  ...(reviewSpan.value?.repos ?? []).map(markOf),
+])
 const repos = computed(() =>
-  (props.diff ? projectDiffRepos.value : projectScopeWorkspaces.value).map((w) => ({
+  (props.diff ? spanDiffRepos.value : (reviewSpan.value?.repos ?? [])).map((w) => ({
     w,
     name: name(w),
     changed: changeCount(w),
@@ -29,7 +62,7 @@ const open = ref(false)
 const root = ref<HTMLElement | null>(null)
 
 function pick(id: string): void {
-  pickProjectRepo(id)
+  pickSpanRepo(id, props.terminal)
   open.value = false
 }
 
@@ -59,17 +92,27 @@ onBeforeUnmount(() => {
     <button
       class="trigger"
       :class="{ open }"
-      :title="current.name + (changeCount(current) ? ' — ' + changeCount(current) + ' uncommitted' : '')"
-      :disabled="repos.length < 2"
+      :title="atFolder ? 'All repositories — from the folder they sit in' : name(current) + (changeCount(current) ? ' — ' + changeCount(current) + ' uncommitted' : '')"
+      :disabled="repos.length + (folder ? 1 : 0) < 2"
       @click="open = !open"
     >
-      <SquareDot class="sm lead" />
-      <span class="nm">{{ name(current) }}</span>
+      <FolderTree v-if="atFolder" class="sm lead" />
+      <SquareDot v-else class="sm lead" />
+      <span class="nm"><span v-for="l in new Set(labels)" :key="l" :class="{ ghost: l !== label }">{{ l }}</span></span>
+      <span class="ini"><span v-for="m in new Set(marks)" :key="m" :class="{ ghost: m !== mark }">{{ m }}</span></span>
       <span v-if="changeCount(current)" class="n num">{{ changeCount(current) }}</span>
-      <ChevronDown v-if="repos.length > 1" class="sm chev" />
+      <ChevronDown v-if="repos.length + (folder ? 1 : 0) > 1" class="sm chev" />
     </button>
     <div v-if="open" class="menu">
-      <button v-for="r in repos" :key="r.w.id" :title="r.w.name" @click="pick(r.w.id)">
+      <template v-if="folder">
+        <button :title="folder.path" @click="pick(folder.id)">
+          <Check class="tick" :class="{ hidden: !atFolder }" />
+          <FolderTree />
+          <span class="mn">All repositories</span>
+        </button>
+        <div class="rule" />
+      </template>
+      <button v-for="r in repos" :key="r.w.id" :title="r.w.path" @click="pick(r.w.id)">
         <Check class="tick" :class="{ hidden: r.w.id !== current.id }" />
         <SquareDot />
         <span class="mn">{{ r.name }}</span>
@@ -98,7 +141,12 @@ onBeforeUnmount(() => {
 .trigger:hover:not(:disabled), .trigger.open { background: var(--hover); }
 .trigger:disabled { cursor: default; }
 .lead { color: var(--accent); }
-.nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* One cell, every label in it, one visible — see `labels`. */
+.nm, .ini { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+.nm > span, .ini > span { grid-area: 1 / 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nm > .ghost, .ini > .ghost { visibility: hidden; }
+/* Shown in the name's place when the strip is out of room — see `marks`. */
+.ini { display: none; font-weight: 600; letter-spacing: 0.02em; }
 .chev { color: var(--text-dim); }
 .n {
   flex: none;

@@ -285,10 +285,17 @@ export const state = reactive({
    */
   projectOnly: {} as Record<string, string[]>,
   /**
-   * §7 — on the project, the Diff and the Code are still about one repository
-   * at a time: which one, by project id. Absent means the first with changes.
+   * §7 — standing on more than one repository (the project, a topic across
+   * several), the Diff, the Code and the Terminal are still about one at a
+   * time: which one, by `reviewSpan`'s key. Absent means the first with changes.
    */
-  projectRepo: {} as Record<string, string>,
+  spanRepo: {} as Record<string, string>,
+  /**
+   * Same key: the span's Terminal is at its folder (`spanFolder`) — in every
+   * repository at once — rather than in the one picked. The Diff and the Code
+   * have no such reading, so they keep the pick.
+   */
+  spanAtFolder: {} as Record<string, boolean>,
   /**
    * What is being written, per conversation.
    *
@@ -722,7 +729,7 @@ export function reviewToolsFor(w: Workspace | null, wholeProject = false): Revie
   if (!w) return []
   // §7 — standing on the project there is no one checkout to read. The Diff
   // and the Code are each about a single repository, so here they name which
-  // one they are on and let it be changed (`projectRepo`) — never the anchor,
+  // one they are on and let it be changed (`spanRepo`) — never the anchor,
   // the first one, which nobody chose. The rest widen instead: the Output is
   // every repository's, and the Terminal opens at
   // the project's root folder.
@@ -1200,28 +1207,83 @@ export function changeCount(w: Workspace): number {
 }
 
 /**
- * §7 — the repository the project's Diff and Code are on, of those it is
- * standing on: the one picked, else the first with something to read.
+ * §7 — standing on more than one repository at once: the project, or a topic
+ * that spans several. The Diff, the Code and the Terminal are each about one
+ * repository, so there they name which and let it be changed in place — going
+ * to that repository's row to commit it or run something in it would step off
+ * the scope you were standing on, and the conversation with it.
+ *
+ * `key` is what the pick is remembered by; a topic with a single repository is
+ * just that repository, and spans nothing.
  */
-export const projectRepo = computed<Workspace | null>(() => {
-  if (!onProject.value || !state.activeProjectId) return null
-  const ws = projectScopeWorkspaces.value
-  const picked = ws.find((w) => w.id === state.projectRepo[state.activeProjectId!])
-  return picked ?? ws.find((w) => changeCount(w) > 0) ?? ws[0] ?? null
+export const reviewSpan = computed<{ key: string; repos: Workspace[]; topicId: string | null } | null>(() => {
+  if (onProject.value && state.activeProjectId) {
+    return { key: state.activeProjectId, repos: projectScopeWorkspaces.value, topicId: null }
+  }
+  const t = selectedTopicId.value
+  if (!t) return null
+  const repos = state.workspaces.filter((w) => w.topicId === t && w.kind !== 'group')
+  return repos.length > 1 ? { key: 'topic:' + t, repos, topicId: t } : null
 })
 
-export function pickProjectRepo(workspaceId: string): void {
-  const w = state.workspaces.find((x) => x.id === workspaceId)
-  if (w) state.projectRepo[w.projectId] = w.id
+/**
+ * The folder the span's repositories sit in, side by side: the topic's
+ * (`worktrees/<slug>/`, registered as its group workspace) or the project's
+ * root. A shell there is in all of them. Null for a topic only inferred from
+ * branch names, which has no folder of its own.
+ */
+export const spanFolder = computed<Workspace | null>(() => {
+  const span = reviewSpan.value
+  if (!span) return null
+  return (
+    state.workspaces.find(
+      (w) =>
+        w.kind === 'group' &&
+        w.projectId === state.activeProjectId &&
+        (span.topicId ? w.topicId === span.topicId : !w.topicId),
+    ) ?? null
+  )
+})
+
+/** Where the span's Terminal is: its folder, when that was picked, else the picked repository. */
+export const spanTerminal = computed<Workspace | null>(() => {
+  const span = reviewSpan.value
+  if (span && state.spanAtFolder[span.key] && spanFolder.value) return spanFolder.value
+  return spanRepo.value
+})
+
+/** Of those, the one the Code and the Terminal are on: the one picked, else the first with something to read. */
+export const spanRepo = computed<Workspace | null>(() => {
+  const span = reviewSpan.value
+  if (!span) return null
+  const picked = span.repos.find((w) => w.id === state.spanRepo[span.key])
+  return picked ?? span.repos.find((w) => changeCount(w) > 0) ?? span.repos[0] ?? null
+})
+
+/**
+ * Turn the span's Diff, Code and Terminal to one of its repositories — or the
+ * Terminal to its folder. A Terminal standing at the folder stays there until
+ * a repository is picked from the Terminal itself (`fromTerminal`): picking one
+ * for the Diff, or opening a file, is not asking the shell to move.
+ */
+export function pickSpanRepo(workspaceId: string, fromTerminal = false): void {
+  const span = reviewSpan.value
+  if (!span) return
+  if (workspaceId === spanFolder.value?.id) {
+    state.spanAtFolder[span.key] = true
+  } else if (span.repos.some((w) => w.id === workspaceId)) {
+    state.spanRepo[span.key] = workspaceId
+    if (fromTerminal) delete state.spanAtFolder[span.key]
+  }
 }
 
 /**
- * The repositories the project's Diff offers: the ones with something to
- * read. A clean one has no diff to show, only its history — so it is offered
- * only when every one is clean, and the Diff is then the way to their commits.
+ * The repositories the span's Diff offers: the ones with something to read. A
+ * clean one has no diff to show, only its history — so it is offered only when
+ * every one is clean, and the Diff is then the way to their commits.
  */
-export const projectDiffRepos = computed<Workspace[]>(() => {
-  const ws = projectScopeWorkspaces.value.filter((w) => w.git)
+export const spanDiffRepos = computed<Workspace[]>(() => {
+  const ws = (reviewSpan.value?.repos ?? []).filter((w) => w.git)
   const changed = ws.filter((w) => changeCount(w) > 0)
   return changed.length ? changed : ws
 })
@@ -1230,10 +1292,11 @@ export const projectDiffRepos = computed<Workspace[]>(() => {
  * Which of them the Diff is on: the one picked, if it is still offered — one
  * committed clean drops out, and the Diff moves on to the next with changes.
  */
-export const projectDiffRepo = computed<Workspace | null>(() => {
-  if (!onProject.value || !state.activeProjectId) return null
-  const ws = projectDiffRepos.value
-  return ws.find((w) => w.id === state.projectRepo[state.activeProjectId!]) ?? ws[0] ?? null
+export const spanDiffRepo = computed<Workspace | null>(() => {
+  const span = reviewSpan.value
+  if (!span) return null
+  const ws = spanDiffRepos.value
+  return ws.find((w) => w.id === state.spanRepo[span.key]) ?? ws[0] ?? null
 })
 
 function setProjectOnly(projectId: string, ids: string[]): void {
@@ -2957,6 +3020,39 @@ export function shortName(name: string, projectName: string | undefined): string
   return name
 }
 
+/** Two letters for a name: its first two words' initials, or its first two letters. */
+export function monogram(name: string): string {
+  const parts = name.split(/[\s\-_.]+/).filter(Boolean)
+  if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase()
+  return name.replace(/[\s\-_.]+/g, '').slice(0, 2).toUpperCase()
+}
+
+/** A project's tile, where its name has no room: the letters it was given, else two from its name. */
+export function projectMark(p: Project): string {
+  return p.settings.mark ?? monogram(p.name)
+}
+
+/**
+ * A repository where its name has no room — the repository menu at the tool
+ * strip's narrowest: the letters it was given in the project's settings, else
+ * two of its own, taken after the project's prefix — every repository of
+ * Cashplannr starts "cashplannr-", and "CA" on all of them would say nothing.
+ * Three letters when two of `among` would otherwise read the same.
+ */
+export function repoMark(w: Workspace, among: Workspace[] = []): string {
+  const given = state.projects.find((p) => p.id === w.projectId)?.settings.repoMarks?.[w.repoName]
+  return given || derivedRepoMark(w, among)
+}
+
+/** The letters `repoMark` falls back to — what the settings show as the placeholder. */
+export function derivedRepoMark(w: Workspace, among: Workspace[] = []): string {
+  const proj = state.projects.find((p) => p.id === w.projectId)
+  const rest = (x: Workspace) => shortName(x.repoName, proj?.name)
+  const two = monogram(rest(w))
+  const clash = among.some((x) => x.id !== w.id && x.repoName !== w.repoName && monogram(rest(x)) === two)
+  return clash ? rest(w).replace(/[\s\-_.]+/g, '').slice(0, 3).toUpperCase() : two
+}
+
 /** The topic standing selected, with the rows it spans — null unless one is. */
 export const selectedTopicGroup = computed<ListGroup | null>(() => {
   const id = selectedTopicId.value
@@ -3749,14 +3845,14 @@ export function selectWorkspace(id: string): void {
  * Not `selectWorkspace`: that drops a topic standing selected, and opening a
  * file in one of the topic's own repositories is still working on the topic.
  * A scope the file falls outside of is dropped, as a click on the row would.
- * On the project, a file in one of the repositories it stands on opens in the
- * project's own Code, turned to that repository.
+ * On the project, or a topic across repositories, a file in one of the
+ * repositories it stands on opens in its own Code, turned to that repository.
  */
 export function openFileAt(workspaceId: string, path: string, line: number | null = null): void {
   const w = state.workspaces.find((x) => x.id === workspaceId)
   if (!w) return
-  if (onProject.value && projectScopeWorkspaces.value.some((x) => x.id === w.id)) {
-    pickProjectRepo(w.id)
+  if (reviewSpan.value?.repos.some((x) => x.id === w.id)) {
+    pickSpanRepo(w.id)
     state.codeRequest = { workspaceId, path, line }
     goTo('code')
     return

@@ -19,6 +19,9 @@ export const PROJECT_DEFAULTS: ProjectSettings = {
   protectedBranches: {},
   docsPath: null,
   untrackedRepos: [],
+  mark: null,
+  logo: null,
+  repoMarks: {},
 }
 
 /**
@@ -146,7 +149,16 @@ export function projectSettings(root: string): ProjectSettings {
     protectedBranches: row?.settings?.protectedBranches ?? PROJECT_DEFAULTS.protectedBranches,
     docsPath: row?.settings?.docsPath ?? PROJECT_DEFAULTS.docsPath,
     untrackedRepos: row?.settings?.untrackedRepos ?? PROJECT_DEFAULTS.untrackedRepos,
+    mark: row?.settings?.mark ?? PROJECT_DEFAULTS.mark,
+    logo: row?.settings?.logo ?? PROJECT_DEFAULTS.logo,
+    repoMarks: row?.settings?.repoMarks ?? PROJECT_DEFAULTS.repoMarks,
   }
+}
+
+/** Up to three letters or digits, as typed — case is kept, so "v2" can stay "v2". */
+function cleanMark(s: string | null | undefined): string | null {
+  const m = (s ?? '').replace(/\s+/g, '').slice(0, 3)
+  return m || null
 }
 
 export function setProjectSettings(root: string, patch: Partial<ProjectSettings>): ProjectSettings {
@@ -164,11 +176,22 @@ export function setProjectSettings(root: string, patch: Partial<ProjectSettings>
     }
     next.protectedBranches = guarded
     next.untrackedRepos = [...new Set(next.untrackedRepos)]
+    next.mark = cleanMark(next.mark)
+    next.logo = next.logo?.startsWith('data:image/') ? next.logo : null
+    const marks: Record<string, string> = {}
+    for (const [repo, m] of Object.entries(next.repoMarks)) {
+      const clean = cleanMark(m)
+      if (clean) marks[repo] = clean
+    }
+    next.repoMarks = marks
     row.settings = {
       ...(next.defaultBranch ? { defaultBranch: next.defaultBranch } : {}),
       ...(Object.keys(guarded).length ? { protectedBranches: guarded } : {}),
       ...(next.docsPath ? { docsPath: next.docsPath } : {}),
       ...(next.untrackedRepos.length ? { untrackedRepos: next.untrackedRepos } : {}),
+      ...(next.mark ? { mark: next.mark } : {}),
+      ...(next.logo ? { logo: next.logo } : {}),
+      ...(Object.keys(marks).length ? { repoMarks: marks } : {}),
     }
     if (!Object.keys(row.settings!).length) delete row.settings
     out = next
