@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import type { Workspace } from '@cockpit/shared'
 import { BookMarked, BookOpen, FileCode, GitCompareArrows, Logs, SquareTerminal } from '@lucide/vue'
@@ -76,11 +76,54 @@ const tools = computed(() =>
     pip: id === 'memory' && props.workspace.hasMemory,
   })),
 )
+
+/**
+ * Names while they fit, icons when they do not. This was a container query at
+ * 470px, a number taken when there were five tools and no repository menu —
+ * with six and the menu the strip ran off the column's edge well above it.
+ * So it is measured instead: lay the strip out with every name, and if that is
+ * wider than the strip, only the tool you are in keeps its name; at the
+ * column's floor, with the repository menu beside them, not even that one.
+ * Every layout tried happens before the frame is painted, so nothing is seen
+ * flipping.
+ *
+ * The class is set on the element by hand, not bound: Vue has no static class
+ * to re-patch here, and a reactive one would paint the wrong layout once.
+ */
+const strip = ref<HTMLElement>()
+function fit() {
+  const el = strip.value
+  if (!el) return
+  el.classList.remove('icons', 'tight')
+  el.classList.add('measure')
+  for (const step of ['icons', 'tight']) {
+    if (el.scrollWidth <= el.clientWidth + 1) break
+    el.classList.add(step)
+  }
+  el.classList.remove('measure')
+}
+let ro: ResizeObserver | undefined
+let mo: MutationObserver | undefined
+onMounted(() => {
+  if (!strip.value) return
+  ro = new ResizeObserver(fit)
+  ro.observe(strip.value)
+  // A badge arriving, the repository's name changing: the content's width, not the strip's.
+  mo = new MutationObserver(fit)
+  mo.observe(strip.value, { childList: true, characterData: true, subtree: true })
+  fit()
+})
+onBeforeUnmount(() => {
+  ro?.disconnect()
+  mo?.disconnect()
+})
+// Which tool keeps its name is a class on a button, which the observers above do not see.
+watch(shownReviewTool, () => nextTick(fit))
 </script>
 
 <template>
   <div class="review">
-    <nav class="tools">
+    <nav ref="strip" class="tools">
       <button
         v-for="t in tools"
         :key="t.id"
@@ -208,13 +251,15 @@ const tools = computed(() =>
    box is not. */
 .review { container-type: inline-size; }
 
-/* Five tools with five names need about 460px, and the column's floor is 320 —
-   so at the widths it is actually dragged to, the last tab used to be cut in
-   half by the window's edge. Only the tool you are in keeps its name; the rest
-   are their icons, which is what a tab strip does when it runs out of room,
-   and every one of them keeps its keystroke (⌘1..⌘n). */
-@container (max-width: 470px) {
-  .tool:not(.on) .tl { display: none; }
-  .tool:not(.on) { padding: 0 9px; }
-}
+/* See `fit`. Measuring, nothing gives way — the repository menu would rather
+   shrink its name than let the tabs lose theirs, so it is held at full width
+   for the one read. Out of room, only the tool you are in keeps its name; the
+   rest are their icons, and every one keeps its keystroke (⌘1..⌘n). Then that
+   name too (the underline still says which), and only then does the
+   repository's name ellipsize. */
+.tools.measure > * { flex-shrink: 0; }
+.tools.icons .tool:not(.on) .tl { display: none; }
+.tools.icons .tool:not(.on) { padding: 0 9px; }
+.tools.tight .tool .tl { display: none; }
+.tools.tight .tool, .tools.icons.tight .tool:not(.on) { padding: 0 7px; }
 </style>

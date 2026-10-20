@@ -80,11 +80,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.repomenu { position: relative; flex: none; min-width: 0; }
+.repomenu { position: relative; display: flex; flex: 0 1 auto; min-width: 0; }
 .trigger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   max-width: 220px;
   height: 26px;
   padding: 0 7px 0 8px;
@@ -93,6 +94,7 @@ onBeforeUnmount(() => {
   color: var(--text);
   white-space: nowrap;
 }
+.trigger > svg { flex: none; }
 .trigger:hover:not(:disabled), .trigger.open { background: var(--hover); }
 .trigger:disabled { cursor: default; }
 .lead { color: var(--accent); }
