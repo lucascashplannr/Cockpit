@@ -52,7 +52,9 @@ watch(
     root.value = proj?.root ?? ''
     baseBranch.value = proj?.settings.defaultBranch ?? ''
     mark.value = proj?.settings.mark ?? ''
-    repoMarks.value = { ...(proj?.settings.repoMarks ?? {}) }
+    repoMarks.value = Object.fromEntries(
+      Object.entries(proj?.settings.repoMarks ?? {}).map(([k, v]) => [k, v.toLowerCase()]),
+    )
     docsPath.value = linkedDocs(proj?.id)
     guarded.value = Object.fromEntries(
       Object.entries(proj?.settings.protectedBranches ?? {}).map(([k, v]) => [k, [...v]]),
@@ -111,7 +113,7 @@ const settingsChanged = computed(() => {
 })
 
 const marksKey = (m: Record<string, string>) =>
-  JSON.stringify(Object.entries(m).map(([k, v]) => [k, v.trim()]).filter(([, v]) => v).sort(([a], [b]) => a!.localeCompare(b!)))
+  JSON.stringify(Object.entries(m).map(([k, v]) => [k, v.trim().toLowerCase()]).filter(([, v]) => v).sort(([a], [b]) => a!.localeCompare(b!)))
 
 /** The letters a repository gets when none are set — the field's placeholder. */
 const derivedMark = (r: (typeof repos.value)[number]) => derivedRepoMark(r, repos.value)
@@ -231,7 +233,7 @@ async function save() {
           protectedBranches: guarded.value,
           mark: mark.value.trim() || null,
           repoMarks: Object.fromEntries(
-            Object.entries(repoMarks.value).map(([k, v]) => [k, v.trim()]).filter(([, v]) => v),
+            Object.entries(repoMarks.value).map(([k, v]) => [k, v.trim().toLowerCase()]).filter(([, v]) => v),
           ),
         }))
       ) {
@@ -306,8 +308,6 @@ async function browse() {
       <div class="field">
         <span class="lbl">Name</span>
         <div class="row">
-          <!-- The rail's tile as it will look, with the initials typed beside the name. -->
-          <span class="tile" aria-hidden="true">{{ mark.trim() || monogram(name.trim() || p.name) }}</span>
           <input
             ref="nameInput"
             v-model="name"
@@ -394,8 +394,9 @@ async function browse() {
           <label v-for="r in repos" :key="r.id" class="markrow">
             <span class="mono">{{ r.repoName }}</span>
             <input
-              v-model="repoMarks[r.repoName]"
+              :value="repoMarks[r.repoName] ?? ''"
               class="input markin"
+              @input="repoMarks[r.repoName] = ($event.target as HTMLInputElement).value.toLowerCase()"
               type="text"
               maxlength="3"
               spellcheck="false"
@@ -580,26 +581,11 @@ async function browse() {
 .row .btn { flex: none; }
 .row.top { align-items: flex-start; }
 
-/* The rail's tile, so the initials are seen as they will be. */
-.tile {
-  width: 34px;
-  height: 34px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius);
-  background: var(--hover);
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  font-weight: 650;
-  letter-spacing: 0.02em;
-}
 .row .markin { flex: none; width: 56px; text-align: center; }
 .marks { display: flex; flex-direction: column; gap: 6px; }
 .markrow { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-muted); }
 .markrow > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.markrow .markin { flex: none; width: 56px; text-align: center; }
+.markrow .markin { flex: none; width: 56px; text-align: center; text-transform: lowercase; }
 .row.top .chips { min-width: 0; padding-top: 4px; }
 
 .check {

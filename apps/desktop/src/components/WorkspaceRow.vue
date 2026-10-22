@@ -9,7 +9,7 @@ import type { Workspace } from '@cockpit/shared'
 import StripDots from './StripDots.vue'
 import {
   activeProject, activityFor, onProject, openContextMenu, pickRepo, projectNarrowing, selectedTopicId, selectWorkspace,
-  shortName, state,
+  repoMark, shortName, state,
 } from '../core/store.js'
 
 /**
@@ -102,10 +102,15 @@ const ATTENTION_TEXT: Record<string, string> = {
 
 /**
  * On the strip there is room for one word, so it had better be the one that
- * tells this row from the next — which, in a project whose repositories are
- * all `cashplannr-something`, is the something.
+ * tells this row from the next. A repository says its initials — the same ones
+ * the repository menu shows (`repoMark`). A branch keeps its name, which in a
+ * project whose repositories are all `cashplannr-something` is the something.
  */
-const short = computed(() => shortName(w.value.name, activeProject.value?.name))
+const short = computed(() =>
+  w.value.kind === 'main'
+    ? repoMark(w.value, state.workspaces.filter((x) => x.projectId === w.value.projectId))
+    : shortName(w.value.name, activeProject.value?.name),
+)
 
 /**
  * The counters, in words: the strip has a dot where the wide row has numbers,

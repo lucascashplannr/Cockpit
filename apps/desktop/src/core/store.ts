@@ -3041,7 +3041,8 @@ export function projectMark(p: Project): string {
  */
 export function repoMark(w: Workspace, among: Workspace[] = []): string {
   const given = state.projects.find((p) => p.id === w.projectId)?.settings.repoMarks?.[w.repoName]
-  return given || derivedRepoMark(w, among)
+  // Repository initials are always lowercase, whatever was typed or saved.
+  return given?.toLowerCase() || derivedRepoMark(w, among)
 }
 
 /** The letters `repoMark` falls back to — what the settings show as the placeholder. */
@@ -3050,7 +3051,7 @@ export function derivedRepoMark(w: Workspace, among: Workspace[] = []): string {
   const rest = (x: Workspace) => shortName(x.repoName, proj?.name)
   const two = monogram(rest(w))
   const clash = among.some((x) => x.id !== w.id && x.repoName !== w.repoName && monogram(rest(x)) === two)
-  return clash ? rest(w).replace(/[\s\-_.]+/g, '').slice(0, 3).toUpperCase() : two
+  return (clash ? rest(w).replace(/[\s\-_.]+/g, '').slice(0, 3) : two).toLowerCase()
 }
 
 /** The topic standing selected, with the rows it spans — null unless one is. */

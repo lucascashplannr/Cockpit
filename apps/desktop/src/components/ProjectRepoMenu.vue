@@ -54,6 +54,7 @@ const repos = computed(() =>
   (props.diff ? spanDiffRepos.value : (reviewSpan.value?.repos ?? [])).map((w) => ({
     w,
     name: name(w),
+    mark: markOf(w),
     changed: changeCount(w),
   })),
 )
@@ -117,6 +118,7 @@ onBeforeUnmount(() => {
         <SquareDot />
         <span class="mn">{{ r.name }}</span>
         <span v-if="r.changed" class="n num">{{ r.changed }}</span>
+        <span class="mk">{{ r.mark }}</span>
       </button>
     </div>
   </div>
@@ -166,4 +168,15 @@ onBeforeUnmount(() => {
 .menu .tick { color: var(--accent); }
 .menu .tick.hidden { visibility: hidden; }
 .mn { flex: 1; }
+/* The initials the trigger shows when the strip is narrow, so the two can be matched. */
+.mk {
+  flex: none;
+  min-width: 28px;
+  margin-left: 12px;
+  text-align: right;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
 </style>
