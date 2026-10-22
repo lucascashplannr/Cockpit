@@ -22,7 +22,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import type { BlameCommit, FileEntry, Workspace } from '@cockpit/shared'
 import {
   ChevronDown, ChevronRight, Code, Copy, Eye, FileCode, Folder, FolderOpen, GitCommitVertical, Info, Save, Search,
-  UserPen,
+  SquareArrowOutUpRight, UserPen,
 } from '@lucide/vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
 import Splitter from '../Splitter.vue'
@@ -500,6 +500,15 @@ async function copyPath() {
   toast('info', 'Path copied')
 }
 
+async function openInIde() {
+  const path = openPath.value
+  if (!path) return
+  detailOpen.value = false
+  await guard(() =>
+    client.call('workspace.openIn', { workspaceId: props.workspace.id, target: 'ide', path }),
+  )
+}
+
 async function revealFolder() {
   const path = openPath.value
   if (!path) return
@@ -655,6 +664,7 @@ onBeforeUnmount(() => {
             <div class="rule" />
             <button v-if="workspace.repo && !image" @click="fileCommits"><GitCommitVertical />Commits</button>
             <button @click="copyPath"><Copy />Copy path</button>
+            <button @click="openInIde"><SquareArrowOutUpRight />Open in IDE</button>
             <button @click="revealFolder"><FolderOpen />Open folder</button>
           </div>
         </div>
