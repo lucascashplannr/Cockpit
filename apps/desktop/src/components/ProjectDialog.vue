@@ -4,7 +4,7 @@ import { FolderOpen, Plus, ShieldCheck, SlidersHorizontal, Trash2, TriangleAlert
 import DialogShell from './DialogShell.vue'
 import {
   addRepoTo, askTrashProject, askUntrackProject, askUntrackRepo, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
-  derivedRepoMark, monogram, refreshDocs, renameProject, setDocsHome, setProjectSettings, state, toast, trackRepo,
+  derivedRepoMark, monogram, refreshDocs, renameProject, setDocsHome, setProjectSettings, state, trackRepo,
 } from '../core/store.js'
 
 /**
@@ -34,7 +34,6 @@ const guarded = ref<Record<string, string[]>>({})
 const drafts = reactive<Record<string, string>>({})
 /** How the project and its repositories are drawn where their names have no room — see `ProjectSettings.mark`. */
 const mark = ref('')
-const logo = ref<string | null>(null)
 const repoMarks = ref<Record<string, string>>({})
 /** §9 — the Docs home, as a folder: the core writes it as `{ repo, folder }`. */
 const docsPath = ref('')
@@ -53,7 +52,6 @@ watch(
     root.value = proj?.root ?? ''
     baseBranch.value = proj?.settings.defaultBranch ?? ''
     mark.value = proj?.settings.mark ?? ''
-    logo.value = proj?.settings.logo ?? null
     repoMarks.value = { ...(proj?.settings.repoMarks ?? {}) }
     docsPath.value = linkedDocs(proj?.id)
     guarded.value = Object.fromEntries(
@@ -108,7 +106,6 @@ const settingsChanged = computed(() => {
     (baseBranch.value.trim() || null) !== s.defaultBranch ||
     normal(guarded.value) !== normal(s.protectedBranches ?? {}) ||
     (mark.value.trim() || null) !== (s.mark ?? null) ||
-    logo.value !== (s.logo ?? null) ||
     marksKey(repoMarks.value) !== marksKey(s.repoMarks ?? {})
   )
 })
@@ -118,47 +115,6 @@ const marksKey = (m: Record<string, string>) =>
 
 /** The letters a repository gets when none are set — the field's placeholder. */
 const derivedMark = (r: (typeof repos.value)[number]) => derivedRepoMark(r, repos.value)
-
-/**
- * A logo, scaled to a tile's size here rather than stored as picked: the
- * settings travel to the window with every project update, and a 2 MB photo
- * would ride along each time. Read as a `data:` URL because that is what the
- * window's content policy lets an `<img>` show; a `blob:` URL is refused.
- */
-const logoInput = ref<HTMLInputElement | null>(null)
-async function pickLogo(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  try {
-    const src = await new Promise<string>((ok, fail) => {
-      const r = new FileReader()
-      r.onload = () => ok(String(r.result))
-      r.onerror = () => fail(r.error)
-      r.readAsDataURL(file)
-    })
-    const img = new Image()
-    img.src = src
-    await img.decode()
-    const size = 96
-    const c = document.createElement('canvas')
-    c.width = c.height = size
-    const ctx = c.getContext('2d')!
-    const w = img.naturalWidth
-    const h = img.naturalHeight
-    // Cropped to its middle square; an SVG with no size of its own is drawn whole.
-    if (w && h) {
-      const side = Math.min(w, h)
-      ctx.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size)
-    } else {
-      ctx.drawImage(img, 0, 0, size, size)
-    }
-    logo.value = c.toDataURL('image/png')
-  } catch {
-    toast('error', 'Cockpit could not read that image.')
-  }
-}
 
 /** The folder the docs are linked to on purpose — found ones are a placeholder. */
 function linkedDocs(projectId: string | undefined): string {
@@ -274,7 +230,6 @@ async function save() {
           defaultBranch: baseBranch.value.trim() || null,
           protectedBranches: guarded.value,
           mark: mark.value.trim() || null,
-          logo: logo.value,
           repoMarks: Object.fromEntries(
             Object.entries(repoMarks.value).map(([k, v]) => [k, v.trim()]).filter(([, v]) => v),
           ),
@@ -351,16 +306,8 @@ async function browse() {
       <div class="field">
         <span class="lbl">Name</span>
         <div class="row">
-          <!-- The rail's tile as it will look: a logo, or the letters. Picking
-               a logo is clicking it. -->
-          <span class="tilewrap">
-            <button class="tile" :title="logo ? 'Change the logo' : 'Choose a logo'" @click="logoInput?.click()">
-              <img v-if="logo" :src="logo" alt="" />
-              <span v-else>{{ mark.trim() || monogram(name.trim() || p.name) }}</span>
-            </button>
-            <button v-if="logo" class="unlogo" title="Remove the logo" @click="logo = null"><X /></button>
-          </span>
-          <input ref="logoInput" type="file" accept="image/*" hidden @change="pickLogo" />
+          <!-- The rail's tile as it will look, with the initials typed beside the name. -->
+          <span class="tile" aria-hidden="true">{{ mark.trim() || monogram(name.trim() || p.name) }}</span>
           <input
             ref="nameInput"
             v-model="name"
@@ -633,11 +580,11 @@ async function browse() {
 .row .btn { flex: none; }
 .row.top { align-items: flex-start; }
 
-/* The rail's tile, at the rail's size, so what is picked is seen as it will be. */
-.tilewrap { position: relative; flex: none; }
+/* The rail's tile, so the initials are seen as they will be. */
 .tile {
   width: 34px;
   height: 34px;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -647,26 +594,7 @@ async function browse() {
   font-size: var(--fs-sm);
   font-weight: 650;
   letter-spacing: 0.02em;
-  overflow: hidden;
 }
-.tile:hover { box-shadow: inset 0 0 0 1px var(--line); }
-.tile img { width: 20px; height: 20px; border-radius: 4px; object-fit: cover; }
-.unlogo {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  width: 15px;
-  height: 15px;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--surface-raised, var(--hover));
-  box-shadow: 0 0 0 1px var(--line);
-  color: var(--text-muted);
-}
-.unlogo .lucide { width: 9px; height: 9px; }
-.tilewrap:hover .unlogo { display: flex; }
 .row .markin { flex: none; width: 56px; text-align: center; }
 .marks { display: flex; flex-direction: column; gap: 6px; }
 .markrow { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-muted); }

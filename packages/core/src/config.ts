@@ -20,7 +20,6 @@ export const PROJECT_DEFAULTS: ProjectSettings = {
   docsPath: null,
   untrackedRepos: [],
   mark: null,
-  logo: null,
   repoMarks: {},
 }
 
@@ -150,7 +149,6 @@ export function projectSettings(root: string): ProjectSettings {
     docsPath: row?.settings?.docsPath ?? PROJECT_DEFAULTS.docsPath,
     untrackedRepos: row?.settings?.untrackedRepos ?? PROJECT_DEFAULTS.untrackedRepos,
     mark: row?.settings?.mark ?? PROJECT_DEFAULTS.mark,
-    logo: row?.settings?.logo ?? PROJECT_DEFAULTS.logo,
     repoMarks: row?.settings?.repoMarks ?? PROJECT_DEFAULTS.repoMarks,
   }
 }
@@ -177,7 +175,6 @@ export function setProjectSettings(root: string, patch: Partial<ProjectSettings>
     next.protectedBranches = guarded
     next.untrackedRepos = [...new Set(next.untrackedRepos)]
     next.mark = cleanMark(next.mark)
-    next.logo = next.logo?.startsWith('data:image/') ? next.logo : null
     const marks: Record<string, string> = {}
     for (const [repo, m] of Object.entries(next.repoMarks)) {
       const clean = cleanMark(m)
@@ -190,7 +187,6 @@ export function setProjectSettings(root: string, patch: Partial<ProjectSettings>
       ...(next.docsPath ? { docsPath: next.docsPath } : {}),
       ...(next.untrackedRepos.length ? { untrackedRepos: next.untrackedRepos } : {}),
       ...(next.mark ? { mark: next.mark } : {}),
-      ...(next.logo ? { logo: next.logo } : {}),
       ...(Object.keys(marks).length ? { repoMarks: marks } : {}),
     }
     if (!Object.keys(row.settings!).length) delete row.settings

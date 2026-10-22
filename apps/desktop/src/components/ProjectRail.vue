@@ -103,9 +103,8 @@ function tileTitle(name: string, root: string, projectId: string): string {
         @click="pick(p.id)"
         @contextmenu.prevent="state.editingProjectId = p.id"
       >
-        <!-- Its logo or its letters, as set in its settings; two letters of its name otherwise. -->
-        <img v-if="p.settings.logo" class="logo" :src="p.settings.logo" alt="" />
-        <span v-else class="gram">{{ projectMark(p) }}</span>
+        <!-- Its initials, as set in its settings; two letters of its name otherwise. -->
+        <span class="gram">{{ projectMark(p) }}</span>
         <!-- A request, not a state: a count on the corner, in the one colour
              nothing else in the rail uses, because it is the only thing here
              addressed to you — whatever the agent wants (a reply read, a tool
@@ -334,8 +333,6 @@ function tileTitle(name: string, root: string, projectId: string): string {
   gap: var(--stack);
 }
 .tile .gram { line-height: 1; }
-/* The height the letters take and a little more: a mark, not a picture. */
-.tile .logo { width: 18px; height: 18px; border-radius: 4px; object-fit: cover; display: block; }
 .slots {
   display: flex;
   gap: 4px;
