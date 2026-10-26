@@ -22,7 +22,7 @@ import DocsOfferLine from '../docs/DocsOfferLine.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, activeDraftKey, agentDraft, agentFiles, alongsideChosen, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
+  activeAgentScope, activeDraftKey, agentDraft, agentFiles, alongsideChosen, chooseAlongside, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, forgetMemoryChoice, memoryLabel, renameConversation, restoreConversation,
@@ -121,22 +121,51 @@ const sources = computed(() =>
  * here" — the one holder that is never in the way, announced in the one place
  * it makes no sense. It is told apart by the session the lease belongs to.
  */
-const blocked = computed(() =>
+const inTheWay = computed(() =>
   (preview.value?.blocked ?? [])
     .filter((b) => b.sessionId !== selected.value?.id)
-    // §7 — Alongside: a running conversation's lock is not in the way once
-    // the person chose to share it, or once this thread already shares it.
-    .filter((b) => !(b.shareable && (alongsideChosen(scope.value) || !!selected.value?.alongside))),
+    // §7 — already sharing: this thread works alongside, its lock overlaps.
+    .filter((b) => !(b.shareable && !!selected.value?.alongside)),
 )
+/**
+ * §7 — what stops Send: a lock with no running conversation behind it, or one
+ * that is not a conversation's. A running conversation's lock does not stop
+ * it — Send asks first whether to work alongside it (`send`).
+ */
+const blocked = computed(() => inTheWay.value.filter((b) => !b.shareable))
+const sharing = computed(() => inTheWay.value.filter((b) => b.shareable))
 const paths = computed(() => preview.value?.paths ?? [])
 /** Said on the send button, which is otherwise disabled without a word. */
 const lockedWhy = computed(() =>
-  !blocked.value.length
-    ? undefined
-    : blocked.value.every((b) => b.shareable)
-      ? 'Locked by another conversation — the lock in the bar above can share it'
-      : 'Locked — the lock in the bar above says by what',
+  blocked.value.length ? 'Locked — the lock in the bar above says by what' : undefined,
 )
+
+/**
+ * §7 — Send, into a folder another running conversation holds: asked once,
+ * in the app's own dialog, then sent alongside it.
+ */
+function askAlongside(): boolean {
+  const s = scope.value
+  if (!sharing.value.length || !s || alongsideChosen(s)) return false
+  const others = sharing.value.map((b) => state.agents.find((c) => c.id === b.sessionId)?.title || b.reason || 'another conversation')
+  const where = [...new Set(sharing.value.flatMap((b) => b.names))].join(', ')
+  state.pendingConfirm = {
+    title: 'Work alongside ' + (others.length === 1 ? 'another conversation' : others.length + ' conversations') + '?',
+    body: [
+      (others.length === 1 ? '“' + others[0] + '” is' : others.map((t) => '“' + t + '”').join(' and ') + ' are') +
+        ' working in ' + where + '. Both agents will edit the same files: each is told about the other, and Undo only puts back its own.',
+    ],
+    verb: 'Send anyway',
+    done: 'working alongside',
+    danger: false,
+    run: async () => {
+      chooseAlongside(s, true)
+      await send()
+      return true
+    },
+  }
+  return true
+}
 
 /**
  * Which thread is open is the scope's business, not this component's: it used
@@ -801,6 +830,7 @@ function refuseCommand(name: string, run: 'window' | 'engine', thread: boolean):
 
 async function send(): Promise<void> {
   if (!canSend.value) return
+  if (askAlongside()) return
   const text = agentDraft.value.trim()
   const files = agentFiles.value
   const cmd = commandIn(text)

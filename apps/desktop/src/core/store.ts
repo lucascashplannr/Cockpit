@@ -1500,10 +1500,11 @@ interface ThreadMemory {
   /** scopeKey → showing an empty composer here rather than any thread. */
   fresh: Record<string, true>
   /**
-   * §7 — scopeKey → two threads shown side by side, left then right. The one
-   * of the two that is `pinned` is the active one: it has the composer.
+   * §7 — scopeKey → the pairs of threads shown side by side, each left then
+   * right. A pair is one tab in the bar; showing either half shows both, and
+   * the one that is `pinned` has the composer.
    */
-  pair: Record<string, [string, string]>
+  pairs: Record<string, [string, string][]>
   /**
    * §7 — the tab bar. session id → when it was opened as a tab (its place in
    * the bar), and → when its tab was closed. A running conversation, or one
@@ -1526,7 +1527,7 @@ interface ThreadMemory {
 export const threads = reactive<ThreadMemory>(readThreads())
 
 function readThreads(): ThreadMemory {
-  const empty: ThreadMemory = { pinned: {}, read: {}, unread: {}, fresh: {}, pair: {}, tabAt: {}, closedAt: {}, newTab: {}, since: Date.now() }
+  const empty: ThreadMemory = { pinned: {}, read: {}, unread: {}, fresh: {}, pairs: {}, tabAt: {}, closedAt: {}, newTab: {}, since: Date.now() }
   try {
     const raw = JSON.parse(localStorage.getItem(THREADS_KEY) ?? 'null') as Partial<ThreadMemory> | null
     if (!raw || typeof raw !== 'object') return empty
@@ -1535,7 +1536,12 @@ function readThreads(): ThreadMemory {
       read: raw.read ?? {},
       unread: raw.unread ?? {},
       fresh: raw.fresh ?? {},
-      pair: raw.pair ?? {},
+      // One pair per place, before a bar could hold several.
+      pairs:
+        raw.pairs ??
+        Object.fromEntries(
+          Object.entries((raw as { pair?: Record<string, [string, string]> }).pair ?? {}).map(([k, v]) => [k, [v]]),
+        ),
       tabAt: raw.tabAt ?? {},
       closedAt: raw.closedAt ?? {},
       newTab: raw.newTab ?? {},
@@ -2235,52 +2241,17 @@ export function startFresh(scope: AgentScope): void {
   }
   threads.fresh[scopeKey(scope)] = true
   threads.newTab[scopeKey(scope)] = true
-  // An empty box is one thing on screen, never half of a pair.
-  delete threads.pair[scopeKey(scope)]
   saveThreads()
 }
 
 /* ── several conversations on one place (§7, Alongside) ──────────────────
  *
  * With conversations working alongside each other, "the one on screen and
- * the rest behind History" hides exactly the one that needs you. Three ways
- * of showing them are on a bench until one is chosen:
- *
- *   strip — the running ones as a row over the thread, one click apart; a
- *           ⌘-click puts a second one beside the first (side by side);
- *   list  — the running ones hang under their repository or topic in the list;
- *   both  — the two together.
- *
- * `today` is the window as it was, for comparison.
+ * the rest behind History" hides exactly the one that needs you. So every
+ * place has a tab bar over its thread — browser tabs, a pair of them side by
+ * side shown as one. Chosen on a bench, 2026-10-26; the list's own rows for
+ * running conversations were tried and dropped the same day.
  */
-export type ThreadBench = 'today' | 'strip' | 'list' | 'both'
-export const THREAD_BENCHES: { id: ThreadBench; label: string }[] = [
-  { id: 'today', label: 'Today' },
-  { id: 'strip', label: 'A+B Strip' },
-  { id: 'list', label: 'C List' },
-  { id: 'both', label: 'All' },
-]
-const BENCH_KEY = 'cockpit.threadBench'
-function readBench(): ThreadBench {
-  try {
-    const v = localStorage.getItem(BENCH_KEY)
-    if (v && THREAD_BENCHES.some((b) => b.id === v)) return v as ThreadBench
-  } catch {
-    /* a window without storage starts on everything */
-  }
-  return 'both'
-}
-export const threadBench = ref<ThreadBench>(readBench())
-export function setThreadBench(b: ThreadBench): void {
-  threadBench.value = b
-  try {
-    localStorage.setItem(BENCH_KEY, b)
-  } catch {
-    /* kept for this window only */
-  }
-}
-export const benchStrip = computed(() => threadBench.value === 'strip' || threadBench.value === 'both')
-export const benchList = computed(() => threadBench.value === 'list' || threadBench.value === 'both')
 
 /** Worth a place outside History: running, asking for you, or on screen. */
 function inPlay(c: Conversation): boolean {
@@ -2296,40 +2267,129 @@ function tabClosed(c: Conversation): boolean {
 /**
  * §7 — the tab bar: the conversations opened here, every one running or
  * waiting for you that was not closed since, and whatever is on screen. In the
- * order they got their tab, so a tab keeps its place as others come and go.
+ * order of their tabs, so a tab keeps its place as others come and go.
  */
 export function stripFor(scope: AgentScope | null): Conversation[] {
   if (!scope) return []
   const open = threads.fresh[scopeKey(scope)] ? null : openThreadFor(scope)
-  const pair: string[] = threads.pair[scopeKey(scope)] ?? []
+  const paired = new Set((threads.pairs[scopeKey(scope)] ?? []).flat())
   return sessionsForScope(scope)
     .filter(
       (c) =>
         c.hiddenAt === null &&
-        (c.id in threads.tabAt || (inPlay(c) && !tabClosed(c)) || c.id === open?.id || pair.includes(c.id)),
+        (c.id in threads.tabAt || (inPlay(c) && !tabClosed(c)) || c.id === open?.id || paired.has(c.id)),
     )
-    .sort((a, b) => (threads.tabAt[a.id] ?? a.startedAt) - (threads.tabAt[b.id] ?? b.startedAt))
+    .sort((a, b) => tabOrder(a) - tabOrder(b))
+}
+
+function tabOrder(c: Conversation): number {
+  return threads.tabAt[c.id] ?? c.startedAt
+}
+
+/** One item of the tab bar: a conversation, or two side by side shown as one tab. */
+export type TabEntry =
+  | { kind: 'one'; key: string; conv: Conversation }
+  | { kind: 'pair'; key: string; convs: [Conversation, Conversation] }
+
+/** The bar as drawn: each pair once, where its first half stands. */
+export function tabEntriesFor(scope: AgentScope | null): TabEntry[] {
+  if (!scope) return []
+  const list = stripFor(scope)
+  const byId = new Map(list.map((c) => [c.id, c]))
+  const seen = new Set<string>()
+  const out: TabEntry[] = []
+  for (const c of list) {
+    if (seen.has(c.id)) continue
+    const p = pairOf(scope, c.id)
+    const a = p && byId.get(p[0])
+    const b = p && byId.get(p[1])
+    if (p && a && b) {
+      seen.add(a.id).add(b.id)
+      out.push({ kind: 'pair', key: a.id + '+' + b.id, convs: [a, b] })
+    } else {
+      seen.add(c.id)
+      out.push({ kind: 'one', key: c.id, conv: c })
+    }
+  }
+  return out
+}
+
+/** The pair a conversation is half of, on this scope, if any. */
+function pairOf(scope: AgentScope, id: string): [string, string] | null {
+  return (threads.pairs[scopeKey(scope)] ?? []).find((p) => p.includes(id)) ?? null
+}
+
+/** Out of any pair it was in; its partner stays a tab of its own, right after it. */
+function unpair(scope: AgentScope, id: string): void {
+  const key = scopeKey(scope)
+  const p = pairOf(scope, id)
+  if (!p) return
+  threads.pairs[key] = (threads.pairs[key] ?? []).filter((x) => x !== p)
+  if (!threads.pairs[key]!.length) delete threads.pairs[key]
+}
+
+/**
+ * The bar in a new order, after a drag. Each item's place is written down —
+ * a pair's two halves together — so the order survives a reload.
+ */
+export function reorderTabs(scope: AgentScope, keys: string[]): void {
+  const entries = new Map(tabEntriesFor(scope).map((e) => [e.key, e]))
+  keys.forEach((k, i) => {
+    const e = entries.get(k)
+    if (!e) return
+    for (const c of e.kind === 'one' ? [e.conv] : e.convs) threads.tabAt[c.id] = i
+  })
+  saveThreads()
+}
+
+/**
+ * Two tabs made one: `right` dropped on `left`. They open side by side, the
+ * dropped one on the right and with the composer, in the place `left` had.
+ * Either half's earlier pair comes apart.
+ */
+export function pairTabs(scope: AgentScope, left: string, right: string): void {
+  if (left === right) return
+  const key = scopeKey(scope)
+  unpair(scope, left)
+  unpair(scope, right)
+  threads.pairs[key] = [...(threads.pairs[key] ?? []), [left, right]]
+  const at = threads.tabAt[left] ?? state.agents.find((c) => c.id === left)?.startedAt ?? Date.now()
+  threads.tabAt[left] = at
+  threads.tabAt[right] = at
+  pinThread(scope, right)
+}
+
+/** The pair on screen back to two tabs, side by side in the bar. */
+export function closeSplit(scope: AgentScope): void {
+  const open = openThreadFor(scope)
+  const p = open && pairOf(scope, open.id)
+  if (!p) return
+  unpair(scope, p[0])
+  const at = threads.tabAt[p[0]] ?? Date.now()
+  threads.tabAt[p[0]] = at
+  threads.tabAt[p[1]] = at + 0.5
+  saveThreads()
 }
 
 /**
  * A tab closed. The conversation stays in History, and keeps running if it
- * was; the one beside it takes the screen, or an empty composer when it was
- * the last.
+ * was; its partner, when it was half of a pair, stays on screen alone; else
+ * the tab beside it takes the screen, or an empty composer when it was the last.
  */
 export function closeTab(scope: AgentScope, id: string): void {
   const key = scopeKey(scope)
   const list = stripFor(scope)
   const at = list.findIndex((c) => c.id === id)
   const wasOpen = !threads.fresh[key] && openThreadFor(scope)?.id === id
-  const pair = threads.pair[key]
-  if (pair?.includes(id)) delete threads.pair[key]
+  const p = pairOf(scope, id)
+  unpair(scope, id)
   delete threads.tabAt[id]
   threads.closedAt[id] = Date.now()
   if (wasOpen) {
-    const next = list[at + 1] ?? list[at - 1]
-    if (pair?.includes(id)) pinThread(scope, pair.find((x) => x !== id)!)
-    else if (next) pinThread(scope, next.id)
-    else startFresh(scope)
+    const rest = list.filter((c) => c.id !== id)
+    const next = p ? p.find((x) => x !== id) : (list[at + 1] ?? list[at - 1])?.id
+    if (next) pinThread(scope, next)
+    else if (!rest.length) startFresh(scope)
   }
   saveThreads()
 }
@@ -2351,82 +2411,53 @@ export function closeFresh(scope: AgentScope): void {
   saveThreads()
 }
 
-/** The running conversations started on one row of the list, for the list's own sub-rows. */
-export function inPlayOn(scope: AgentScope): Conversation[] {
-  return sessionsForScope(scope).filter(inPlay).sort((a, b) => a.startedAt - b.startedAt)
-}
-
-/** The two threads side by side on this scope, left then right — or none. */
+/** The two threads side by side on screen, left then right — or none. */
 export function splitFor(scope: AgentScope | null): [Conversation, Conversation] | null {
-  if (!scope || !benchStrip.value) return null
-  const pair = threads.pair[scopeKey(scope)]
+  if (!scope || threads.fresh[scopeKey(scope)]) return null
   const open = openThreadFor(scope)
-  if (!pair || !open || !pair.includes(open.id)) return null
+  const p = open && pairOf(scope, open.id)
+  if (!p) return null
   const all = sessionsForScope(scope)
-  const a = all.find((c) => c.id === pair[0])
-  const b = all.find((c) => c.id === pair[1])
-  if (!a || !b) return null
-  // In the order of their tabs, so the left pane is the left tab.
-  const at = (c: Conversation) => threads.tabAt[c.id] ?? c.startedAt
-  return at(a) <= at(b) ? [a, b] : [b, a]
+  const a = all.find((c) => c.id === p[0])
+  const b = all.find((c) => c.id === p[1])
+  return a && b ? [a, b] : null
 }
 
 /**
- * A pill pressed. A plain click shows that conversation — inside a pair it
- * only moves the composer to it, outside it takes the active side's place.
- * A ⌘-click puts it beside the one on screen, or, pressed on the one already
- * beside, goes back to one.
+ * A tab pressed. A plain click shows that conversation — half of a pair, it
+ * shows the pair with the composer on that side. A ⌘-click pairs it with the
+ * one on screen, on the right; pressed on the half already beside it, the
+ * pair comes apart.
  */
 export function pickThread(scope: AgentScope, id: string, beside = false): void {
-  const key = scopeKey(scope)
-  const open = openThreadFor(scope)
-  const pair = splitFor(scope) ? threads.pair[key] : undefined
-  if (beside) {
-    if (!open || open.id === id) {
-      if (pair) delete threads.pair[key]
-      saveThreads()
-      return
-    }
-    if (pair?.includes(id)) {
-      delete threads.pair[key]
-      saveThreads()
-      return
-    }
-    threads.pair[key] = [open.id, id]
-    pinThread(scope, id)
+  const open = threads.fresh[scopeKey(scope)] ? null : openThreadFor(scope)
+  if (beside && open && open.id !== id) {
+    const p = pairOf(scope, open.id)
+    if (p?.includes(id)) closeSplit(scope)
+    else pairTabs(scope, open.id, id)
     return
   }
-  if (pair && open && !pair.includes(id)) threads.pair[key] = pair.map((x) => (x === open.id ? id : x)) as [string, string]
   pinThread(scope, id)
 }
 
 /**
- * Any conversation on this scope beside the one on screen — running or long
- * finished, from History. Already one of the pair, it just takes the
- * composer; with a pair open, it replaces the half that does not have it.
+ * Any conversation beside the one on screen — running or long finished, from
+ * History. Already its partner, it just takes the composer.
  */
 export function openBeside(scope: AgentScope, id: string): void {
-  const key = scopeKey(scope)
-  const open = openThreadFor(scope)
+  const open = threads.fresh[scopeKey(scope)] ? null : openThreadFor(scope)
   if (!open || open.id === id) return
-  const pair = splitFor(scope) ? threads.pair[key] : undefined
-  if (pair?.includes(id)) {
+  if (pairOf(scope, open.id)?.includes(id)) {
     pinThread(scope, id)
     return
   }
-  threads.pair[key] = pair ? (pair.map((x) => (x === open.id ? x : id)) as [string, string]) : [open.id, id]
-  pinThread(scope, id)
-}
-
-export function closeSplit(scope: AgentScope): void {
-  delete threads.pair[scopeKey(scope)]
-  saveThreads()
+  pairTabs(scope, open.id, id)
 }
 
 /** ⌘⇧[ and ⌘⇧] — the next conversation along the strip, round the end. */
 export function stepThread(by: 1 | -1): void {
   const scope = activeAgentScope.value
-  if (!scope || !benchStrip.value) return
+  if (!scope) return
   const list = stripFor(scope)
   if (list.length < 2) return
   const at = list.findIndex((c) => c.id === openThreadFor(scope)?.id)

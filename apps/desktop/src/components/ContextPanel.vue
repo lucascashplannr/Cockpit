@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
 import { CircleStop, Columns2, History, MousePointerClick, Plus, X } from '@lucide/vue'
 import type { Conversation } from '@cockpit/shared'
 import AgentTab from './tabs/AgentTab.vue'
 import ConversationDrawer from './ConversationDrawer.vue'
 import Wordmark from './brand/Wordmark.vue'
 import {
-  activeAgentScope, activeWorkspace, attentionOf, benchStrip, closeFresh, hasNewTab, closeSplit, closeTab, isBusy, isLive,
-  openThreadFor, pickThread, renameConversation, sessionsForScope, splitFor, startFresh, state, stopConversation,
+  activeAgentScope, activeWorkspace, attentionOf, closeFresh, hasNewTab, closeSplit, closeTab, isBusy, isLive,
+  openThreadFor, pairTabs, pickThread, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
   stripFor,
 } from '../core/store.js'
 
@@ -76,7 +76,7 @@ async function stop(): Promise<void> {
   if (thread.value) await stopConversation(thread.value.id)
 }
 
-/* ── §7 — the tab bar, and two threads side by side (bench A + B) ────────
+/* ── §7 — the tab bar, and two threads side by side ─────────────────────
  *
  * Always there, even for one conversation: it is the way between them, and a
  * way that appears only once there are two is one nobody learns. An empty
@@ -85,7 +85,7 @@ async function stop(): Promise<void> {
  */
 const strip = computed(() => stripFor(activeAgentScope.value))
 const pair = computed(() => splitFor(activeAgentScope.value))
-const showStrip = computed(() => benchStrip.value && !!activeAgentScope.value)
+const showStrip = computed(() => !!activeAgentScope.value)
 
 function closeOne(c: Conversation): void {
   const s = activeAgentScope.value
@@ -126,9 +126,125 @@ function stateWord(c: Conversation): string {
   return d === 'you' ? 'needs you' : d === 'work' ? 'working' : d === 'open' ? 'open' : 'finished'
 }
 function press(c: Conversation, e: MouseEvent): void {
+  // The click a drag ends on is the end of the drag, not a choice of tab.
+  if (dragEnded) return
   const s = activeAgentScope.value
   if (s) pickThread(s, c.id, e.metaKey || e.ctrlKey)
 }
+
+/* ── §7 — tabs grabbed: moved along the bar, or dropped on one to pair ───
+ *
+ * Pointer events rather than HTML drag and drop: the tab itself follows the
+ * cursor, with no ghost image, and the bar is the only place it can land.
+ * Over the middle half of a single tab, a single tab pairs with it (the
+ * grabbed one on the right); anywhere else it goes before or after.
+ */
+const entries = computed(() => tabEntriesFor(activeAgentScope.value))
+const isOn = (e: TabEntry) =>
+  e.kind === 'one' ? e.conv.id === thread.value?.id : e.convs.some((c) => c.id === thread.value?.id)
+
+const navEl = ref<HTMLElement | null>(null)
+const drag = reactive({
+  key: null as string | null,
+  moved: false,
+  dx: 0,
+  target: null as string | null,
+  mode: null as 'before' | 'after' | 'pair' | null,
+  caret: 0,
+})
+let startX = 0
+let rects: { key: string; kind: string; left: number; right: number }[] = []
+let dragEnded = false
+
+function measure(): void {
+  const nav = navEl.value
+  if (!nav) return
+  rects = [...nav.querySelectorAll<HTMLElement>('[data-tab]')].map((el) => {
+    const r = el.getBoundingClientRect()
+    return { key: el.dataset.tab!, kind: el.dataset.kind!, left: r.left, right: r.right }
+  })
+}
+
+function down(ev: PointerEvent, e: TabEntry): void {
+  if (ev.button !== 0 || renaming.value) return
+  if ((ev.target as HTMLElement).closest('.px, input')) return
+  startX = ev.clientX
+  drag.key = e.key
+  drag.moved = false
+  drag.dx = 0
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
+function move(ev: PointerEvent): void {
+  const dx = ev.clientX - startX
+  if (!drag.moved) {
+    if (Math.abs(dx) < 4) return
+    drag.moved = true
+    measure()
+  }
+  drag.dx = dx
+  const me = rects.find((r) => r.key === drag.key)
+  const others = rects.filter((r) => r.key !== drag.key)
+  const x = ev.clientX
+  let target: (typeof rects)[number] | undefined
+  let mode: typeof drag.mode = null
+  for (const r of others) {
+    if (x < r.left || x > r.right) continue
+    const w = r.right - r.left
+    target = r
+    if (me?.kind === 'one' && r.kind === 'one' && x > r.left + w * 0.25 && x < r.right - w * 0.25) mode = 'pair'
+    else mode = x < r.left + w / 2 ? 'before' : 'after'
+    break
+  }
+  if (!target && others.length) {
+    if (x < others[0]!.left) [target, mode] = [others[0], 'before']
+    else if (x > others[others.length - 1]!.right) [target, mode] = [others[others.length - 1], 'after']
+  }
+  // Back over its own slot, or into the gap it already stands in: nowhere new.
+  const keys = rects.map((r) => r.key)
+  const from = keys.indexOf(drag.key!)
+  if (target && mode !== 'pair') {
+    const to = keys.indexOf(target.key) + (mode === 'after' ? 1 : 0)
+    if (to === from || to === from + 1) [target, mode] = [undefined, null]
+  }
+  drag.target = target?.key ?? null
+  drag.mode = mode
+  const nav = navEl.value?.getBoundingClientRect().left ?? 0
+  if (target && mode !== 'pair') drag.caret = (mode === 'before' ? target.left - 2 : target.right + 1) - nav
+}
+
+function up(): void {
+  window.removeEventListener('pointermove', move)
+  window.removeEventListener('pointerup', up)
+  const s = activeAgentScope.value
+  if (drag.moved && s && drag.key && drag.target && drag.mode) {
+    const list = entries.value
+    if (drag.mode === 'pair') {
+      const left = list.find((e) => e.key === drag.target)
+      const right = list.find((e) => e.key === drag.key)
+      if (left?.kind === 'one' && right?.kind === 'one') pairTabs(s, left.conv.id, right.conv.id)
+    } else {
+      const keys = list.map((e) => e.key).filter((k) => k !== drag.key)
+      const at = keys.indexOf(drag.target)
+      keys.splice(drag.mode === 'before' ? at : at + 1, 0, drag.key)
+      reorderTabs(s, keys)
+    }
+  }
+  if (drag.moved) {
+    dragEnded = true
+    setTimeout(() => (dragEnded = false), 0)
+  }
+  drag.key = null
+  drag.moved = false
+  drag.dx = 0
+  drag.target = null
+  drag.mode = null
+}
+onBeforeUnmount(() => {
+  window.removeEventListener('pointermove', move)
+  window.removeEventListener('pointerup', up)
+})
 function fresh(): void {
   const s = activeAgentScope.value
   if (s) startFresh(s)
@@ -159,37 +275,86 @@ function single(): void {
            window (ScopeBar): none of what it carried was about the
            conversation. What is left here is the conversation. -->
       <div class="body" :class="{ striped: showStrip }">
-        <nav v-if="showStrip" class="strip" aria-label="Conversations here">
+        <nav v-if="showStrip" ref="navEl" class="strip" :class="{ dragging: drag.moved }" aria-label="Conversations here">
           <!-- Browser tabs: one per conversation, the new one added at the end,
                the + always after the last. A dot only when there is news. -->
+          <span v-if="drag.moved && drag.target && drag.mode !== 'pair'" class="caret" :style="{ left: drag.caret + 'px' }" />
           <TransitionGroup name="tab" tag="div" class="tabs">
-            <div
-              v-for="c in strip"
-              :key="c.id"
-              class="tab"
-              role="tab"
-              :aria-selected="c.id === thread?.id"
-              :class="{ on: c.id === thread?.id, paired: !!pair && pair.some((p) => p.id === c.id) }"
-              :title="c.title + (dotOf(c) === 'work' || dotOf(c) === 'you' ? ' — ' + stateWord(c) : '')"
-              @click="renaming === c.id || press(c, $event)"
-              @dblclick="startRename(c)"
-              @mousedown.middle.prevent="closeOne(c)"
-            >
-              <span v-if="dotOf(c) === 'work' || dotOf(c) === 'you'" class="dot" :class="dotOf(c)" />
-              <input
-                v-if="renaming === c.id"
-                ref="renameEl"
-                v-model="renameDraft"
-                class="pin"
-                maxlength="80"
-                spellcheck="false"
-                @keydown.enter.prevent="commitRename(c)"
-                @keydown.esc.stop.prevent="renaming = null"
-                @blur="commitRename(c)"
-              />
-              <span v-else class="pt">{{ c.title || 'Untitled' }}</span>
-              <button class="px" title="Close tab" @click.stop="closeOne(c)"><X class="xs" /></button>
-            </div>
+            <template v-for="e in entries" :key="e.key">
+              <div
+                v-if="e.kind === 'one'"
+                class="tab"
+                role="tab"
+                :data-tab="e.key"
+                data-kind="one"
+                :aria-selected="isOn(e)"
+                :class="{
+                  on: isOn(e),
+                  lifted: drag.moved && drag.key === e.key,
+                  droppair: drag.mode === 'pair' && drag.target === e.key,
+                }"
+                :style="drag.moved && drag.key === e.key ? { transform: 'translateX(' + drag.dx + 'px)' } : undefined"
+                :title="e.conv.title + (dotOf(e.conv) === 'work' || dotOf(e.conv) === 'you' ? ' — ' + stateWord(e.conv) : '')"
+                @pointerdown="down($event, e)"
+                @click="renaming === e.conv.id || press(e.conv, $event)"
+                @dblclick="startRename(e.conv)"
+                @mousedown.middle.prevent="closeOne(e.conv)"
+              >
+                <span v-if="dotOf(e.conv) === 'work' || dotOf(e.conv) === 'you'" class="dot" :class="dotOf(e.conv)" />
+                <input
+                  v-if="renaming === e.conv.id"
+                  ref="renameEl"
+                  v-model="renameDraft"
+                  class="pin"
+                  maxlength="80"
+                  spellcheck="false"
+                  @keydown.enter.prevent="commitRename(e.conv)"
+                  @keydown.esc.stop.prevent="renaming = null"
+                  @blur="commitRename(e.conv)"
+                />
+                <span v-else class="pt">{{ e.conv.title || 'Untitled' }}</span>
+                <button class="px" title="Close tab" @click.stop="closeOne(e.conv)"><X class="xs" /></button>
+              </div>
+              <!-- Two side by side are one tab: two titles and a line between. -->
+              <div
+                v-else
+                class="tab pairtab"
+                role="tab"
+                :data-tab="e.key"
+                data-kind="pair"
+                :aria-selected="isOn(e)"
+                :class="{ on: isOn(e), lifted: drag.moved && drag.key === e.key }"
+                :style="drag.moved && drag.key === e.key ? { transform: 'translateX(' + drag.dx + 'px)' } : undefined"
+                @pointerdown="down($event, e)"
+              >
+                <template v-for="(c, i) in e.convs" :key="c.id">
+                  <span v-if="i === 1" class="split" />
+                  <div
+                    class="half"
+                    :class="{ active: c.id === thread?.id }"
+                    :title="c.title + (dotOf(c) === 'work' || dotOf(c) === 'you' ? ' — ' + stateWord(c) : '')"
+                    @click="renaming === c.id || press(c, $event)"
+                    @dblclick="startRename(c)"
+                    @mousedown.middle.prevent="closeOne(c)"
+                  >
+                    <span v-if="dotOf(c) === 'work' || dotOf(c) === 'you'" class="dot" :class="dotOf(c)" />
+                    <input
+                      v-if="renaming === c.id"
+                      ref="renameEl"
+                      v-model="renameDraft"
+                      class="pin"
+                      maxlength="80"
+                      spellcheck="false"
+                      @keydown.enter.prevent="commitRename(c)"
+                      @keydown.esc.stop.prevent="renaming = null"
+                      @blur="commitRename(c)"
+                    />
+                    <span v-else class="pt">{{ c.title || 'Untitled' }}</span>
+                    <button class="px" title="Close tab" @click.stop="closeOne(c)"><X class="xs" /></button>
+                  </div>
+                </template>
+              </div>
+            </template>
             <div
               v-if="!thread || hasNewTab(activeAgentScope)"
               key="__new"
@@ -411,6 +576,55 @@ function single(): void {
 .tab-enter-from, .tab-leave-to { opacity: 0; transform: translateY(3px); }
 .tab-leave-active { position: absolute; }
 .tab-move { transition: transform 160ms var(--ease-soft); }
+
+/* ── §7 — a pair, one tab with two titles ───────────────────────────────── */
+.strip { position: relative; }
+.tab.pairtab { flex: 0 1 312px; width: 312px; gap: 0; padding: 0 2px; }
+.half {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 100%;
+  padding: 0 4px 0 10px;
+  color: var(--text-dim);
+}
+.tab.pairtab.on .half { color: var(--text-muted); }
+.tab.pairtab.on .half.active { color: var(--text); }
+.half:hover { color: var(--text); }
+.half .px { visibility: hidden; }
+.half:hover .px, .tab.on .half.active .px { visibility: visible; }
+.tab.pairtab .px { visibility: hidden; }
+.tab.pairtab .half:hover .px, .tab.pairtab.on .half.active .px { visibility: visible; }
+.split { flex: none; width: 1px; height: 14px; background: var(--line-strong); }
+
+/* ── grabbed ───────────────────────────────────────────────────────────── */
+.tab { touch-action: none; }
+.tab.lifted {
+  z-index: 3;
+  background: var(--panel-raised);
+  color: var(--text);
+  box-shadow: var(--shadow-md), inset 0 0 0 1px var(--line);
+  cursor: grabbing;
+  transition: none;
+}
+.strip.dragging .tab:not(.lifted) { transition: background var(--dur-1) var(--ease-soft); }
+.strip.dragging .tab::before { opacity: 0; }
+/* Dropped here, the two open side by side. */
+.tab.droppair { background: var(--accent-soft); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent); }
+/* Dropped here, it goes in this gap. */
+.caret {
+  position: absolute;
+  z-index: 4;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
 .striped .instr { top: 8px; }
 .striped :deep(.drawer) { top: 44px; }
 .striped :deep(.tbar) { padding-right: 20px; }

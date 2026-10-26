@@ -2,9 +2,9 @@
 import { attentionIcon } from './agent/attention.js'
 import { computed, ref, watch } from 'vue'
 import type { Conversation } from '@cockpit/shared'
-import { ChevronDown, CircleStop, Columns2, EyeOff, Pencil, Plus, RotateCcw, Sparkles, Trash2, X } from '@lucide/vue'
+import { ChevronDown, CircleStop, EyeOff, Pencil, Plus, RotateCcw, Sparkles, Trash2, X } from '@lucide/vue'
 import {
-  activeAgentScope, attentionOf, benchStrip, deleteConversation, openBeside, engineName, isBusy, isLive, keptOnRemove,
+  activeAgentScope, attentionOf, deleteConversation, openBeside, engineName, isBusy, isLive, keptOnRemove,
   openConversation, openThreadFor, pinThread, removedOn, renameConversation, restoreConversation, sessionsForScope, startFresh, state,
   stopConversation,
 } from '../core/store.js'
@@ -49,7 +49,7 @@ function open(c: Conversation, e?: MouseEvent): void {
 
 /** §7 — side by side with the one on screen, whether or not it is running. */
 function canBeside(c: Conversation): boolean {
-  return benchStrip.value && !!selected.value && selected.value.id !== c.id
+  return !!selected.value && selected.value.id !== c.id
 }
 function beside(c: Conversation): void {
   if (scope.value) openBeside(scope.value, c.id)
@@ -253,14 +253,6 @@ function dotClass(c: Conversation): string {
         <!-- The acts, on the row they act on. Quiet until the row is under the
              cursor: a list of twenty with sixty buttons lit is a toolbar. -->
         <span class="acts">
-          <button
-            v-if="canBeside(c)"
-            class="icon-btn small"
-            title="Open beside this one (⌘-click the row)"
-            @click="beside(c)"
-          >
-            <Columns2 class="sm" />
-          </button>
           <button
             v-if="isLive(c)"
             class="icon-btn small"
