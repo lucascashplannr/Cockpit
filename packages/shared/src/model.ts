@@ -591,6 +591,11 @@ export interface Workspace {
   /** Active agent sessions whose scope covers this path. */
   agentSessions: string[]
   lease: LeaseInfo | null
+  /**
+   * Every lock covering this path. More than one only when conversations work
+   * Alongside; `lease` is the first of them, kept for older readers.
+   */
+  leases?: LeaseInfo[]
   hasMemory: boolean
   lastProbedAt: number
   /** Disk footprint, surfaced because it accumulates silently (§16). */
@@ -765,6 +770,12 @@ export interface LeaseInfo {
   acquiredAt: number
   expiresAt: number | null
   reason: string
+  /**
+   * §7 — held Alongside: other conversations that also agreed to share may
+   * work in the same paths. Only a conversation wanting them to itself is
+   * stopped. Absent from an older core, which only ever held exclusive ones.
+   */
+  shared?: boolean
 }
 
 /**
@@ -1158,6 +1169,13 @@ export interface Conversation {
    * for good with that memory. Null for every conversation still in the list.
    */
   hiddenAt: number | null
+  /**
+   * §7 — it works Alongside other conversations in the same folder rather than
+   * holding the folder to itself. Set when it was started that way or when
+   * another conversation joined it; it stays set, so picking it back up does
+   * not lock out the one it was sharing with.
+   */
+  alongside?: boolean
 }
 
 export interface DiffFile {

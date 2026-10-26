@@ -2,9 +2,9 @@
 import { attentionIcon } from './agent/attention.js'
 import { computed, ref, watch } from 'vue'
 import type { Conversation } from '@cockpit/shared'
-import { ChevronDown, CircleStop, EyeOff, Pencil, Plus, RotateCcw, Sparkles, Trash2, X } from '@lucide/vue'
+import { ChevronDown, CircleStop, Columns2, EyeOff, Pencil, Plus, RotateCcw, Sparkles, Trash2, X } from '@lucide/vue'
 import {
-  activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive, keptOnRemove,
+  activeAgentScope, attentionOf, benchStrip, deleteConversation, openBeside, engineName, isBusy, isLive, keptOnRemove,
   openConversation, openThreadFor, pinThread, removedOn, renameConversation, restoreConversation, sessionsForScope, startFresh, state,
   stopConversation,
 } from '../core/store.js'
@@ -41,8 +41,18 @@ const ATTENTION_TEXT: Record<Attention, string> = {
   failed: 'the engine failed',
 }
 
-function open(c: Conversation): void {
+function open(c: Conversation, e?: MouseEvent): void {
+  if (e && (e.metaKey || e.ctrlKey) && canBeside(c)) return beside(c)
   if (scope.value) pinThread(scope.value, c.id)
+  state.historyOpen = false
+}
+
+/** §7 — side by side with the one on screen, whether or not it is running. */
+function canBeside(c: Conversation): boolean {
+  return benchStrip.value && !!selected.value && selected.value.id !== c.id
+}
+function beside(c: Conversation): void {
+  if (scope.value) openBeside(scope.value, c.id)
   state.historyOpen = false
 }
 
@@ -200,7 +210,7 @@ function dotClass(c: Conversation): string {
       >
         <!-- A field cannot live in a button, so the row is not one while its
              name is being typed. -->
-        <component :is="editing === c.id ? 'div' : 'button'" class="pick" @click="editing === c.id || open(c)">
+        <component :is="editing === c.id ? 'div' : 'button'" class="pick" @click="editing === c.id || open(c, $event)">
           <span class="crow">
             <span class="dot" :class="dotClass(c)" />
             <input
@@ -243,6 +253,14 @@ function dotClass(c: Conversation): string {
         <!-- The acts, on the row they act on. Quiet until the row is under the
              cursor: a list of twenty with sixty buttons lit is a toolbar. -->
         <span class="acts">
+          <button
+            v-if="canBeside(c)"
+            class="icon-btn small"
+            title="Open beside this one (⌘-click the row)"
+            @click="beside(c)"
+          >
+            <Columns2 class="sm" />
+          </button>
           <button
             v-if="isLive(c)"
             class="icon-btn small"

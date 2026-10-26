@@ -11,7 +11,7 @@ import { childRepos, detectCapabilities, findManifest, projectNameFor, readManif
 import { fetchRemote, git, isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
-import { leaseCovering } from './leases.js'
+import { leaseCovering, leasesCovering } from './leases.js'
 import { runtimeStateFor } from './runtime/index.js'
 import { covers, liveSessions, sessionsTouching } from './agents.js'
 
@@ -791,7 +791,8 @@ export async function probeWorkspace(id: string): Promise<Workspace> {
   ws.git = ws.repo ? await probeGit(ws.path, baseOverride(ws.path)) : null
   if (ws.kind === 'main' && (await isWorktree(ws.path))) ws.kind = 'worktree'
   ws.runtime = await runtimeStateFor(ws)
-  ws.lease = leaseCovering(ws.path)
+  ws.leases = leasesCovering(ws.path)
+  ws.lease = ws.leases[0] ?? null
   ws.agentSessions = sessionsTouching(ws.path).map((s) => s.id)
   // §6 — the memory this checkout's work reads, so this agrees with what
   // `memory.read` returns and what the agent is actually handed. Something
@@ -927,7 +928,8 @@ async function runReconcile(
 export function refreshAgentActivity(): void {
   const live = liveSessions()
   for (const ws of workspaces.values()) {
-    ws.lease = leaseCovering(ws.path)
+    ws.leases = leasesCovering(ws.path)
+    ws.lease = ws.leases[0] ?? null
     ws.agentSessions = live.filter((s) => covers(s, ws.path)).map((s) => s.id)
   }
 }
@@ -937,7 +939,8 @@ export async function refreshGit(id: string): Promise<Workspace | null> {
   const ws = workspaces.get(id)
   if (!ws || !ws.repo) return null
   ws.git = await probeGit(ws.path, baseOverride(ws.path))
-  ws.lease = leaseCovering(ws.path)
+  ws.leases = leasesCovering(ws.path)
+  ws.lease = ws.leases[0] ?? null
   ws.lastProbedAt = Date.now()
   return ws
 }

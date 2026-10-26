@@ -3,7 +3,7 @@ import type { FSWatcher } from 'node:fs'
 import { join, relative } from 'node:path'
 import { allWorkspaces, refreshGit } from './registry.js'
 import { recordTouch } from './journal.js'
-import { sessionsTouching } from './agents.js'
+import { sessionsTouching, writtenByUndo } from './agents.js'
 
 /**
  * §14 — "chokidar, avec exclusions agressives." A watcher that follows
@@ -110,14 +110,25 @@ export function start(onChange: (workspaceIds: string[]) => void): void {
 
     // §12 — if an agent holds this subtree, the edit is attributed to it.
     // Otherwise it is a human edit. This is what fills the diff's author split.
+    //
+    // With two conversations working alongside, a change under both cannot be
+    // put down to either from here: it is an agent's, and nobody says whose.
+    // Naming the first one would hand its Undo the other's files. The engine's
+    // own Edit and Write calls still name their conversation (agents.ts).
+    //
+    // An Undo's own writes are nobody's edit at all: credited to the agent
+    // still running beside it, they would become that agent's to undo next.
     const rel = relative(ws.path, file)
-    const agent = sessionsTouching(file)[0]
-    recordTouch(
-      ws.id,
-      rel,
-      agent ? { kind: 'agent', engine: agent.engine, sessionId: agent.id } : { kind: 'human' },
-      agent?.id,
-    )
+    if (!writtenByUndo(file)) {
+      const here = sessionsTouching(file)
+      const agent = here[0]
+      recordTouch(
+        ws.id,
+        rel,
+        agent ? { kind: 'agent', engine: agent.engine, sessionId: agent.id } : { kind: 'human' },
+        here.length === 1 ? agent?.id : undefined,
+      )
+    }
     schedule(ws.id)
   }
 

@@ -134,6 +134,14 @@ export interface ScopeBlock {
    * wait for. The two look identical until this says which.
    */
   live: boolean
+  /**
+   * §7 — the lock is held Alongside, or could be: a running conversation's
+   * lock can be shared by starting this one Alongside. A leftover lock, or one
+   * held by something other than a conversation, cannot.
+   */
+  shareable: boolean
+  /** Already held Alongside. */
+  shared: boolean
 }
 
 export interface AgentScopePreview {
@@ -855,6 +863,8 @@ export interface Rpc {
        * topic, a new one anywhere else.
        */
       memory?: string
+      /** §7 — share the folder with the conversation already running there. */
+      alongside?: boolean
     }
     result: AgentStartResult
   }
@@ -879,6 +889,8 @@ export interface Rpc {
       prompt: string
       options?: EngineOptions
       attachments?: AttachmentInput[]
+      /** §7 — picked back up Alongside a conversation that started here meanwhile. */
+      alongside?: boolean
     }
     result: AgentStartResult
   }

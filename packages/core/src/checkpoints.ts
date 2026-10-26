@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { newId } from '@cockpit/shared'
 import { COCKPIT_HOME } from './config.js'
@@ -255,6 +255,8 @@ export async function preview(
   sessionId: string,
   turnId: string,
   nameOf: (workspaceId: string) => string,
+  /** The same limit the revert will be given, so the number shown is the one that moves. */
+  limit?: RevertLimit,
 ): Promise<RevertPreviewEntry[]> {
   const out: RevertPreviewEntry[] = []
   for (const cp of forTurn(sessionId, turnId)) {
@@ -262,14 +264,16 @@ export async function preview(
     const dir = storeFor(cp.workspaceId)
     if (!existsSync(join(dir, 'HEAD'))) continue
     await shadow(dir, cp.path, ['add', '-A'])
-    const d = await shadow(dir, cp.path, ['diff', '--numstat', '--cached', cp.commit])
+    const d = await shadow(dir, cp.path, ['-c', 'core.quotePath=false', 'diff', '--numstat', '--no-renames', '--cached', cp.commit])
     if (!d.ok) continue
+    const allowed = limit?.(cp) ?? null
     let files = 0
     let insertions = 0
     let deletions = 0
     for (const line of d.stdout.split('\n')) {
       const parts = line.trim().split('\t')
       if (parts.length < 3) continue
+      if (allowed && !allowed.has(parts[2]!)) continue
       files++
       // A binary file reports `-` on both counts; counting it as zero lines is
       // right, dropping the file from the count is not.
@@ -290,6 +294,30 @@ export interface RevertResult {
   files: number
   workspaces: number
   failures: string[]
+  /**
+   * Files that moved since the snapshot but were not this conversation's to
+   * put back, relative to their repository: another conversation working
+   * alongside touched them since, or nobody can say who did. Empty for a
+   * whole-tree revert, which by definition leaves nothing out.
+   */
+  leftAlone: string[]
+}
+
+/**
+ * Which files of one checkpoint's tree a revert may put back, relative to that
+ * checkpoint's path. Null puts back the whole tree, as before there was ever a
+ * second conversation in the same folder.
+ */
+export type RevertLimit = (cp: Checkpoint) => Set<string> | null
+
+/** The folders a turn's snapshots were taken of. */
+export function pathsOf(sessionId: string, turnId: string): string[] {
+  return forTurn(sessionId, turnId).map((c) => c.path)
+}
+
+/** When a turn's snapshot of one workspace was taken, so a redo can measure from it. */
+export function takenAt(sessionId: string, turnId: string, workspaceId: string): number | null {
+  return forTurn(sessionId, turnId).find((c) => c.workspaceId === workspaceId)?.createdAt ?? null
 }
 
 /** Whether a turn id names any snapshot at all. */
@@ -316,10 +344,18 @@ export async function revert(
   sessionId: string,
   turnId: string,
   reason: string,
+  /**
+   * With another conversation working alongside in the same folder, the tree
+   * as it stood before this turn also holds the *other* agent's work as it
+   * stood then — and putting the whole tree back would throw away everything
+   * that agent wrote since. So the caller can name the files that are this
+   * conversation's own, and only those move.
+   */
+  limit?: RevertLimit,
 ): Promise<RevertResult> {
   const cps = forTurn(sessionId, turnId)
   if (!cps.length)
-    return { ok: false, detail: 'no checkpoint was taken for that turn', redoTurnId: null, files: 0, workspaces: 0, failures: [] }
+    return { ok: false, detail: 'no checkpoint was taken for that turn', redoTurnId: null, files: 0, workspaces: 0, failures: [], leftAlone: [] }
 
   // One id for the whole redo, so undoing the undo is one operation across
   // every repository the turn spanned.
@@ -330,6 +366,7 @@ export async function revert(
   // actually moved, not from the preview: the two are taken a click apart and
   // the number shown afterwards has to be the one that happened.
   let files = 0
+  const leftAlone: string[] = []
 
   for (const cp of cps) {
     if (!existsSync(cp.path)) {
@@ -347,15 +384,41 @@ export async function revert(
 
     // Which paths are about to move, read before they do: this is also what
     // step 3 unstages, and after the restore the answer is empty by design.
-    const moved = await shadow(dir, cp.path, ['diff', '--name-only', '--cached', cp.commit])
-    const paths = moved.ok ? moved.stdout.split('\n').map((l) => l.trim()).filter(Boolean) : []
+    // With a status, because a limited revert puts a file back and removes a
+    // created one by two different means. No rename detection: a rename is a
+    // delete and a create, and each half is judged on its own.
+    const moved = await shadow(dir, cp.path, ['-c', 'core.quotePath=false', 'diff', '--name-status', '--no-renames', '--cached', cp.commit])
+    const changes = (moved.ok ? moved.stdout.split('\n') : [])
+      .map((l) => l.split('\t'))
+      .filter((p) => p.length >= 2 && p[1]!.trim())
+      .map((p) => ({ status: p[0]!.trim(), path: p[1]!.trim() }))
+    const allowed = limit?.(cp) ?? null
+    const mine = allowed ? changes.filter((c) => allowed.has(c.path)) : changes
+    if (allowed) for (const c of changes) if (!allowed.has(c.path)) leftAlone.push(c.path)
+    const paths = mine.map((c) => c.path)
     files += paths.length
 
-    // 2 — the tree, back.
-    const r = await shadow(dir, cp.path, ['read-tree', '-u', '--reset', cp.commit])
-    if (!r.ok) {
-      failures.push(cp.workspaceId + ': ' + r.stderr.trim().slice(-200))
-      continue
+    // 2 — the tree, back: all of it, or only the files that were this
+    // conversation's. `checkout <commit> -- paths` restores what the snapshot
+    // had; a file it did not have was created since, and goes.
+    if (!allowed) {
+      const r = await shadow(dir, cp.path, ['read-tree', '-u', '--reset', cp.commit])
+      if (!r.ok) {
+        failures.push(cp.workspaceId + ': ' + r.stderr.trim().slice(-200))
+        continue
+      }
+    } else {
+      const back = mine.filter((c) => c.status !== 'A').map((c) => c.path)
+      let failed = ''
+      for (let i = 0; i < back.length && !failed; i += 100) {
+        const r = await shadow(dir, cp.path, ['checkout', cp.commit, '--', ...back.slice(i, i + 100)])
+        if (!r.ok) failed = r.stderr.trim().slice(-200)
+      }
+      if (failed) {
+        failures.push(cp.workspaceId + ': ' + failed)
+        continue
+      }
+      for (const c of mine) if (c.status === 'A') rmSync(join(cp.path, c.path), { force: true })
     }
     restored++
 
@@ -379,6 +442,7 @@ export async function revert(
       files: 0,
       workspaces: 0,
       failures,
+      leftAlone,
     }
   }
 
@@ -389,7 +453,7 @@ export async function revert(
     restored +
     (restored === 1 ? ' repository' : ' repositories') +
     (failures.length ? ' — ' + failures.join('; ') : '')
-  return { ok: true, detail, redoTurnId, files, workspaces: restored, failures }
+  return { ok: true, detail, redoTurnId, files, workspaces: restored, failures, leftAlone }
 }
 
 /**

@@ -1,6 +1,7 @@
 import { MEMORY_NEW, MEMORY_OFF, STATE_SECTION, conversationRef } from '@cockpit/shared'
 import type { Actor, Conversation } from '@cockpit/shared'
 import * as docsTools from './docsTools.js'
+import * as peersTools from './peersTools.js'
 import * as memory from './memory.js'
 import { getWorkspace } from './registry.js'
 
@@ -201,11 +202,18 @@ export function handle(c: Conversation, own: Set<string>, msg: JsonRpc): Record<
     // that knows which conversation is asking.
     case 'tools/list':
       return reply({
-        tools: [...(c.memory !== MEMORY_OFF ? TOOLS : []), ...(docsTools.available(c) ? docsTools.TOOLS : [])],
+        tools: [
+          ...(c.memory !== MEMORY_OFF ? TOOLS : []),
+          ...(docsTools.available(c) ? docsTools.TOOLS : []),
+          // §7 — always: a conversation alone in its folder today may be
+          // joined by another one tomorrow, and its tool list is fixed at launch.
+          ...peersTools.TOOLS,
+        ],
       })
     case 'tools/call': {
       const name = msg.params?.name ?? ''
       if (docsTools.NAMES.includes(name)) return reply(docsTools.call(c, name, msg.params?.arguments ?? {}))
+      if (peersTools.NAMES.includes(name)) return reply(peersTools.call(c, name))
       return reply(call(c, own, name, msg.params?.arguments ?? {}))
     }
     default:

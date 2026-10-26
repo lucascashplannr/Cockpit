@@ -259,6 +259,12 @@ export const state = reactive({
   /** §6 — the erased ones the service still keeps, per project. */
   erasedMemories: {} as Record<string, ErasedMemory[]>,
   memoryChoice: {} as Record<string, string>,
+  /**
+   * §7 — scopes where the person chose to work Alongside the conversation
+   * already running there, by scope key. Said once, for the next start or
+   * resume on that scope; the conversation itself remembers it after that.
+   */
+  alongside: {} as Record<string, boolean>,
   /** §9 — each project's linked docs, and the proposals still waiting on someone. */
   docsInfo: {} as Record<string, DocsInfo | null>,
   docsPending: {} as Record<string, DocsProposalSet[]>,
@@ -1384,6 +1390,20 @@ export function sessionsForScope(scope: AgentScope | null): Conversation[] {
   return state.agents.filter((s) => scopeKey(s.scope) === key)
 }
 
+/**
+ * §7 — the person chose to share this scope's folders with the conversation
+ * already running there: the next start, or the next resume of a thread on
+ * it, goes Alongside. Pressed again, the choice is taken back.
+ */
+export function chooseAlongside(scope: AgentScope, on: boolean): void {
+  if (on) state.alongside[scopeKey(scope)] = true
+  else delete state.alongside[scopeKey(scope)]
+}
+
+export function alongsideChosen(scope: AgentScope | null): boolean {
+  return !!scope && !!state.alongside[scopeKey(scope)]
+}
+
 export async function startAgentIn(
   engine: string,
   scope: AgentScope,
@@ -1401,12 +1421,14 @@ export async function startAgentIn(
       options: engineOptions(key),
       attachments: wire(files),
       memory: memoryChoiceFor(scope),
+      alongside: !!state.alongside[scopeKey(scope)],
     }),
   )
   if (!res) return false
   // Said once, for the conversation it was said for: the next one on this
   // scope starts from the default again, unless a `/next` says otherwise.
   delete state.memoryChoice[scopeKey(scope)]
+  if (!('denied' in res)) delete state.alongside[scopeKey(scope)]
   if ('denied' in res) {
     // §7 — a refusal explains itself; a silent no is worse than a blocked run.
     toast('error', res.reason)
@@ -1425,6 +1447,8 @@ export async function startAgentIn(
   saveComposer()
   // The thread that was just opened is the one to land in, and the panel must
   // still be on it after a detour through three other projects (§6).
+  // §7 — the "New conversation" tab it was asked in has become its tab.
+  delete threads.newTab[scopeKey(scope)]
   pinThread(scope, res.sessionId)
   // §4 — say that the anchor exists, or capturing it was pointless.
   toast(
@@ -1476,6 +1500,21 @@ interface ThreadMemory {
   /** scopeKey → showing an empty composer here rather than any thread. */
   fresh: Record<string, true>
   /**
+   * §7 — scopeKey → two threads shown side by side, left then right. The one
+   * of the two that is `pinned` is the active one: it has the composer.
+   */
+  pair: Record<string, [string, string]>
+  /**
+   * §7 — the tab bar. session id → when it was opened as a tab (its place in
+   * the bar), and → when its tab was closed. A running conversation, or one
+   * that needs you, has a tab without being opened; closing it hides it until
+   * it has something new to say.
+   */
+  tabAt: Record<string, number>
+  closedAt: Record<string, number>
+  /** scopeKey → a "New conversation" tab is open here, used or not yet. */
+  newTab: Record<string, true>
+  /**
    * When this window first learned to track any of the above. Every
    * conversation that ended before it counts as read — otherwise switching to
    * a build that has this would light up every project in the rail at once
@@ -1487,7 +1526,7 @@ interface ThreadMemory {
 export const threads = reactive<ThreadMemory>(readThreads())
 
 function readThreads(): ThreadMemory {
-  const empty: ThreadMemory = { pinned: {}, read: {}, unread: {}, fresh: {}, since: Date.now() }
+  const empty: ThreadMemory = { pinned: {}, read: {}, unread: {}, fresh: {}, pair: {}, tabAt: {}, closedAt: {}, newTab: {}, since: Date.now() }
   try {
     const raw = JSON.parse(localStorage.getItem(THREADS_KEY) ?? 'null') as Partial<ThreadMemory> | null
     if (!raw || typeof raw !== 'object') return empty
@@ -1496,6 +1535,10 @@ function readThreads(): ThreadMemory {
       read: raw.read ?? {},
       unread: raw.unread ?? {},
       fresh: raw.fresh ?? {},
+      pair: raw.pair ?? {},
+      tabAt: raw.tabAt ?? {},
+      closedAt: raw.closedAt ?? {},
+      newTab: raw.newTab ?? {},
       since: typeof raw.since === 'number' ? raw.since : empty.since,
     }
   } catch {
@@ -2156,6 +2199,13 @@ export function openThreadFor(scope: AgentScope | null): Conversation | null {
 
 /** Showing one out of the history. Whatever was showing simply stops being. */
 export function pinThread(scope: AgentScope, sessionId: string): void {
+  // §7 — whatever is opened gets a tab, in the place it already had if it was
+  // showing there by itself.
+  if (!(sessionId in threads.tabAt)) {
+    const c = state.agents.find((x) => x.id === sessionId)
+    threads.tabAt[sessionId] = c && inPlay(c) && !tabClosed(c) ? c.startedAt : Date.now()
+  }
+  delete threads.closedAt[sessionId]
   threads.pinned[scopeKey(scope)] = sessionId
   // Opening a conversation is the opposite of composing a new one.
   delete threads.fresh[scopeKey(scope)]
@@ -2176,8 +2226,212 @@ export function pinThread(scope: AgentScope, sessionId: string): void {
  * many threads have been opened on the way.
  */
 export function startFresh(scope: AgentScope): void {
+  // §7 — a new tab goes next to the ones already open, never instead of them.
+  // What was on screen keeps its tab even when it only had one for being on
+  // screen (shown because nothing was ever pinned here, and finished).
+  if (!threads.fresh[scopeKey(scope)]) {
+    const open = openThreadFor(scope)
+    if (open && !(open.id in threads.tabAt) && !tabClosed(open)) threads.tabAt[open.id] = open.startedAt
+  }
   threads.fresh[scopeKey(scope)] = true
+  threads.newTab[scopeKey(scope)] = true
+  // An empty box is one thing on screen, never half of a pair.
+  delete threads.pair[scopeKey(scope)]
   saveThreads()
+}
+
+/* ── several conversations on one place (§7, Alongside) ──────────────────
+ *
+ * With conversations working alongside each other, "the one on screen and
+ * the rest behind History" hides exactly the one that needs you. Three ways
+ * of showing them are on a bench until one is chosen:
+ *
+ *   strip — the running ones as a row over the thread, one click apart; a
+ *           ⌘-click puts a second one beside the first (side by side);
+ *   list  — the running ones hang under their repository or topic in the list;
+ *   both  — the two together.
+ *
+ * `today` is the window as it was, for comparison.
+ */
+export type ThreadBench = 'today' | 'strip' | 'list' | 'both'
+export const THREAD_BENCHES: { id: ThreadBench; label: string }[] = [
+  { id: 'today', label: 'Today' },
+  { id: 'strip', label: 'A+B Strip' },
+  { id: 'list', label: 'C List' },
+  { id: 'both', label: 'All' },
+]
+const BENCH_KEY = 'cockpit.threadBench'
+function readBench(): ThreadBench {
+  try {
+    const v = localStorage.getItem(BENCH_KEY)
+    if (v && THREAD_BENCHES.some((b) => b.id === v)) return v as ThreadBench
+  } catch {
+    /* a window without storage starts on everything */
+  }
+  return 'both'
+}
+export const threadBench = ref<ThreadBench>(readBench())
+export function setThreadBench(b: ThreadBench): void {
+  threadBench.value = b
+  try {
+    localStorage.setItem(BENCH_KEY, b)
+  } catch {
+    /* kept for this window only */
+  }
+}
+export const benchStrip = computed(() => threadBench.value === 'strip' || threadBench.value === 'both')
+export const benchList = computed(() => threadBench.value === 'list' || threadBench.value === 'both')
+
+/** Worth a place outside History: running, asking for you, or on screen. */
+function inPlay(c: Conversation): boolean {
+  return c.hiddenAt === null && (isLive(c) || attentionOf(c) !== 'none')
+}
+
+/** Its tab was closed, and nothing has happened in it since. */
+function tabClosed(c: Conversation): boolean {
+  const at = threads.closedAt[c.id]
+  return at !== undefined && at >= lastActivityAt(c)
+}
+
+/**
+ * §7 — the tab bar: the conversations opened here, every one running or
+ * waiting for you that was not closed since, and whatever is on screen. In the
+ * order they got their tab, so a tab keeps its place as others come and go.
+ */
+export function stripFor(scope: AgentScope | null): Conversation[] {
+  if (!scope) return []
+  const open = threads.fresh[scopeKey(scope)] ? null : openThreadFor(scope)
+  const pair: string[] = threads.pair[scopeKey(scope)] ?? []
+  return sessionsForScope(scope)
+    .filter(
+      (c) =>
+        c.hiddenAt === null &&
+        (c.id in threads.tabAt || (inPlay(c) && !tabClosed(c)) || c.id === open?.id || pair.includes(c.id)),
+    )
+    .sort((a, b) => (threads.tabAt[a.id] ?? a.startedAt) - (threads.tabAt[b.id] ?? b.startedAt))
+}
+
+/**
+ * A tab closed. The conversation stays in History, and keeps running if it
+ * was; the one beside it takes the screen, or an empty composer when it was
+ * the last.
+ */
+export function closeTab(scope: AgentScope, id: string): void {
+  const key = scopeKey(scope)
+  const list = stripFor(scope)
+  const at = list.findIndex((c) => c.id === id)
+  const wasOpen = !threads.fresh[key] && openThreadFor(scope)?.id === id
+  const pair = threads.pair[key]
+  if (pair?.includes(id)) delete threads.pair[key]
+  delete threads.tabAt[id]
+  threads.closedAt[id] = Date.now()
+  if (wasOpen) {
+    const next = list[at + 1] ?? list[at - 1]
+    if (pair?.includes(id)) pinThread(scope, pair.find((x) => x !== id)!)
+    else if (next) pinThread(scope, next.id)
+    else startFresh(scope)
+  }
+  saveThreads()
+}
+
+/** The "New conversation" tab is open on this scope — on screen or not. */
+export function hasNewTab(scope: AgentScope | null): boolean {
+  return !!scope && (!!threads.newTab[scopeKey(scope)] || !!threads.fresh[scopeKey(scope)])
+}
+
+/** The "New conversation" tab, closed: back to the last tab if it was on screen. */
+export function closeFresh(scope: AgentScope): void {
+  const key = scopeKey(scope)
+  delete threads.newTab[key]
+  if (threads.fresh[key]) {
+    const list = stripFor(scope)
+    const last = list[list.length - 1]
+    if (last) pinThread(scope, last.id)
+  }
+  saveThreads()
+}
+
+/** The running conversations started on one row of the list, for the list's own sub-rows. */
+export function inPlayOn(scope: AgentScope): Conversation[] {
+  return sessionsForScope(scope).filter(inPlay).sort((a, b) => a.startedAt - b.startedAt)
+}
+
+/** The two threads side by side on this scope, left then right — or none. */
+export function splitFor(scope: AgentScope | null): [Conversation, Conversation] | null {
+  if (!scope || !benchStrip.value) return null
+  const pair = threads.pair[scopeKey(scope)]
+  const open = openThreadFor(scope)
+  if (!pair || !open || !pair.includes(open.id)) return null
+  const all = sessionsForScope(scope)
+  const a = all.find((c) => c.id === pair[0])
+  const b = all.find((c) => c.id === pair[1])
+  if (!a || !b) return null
+  // In the order of their tabs, so the left pane is the left tab.
+  const at = (c: Conversation) => threads.tabAt[c.id] ?? c.startedAt
+  return at(a) <= at(b) ? [a, b] : [b, a]
+}
+
+/**
+ * A pill pressed. A plain click shows that conversation — inside a pair it
+ * only moves the composer to it, outside it takes the active side's place.
+ * A ⌘-click puts it beside the one on screen, or, pressed on the one already
+ * beside, goes back to one.
+ */
+export function pickThread(scope: AgentScope, id: string, beside = false): void {
+  const key = scopeKey(scope)
+  const open = openThreadFor(scope)
+  const pair = splitFor(scope) ? threads.pair[key] : undefined
+  if (beside) {
+    if (!open || open.id === id) {
+      if (pair) delete threads.pair[key]
+      saveThreads()
+      return
+    }
+    if (pair?.includes(id)) {
+      delete threads.pair[key]
+      saveThreads()
+      return
+    }
+    threads.pair[key] = [open.id, id]
+    pinThread(scope, id)
+    return
+  }
+  if (pair && open && !pair.includes(id)) threads.pair[key] = pair.map((x) => (x === open.id ? id : x)) as [string, string]
+  pinThread(scope, id)
+}
+
+/**
+ * Any conversation on this scope beside the one on screen — running or long
+ * finished, from History. Already one of the pair, it just takes the
+ * composer; with a pair open, it replaces the half that does not have it.
+ */
+export function openBeside(scope: AgentScope, id: string): void {
+  const key = scopeKey(scope)
+  const open = openThreadFor(scope)
+  if (!open || open.id === id) return
+  const pair = splitFor(scope) ? threads.pair[key] : undefined
+  if (pair?.includes(id)) {
+    pinThread(scope, id)
+    return
+  }
+  threads.pair[key] = pair ? (pair.map((x) => (x === open.id ? x : id)) as [string, string]) : [open.id, id]
+  pinThread(scope, id)
+}
+
+export function closeSplit(scope: AgentScope): void {
+  delete threads.pair[scopeKey(scope)]
+  saveThreads()
+}
+
+/** ⌘⇧[ and ⌘⇧] — the next conversation along the strip, round the end. */
+export function stepThread(by: 1 | -1): void {
+  const scope = activeAgentScope.value
+  if (!scope || !benchStrip.value) return
+  const list = stripFor(scope)
+  if (list.length < 2) return
+  const at = list.findIndex((c) => c.id === openThreadFor(scope)?.id)
+  const next = list[(at + by + list.length) % list.length]
+  if (next) pickThread(scope, next.id)
 }
 
 /** Aimed at the scope *and* on an empty composer — the menu's "New conversation". */
@@ -6374,12 +6628,15 @@ export async function resumeSession(
   prompt: string,
   files: DraftFile[] = [],
 ): Promise<boolean> {
+  const c = state.agents.find((x) => x.id === sessionId)
+  const together = !!c && !!state.alongside[scopeKey(c.scope)]
   const res = await guard(() =>
     client.call('agent.resume', {
       sessionId,
       prompt,
       options: engineOptions(draftKey(null, sessionId)),
       attachments: wire(files),
+      alongside: together,
     }),
   )
   if (!res) return false
@@ -6387,6 +6644,7 @@ export async function resumeSession(
     toast('error', res.reason)
     return false
   }
+  if (together && c) delete state.alongside[scopeKey(c.scope)]
   toast('info', 'resumed', { icon: 'play' })
   return true
 }

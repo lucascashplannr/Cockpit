@@ -781,6 +781,7 @@ const handlers: Record<string, Handler> = {
     options?: agents.EngineOptions
     attachments?: AttachmentInput[]
     memory?: string
+    alongside?: boolean
   }) => {
     // §7 — the scope says what this is for. A caller that only knows where it
     // is standing may still pass workspaces, and that reads as a workspace
@@ -830,6 +831,7 @@ const handlers: Record<string, Handler> = {
       // §6 — as chosen in the composer; a topic's own memory, or a new one,
       // when nothing was said.
       memory: p.memory ?? (r.topicId ? topicMemoryId(r.topicId) : MEMORY_NEW),
+      alongside: !!p.alongside,
     })
     pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints }
@@ -839,6 +841,7 @@ const handlers: Record<string, Handler> = {
     prompt: string
     options?: agents.EngineOptions
     attachments?: AttachmentInput[]
+    alongside?: boolean
   }) => {
     const prev = agents.get(p.sessionId)
     if (!prev) throw new Error('unknown session: ' + p.sessionId)
@@ -853,6 +856,7 @@ const handlers: Record<string, Handler> = {
       allowFor(registry.getWorkspace(prev.workspaceIds[0] ?? '')?.projectId),
       p.options,
       p.attachments,
+      !!p.alongside,
     )
     pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints: [] }
@@ -1080,6 +1084,7 @@ const handlers: Record<string, Handler> = {
       p.sessionId,
       p.turnId,
       (id) => registry.getWorkspace(id)?.name ?? id,
+      agents.undoLimit(p.sessionId, p.turnId, false),
     ),
   /**
    * §16 — a turn undone, files and conversation, or brought back.

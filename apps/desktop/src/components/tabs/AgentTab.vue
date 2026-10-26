@@ -22,11 +22,11 @@ import DocsOfferLine from '../docs/DocsOfferLine.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, activeDraftKey, agentDraft, agentFiles, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
+  activeAgentScope, activeDraftKey, agentDraft, agentFiles, alongsideChosen, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, forgetMemoryChoice, memoryLabel, renameConversation, restoreConversation,
-  threadScrollOf, toast, transcriptOf, type ThreadScroll,
+  threadScrollOf, toast, transcriptOf, pickThread, type ThreadScroll,
 } from '../../core/store.js'
 import {
   COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, commandOff, isDocument, isHandoff, isMemorize,
@@ -47,7 +47,25 @@ import { usePaced } from '../../core/reveal.js'
  * than neighbours of it: they open over it and close back to it.
  */
 
-const props = defineProps<{ workspace: Workspace }>()
+const props = defineProps<{
+  workspace: Workspace
+  /**
+   * §7 — side by side: the thread this pane shows, rather than whichever is
+   * open on the scope. Absent, it is the one open thread, as it always was.
+   */
+  threadId?: string
+  /**
+   * The other half of a pair. It shows its thread and can answer a question
+   * the agent asked, but the composer belongs to the active half: a click
+   * anywhere in here makes this one active.
+   */
+  passive?: boolean
+  /**
+   * The tab bar above names this thread, says its state and renames it: the
+   * thread's own bar would say all of it a second time.
+   */
+  bare?: boolean
+}>()
 
 const engines = ref<{ id: string; available: boolean; bin: string; models?: string[] }[]>([])
 const engine = ref('claude')
@@ -104,12 +122,20 @@ const sources = computed(() =>
  * it makes no sense. It is told apart by the session the lease belongs to.
  */
 const blocked = computed(() =>
-  (preview.value?.blocked ?? []).filter((b) => b.sessionId !== selected.value?.id),
+  (preview.value?.blocked ?? [])
+    .filter((b) => b.sessionId !== selected.value?.id)
+    // §7 — Alongside: a running conversation's lock is not in the way once
+    // the person chose to share it, or once this thread already shares it.
+    .filter((b) => !(b.shareable && (alongsideChosen(scope.value) || !!selected.value?.alongside))),
 )
 const paths = computed(() => preview.value?.paths ?? [])
 /** Said on the send button, which is otherwise disabled without a word. */
 const lockedWhy = computed(() =>
-  blocked.value.length ? 'Locked — the lock in the bar above says by what' : undefined,
+  !blocked.value.length
+    ? undefined
+    : blocked.value.every((b) => b.shareable)
+      ? 'Locked by another conversation — the lock in the bar above can share it'
+      : 'Locked — the lock in the bar above says by what',
 )
 
 /**
@@ -118,7 +144,16 @@ const lockedWhy = computed(() =>
  * panel to its empty composer while the work was still running. It lives in
  * the store now, and it is remembered.
  */
-const selected = computed(() => openThreadFor(scope.value))
+const selected = computed(() =>
+  props.threadId
+    ? (sessionsForScope(scope.value).find((c) => c.id === props.threadId) ?? openThreadFor(scope.value))
+    : openThreadFor(scope.value),
+)
+/** A passive pane's own unsent words, shown in its stand-in box. */
+const passiveDraft = computed(() => (selected.value ? state.drafts['thread:' + selected.value.id] ?? '' : ''))
+function activate(): void {
+  if (props.passive && scope.value && selected.value) pickThread(scope.value, selected.value.id)
+}
 
 /* ── the name, typed over ────────────────────────────────────────────────
  *
@@ -1316,7 +1351,8 @@ function ago(ts: number): string {
 <template>
   <div
     class="agent"
-    :class="{ over }"
+    :class="{ over, passive }"
+    @mousedown.capture="activate"
     @dragenter="onDragEnter"
     @dragover.prevent
     @dragleave="onDragLeave"
@@ -1400,7 +1436,7 @@ function ago(ts: number): string {
            below is a centred column with air on both sides now, and a bar that
            lives in that column would either be as narrow as the text or have
            to fight its way back out with negative margins. -->
-      <div class="tbar">
+      <div v-if="!bare" class="tbar">
         <!-- No dot here: the word beside the title says the state, and the
              dot said it again. The dot stays where there are many rows and no
              room for words — the history list. -->
@@ -1821,7 +1857,11 @@ function ago(ts: number): string {
         />
         <PermissionAsk v-else-if="selected && pending.length" :session-id="selected.id" :requests="pending" />
 
+        <button v-if="passive" class="standin" :title="'Write in ' + selected.title" @click="activate">
+          {{ passiveDraft || 'Ask a follow-up…' }}
+        </button>
         <Composer
+          v-else
           ref="composer"
           :mode="queueing ? 'queue' : continuing ? 'continue' : 'start'"
           :disabled="!canSend"
@@ -1984,6 +2024,26 @@ function ago(ts: number): string {
   margin-right: auto;
 }
 .agent { --measure: 780px; --pad: 20px; }
+/* §7 — side by side: the half without the composer. Its bar is not the one
+   the column's instruments hang from, and its box only says what was typed. */
+.agent.passive .tbar { anchor-name: none; }
+.agent.passive .thread { opacity: 0.86; }
+.standin {
+  display: block;
+  width: 100%;
+  min-height: 46px;
+  padding: 12px 14px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-input);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.standin:hover { border-color: var(--line-strong); color: var(--text-muted); }
 
 .tbar {
   anchor-name: --convtop;

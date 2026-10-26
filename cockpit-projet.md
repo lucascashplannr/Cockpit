@@ -47,7 +47,7 @@ La formule qui tranche les arbitrages : **le cockpit supprime la navigation, pas
 3. **Tout est un événement.** Un journal unique dont dérivent l'affichage, les logs, les automations et l'historique. Structurant, très difficile à rajouter après coup.
 4. **On sonde, on ne se souvient pas.** Rien de ce que Git, Docker ou le système savent déjà n'est stocké. Sinon la première suppression manuelle rend tout l'affichage mensonger.
 5. **Le cockpit lit l'organisation, il ne la dicte pas.** Chaque projet déclare sa stratégie ; le cockpit s'adapte.
-6. **Une seule action à la fois sur un même sous-arbre.** Verrouillage par chemin, pas par topic (§7).
+6. **Une seule action à la fois sur un même sous-arbre — sauf accord explicite.** Verrouillage par chemin, pas par topic (§7). Deux conversations peuvent travailler *Alongside* si la personne le choisit ; chacune sait alors que l'autre existe, et Undo ne reprend que ses propres fichiers.
 7. **Toute opération affiche son plan avant de s'exécuter** et laisse une trace annulable.
 8. **Rien ne se décide à la place du développeur.** Pas de merge auto, pas de push auto, pas de commit d'agent sans revue.
 9. **Absent = invisible, jamais grisé.** Une capacité non configurée ne laisse aucune trace dans l'interface.
@@ -140,6 +140,7 @@ vocabulaire à réapprendre à chaque écran.
 | ce que l'agent a le droit de toucher | **Scope** | — |
 | les serveurs de dev | **Servers** | runtime |
 | la revendication exclusive sur des chemins | **Locked** | lease, leased |
+| deux conversations qui partagent un dossier et se savent l'une l'autre | **Alongside** | shared, parallel, concurrent |
 | une branche où Cockpit refuse le commit, et le push de ce qui n'est pas arrivé par Send to | **Protected** | locked, locked branch |
 | le démon permanent | **the service** | core, daemon |
 | un enregistrement du fil d'un moteur | **Transcript** | session file |
@@ -248,6 +249,18 @@ Une session d'agent = **une liste de chemins** + un moteur + un mode + un bail. 
 Une session prend un **bail** sur un ensemble de sous-arbres. Le cockpit refuse toute session dont la portée chevauche un bail actif. Un agent projet et un agent repo sur le même sujet ne peuvent pas coexister — ils s'écraseraient, et la corruption serait silencieuse.
 
 Le verrou porte sur des **chemins**, jamais sur des topics : ça fonctionne identiquement en `full` structuré et en `none` yolo.
+
+### Alongside — partager un dossier, sur demande
+
+Exclusif par défaut. Quand la personne le choisit (le verrou de la barre propose *Work alongside*), une seconde conversation démarre dans le même dossier : son bail est **partagé**, et le bail exclusif de la conversation déjà en cours le devient aussi. Un bail sans conversation vivante derrière lui ne se partage jamais. Une conversation qui a travaillé Alongside le reste quand elle est reprise.
+
+Ce que le partage exige, et qui est livré avec lui :
+
+- **Undo par fichier.** Seul dans un dossier, Undo remet tout l'arbre (y compris ce que Bash a changé). Dès qu'une autre conversation y a écrit depuis le tour, Undo ne remet que les fichiers de *cette* conversation, moins ceux qu'un autre a touchés depuis — et dit lesquels il a laissés.
+- **Attribution honnête.** Un changement vu par le watcher sous deux conversations vivantes n'est attribué à aucune des deux ; les appels Edit/Write nomment toujours la leur.
+- **Se savoir.** L'outil `mcp__cockpit__peers` liste les autres conversations du dossier (titre, état, fichiers changés, dernier message), et le début d'un tour le dit quand cet ensemble a changé.
+
+Pas encore : messages entre conversations, revendication de fichiers avant écriture, Diff et commit par conversation.
 
 ### Contexte pour l'agent projet
 

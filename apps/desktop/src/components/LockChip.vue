@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Conversation, LeaseInfo, Workspace } from '@cockpit/shared'
-import { ArrowRight, Lock, LockOpen } from '@lucide/vue'
+import { ArrowRight, Check, Lock, LockOpen, Users } from '@lucide/vue'
 import {
-  activeAgentScope, client, guard, isBusy, isLive, openConversation, openThreadFor, state,
+  activeAgentScope, alongsideChosen, chooseAlongside, client, guard, isBusy, isLive, openConversation, openThreadFor, state,
 } from '../core/store.js'
 
 /**
@@ -17,6 +17,10 @@ import {
  *
  * A glyph now, and the sentence behind it: which conversation, since when,
  * what it stops and what it does not, and the one act that applies.
+ *
+ * §7 — Alongside: a running conversation's lock can be shared, and the second
+ * conversation then works in the same folder beside it. Chosen here, where the
+ * lock is explained; the glyph becomes two people once nothing is in the way.
  */
 
 const props = defineProps<{ workspaces: Workspace[] }>()
@@ -36,16 +40,17 @@ interface Held {
 const locks = computed<Held[]>(() => {
   const byId = new Map<string, Held>()
   for (const w of props.workspaces) {
-    const lease = w.lease
-    if (!lease) continue
-    const seen = byId.get(lease.id)
-    if (seen) seen.names.push(w.name)
-    else {
-      byId.set(lease.id, {
-        lease,
-        names: [w.name],
-        by: state.agents.find((c) => c.leaseId === lease.id && isLive(c)) ?? null,
-      })
+    // Every lock, not the first: Alongside, one folder carries one per conversation.
+    for (const lease of w.leases ?? (w.lease ? [w.lease] : [])) {
+      const seen = byId.get(lease.id)
+      if (seen) seen.names.push(w.name)
+      else {
+        byId.set(lease.id, {
+          lease,
+          names: [w.name],
+          by: state.agents.find((c) => c.leaseId === lease.id && isLive(c)) ?? null,
+        })
+      }
     }
   }
   return [...byId.values()]
@@ -54,11 +59,25 @@ const locks = computed<Held[]>(() => {
 /** The thread on screen holds a lock of its own, and that one is not news. */
 const current = computed(() => openThreadFor(activeAgentScope.value))
 const mine = (l: Held) => !!l.by && l.by.id === current.value?.id
-const inTheWay = computed(() => locks.value.some((l) => !mine(l)))
+/** The person chose Alongside for the scope on screen: the next message shares the folder. */
+const chosen = computed(() => alongsideChosen(activeAgentScope.value))
+/** This lock asks nothing of the conversation on screen: its own, shared, or about to be. */
+const together = (l: Held) =>
+  mine(l) || (!!l.by && (!!l.lease.shared || chosen.value || !!current.value?.alongside))
+const inTheWay = computed(() => locks.value.some((l) => !together(l)))
+/** Every lock here is shared, or is about to be: two people, not a padlock. */
+const sharing = computed(() => locks.value.length > 0 && locks.value.every((l) => !!l.by && (l.lease.shared || together(l))) && locks.value.some((l) => !mine(l)))
+
+/** What sharing means is said once, under the first lock it applies to. */
+const sharesSaid = (l: Held) => !!l.by && (!!l.lease.shared || (together(l) && !mine(l)))
+const explainedId = computed(() => locks.value.find(sharesSaid)?.lease.id ?? null)
 
 function heading(l: Held): string {
   if (!l.by) return 'Locked, with nothing running'
-  return mine(l) ? 'Locked by this conversation' : 'Locked by another conversation'
+  if (mine(l)) return l.lease.shared ? 'This conversation, alongside' : 'Locked by this conversation'
+  if (l.lease.shared) return 'Alongside — another conversation'
+  if (together(l)) return 'Shared from your next message'
+  return 'Locked by another conversation'
 }
 
 const hint = computed(() => {
@@ -95,6 +114,11 @@ function show(c: Conversation) {
   openConversation(c)
 }
 
+function alongside() {
+  const s = activeAgentScope.value
+  if (s) chooseAlongside(s, !chosen.value)
+}
+
 /**
  * Offered only with no conversation behind the lock, which is the one case
  * where clearing it cannot interrupt work.
@@ -129,18 +153,21 @@ onBeforeUnmount(() => {
     <button
       class="lkb"
       :class="{ on: open, warn: inTheWay }"
-      :title="open ? undefined : hint"
-      aria-label="Locked"
+      :title="open ? undefined : sharing ? 'Working alongside — what this means' : hint"
+      :aria-label="sharing ? 'Alongside' : 'Locked'"
       @click="toggle"
     >
-      <Lock class="sm" />
+      <Users v-if="sharing" class="sm" />
+      <Lock v-else class="sm" />
     </button>
 
     <div v-if="open" class="menu lkp">
       <template v-for="l in locks" :key="l.lease.id">
         <span class="rule" />
         <div class="lkc">
-          <p class="lkh" :class="{ warn: !mine(l) }"><Lock class="sm" />{{ heading(l) }}</p>
+          <p class="lkh" :class="{ warn: !together(l) }">
+            <Users v-if="l.lease.shared || (l.by && together(l) && !mine(l))" class="sm" /><Lock v-else class="sm" />{{ heading(l) }}
+          </p>
 
           <!-- Which one, in the words it was started with. -->
           <p v-if="l.by" class="lkq" :title="l.by.title">“{{ l.by.title }}”</p>
@@ -148,9 +175,15 @@ onBeforeUnmount(() => {
             <template v-if="l.by">{{ isBusy(l.by) ? 'working' : 'open' }} · </template>locked {{ ago(l.lease.acquiredAt) }}
           </p>
 
-          <p v-if="l.by" class="lkx">
-            Two agents never share a folder, so no other conversation can start in
-            {{ names(l.names) }} until {{ mine(l) ? 'this' : 'that' }} one ends or has sat idle for a few minutes.
+          <p v-if="sharesSaid(l)" class="lkx" :hidden="l.lease.id !== explainedId">
+            Sharing {{ names(l.names) }}. Each agent is told what the other changed, and Undo puts back only its own files.
+          </p>
+          <p v-else-if="l.by && !mine(l)" class="lkx">
+            No other conversation can start in {{ names(l.names) }} until that one ends, unless it works alongside.
+            It does not stop you — edit, commit and push as usual.
+          </p>
+          <p v-else-if="l.by" class="lkx">
+            No other conversation can start in {{ names(l.names) }} until this one ends, unless it works alongside.
             It does not stop you — edit, commit and push as usual.
           </p>
           <p v-else class="lkx">
@@ -160,6 +193,9 @@ onBeforeUnmount(() => {
           </p>
         </div>
 
+        <button v-if="l.by && !mine(l) && !l.lease.shared && !current?.alongside" :class="{ picked: chosen }" @click="alongside">
+          <Check v-if="chosen" /><Users v-else />{{ chosen ? 'Your next message works alongside' : 'Work alongside' }}
+        </button>
         <button v-if="l.by && !mine(l)" @click="show(l.by)">
           <ArrowRight />Open that conversation
         </button>
@@ -226,4 +262,5 @@ onBeforeUnmount(() => {
 }
 .lkm { font-size: 11px; color: var(--text-dim); }
 .lkc .lkx { margin-top: 3px; font-size: var(--fs-xs); line-height: 1.5; color: var(--text-dim); }
+.lkp button.picked { color: var(--accent); }
 </style>

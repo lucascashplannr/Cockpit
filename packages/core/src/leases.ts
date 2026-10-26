@@ -8,6 +8,11 @@ import { append } from './journal.js'
  * §7 — "Une session prend un bail sur un ensemble de sous-arbres."
  * The lock is on PATHS, never on topics, so it behaves identically in a
  * structured C3 and in a C0 yolo on the main checkout.
+ *
+ * A lock is exclusive unless it is held Alongside (`shared`). Two shared locks
+ * may overlap; an exclusive one overlaps nothing. A shared request may turn an
+ * overlapping exclusive lock into a shared one, but only when the caller says
+ * that lock may be shared — a running conversation, never a leftover.
  */
 
 interface Row {
@@ -17,6 +22,7 @@ interface Row {
   acquired_at: number
   expires_at: number | null
   reason: string
+  shared?: number
 }
 
 function hydrate(r: Row): LeaseInfo {
@@ -27,6 +33,7 @@ function hydrate(r: Row): LeaseInfo {
     acquiredAt: r.acquired_at,
     expiresAt: r.expires_at,
     reason: r.reason,
+    shared: !!r.shared,
   }
 }
 
@@ -50,6 +57,8 @@ export interface AcquireResult {
   ok: boolean
   lease?: LeaseInfo
   conflict?: { lease: LeaseInfo; path: string }
+  /** The exclusive locks this request turned into shared ones. */
+  sharedWith?: string[]
 }
 
 /** Refuses any scope that overlaps a live lease. Silent corruption is the
@@ -59,12 +68,23 @@ export function acquire(opts: {
   paths: string[]
   reason: string
   ttlMs?: number | null
+  /** Alongside: overlaps other shared locks, and may share an exclusive one `share` allows. */
+  shared?: boolean
+  share?: (lease: LeaseInfo) => boolean
 }): AcquireResult {
   expireStale()
   const current = list()
+  // Only once every overlap has been judged: a request that is refused on its
+  // third path must not have shared the lock on its first.
+  const toShare = new Set<string>()
   for (const p of opts.paths) {
     for (const lease of current) {
       const hit = lease.paths.find((lp) => overlaps(p, lp))
+      if (hit && opts.shared && lease.shared) continue
+      if (hit && opts.shared && opts.share?.(lease)) {
+        toShare.add(lease.id)
+        continue
+      }
       if (hit) {
         append({
           type: 'lease.denied',
@@ -83,12 +103,24 @@ export function acquire(opts: {
     acquiredAt: Date.now(),
     expiresAt: opts.ttlMs ? Date.now() + opts.ttlMs : null,
     reason: opts.reason,
+    shared: !!opts.shared,
   }
-  getDb()
-    .prepare('INSERT INTO leases (id, holder, paths, acquired_at, expires_at, reason) VALUES (?,?,?,?,?,?)')
-    .run(lease.id, lease.holder, JSON.stringify(lease.paths), lease.acquiredAt, lease.expiresAt, lease.reason)
-  append({ type: 'lease.acquired', payload: { id: lease.id, paths: lease.paths, holder: lease.holder } })
-  return { ok: true, lease }
+  const db = getDb()
+  for (const id of toShare) db.prepare('UPDATE leases SET shared = 1 WHERE id = ?').run(id)
+  db.prepare('INSERT INTO leases (id, holder, paths, acquired_at, expires_at, reason, shared) VALUES (?,?,?,?,?,?,?)').run(
+    lease.id,
+    lease.holder,
+    JSON.stringify(lease.paths),
+    lease.acquiredAt,
+    lease.expiresAt,
+    lease.reason,
+    lease.shared ? 1 : 0,
+  )
+  append({
+    type: 'lease.acquired',
+    payload: { id: lease.id, paths: lease.paths, holder: lease.holder, shared: !!lease.shared, ...(toShare.size ? { sharedWith: [...toShare] } : {}) },
+  })
+  return { ok: true, lease, sharedWith: [...toShare] }
 }
 
 export function release(id: string): void {
@@ -98,7 +130,12 @@ export function release(id: string): void {
 }
 
 export function leaseCovering(path: string): LeaseInfo | null {
-  return list().find((l) => l.paths.some((lp) => overlaps(path, lp))) ?? null
+  return leasesCovering(path)[0] ?? null
+}
+
+/** Every lock on a path: more than one only Alongside. */
+export function leasesCovering(path: string): LeaseInfo[] {
+  return list().filter((l) => l.paths.some((lp) => overlaps(path, lp)))
 }
 
 /** §13 — the core must survive its own death; stale leases go at boot. */

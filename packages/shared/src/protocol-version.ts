@@ -107,8 +107,14 @@
  * 2.34 — `docs.signals`, `docs.draft`, `docs.dismissOffer`, `docs.dropFlag`: the
  * flags agents leave on pages and the offers made at Send and `/next`. An older
  * core offers nothing, and the band says nothing is waiting.
+ *
+ * 2.35 — Alongside: `alongside` on `agent.start` and `agent.resume`, shared
+ * locks (`LeaseInfo.shared`, `Workspace.leases`, `ScopeBlock.shareable`), and
+ * the `peers` tool. An older core ignores the flag and refuses the start on
+ * the lock, which reads as Alongside not working rather than as a service
+ * nobody restarted.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 34 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 35 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

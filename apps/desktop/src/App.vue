@@ -27,7 +27,7 @@ import Splitter from './components/Splitter.vue'
 import {
   LAYOUT_LIMITS, LIST_NARROW, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout, listWide,
   onProject, requestPlan, resetColumnWidth, resetPlaceWidth, saveLayout, savePlaceWidth, setColumnWidth, showsAgent, showsReview, shownReviewTool, stepAttachment,
-  stepView, toggleList,
+  stepThread, stepView, toggleList,
 } from './core/store.js'
 
 /**
@@ -170,6 +170,14 @@ function onKey(e: KeyboardEvent) {
   if (meta && e.altKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
     e.preventDefault()
     stepView(e.code === 'ArrowRight' ? 1 : -1)
+    return
+  }
+
+  // §7 — the next conversation along the strip. ⌘⇧[ and ⌘⇧] are how every
+  // tabbed window on a Mac walks its tabs; read by position for AZERTY.
+  if (meta && e.shiftKey && !e.altKey && (e.code === 'BracketLeft' || e.code === 'BracketRight')) {
+    e.preventDefault()
+    stepThread(e.code === 'BracketRight' ? 1 : -1)
     return
   }
 

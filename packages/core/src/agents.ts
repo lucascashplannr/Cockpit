@@ -1,16 +1,16 @@
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
-import { resolve } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, commandIn, newId } from '@cockpit/shared'
+import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, commandIn, conversationRef, newId } from '@cockpit/shared'
 import type {
   AgentAnswers, AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, MemorySource, PermissionMode,
   PermissionRequest, TurnUsage,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
-import { append, recordTouch } from './journal.js'
+import { append, recordTouch, touchedBy } from './journal.js'
 import { run, which } from './exec.js'
 import * as leases from './leases.js'
 import * as checkpoints from './checkpoints.js'
@@ -19,6 +19,7 @@ import { ranUnasked } from './unasked.js'
 import * as memory from './memory.js'
 import * as docsTools from './docsTools.js'
 import * as memoryTools from './memoryTools.js'
+import * as peersTools from './peersTools.js'
 import * as docs from './docs.js'
 import { getTopic, getWorkspace } from './registry.js'
 import { isInside } from './config.js'
@@ -365,9 +366,13 @@ const SHELL_RULES = [
   'inner command, then use its output in the next one. Pipes, &&, ; and redirection are all fine.',
 ].join(' ')
 
-/** The tools this process hosts for the conversation: its memory's, and its docs'. */
+/** The tools this process hosts for the conversation: its memory's, its docs', and who works beside it. */
 function cockpitTools(ctx: LaunchContext): string[] {
-  return [...(ctx.memory ? memoryTools.TOOL_NAMES : []), ...(ctx.docs ? docsTools.TOOL_NAMES : [])]
+  return [
+    ...(ctx.memory ? memoryTools.TOOL_NAMES : []),
+    ...(ctx.docs ? docsTools.TOOL_NAMES : []),
+    ...peersTools.TOOL_NAMES,
+  ]
 }
 
 /** Shared by start and resume, so the two cannot drift apart on permissions. */
@@ -963,6 +968,8 @@ interface Live {
    */
   memorySeen: string | null
   memoryOwn: Set<string>
+  /** §7 — which conversations it was last told were working beside it. See `peersNews`. */
+  peersSeen: string
   /** §16 — what the turn in flight has reported, until its row is written. */
   usage: NormalizedEvent['usage'] | null
   /** The window as the most recent call left it. See `contextTokens`. */
@@ -1056,12 +1063,13 @@ agentBus.setMaxListeners(50)
 function persist(s: Conversation): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, topic_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title, denials, memory)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, topic_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title, denials, memory, alongside)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET status=excluded.status, ended_at=excluded.ended_at,
          turns=excluded.turns, last_message=excluded.last_message,
          lease_id=excluded.lease_id, engine_session_id=excluded.engine_session_id,
-         prompt=excluded.prompt, denials=excluded.denials, memory=excluded.memory`,
+         prompt=excluded.prompt, denials=excluded.denials, memory=excluded.memory,
+         alongside=excluded.alongside`,
     )
     .run(
       s.id,
@@ -1084,6 +1092,7 @@ function persist(s: Conversation): void {
       s.title,
       JSON.stringify(s.denials),
       s.memory,
+      s.alongside ? 1 : 0,
     )
 }
 
@@ -1423,6 +1432,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     pending: pendingIn(String(r.id)),
     naming: namingIds.has(String(r.id)),
     hiddenAt: r.hidden_at == null ? null : Number(r.hidden_at),
+    alongside: !!r.alongside,
   }
 }
 
@@ -1550,6 +1560,11 @@ export interface StartAgentInput {
   attachments?: AttachmentInput[]
   /** §6 — `off`, `new`, or a memory's id. The caller decides the default. */
   memory: string
+  /**
+   * §7 — work Alongside whatever conversation is already running here rather
+   * than be refused by its lock. Chosen by the person, never by default.
+   */
+  alongside?: boolean
 }
 
 export type StartAgentResult = { sessionId: string } | { denied: true; reason: string }
@@ -1604,6 +1619,7 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     naming: false,
     usage: null,
     hiddenAt: null,
+    alongside: !!input.alongside,
   }
 
   // Marked before the row exists, so the window never gets a frame of the
@@ -1713,6 +1729,8 @@ export async function resumeAgent(
   allow?: string[],
   opts?: EngineOptions,
   incoming: AttachmentInput[] = [],
+  /** §7 — picked back up Alongside a conversation that started here meanwhile. */
+  alongside = false,
 ): Promise<StartAgentResult> {
   const prev = get(sessionId)
   if (!prev) return { denied: true, reason: 'unknown session: ' + sessionId }
@@ -1765,6 +1783,8 @@ export async function resumeAgent(
     denials: [],
     // Picked back up: a conversation someone is talking to again belongs in the list.
     hiddenAt: null,
+    // Once Alongside, always: the conversation it shared with may still be here.
+    alongside: !!prev.alongside || alongside,
   }
   restore(sessionId)
   // Every turn undone: nothing is left to resume, so the engine starts afresh
@@ -1844,20 +1864,38 @@ async function launch(
   // §7 — the lease is what makes two overlapping agents impossible. It is taken
   // on paths, so a topic-wide session and a repo session inside it collide
   // exactly as they should.
+  //
+  // Alongside, the lock is shared instead: it overlaps other shared locks, and
+  // a running conversation's exclusive lock becomes shared too — that
+  // conversation is now working alongside this one, and is told so on its
+  // next turn. A lock with no conversation behind it is never shared.
+  const holderOf = (leaseId: string): Live | undefined =>
+    [...live.values()].find((x) => x.session.leaseId === leaseId)
   const lease = leases.acquire({
     holder: 'agent:' + session.engine,
     paths: session.paths,
     reason: session.prompt.slice(0, 120),
     ttlMs: 6 * 3600_000,
+    shared: !!session.alongside,
+    share: (held) => !!holderOf(held.id),
   })
   if (!lease.ok || !lease.lease) {
+    const by = lease.conflict ? holderOf(lease.conflict.lease.id) : undefined
     return {
       denied: true,
-      reason:
-        'scope overlaps an active lease held by ' +
-        (lease.conflict?.lease.holder ?? 'another session') +
-        ' on ' +
-        (lease.conflict?.path ?? '?'),
+      reason: by
+        ? 'locked by the conversation “' + by.session.title.slice(0, 60) + '” — start this one Alongside to share the folder'
+        : 'scope overlaps an active lease held by ' +
+          (lease.conflict?.lease.holder ?? 'another session') +
+          ' on ' +
+          (lease.conflict?.path ?? '?'),
+    }
+  }
+  for (const id of lease.sharedWith ?? []) {
+    const other = holderOf(id)
+    if (other && !other.session.alongside) {
+      other.session.alongside = true
+      persist(other.session)
     }
   }
   session.leaseId = lease.lease.id
@@ -1900,7 +1938,15 @@ async function launch(
   // about the memory's rules; the preamble itself is for any engine.
   const home = memory.homeOf(session)
   const memorySeen = home ? memory.contentAt(home.file, home.kind) : null
-  const opening = [memory.preamble(home), docs.preambleBlock(docsInfo, !!spec.control?.mcp), preamble.trim()]
+  // §7 — who is already working here, said once at the start; what changes
+  // after is said at the top of the turn it changed before (`peersNews`).
+  const peersNow = session.alongside ? peersFor(session) : []
+  const opening = [
+    memory.preamble(home),
+    docs.preambleBlock(docsInfo, !!spec.control?.mcp),
+    preamble.trim(),
+    peersTools.news(peersNow).replace(/\n---\n\n\n$/, '').trim(),
+  ]
     .filter(Boolean)
     .join('\n\n')
   const segs = withUltracode(
@@ -1944,11 +1990,13 @@ async function launch(
     idle: null,
     memorySeen,
     memoryOwn: new Set(),
+    peersSeen: peersSignature(peersNow),
   }
   live.set(session.id, l)
 
   if (spec.streaming && spec.encodeTurn) {
-    if (spec.control) child.stdin?.write(spec.control.open(ctx.memory !== false || !!ctx.docs) + '\n')
+    // Always: the peers tool is hosted whatever the memory and docs say.
+    if (spec.control) child.stdin?.write(spec.control.open(true) + '\n')
     // The process serves the whole conversation, so its stdin stays open: it
     // is the channel every later turn arrives on.
     child.stdin?.write(spec.encodeTurn(withFiles, segs) + '\n')
@@ -2330,7 +2378,7 @@ async function flushQueue(l: Live): Promise<void> {
   agentBus.emit('changed')
   await checkpointTurn(l.session, turnId, prompt || attachments.summarise(files))
   const command = commandIn(prompt)?.command.run === 'engine'
-  const news = command ? '' : memoryNews(l)
+  const news = command ? '' : memoryNews(l) + peersNews(l)
   const segs = withUltracode(l.spec, attachments.turnSegments(news, prompt, files), ultracode && !command)
   l.child.stdin?.write(encode(attachments.flatten(segs), segs) + '\n')
   agentBus.emit('changed')
@@ -2361,6 +2409,85 @@ function memoryNews(l: Live): string {
     '',
     '',
   ].join('\n')
+}
+
+/**
+ * §7 — the other conversations working in this one's folders: every running
+ * one, and — for a conversation that works Alongside — those that worked
+ * alongside it in the last day and have since been let go. An idle process is
+ * released after five minutes; the agent that wrote half the files in a folder
+ * has not stopped mattering five minutes later.
+ */
+function peersFor(c: Conversation): peersTools.Peer[] {
+  const DAY = 24 * 3600_000
+  const seen = new Set<string>([c.id])
+  const others: Conversation[] = []
+  const overlaps = (x: Conversation) => c.paths.some((p) => covers(x, p))
+  for (const l of live.values()) {
+    if (seen.has(l.session.id) || !overlaps(l.session)) continue
+    seen.add(l.session.id)
+    others.push(l.session)
+  }
+  if (c.alongside) {
+    const rows = getDb()
+      .prepare(
+        'SELECT id FROM agent_sessions WHERE alongside = 1 AND hidden_at IS NULL AND COALESCE(ended_at, started_at) > ? ORDER BY started_at DESC LIMIT 20',
+      )
+      .all(Date.now() - DAY) as { id: string }[]
+    for (const r of rows) {
+      if (seen.has(r.id)) continue
+      const x = get(r.id)
+      if (!x || !overlaps(x)) continue
+      seen.add(x.id)
+      others.push(x)
+    }
+  }
+  const nameOf = (id: string) => {
+    const w = getWorkspace(id)
+    return w ? w.repoName || w.name : id
+  }
+  return others.map((x) => {
+    const sharedIds = x.workspaceIds.filter((id) => c.workspaceIds.includes(id))
+    const ids = sharedIds.length ? sharedIds : x.workspaceIds
+    const many = ids.length > 1
+    const files = [
+      ...new Set(
+        touchedBy(x.id)
+          .filter((t) => ids.includes(t.workspaceId))
+          .map((t) => (many ? nameOf(t.workspaceId) + '/' : '') + t.path),
+      ),
+    ]
+    const l = live.get(x.id)
+    return {
+      ref: conversationRef(x.id),
+      title: x.title || 'untitled',
+      status: l ? (l.busy ? ('working' as const) : ('open' as const)) : ('stopped' as const),
+      repositories: [...new Set(ids.map(nameOf))],
+      files,
+      lastMessage: x.lastMessage ? x.lastMessage.replace(/\s+/g, ' ').slice(0, 300) : null,
+    }
+  })
+}
+peersTools.provide(peersFor)
+
+function peersSignature(peers: peersTools.Peer[]): string {
+  return peers.map((p) => p.ref).sort().join(',')
+}
+
+/**
+ * §7 — who is working beside it, at the top of the next turn, but only when
+ * that set has changed since it was last told: a conversation that joined, or
+ * one that left. Said every turn, it would be a paragraph the agent learns to
+ * skip; said on change, it is news.
+ */
+function peersNews(l: Live): string {
+  if (!l.session.alongside) return ''
+  const peers = peersFor(l.session)
+  const sig = peersSignature(peers)
+  if (sig === l.peersSeen) return ''
+  l.peersSeen = sig
+  if (!peers.length) return ''
+  return peersTools.news(peers)
 }
 
 function relativeTo(root: string, p: string): string {
@@ -2600,10 +2727,18 @@ export async function undo(
   let files = 0
   let workspaces = 0
   let failures: string[] = []
+  let leftAlone: string[] = []
   if (checkpoints.has(sessionId, snapshot)) {
-    const r = await checkpoints.revert(sessionId, snapshot, redo ? 'redo of a turn' : 'undo of a turn')
-    if (!r.ok) return { ok: false, detail: r.detail }
-    ;({ files, workspaces, failures } = r)
+    const paths = checkpoints.pathsOf(sessionId, snapshot)
+    for (const p of paths) undoWriting.set(p, Infinity)
+    try {
+      const r = await checkpoints.revert(sessionId, snapshot, redo ? 'redo of a turn' : 'undo of a turn', undoLimit(sessionId, turnId, redo))
+      if (!r.ok) return { ok: false, detail: r.detail }
+      ;({ files, workspaces, failures, leftAlone } = r)
+    } finally {
+      // The watcher hears about a write a moment after it lands.
+      for (const p of paths) undoWriting.set(p, Date.now() + UNDO_ECHO_MS)
+    }
   }
 
   let turns = 0
@@ -2627,7 +2762,7 @@ export async function undo(
     // Which direction it went, and whether the conversation went with it.
     // The window draws a files-only undo as a line in the thread; one that
     // took turns away is drawn by the turns being gone.
-    payload: { turnId, redo, files, workspaces, failures, turns, conversation: t.forgettable },
+    payload: { turnId, redo, files, workspaces, failures, turns, conversation: t.forgettable, leftAlone },
   })
   agentBus.emit('changed')
 
@@ -2635,8 +2770,100 @@ export async function undo(
     ...(turns ? [turns + (turns === 1 ? ' turn' : ' turns')] : []),
     ...(files ? [files + (files === 1 ? ' file' : ' files')] : []),
   ]
-  const detail = (redo ? 'brought back' : 'undone') + (what.length ? ' — ' + what.join(', ') : '')
+  let detail = (redo ? 'brought back' : 'undone') + (what.length ? ' — ' + what.join(', ') : '')
+  if (leftAlone.length)
+    detail +=
+      ' — left ' + (leftAlone.length === 1 ? leftAlone[0] : leftAlone.length + ' files') +
+      ' as ' + (leftAlone.length === 1 ? 'it is' : 'they are') + ': another conversation here changed ' +
+      (leftAlone.length === 1 ? 'it' : 'them') + ' since'
   return { ok: true, detail: failures.length ? detail + ' — ' + failures.join('; ') : detail }
+}
+
+/**
+ * The folders an Undo is writing into right now, or until when its echo may
+ * still arrive. The watcher hears about a file a moment after it is written,
+ * and a revert's writes are nobody's edit.
+ */
+const undoWriting = new Map<string, number>()
+const UNDO_ECHO_MS = 3000
+
+export function writtenByUndo(file: string): boolean {
+  const now = Date.now()
+  for (const [root, until] of undoWriting) {
+    if (until < now) {
+      undoWriting.delete(root)
+      continue
+    }
+    if (file === root || file.startsWith(root + '/')) return true
+  }
+  return false
+}
+
+/**
+ * §16 — which files an Undo may put back, once a folder has been worked in by
+ * more than one conversation.
+ *
+ * Alone in a folder, a conversation's Undo puts back the whole tree as it
+ * stood before the turn — including files changed through Bash, which no tool
+ * call names. That is the default and it stays the default.
+ *
+ * Alongside another conversation, the same tree also holds that agent's work
+ * as it stood then, and putting it back would erase everything it wrote since.
+ * So the Undo narrows to the files this conversation is known to have changed
+ * since the turn, minus any that someone else — another agent, a person, or a
+ * change nobody can name — has touched since. What is left out is said.
+ *
+ * A redo is measured the same way: this conversation's files since the turn
+ * it is bringing back, minus whatever others touched since the undo.
+ */
+export function undoLimit(sessionId: string, turnId: string, redo: boolean): checkpoints.RevertLimit {
+  const cwdOf = new Map<string, string | null>()
+  const cwd = (id: string | null): string | null => {
+    if (!id) return null
+    if (!cwdOf.has(id)) cwdOf.set(id, get(id)?.paths[0] ?? null)
+    return cwdOf.get(id)!
+  }
+  return (cp) => {
+    const othersSince = cp.createdAt
+    const ownSince = redo ? (checkpoints.takenAt(sessionId, turnId, cp.workspaceId) ?? cp.createdAt) : cp.createdAt
+    const rows = getDb()
+      .prepare('SELECT path, actor, session_id AS sessionId, ts FROM touches WHERE workspace_id = ? AND ts >= ?')
+      .all(cp.workspaceId, Math.min(ownSince, othersSince)) as {
+      path: string
+      actor: string
+      sessionId: string | null
+      ts: number
+    }[]
+    const isMine = (r: (typeof rows)[number]) => r.actor === 'agent' && r.sessionId === sessionId
+    const shared =
+      rows.some((r) => r.ts >= othersSince && r.actor === 'agent' && r.sessionId !== sessionId) ||
+      liveSessions().some((c) => c.id !== sessionId && covers(c, cp.path))
+    if (!shared) return null
+
+    const wsPath = getWorkspace(cp.workspaceId)?.path ?? cp.path
+    // A touch is stored relative to the workspace (the watcher) or to the
+    // conversation's working directory (a tool call), and the row does not say
+    // which. Both readings are tried: one that names nothing that moved is
+    // harmless, because only files that moved are ever put back.
+    const under = (r: (typeof rows)[number]): string[] => {
+      const bases = isAbsolute(r.path) ? [''] : [wsPath, cwd(r.sessionId)].filter((b): b is string => !!b)
+      const out: string[] = []
+      for (const b of bases) {
+        const rel = relative(cp.path, b ? resolve(b, r.path) : r.path)
+        if (rel && !rel.startsWith('..') && !isAbsolute(rel)) out.push(rel)
+      }
+      return out
+    }
+    const own = new Set<string>()
+    const others = new Set<string>()
+    for (const r of rows) {
+      if (isMine(r)) {
+        if (r.ts >= ownSince) for (const p of under(r)) own.add(p)
+      } else if (r.ts >= othersSince) for (const p of under(r)) others.add(p)
+    }
+    for (const p of others) own.delete(p)
+    return own
+  }
 }
 
 /**

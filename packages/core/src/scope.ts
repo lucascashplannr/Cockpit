@@ -138,11 +138,13 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
     // develop, whatever `origin/HEAD` still points at.
     const base = registry.baseOverride(w.path) ?? (await defaultBranch(w.path))
     const onDefaultBranch = !!w.repo && !!branch && branch === base
-    const held = leases.leaseCovering(path)
+    // Every lock, not the first: Alongside, several conversations hold one
+    // each over the same folder, and the composer names them all.
+    const heldAll = leases.leasesCovering(path)
     // Its own session's lease is not a reason to say a new one cannot start —
     // but any other holder is, and start would refuse on exactly this.
-    const leasedBy = held ? held.holder : null
-    if (held) {
+    const leasedBy = heldAll[0]?.holder ?? null
+    for (const held of heldAll) {
       const seen = blocked.get(held.id)
       if (seen) seen.names.push(w.name)
       else
@@ -153,6 +155,10 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
           reason: held.reason,
           acquiredAt: held.acquiredAt,
           live: liveByLease.has(held.id),
+          // Only a running conversation's lock can be shared: a leftover is
+          // something to clear, and anything else is not ours to share.
+          shareable: liveByLease.has(held.id),
+          shared: !!held.shared,
         })
     }
     paths.push({

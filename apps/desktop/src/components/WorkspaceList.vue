@@ -6,9 +6,10 @@ import {
   ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, LoaderCircle, Plus,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
+import ThreadRows from './ThreadRows.vue'
 import ListToggle from './ListToggle.vue'
 import {
-  activeProject, activityFor, collapsedTopics, listWide, onProject, openAgentOn, openContextMenu,
+  THREAD_BENCHES, activeProject, activityFor, benchList, collapsedTopics, setThreadBench, threadBench, listWide, onProject, openAgentOn, openContextMenu,
   selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 
@@ -184,6 +185,8 @@ const ATTENTION_TEXT: Record<string, string> = {
     </header>
 
     <div ref="scroller" class="scroll">
+      <!-- §7 — bench C: the project's own running conversations, first. -->
+      <ThreadRows v-if="benchList && !narrow && activeProject" :scope="{ kind: 'project', projectId: activeProject.id }" class="projthreads" />
       <div v-if="!hasProjects" class="empty">
         <FolderPlus />
         <strong>No project yet</strong>
@@ -305,13 +308,16 @@ const ATTENTION_TEXT: Record<string, string> = {
             <span v-if="!narrow" class="section-label">not in a topic</span>
           </div>
 
-          <WorkspaceRow
-            v-for="w in (g.topicId && collapsedTopics[g.topicId] ? [] : g.workspaces)"
-            :key="w.id"
-            :workspace="w"
-            :compact="!!g.title"
-            :narrow="narrow"
-          />
+          <!-- §7 — bench C: a topic's own running conversations, under its header. -->
+          <ThreadRows v-if="benchList && !narrow && g.title && g.topicId" :scope="{ kind: 'topic', topicId: g.topicId }" />
+          <template v-for="w in (g.topicId && collapsedTopics[g.topicId] ? [] : g.workspaces)" :key="w.id">
+            <WorkspaceRow
+              :workspace="w"
+              :compact="!!g.title"
+              :narrow="narrow"
+            />
+            <ThreadRows v-if="benchList && !narrow" :scope="{ kind: 'workspace', workspaceId: w.id }" :deep="!!g.title" />
+          </template>
         </div>
         </template>
         <div v-if="opening && openingAt === groups.length" class="group topic opening" :title="'Creating ' + opening.name + '…'">
@@ -349,6 +355,16 @@ const ATTENTION_TEXT: Record<string, string> = {
         <Plus class="sm" />
         <span v-if="!narrow" class="lbl">New topic</span>
       </button>
+      <!-- §7 — temporary: the bench for showing several conversations at
+           once. Goes when one of them is chosen. -->
+      <div v-if="!narrow" class="bench" title="Try each way of showing conversations that run alongside">
+        <button
+          v-for="b in THREAD_BENCHES"
+          :key="b.id"
+          :class="{ on: threadBench === b.id }"
+          @click="setThreadBench(b.id)"
+        >{{ b.label }}</button>
+      </div>
     </footer>
   </section>
 </template>
@@ -408,6 +424,24 @@ const ATTENTION_TEXT: Record<string, string> = {
    row's box and the row's inset, a step dimmer because they are offers rather
    than places. */
 .foot { flex: none; padding: 4px 10px 10px; }
+.bench {
+  display: flex;
+  gap: 1px;
+  margin-top: 6px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+}
+.bench button {
+  flex: 1;
+  height: 22px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.bench button:hover { color: var(--text); }
+.bench button.on { background: var(--panel-raised); color: var(--text); box-shadow: var(--shadow-xs); }
 .add {
   display: flex;
   align-items: center;

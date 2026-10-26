@@ -281,6 +281,14 @@ function migrate(d: Db): void {
   // older core simply never reads, so no version bump.
   addColumn(d, 'agent_sessions', 'hidden_at', 'INTEGER')
 
+  // §7 — Alongside: conversations that agreed to share a folder. A lock held
+  // that way stops only a conversation that wants the folder to itself, and a
+  // conversation that once worked alongside takes its lock that way again
+  // when it is picked back up. Both default to the old behaviour, so an older
+  // core reading them sees exactly what it always did.
+  addColumn(d, 'agent_sessions', 'alongside', 'INTEGER NOT NULL DEFAULT 0')
+  addColumn(d, 'leases', 'shared', 'INTEGER NOT NULL DEFAULT 0')
+
   d.exec(`
     -- §6 — the conversation. Append-only: a resume adds a row, it never
     -- overwrites the question that opened the thread.
