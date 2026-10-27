@@ -469,9 +469,9 @@ function fresh(): void {
   border-bottom: 1px solid var(--line-soft);
   overflow: hidden;
 }
-.tabs { display: flex; align-items: center; gap: 2px; min-width: 0; }
-/* As a browser draws them: equal widths that give way together, the one on
-   screen raised, the others only text until the cursor is on them. */
+.tabs { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* Equal widths that give way together. Every tab is a box of its own — the
+   one on screen raised and lit, the others the same box at rest. */
 .tab {
   position: relative;
   flex: 0 1 184px;
@@ -489,24 +489,14 @@ function fresh(): void {
   user-select: none;
   transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
-.tab:hover { background: var(--hover); color: var(--text-muted); }
+.tab {
+  background: color-mix(in srgb, var(--panel-raised) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+}
+.tab:hover { background: color-mix(in srgb, var(--panel-raised) 80%, transparent); color: var(--text-muted); }
 .tab.on { background: var(--panel-raised); color: var(--text); box-shadow: var(--shadow-xs), inset 0 0 0 1px var(--line); }
 .tab.paired:not(.on) { color: var(--text-muted); }
-/* The edges between tabs, as a browser draws them: a hairline between two
-   resting tabs, gone beside the one on screen or under the cursor. */
-.tab + .tab::before, .tabs + .add::before {
-  content: '';
-  position: absolute;
-  left: -2px;
-  top: 9px;
-  bottom: 9px;
-  width: 1px;
-  background: var(--line);
-  transition: opacity var(--dur-1) var(--ease-soft);
-}
-.tab.on::before, .tab:hover::before, .tab.on + .tab::before, .tab:hover + .tab::before { opacity: 0; }
 .add { position: relative; margin-left: 2px; }
-.tabs:has(.tab:last-child.on) + .add::before, .tabs:has(.tab:last-child:hover) + .add::before { opacity: 0; }
 .pt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Always there, seen only on the tab on screen or under the cursor: a tab
    does not change width as the cursor crosses it. */
@@ -594,7 +584,7 @@ function fresh(): void {
   transition: none;
 }
 .strip.dragging .tab:not(.lifted) { transition: background var(--dur-1) var(--ease-soft); }
-.strip.dragging .tab::before { opacity: 0; }
+
 /* Dropped here, the two open side by side. */
 .tab.droppair { background: var(--accent-soft); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent); }
 /* Dropped here, it goes in this gap. */
