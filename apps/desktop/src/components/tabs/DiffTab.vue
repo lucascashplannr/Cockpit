@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { CommitPreview, DiffFile, FileDiff, StashEntry, Workspace } from '@cockpit/shared'
 import type { Component } from 'vue'
 import {
-  Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, Code, Columns2, Eye, FileCode, Rows2, GitBranch, LoaderCircle,
+  Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, Code, Columns2, Eye, FileCode, Rows2, LoaderCircle,
   ChevronUp, FileText, GitCommitHorizontal, Save, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
   Copy, FilePen, FolderOpen, GitGraph, Info, SquareDot, Undo2, User, UsersRound,
 } from '@lucide/vue'
@@ -16,7 +16,7 @@ import { paintDiff } from '../../core/editor.js'
 import { useFindKey, useTextFind } from '../../core/find.js'
 import {
   LAYOUT_DEFAULTS, LAYOUT_LIMITS, busyVerb, busyWord, gitBusy, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
-  activeProject, changeCount, pickSpanRepo, resetCommitHeight, reviewSpan, shortName, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
+  activeProject, changeCount, pickSpanRepo, resetCommitHeight, reviewSpan, shortName, saveLayout, savePlaceWidth, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
 /**
@@ -673,15 +673,10 @@ async function refreshCommit() {
 }
 
 /**
- * The rest of the topic, and what each of them is holding.
- *
- * Not an action — a door. Closing out a topic still means every repository
- * gets committed, and the thing the topic-wide commit was really buying was
- * not having to hunt for the next one.
- *
- * Standing on the topic itself, the door turns this Diff to that repository
- * (`pickSpanRepo`) rather than going to its row: the conversation is the
- * topic's, and committing one of its repositories is not leaving it.
+ * The rest of the topic that is holding changes — counted on Set aside, which
+ * parks all of them. It was also listed above the commit box ("Also in this
+ * topic"); that list went: the repository menu at the end of the tool strip
+ * already turns the Diff to any of them.
  */
 const inSpan = (id: string) => !!reviewSpan.value?.repos.some((w) => w.id === id)
 const elsewhere = computed(() => {
@@ -1425,28 +1420,6 @@ const mark: Record<string, Component> = {
         </div>
 
         <template v-else>
-          <!-- The topic's other repositories: named, counted, and one click
-               away — but committed on their own terms, with their own message,
-               once you are standing in them. -->
-          <!-- With every repository listed above, the list is already this door. -->
-          <div v-if="elsewhere.length && !repos" class="cscope">
-            <span class="section-label">also in this topic</span>
-            <button
-              v-for="e in elsewhere"
-              :key="e.id"
-              class="crow"
-              :title="inSpan(e.id) ? 'Turn the Diff to ' + e.name : 'Go to ' + e.name + ' to commit it'"
-              @click="inSpan(e.id) ? pickSpanRepo(e.id) : selectWorkspace(e.id)"
-            >
-              <GitBranch class="sm" />
-              <span class="cname">{{ e.name }}</span>
-              <span v-if="e.conflicted" class="num bad">{{ e.conflicted }} unmerged</span>
-              <span v-else class="num">{{ e.dirty }}</span>
-              <ChevronRight class="go" />
-            </button>
-            <p class="cnote">Each commits with its own message. Push covers the topic.</p>
-          </div>
-
           <div class="cbox" :class="{ amending }">
             <!-- Where it lands comes first: the branch is the one thing in
                  here that is hard to take back once it is wrong. -->
@@ -1855,35 +1828,6 @@ const mark: Record<string, Component> = {
   background: var(--surface-dock);
 }
 
-/* What the count is made of. */
-.cscope { margin: 0 0 9px; }
-.crow {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  height: 24px;
-  padding: 0 7px;
-  margin-left: -7px;
-  border-radius: var(--radius-sm);
-  text-align: left;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
-}
-.crow:hover { background: var(--hover); color: var(--text); }
-.crow .go { width: 12px; height: 12px; flex: none; color: var(--text-dim); }
-.crow .num.bad { color: var(--danger); }
-.crow .lucide { width: 12px; height: 12px; color: var(--text-dim); }
-.cname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.crow .num { color: var(--text-dim); font-size: 11px; }
-
-.cnote {
-  margin: 5px 0 0;
-  font-size: 10px;
-  color: var(--text-dim);
-  line-height: 1.45;
-}
 /* §16 — parked work, listed above the box it would have been committed from. */
 .cstash { margin: 0 0 10px; }
 .srow {

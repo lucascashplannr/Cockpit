@@ -86,8 +86,8 @@ const tools = computed(() =>
  * with six and the menu the strip ran off the column's edge well above it.
  * So it is measured instead: lay the strip out with every name, and if that is
  * wider than the strip, only the tool you are in keeps its name; at the
- * column's floor, with the repository menu beside them, not even that one —
- * and past that, the menu is its icon too, never a name cut to "All repo…".
+ * column's floor, with the repository menu beside them, not even that one.
+ * The menu itself is always short: its letters, never a name.
  * Every layout tried happens before the frame is painted, so nothing is seen
  * flipping.
  *
@@ -109,9 +109,9 @@ function fits(el: HTMLElement): boolean {
 function fit() {
   const el = strip.value
   if (!el) return
-  el.classList.remove('icons', 'tight', 'bare')
+  el.classList.remove('icons', 'tight')
   el.classList.add('measure')
-  for (const step of ['icons', 'tight', 'bare']) {
+  for (const step of ['icons', 'tight']) {
     if (fits(el)) break
     el.classList.add(step)
   }
@@ -266,14 +266,10 @@ watch(shownReviewTool, () => nextTick(fit))
    box is not. */
 .review { container-type: inline-size; }
 
-/* See `fit`. Measuring, nothing gives way — the repository menu would rather
-   shrink its name than let the tabs lose theirs, so it is held at full width
-   for the one read. Out of room, only the tool you are in keeps its name; the
-   rest are their icons, and every one keeps its keystroke (⌘1..⌘n). Then that
-   name too (the underline still says which), and last the repository menu's,
-   down to its letters — set in the project's settings, or two taken from its
-   name, and "All" for the folder — with the whole name in its tooltip. A name cut to "All repo…" looks broken; an icon alone says nothing
-   about where you are. */
+/* See `fit`. Measuring, nothing gives way, so the read is of every name at
+   full width. Out of room, only the tool you are in keeps its name; the rest
+   are their icons, and every one keeps its keystroke (⌘1..⌘n). Then that name
+   too — the underline still says which. */
 .tools.measure > * { flex-shrink: 0; }
 .tools.icons .tool:not(.on) .tl { display: none; }
 .tools.icons .tool:not(.on) { padding: 0 9px; }
@@ -281,6 +277,4 @@ watch(shownReviewTool, () => nextTick(fit))
 .tools.tight .tool, .tools.icons.tight .tool:not(.on) { padding: 0 7px; }
 /* Under an icon alone, the 8px insets left a 14px nub; the icon's width reads as the tab. */
 .tools.tight .tool.on::after { left: 5px; right: 5px; }
-.tools.bare :deep(.repomenu .nm) { display: none; }
-.tools.bare :deep(.repomenu .ini) { display: grid; }
 </style>

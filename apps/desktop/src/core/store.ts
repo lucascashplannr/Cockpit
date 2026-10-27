@@ -4932,6 +4932,15 @@ function isTrivial(plan: PlanPreview): boolean {
  */
 export const gitBusy = reactive<Record<string, string>>({})
 
+/**
+ * Topics whose delete is running: from the click on "Delete" until the list
+ * no longer has them. The row stays where it was, with a spinner for a lid.
+ */
+export const deletingTopics = reactive<Record<string, true>>({})
+
+/** The topic a `topic.delete` plan removes, by plan id. */
+const deletePlans = new Map<string, string>()
+
 /** What a busy control says, in the words of the verb running — keyed by the plan's operation. */
 const BUSY_WORDS: Record<string, string> = {
   commit: 'Committing',
@@ -5255,14 +5264,26 @@ export async function applyPendingConfirm(): Promise<void> {
   }
   // §4 — it belonged to the question, and the question is answered.
   const from = state.pendingPlanFrom
-  const res = await applyAside(c.plan, () => {
-    if (state.pendingConfirm === c) state.pendingConfirm = null
-    if (state.pendingPlanFrom === from) state.pendingPlanFrom = null
-  })
-  if (res === undefined) return
-  // Its own wording rather than settlePlan's "<operation> applied": the button
-  // said "Put it back", and the toast that follows should agree with it.
-  const ok = await settlePlan(c.plan, res, c.done)
+  // Held until settlePlan has refreshed the list, so the row never comes back
+  // for a frame between the apply answering and the topic leaving.
+  const deleting = deletePlans.get(c.plan.planId)
+  if (deleting) deletingTopics[deleting] = true
+  let ok: boolean
+  try {
+    const res = await applyAside(c.plan, () => {
+      if (state.pendingConfirm === c) state.pendingConfirm = null
+      if (state.pendingPlanFrom === from) state.pendingPlanFrom = null
+    })
+    if (res === undefined) return
+    // Its own wording rather than settlePlan's "<operation> applied": the button
+    // said "Put it back", and the toast that follows should agree with it.
+    ok = await settlePlan(c.plan, res, c.done)
+  } finally {
+    if (deleting) {
+      delete deletingTopics[deleting]
+      deletePlans.delete(c.plan.planId)
+    }
+  }
   // Run aside, so the window may be asking something else by now; the offer
   // would take that question's place, and it is the one that can wait.
   if (ok && from && !state.pendingConfirm && !state.pendingPlan) await offerPush(from.scope)
@@ -5865,7 +5886,8 @@ export const archivedTopics = computed(() =>
  *
  * Nothing on disk moves: it writes the record that the grouping is deliberate,
  * after which the row is an ordinary topic. Reversible in the plainest way —
- * deleting it keeps the branches by default, which puts the inference back.
+ * deleting it with the branch box unticked keeps the branches, which puts the
+ * inference back.
  */
 export async function adoptTopic(topicId: string): Promise<boolean> {
   const res = await guard(() => client.call('topic.adopt', { topicId }))
@@ -5933,7 +5955,9 @@ export function askDeleteTopic(topicId: string): void {
     option: {
       label: 'Delete the branch ' + f.slug + ' in every repository too',
       hint: 'Left alone, the branches stay and every commit on them is still reachable.',
-      value: false,
+      // Ticked: a delete that leaves the branches behind reads as one that did
+      // not finish. Commits that exist nowhere else still stop it (forceable).
+      value: true,
       danger: true,
     },
     // The ellipsis is honest: this one opens the plan rather than running it.
@@ -5991,6 +6015,7 @@ async function askDeletePlan(f: Topic, deleteBranches: boolean, force: boolean):
   }
 
   if (res.plan) {
+    deletePlans.set(res.plan.planId, f.id)
     // §3.7 — the commands, one disclosure down, before any of them runs.
     state.pendingConfirm = {
       title: 'Delete "' + f.name + '" for good?',

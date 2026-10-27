@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, ChevronDown, FolderTree, Layers, SquareDot } from '@lucide/vue'
 import {
-  activeProject, changeCount, pickSpanDiffAll, pickSpanRepo, repoMark, reviewSpan, shortName, spanDiffAll, spanDiffRepo, spanDiffRepos,
+  activeProject, pickSpanDiffAll, pickSpanRepo, repoMark, reviewSpan, shortName, spanDiffAll, spanDiffRepo, spanDiffRepos,
   spanFolder, spanRepo, spanTerminal,
 } from '../core/store.js'
 import type { Workspace } from '@cockpit/shared'
@@ -30,32 +30,20 @@ const hasAll = computed(() => (props.diff ? spanDiffRepos.value.length > 1 : !!f
 const atAll = computed(() =>
   props.diff ? !!spanDiffAll.value : !!folder.value && current.value?.id === folder.value.id,
 )
-/** What the trigger counts: on the Diff's All, every repository's changes. */
-const count = computed(() =>
-  props.diff && atAll.value
-    ? spanDiffRepos.value.reduce((n, w) => n + changeCount(w), 0)
-    : current.value ? changeCount(current.value) : 0,
-)
 // A topic's worktrees are named for the topic — the same name on every row —
 // so there the repository is what tells them apart.
 const name = (w: { name: string; repoName: string }) =>
   reviewSpan.value?.topicId ? w.repoName : shortName(w.name, activeProject.value?.name)
 /**
- * What the trigger can say, and what it says. Every label is laid in the same
- * cell and only the current one is visible, so the trigger is always as wide
- * as the longest: picking "cashplannr-v2" after "cashplannr-projects" used to
- * free just enough room for the strip to put the name back, and the menu
- * flipped between letters and a name depending on which repository it was on.
+ * The trigger says the repository's letters, never its name — set per
+ * repository in the project's settings (`repoMark`), "All" for every one at
+ * once — the same letters as the menu's right-hand column, the whole name in
+ * the tooltip. A name made the trigger as wide as "All repositories" whatever
+ * it was on, and the strip had to run out of room before it got short.
  *
- * `marks` are the letters shown in the name's place when the strip has no room
- * for it (`bare` in ReviewTools) — set per repository in the project's
- * settings (`repoMark`), "All" for the folder.
+ * Every mark is laid in the same cell and only the current one is visible, so
+ * the trigger keeps one width whichever repository it is on.
  */
-const label = computed(() => (atAll.value ? 'All repositories' : current.value ? name(current.value) : ''))
-const labels = computed(() => [
-  ...(hasAll.value ? ['All repositories'] : []),
-  ...(reviewSpan.value?.repos ?? []).map(name),
-])
 const markOf = (w: Workspace) => (w.id === folder.value?.id ? 'All' : repoMark(w, reviewSpan.value?.repos ?? []))
 const mark = computed(() => (atAll.value ? 'All' : current.value ? markOf(current.value) : ''))
 const marks = computed(() => [
@@ -67,7 +55,6 @@ const repos = computed(() =>
     w,
     name: name(w),
     mark: markOf(w),
-    changed: changeCount(w),
   })),
 )
 
@@ -110,16 +97,14 @@ onBeforeUnmount(() => {
     <button
       class="trigger"
       :class="{ open }"
-      :title="atAll ? (diff ? 'All repositories — every change, grouped' : 'All repositories — from the folder they sit in') : name(current) + (count ? ' — ' + count + ' uncommitted' : '')"
+      :title="atAll ? (diff ? 'All repositories — every change, grouped' : 'All repositories — from the folder they sit in') : name(current)"
       :disabled="repos.length + (hasAll ? 1 : 0) < 2"
       @click="open = !open"
     >
       <Layers v-if="atAll && diff" class="sm lead" />
       <FolderTree v-else-if="atAll" class="sm lead" />
       <SquareDot v-else class="sm lead" />
-      <span class="nm"><span v-for="l in new Set(labels)" :key="l" :class="{ ghost: l !== label }">{{ l }}</span></span>
       <span class="ini"><span v-for="m in new Set(marks)" :key="m" :class="{ ghost: m !== mark }">{{ m }}</span></span>
-      <span v-if="count" class="n num">{{ count }}</span>
       <ChevronDown v-if="repos.length + (hasAll ? 1 : 0) > 1" class="sm chev" />
     </button>
     <div v-if="open" class="menu">
@@ -137,7 +122,6 @@ onBeforeUnmount(() => {
         <Check class="tick" :class="{ hidden: atAll || r.w.id !== current.id }" />
         <SquareDot />
         <span class="mn">{{ r.name }}</span>
-        <span v-if="r.changed" class="n num">{{ r.changed }}</span>
         <span class="mk">{{ r.mark }}</span>
       </button>
     </div>
@@ -163,32 +147,17 @@ onBeforeUnmount(() => {
 .trigger:hover:not(:disabled), .trigger.open { background: var(--hover); }
 .trigger:disabled { cursor: default; }
 .lead { color: var(--accent); }
-/* One cell, every label in it, one visible — see `labels`. */
-.nm, .ini { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
-.nm > span, .ini > span { grid-area: 1 / 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.nm > .ghost, .ini > .ghost { visibility: hidden; }
-/* Shown in the name's place when the strip is out of room — see `marks`. */
-.ini { display: none; font-weight: 600; letter-spacing: 0.02em; }
+/* One cell, every mark in it, one visible — see `marks`. Start-aligned: a button centres its text. */
+.ini { display: grid; justify-items: start; font-weight: 600; letter-spacing: 0.02em; }
+.ini > span { grid-area: 1 / 1; }
+.ini > .ghost { visibility: hidden; }
 .chev { color: var(--text-dim); }
-.n {
-  flex: none;
-  font-size: 11px;
-  padding: 0 5px;
-  height: 16px;
-  min-width: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: var(--warn-soft);
-  color: var(--warn);
-}
 /* Under its trigger, held to the strip's right edge like the trigger is. */
 .menu { top: calc(100% + 4px); right: 0; max-height: 60vh; overflow-y: auto; }
 .menu .tick { color: var(--accent); }
 .menu .tick.hidden { visibility: hidden; }
 .mn { flex: 1; }
-/* The initials the trigger shows when the strip is narrow, so the two can be matched. */
+/* The letters the trigger shows, so the two can be matched. */
 .mk {
   flex: none;
   min-width: 28px;

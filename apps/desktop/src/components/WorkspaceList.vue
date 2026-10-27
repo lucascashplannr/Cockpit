@@ -8,7 +8,7 @@ import {
 import WorkspaceRow from './WorkspaceRow.vue'
 import ListToggle from './ListToggle.vue'
 import {
-  activeProject, activityFor, collapsedTopics, listWide, onProject, openAgentOn, openContextMenu,
+  activeProject, activityFor, collapsedTopics, deletingTopics, listWide, onProject, openAgentOn, openContextMenu,
   selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 
@@ -211,6 +211,7 @@ const ATTENTION_TEXT: Record<string, string> = {
           :class="{
             topic: !!(g.title && g.topicId),
             open: !!(g.title && g.topicId) && !collapsedTopics[g.topicId!] && g.workspaces.length > 0,
+            deleting: !!g.topicId && deletingTopics[g.topicId],
           }"
         >
           <!-- A topic is a decoration (§4): no topic, no header. And a
@@ -225,11 +226,13 @@ const ATTENTION_TEXT: Record<string, string> = {
               holding: collapsedTopics[g.topicId] && holdsSelection(g.workspaces),
               menued: state.contextMenu?.target.kind === 'topic' && state.contextMenu.target.id === g.topicId,
             }"
-            :title="topicTip(g)"
+            :title="deletingTopics[g.topicId] ? undefined : topicTip(g)"
+            :disabled="deletingTopics[g.topicId]"
             @click="pressTopic(g.topicId)"
             @contextmenu.prevent="openContextMenu($event, { kind: 'topic', id: g.topicId })"
           >
-            <span class="lead" :class="topicLead(g.topicId).cls">
+            <span v-if="deletingTopics[g.topicId]" class="lead"><LoaderCircle class="sm spin" /></span>
+            <span v-else class="lead" :class="topicLead(g.topicId).cls">
               <component :is="topicLead(g.topicId).icon" class="sm" :class="{ 'agent-star': topicMark(g.topicId)?.turning }" />
             </span>
             <span class="title">{{ g.title.slice(0, 3) }}</span>
@@ -253,8 +256,9 @@ const ATTENTION_TEXT: Record<string, string> = {
                  answer waiting — the lid wears that mark: the first thing on
                  the row is then what the row is doing. The chevron is still
                  under it — hover the mark and it is the lid again. -->
+            <span v-if="g.topicId && deletingTopics[g.topicId]" class="twist"><LoaderCircle class="sm spin" /></span>
             <button
-              v-if="g.topicId"
+              v-else-if="g.topicId"
               class="twist"
               :class="[topicMark(g.topicId) && 'marked', topicMark(g.topicId)?.cls]"
               :title="(topicMark(g.topicId) ? topicMark(g.topicId)!.tip + '\n' : '')
@@ -267,7 +271,7 @@ const ATTENTION_TEXT: Record<string, string> = {
             <Layers v-else class="sm gi" />
             <button
               class="pick"
-              :disabled="!g.topicId"
+              :disabled="!g.topicId || deletingTopics[g.topicId]"
               @click="g.topicId && selectTopic(g.topicId)"
             >
               <span class="title">{{ g.title }}</span>
@@ -632,6 +636,11 @@ const ATTENTION_TEXT: Record<string, string> = {
 .opening .twist:hover { background: none; }
 .opening .spin { color: var(--accent); }
 .opening .title { color: var(--text-muted); }
+/* Going: still where it was, so nothing jumps, but no longer a place to act. */
+.deleting { pointer-events: none; }
+.deleting .spin { color: var(--danger); }
+.deleting .title { color: var(--text-muted); }
+.deleting :deep(.row) { opacity: 0.5; }
 .title {
   flex: 1;
   min-width: 0;
