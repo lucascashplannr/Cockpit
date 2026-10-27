@@ -5,7 +5,7 @@ import {
   UnfoldVertical, X,
 } from '@lucide/vue'
 import {
-  agentDraft, agentFiles, attachConversation, attachFiles, attachText, chooseMemory, client, dataUrl, detachFile,
+  activeDraftKey, attachConversation, attachFiles, attachText, chooseMemory, client, dataUrl, detachFile,
   draftKey, engineName, guard, isLive, isLongPaste, lastActivityAt, memoryChoiceFor, memoryLabel, modeFor, openDraftFiles,
   pickMode, placedHandles, projectOfConversation, saveComposer, state, switchMode,
 } from '../../core/store.js'
@@ -72,7 +72,28 @@ const props = defineProps<{
   busy?: boolean
   /** §6 — what the conversation is aimed at, for the Memory chip. */
   scope?: AgentScope | null
+  /**
+   * §7 — whose draft this box shows. Side by side, each pane has a box of its
+   * own; without it the box is the window's active one.
+   */
+  draftKey?: string
 }>()
+
+/* The draft and the files this box holds, by its own key. */
+const boxKey = computed(() => props.draftKey ?? activeDraftKey.value)
+const boxDraft = computed<string>({
+  get: () => state.drafts[boxKey.value] ?? '',
+  set: (v) => {
+    state.drafts[boxKey.value] = v
+  },
+})
+const boxFiles = computed<DraftFile[]>({
+  get: () => state.attachments[boxKey.value] ?? [],
+  set: (v) => {
+    if (v.length) state.attachments[boxKey.value] = v
+    else delete state.attachments[boxKey.value]
+  },
+})
 const emit = defineEmits<{ send: []; stop: []; 'update:engine': [string] }>()
 
 /* ── §6 — which memory ─────────────────────────────────────────────────
@@ -245,7 +266,7 @@ watch(
  */
 const caret = ref(0)
 const mention = computed(() => {
-  const upto = agentDraft.value.slice(0, caret.value)
+  const upto = boxDraft.value.slice(0, caret.value)
   const m = /(^|\s)([@#])([^\s@#]*)$/.exec(upto)
   if (!m) return null
   const q = m[3] ?? ''
@@ -283,7 +304,7 @@ const fileRows = computed<Row[]>(() =>
  * would refuse it for no reason.
  */
 const attachRows = computed<Row[]>(() =>
-  agentFiles.value.map((f) => ({
+  boxFiles.value.map((f) => ({
     key: f.id,
     label: f.name,
     hint: anchorOf(f.handle),
@@ -331,8 +352,8 @@ function ago(ts: number): string {
  * is a path or a fraction and is left alone.
  */
 const slash = computed(() => {
-  const m = /^\/([a-z-]*)$/.exec(agentDraft.value.slice(0, caret.value))
-  return m && !agentDraft.value.slice(caret.value).trim() ? m[1]! : null
+  const m = /^\/([a-z-]*)$/.exec(boxDraft.value.slice(0, caret.value))
+  return m && !boxDraft.value.slice(caret.value).trim() ? m[1]! : null
 })
 
 /**
@@ -408,7 +429,7 @@ function track(): void {
 function acceptCommand(r: Row, run: boolean): void {
   const c = r.command!
   const text = '/' + c.name + (run ? '' : ' ')
-  agentDraft.value = text
+  boxDraft.value = text
   if (run) {
     submit()
     return
@@ -425,11 +446,11 @@ function accept(r: Row | undefined, run = false): void {
   if (r?.command) return acceptCommand(r, run)
   const m = mention.value
   if (!m || !r) return
-  const after = agentDraft.value.slice(caret.value)
+  const after = boxDraft.value.slice(caret.value)
   // A conversation is tagged, not named: the `@word` typed to find it gives way
   // to the chip of what was attached, as a pasted screenshot's does.
   if (r.conversation) {
-    agentDraft.value = agentDraft.value.slice(0, m.from) + after
+    boxDraft.value = boxDraft.value.slice(0, m.from) + after
     caret.value = m.from
     const f = attachConversation(r.conversation)
     if (f) insertAtCaret(anchorWritten(f.handle))
@@ -438,7 +459,7 @@ function accept(r: Row | undefined, run = false): void {
   // An attachment token is written with the blank its chip needs around it; a
   // `@path` is drawn as plain text and wants none.
   const token = m.sigil === '#' ? anchorWritten(r.insert) : m.sigil + r.insert
-  agentDraft.value = agentDraft.value.slice(0, m.from) + token + ' ' + after
+  boxDraft.value = boxDraft.value.slice(0, m.from) + token + ' ' + after
   nextTick(() => {
     const pos = m.from + token.length + 1
     box.value?.focus()
@@ -455,9 +476,9 @@ function accept(r: Row | undefined, run = false): void {
  * the point they were talking about when they pressed ⌘V.
  */
 function insertAtCaret(text: string): void {
-  const at = Math.min(caret.value, agentDraft.value.length)
-  const before = agentDraft.value.slice(0, at)
-  const after = agentDraft.value.slice(at)
+  const at = Math.min(caret.value, boxDraft.value.length)
+  const before = boxDraft.value.slice(0, at)
+  const after = boxDraft.value.slice(at)
   // A token needs air around it or it fuses with the word before it and stops
   // being a token at all.
   const lead = before && !/\s$/.test(before) ? ' ' : ''
@@ -465,7 +486,7 @@ function insertAtCaret(text: string): void {
   // the moment it is inserted, so it should look finished — a pill — rather
   // than sitting open under the cursor waiting for a keystroke that says so.
   const tail = /^\s/.test(after) ? '' : ' '
-  agentDraft.value = before + lead + text + tail + after
+  boxDraft.value = before + lead + text + tail + after
   const pos = at + lead.length + text.length + tail.length
   nextTick(() => {
     box.value?.focus()
@@ -485,12 +506,12 @@ const histAt = ref(-1)
  */
 function walkHistory(step: number, ev: KeyboardEvent): void {
   const recalled = histAt.value >= 0
-  if (!recalled && (agentDraft.value !== '' || step < 0)) return
+  if (!recalled && (boxDraft.value !== '' || step < 0)) return
   const next = histAt.value + step
   if (next < -1 || next >= state.promptHistory.length) return
   ev.preventDefault()
   histAt.value = next
-  agentDraft.value = next === -1 ? '' : (state.promptHistory[next] ?? '')
+  boxDraft.value = next === -1 ? '' : (state.promptHistory[next] ?? '')
 }
 
 /**
@@ -515,9 +536,9 @@ function eatAnchor(ev: KeyboardEvent): boolean {
   const el = box.value
   if (!el || el.selectionStart !== el.selectionEnd) return false
   const at = el.selectionStart
-  const draft = agentDraft.value
+  const draft = boxDraft.value
   let i = 0
-  for (const part of splitPrompt(draft, agentFiles.value.map((f) => f.handle))) {
+  for (const part of splitPrompt(draft, boxFiles.value.map((f) => f.handle))) {
     const start = i
     const end = start + (part.kind === 'text' ? part.text.length : anchorOf(part.handle).length)
     i = end
@@ -530,7 +551,7 @@ function eatAnchor(ev: KeyboardEvent): boolean {
     const lead = /\u00a0*$/.exec(draft.slice(0, start))![0].length
     const from = start - Math.min(lead, ANCHOR_PAD.length)
     ev.preventDefault()
-    agentDraft.value = draft.slice(0, from) + '#' + draft.slice(at)
+    boxDraft.value = draft.slice(0, from) + '#' + draft.slice(at)
     nextTick(() => {
       el.setSelectionRange(from + 1, from + 1)
       caret.value = from + 1
@@ -561,8 +582,8 @@ function onKey(ev: KeyboardEvent): void {
     if (ev.key === 'Escape') {
       ev.preventDefault()
       // Closes the list without losing the `@`: it is being typed, not undone.
-      agentDraft.value += ' '
-      caret.value = agentDraft.value.length
+      boxDraft.value += ' '
+      caret.value = boxDraft.value.length
       return
     }
   }
@@ -587,9 +608,9 @@ function onKey(ev: KeyboardEvent): void {
 
 /** A line break where the caret is, replacing any selection. */
 function newline(el: HTMLTextAreaElement): void {
-  const from = el.selectionStart ?? agentDraft.value.length
+  const from = el.selectionStart ?? boxDraft.value.length
   const to = el.selectionEnd ?? from
-  agentDraft.value = agentDraft.value.slice(0, from) + '\n' + agentDraft.value.slice(to)
+  boxDraft.value = boxDraft.value.slice(0, from) + '\n' + boxDraft.value.slice(to)
   nextTick(() => {
     el.setSelectionRange(from + 1, from + 1)
     caret.value = from + 1
@@ -692,7 +713,7 @@ function onPaste(ev: ClipboardEvent): void {
   const el = box.value
   if (el && el.selectionStart !== el.selectionEnd) {
     const [from, to] = [el.selectionStart, el.selectionEnd]
-    agentDraft.value = agentDraft.value.slice(0, from) + agentDraft.value.slice(to)
+    boxDraft.value = boxDraft.value.slice(0, from) + boxDraft.value.slice(to)
     caret.value = from
   }
   const f = attachText(text.replace(/\r\n?/g, '\n'))
@@ -725,12 +746,12 @@ function unfold(f: DraftFile): void {
   // A reference unfolds as a quotation, so that it still reads as someone
   // else's words once the tag that said so is gone.
   const body = f.quoted ? '\n' + f.text.replace(/^/gm, '> ') + '\n' : f.text
-  const draft = agentDraft.value
+  const draft = boxDraft.value
   let i = 0
   let out = ''
   let done = false
   let trim = false
-  for (const part of splitPrompt(draft, agentFiles.value.map((x) => x.handle))) {
+  for (const part of splitPrompt(draft, boxFiles.value.map((x) => x.handle))) {
     const len = part.kind === 'text' ? part.text.length : anchorOf(part.handle).length
     let raw = draft.slice(i, i + len)
     i += len
@@ -747,9 +768,9 @@ function unfold(f: DraftFile): void {
     }
     out += raw
   }
-  agentFiles.value = agentFiles.value.filter((x) => x.id !== f.id)
+  boxFiles.value = boxFiles.value.filter((x) => x.id !== f.id)
   if (done) {
-    agentDraft.value = out
+    boxDraft.value = out
     nextTick(() => box.value?.focus())
   } else {
     insertAtCaret(body)
@@ -810,11 +831,11 @@ interface Written {
 }
 
 const written = computed<Written[]>(() => {
-  const draft = agentDraft.value
+  const draft = boxDraft.value
   const at = caret.value
   const out: Written[] = []
   let i = 0
-  for (const part of splitPrompt(draft, agentFiles.value.map((f) => f.handle))) {
+  for (const part of splitPrompt(draft, boxFiles.value.map((f) => f.handle))) {
     const start = i
     // Cut from the draft rather than written out from the handle: a token is
     // as long as its handle either way, but it may be spelled with either
@@ -909,9 +930,9 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
       <!-- What is attached, over the box and under the mentions: it is part of
            the question being written, so it reads before the words rather than
            under the row of settings that shape the answer. -->
-      <ul v-if="agentFiles.length" class="files">
+      <ul v-if="boxFiles.length" class="files">
         <li
-          v-for="f in agentFiles"
+          v-for="f in boxFiles"
           :key="f.id"
           :class="{
             pic: f.mediaType.startsWith('image/'),
@@ -994,7 +1015,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
 
         <textarea
           ref="box"
-          v-model="agentDraft"
+          v-model="boxDraft"
           class="input prompt selectable"
           rows="1"
           :placeholder="placeholder"

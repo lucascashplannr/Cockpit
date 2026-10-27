@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
-import { CircleStop, Columns2, History, MousePointerClick, Plus, X } from '@lucide/vue'
+import { Asterisk, CircleStop, Hand, History, MousePointerClick, Plus, X } from '@lucide/vue'
 import type { Conversation } from '@cockpit/shared'
 import AgentTab from './tabs/AgentTab.vue'
 import ConversationDrawer from './ConversationDrawer.vue'
 import Wordmark from './brand/Wordmark.vue'
 import {
-  activeAgentScope, activeWorkspace, attentionOf, closeFresh, hasMail, hasNewTab, closeSplit, closeTab, isBusy, isLive,
+  activeAgentScope, activeWorkspace, attentionOf, closeFresh, hasMail, hasNewTab, closeTab, isBusy, isLive,
   openThreadFor, pairTabs, pickThread, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
   stripFor,
 } from '../core/store.js'
@@ -98,7 +98,10 @@ function commitRename(c: Conversation): void {
 }
 
 function dotOf(c: Conversation): string {
-  if (attentionOf(c) !== 'none') return 'you'
+  // It asked something — a question, or a call waiting on a yes: the hand.
+  const a = attentionOf(c)
+  if (a === 'approval') return 'ask'
+  if (a !== 'none') return 'you'
   if (isBusy(c)) return 'work'
   if (hasMail(c)) return 'mail'
   return isLive(c) ? 'open' : 'done'
@@ -106,11 +109,11 @@ function dotOf(c: Conversation): string {
 /** A dot only when there is news: working, needs you, or a message waiting. */
 function news(c: Conversation): boolean {
   const d = dotOf(c)
-  return d === 'work' || d === 'you' || d === 'mail'
+  return d === 'work' || d === 'you' || d === 'ask' || d === 'mail'
 }
 function stateWord(c: Conversation): string {
   const d = dotOf(c)
-  return d === 'you' ? 'needs you' : d === 'work' ? 'working' : d === 'mail' ? 'a message is waiting' : d === 'open' ? 'open' : 'finished'
+  return d === 'ask' ? 'asking you' : d === 'you' ? 'needs you' : d === 'work' ? 'working' : d === 'mail' ? 'a message is waiting' : d === 'open' ? 'open' : 'finished'
 }
 function press(c: Conversation, e: MouseEvent): void {
   // The click a drag ends on is the end of the drag, not a choice of tab.
@@ -236,10 +239,6 @@ function fresh(): void {
   const s = activeAgentScope.value
   if (s) startFresh(s)
 }
-function single(): void {
-  const s = activeAgentScope.value
-  if (s) closeSplit(s)
-}
 
 </script>
 
@@ -287,7 +286,9 @@ function single(): void {
                 @dblclick="startRename(e.conv)"
                 @mousedown.middle.prevent="closeOne(e.conv)"
               >
-                <span v-if="news(e.conv)" class="dot" :class="dotOf(e.conv)" />
+                <Hand v-if="dotOf(e.conv) === 'ask'" class="ask" />
+                <Asterisk v-else-if="dotOf(e.conv) === 'work'" class="star agent-star" />
+                <span v-else-if="news(e.conv)" class="dot" :class="dotOf(e.conv)" />
                 <input
                   v-if="renaming === e.conv.id"
                   ref="renameEl"
@@ -324,7 +325,9 @@ function single(): void {
                     @dblclick="startRename(c)"
                     @mousedown.middle.prevent="closeOne(c)"
                   >
-                    <span v-if="news(c)" class="dot" :class="dotOf(c)" />
+                    <Hand v-if="dotOf(c) === 'ask'" class="ask" />
+                    <Asterisk v-else-if="dotOf(c) === 'work'" class="star agent-star" />
+                    <span v-else-if="news(c)" class="dot" :class="dotOf(c)" />
                     <input
                       v-if="renaming === c.id"
                       ref="renameEl"
@@ -356,7 +359,6 @@ function single(): void {
             </div>
           </TransitionGroup>
           <button class="add" title="New conversation" @click="fresh"><Plus class="sm" /></button>
-          <button v-if="pair" class="add" title="Back to one" @click="single"><Columns2 class="sm" /></button>
         </nav>
         <div class="panes">
           <template v-if="pair">
@@ -545,6 +547,10 @@ function single(): void {
 }
 .dot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
 .dot.work { background: var(--agent); }
+/* Working: the turning star the list's rows carry. */
+.star { flex: none; width: 13px; height: 13px; stroke-width: 2.4; color: var(--agent); }
+/* It asked you something: the hand the thread's own "needs you" carries. */
+.ask { flex: none; width: 12px; height: 12px; stroke-width: 2.2; color: var(--warn); }
 .dot.you { box-shadow: inset 0 0 0 1.75px var(--warn); }
 /* §7 — another conversation left it a message, and nothing will read it yet. */
 .dot.mail { box-shadow: inset 0 0 0 1.75px var(--accent); }

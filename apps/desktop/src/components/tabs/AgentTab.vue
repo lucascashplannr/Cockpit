@@ -22,7 +22,7 @@ import DocsOfferLine from '../docs/DocsOfferLine.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
-  activeAgentScope, activeDraftKey, agentDraft, agentFiles, alongsideChosen, chooseAlongside, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
+  activeAgentScope, activeDraftKey, alongsideChosen, draftKey, type DraftFile, chooseAlongside, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, forgetMemoryChoice, memoryLabel, renameConversation, restoreConversation,
@@ -178,8 +178,24 @@ const selected = computed(() =>
     ? (sessionsForScope(scope.value).find((c) => c.id === props.threadId) ?? openThreadFor(scope.value))
     : openThreadFor(scope.value),
 )
-/** A passive pane's own unsent words, shown in its stand-in box. */
-const passiveDraft = computed(() => (selected.value ? state.drafts['thread:' + selected.value.id] ?? '' : ''))
+/**
+ * §7 — this pane's own box. Side by side each half keeps its draft, its files
+ * and its settings; alone, it is the window's active box.
+ */
+const myKey = computed(() => (props.threadId ? draftKey(null, props.threadId) : activeDraftKey.value))
+const agentDraft = computed<string>({
+  get: () => state.drafts[myKey.value] ?? '',
+  set: (v) => {
+    state.drafts[myKey.value] = v
+  },
+})
+const agentFiles = computed<DraftFile[]>({
+  get: () => state.attachments[myKey.value] ?? [],
+  set: (v) => {
+    if (v.length) state.attachments[myKey.value] = v
+    else delete state.attachments[myKey.value]
+  },
+})
 function activate(): void {
   if (props.passive && scope.value && selected.value) pickThread(scope.value, selected.value.id)
 }
@@ -1465,6 +1481,7 @@ function ago(ts: number): string {
     class="agent"
     :class="{ over, passive }"
     @mousedown.capture="activate"
+    @focusin="activate"
     @dragenter="onDragEnter"
     @dragover.prevent
     @dragleave="onDragLeave"
@@ -1990,12 +2007,9 @@ function ago(ts: number): string {
         />
         <PermissionAsk v-else-if="selected && pending.length" :session-id="selected.id" :requests="pending" />
 
-        <button v-if="passive" class="standin" :title="'Write in ' + selected.title" @click="activate">
-          {{ passiveDraft || 'Ask a follow-up…' }}
-        </button>
         <Composer
-          v-else
           ref="composer"
+          :draft-key="myKey"
           :mode="queueing ? 'queue' : continuing ? 'continue' : 'start'"
           :disabled="!canSend"
           :why="lockedWhy"
@@ -2153,25 +2167,9 @@ function ago(ts: number): string {
   margin-right: auto;
 }
 .agent { --measure: 780px; --pad: 20px; }
-/* §7 — side by side: the half without the composer. Its box only says what
-   was typed. */
+/* §7 — side by side: the half you are not typing in. Its box is a real one;
+   clicking into it makes it the half you are typing in. */
 .agent.passive .thread { opacity: 0.86; }
-.standin {
-  display: block;
-  width: 100%;
-  min-height: 46px;
-  padding: 12px 14px;
-  text-align: left;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface-input);
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.standin:hover { border-color: var(--line-strong); color: var(--text-muted); }
 
 .tbar {
   flex: none;
