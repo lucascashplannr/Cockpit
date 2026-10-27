@@ -1176,6 +1176,24 @@ export interface Conversation {
    * not lock out the one it was sharing with.
    */
   alongside?: boolean
+  /**
+   * §7 — what other conversations told it that it has not read yet, oldest
+   * first. A message never starts a turn: a working agent reads it after its
+   * next tool call, an idle one at the top of its next turn.
+   */
+  inbox?: PeerMessage[]
+}
+
+/** §7 — one conversation's message to another (`mcp__cockpit__tell`). */
+export interface PeerMessage {
+  id: string
+  fromId: string
+  /** The sender's title, as it was when it wrote. */
+  fromTitle: string
+  toId: string
+  toTitle: string
+  text: string
+  sentAt: number
 }
 
 export interface DiffFile {

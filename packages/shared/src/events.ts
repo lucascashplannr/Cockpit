@@ -107,6 +107,11 @@ export type EventType =
   | 'agent.output'
   | 'agent.tool_use'
   /**
+   * §7 — a message from another conversation, journalled under the one it was
+   * sent to (payload: PeerMessage). The sender's side is its own tool call.
+   */
+  | 'agent.peer_message'
+  /**
    * What a tool call actually did. Split from `agent.tool_use` because the two
    * are separated by however long the command takes, and a transcript that
    * shows only the call reads as though every one of them succeeded.

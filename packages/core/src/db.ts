@@ -289,6 +289,23 @@ function migrate(d: Db): void {
   addColumn(d, 'agent_sessions', 'alongside', 'INTEGER NOT NULL DEFAULT 0')
   addColumn(d, 'leases', 'shared', 'INTEGER NOT NULL DEFAULT 0')
 
+  // §7 — a message one conversation left for another. Undelivered until the
+  // recipient reads it: after its next tool call when it is working, at the
+  // top of its next turn otherwise. Nothing here starts a turn.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS peer_messages (
+      id           TEXT PRIMARY KEY,
+      from_session TEXT NOT NULL,
+      to_session   TEXT NOT NULL,
+      from_title   TEXT NOT NULL,
+      to_title     TEXT NOT NULL,
+      text         TEXT NOT NULL,
+      sent_at      INTEGER NOT NULL,
+      delivered_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS peer_messages_to ON peer_messages (to_session, delivered_at);
+  `)
+
   d.exec(`
     -- §6 — the conversation. Append-only: a resume adds a row, it never
     -- overwrites the question that opened the thread.

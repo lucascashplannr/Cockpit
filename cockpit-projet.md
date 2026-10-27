@@ -260,7 +260,9 @@ Ce que le partage exige, et qui est livré avec lui :
 - **Attribution honnête.** Un changement vu par le watcher sous deux conversations vivantes n'est attribué à aucune des deux ; les appels Edit/Write nomment toujours la leur.
 - **Se savoir.** L'outil `mcp__cockpit__peers` liste les autres conversations du dossier (titre, état, fichiers changés, dernier message), et le début d'un tour le dit quand cet ensemble a changé.
 
-Pas encore : messages entre conversations, revendication de fichiers avant écriture, Diff et commit par conversation.
+- **Se parler.** L'outil `mcp__cockpit__tell` laisse un message à une autre conversation du dossier. Un message **ne réveille jamais** une conversation : si elle travaille, elle le lit après son prochain appel d'outil (un hook `PostToolUse` sur le canal de contrôle) ; sinon il attend le début de son prochain tour. Son onglet porte alors un anneau accent, et le fil montre le message *unread* avec *Let it answer*, qui démarre ce tour exprès. Huit messages au plus par tour et par conversation : deux agents qui travaillent peuvent se coordonner, pas bavarder. Dans le fil, un message est une citation avec son expéditeur (*From* / *To*), pas une carte d'outil.
+
+Pas encore : revendication de fichiers avant écriture, Diff et commit par conversation.
 
 ### Contexte pour l'agent projet
 

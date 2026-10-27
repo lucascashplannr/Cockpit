@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, commandIn, conversationRef, newId } from '@cockpit/shared'
 import type {
-  AgentAnswers, AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, MemorySource, PermissionMode,
+  AgentAnswers, AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, MemorySource, PeerMessage, PermissionMode,
   PermissionRequest, TurnUsage,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
@@ -163,6 +163,11 @@ export interface NormalizedEvent {
     /** A control request this driver does not handle, to be refused so the engine is not left waiting. */
     | 'control'
     /**
+     * §7 — a hook this driver registered at `initialize` fired (a tool call
+     * just finished). Answered with whatever messages are waiting for it.
+     */
+    | 'hook'
+    /**
      * A call to an MCP server this process hosts (`type: 'sdk'`): `server` and
      * the JSON-RPC `message`, answered on the control channel. See memoryTools.
      */
@@ -196,6 +201,8 @@ export interface NormalizedEvent {
   interrupted?: boolean
   /** `mode` only: what the engine is actually running under. */
   mode?: PermissionMode
+  /** `hook` only: it fired inside a sub-agent. */
+  subagent?: boolean
   /** `permission` / `control` / `control_done` / `control_error`: the id of the request. */
   requestId?: string
   /** `mcp` only: which hosted server, and the JSON-RPC message for it. */
@@ -302,6 +309,8 @@ export interface EngineSpec {
     unsupported(requestId: string): string
     /** The answer to an `mcp` request: the server's JSON-RPC reply. */
     mcp?(requestId: string, response: Record<string, unknown> | null): string
+    /** The answer to a `hook`: text the model reads after the tool's result, or nothing. */
+    hook?(requestId: string, context: string): string
   }
 }
 
@@ -578,6 +587,10 @@ const claudeEngine: EngineSpec = {
       const r = (o.request ?? {}) as Record<string, unknown>
       if (r.subtype === 'mcp_message' && r.message && typeof r.message === 'object')
         return [{ kind: 'mcp', requestId, server: String(r.server_name ?? ''), message: r.message as Record<string, unknown> }]
+      // `agent_id` is there only inside a sub-agent, whose context is not the
+      // conversation's: a message read there is a message the agent never sees.
+      if (r.subtype === 'hook_callback')
+        return [{ kind: 'hook', requestId, subagent: !!(r.input as { agent_id?: unknown } | undefined)?.agent_id }]
       if (r.subtype !== 'can_use_tool') return [{ kind: 'control', requestId }]
       const input = (r.input ?? {}) as Record<string, unknown>
       return [
@@ -710,7 +723,24 @@ const claudeEngine: EngineSpec = {
       JSON.stringify({
         type: 'control_request',
         request_id: 'init',
-        request: { subtype: 'initialize', ...(memory ? { sdkMcpServers: [memoryTools.SERVER] } : {}) },
+        request: {
+          subtype: 'initialize',
+          ...(memory ? { sdkMcpServers: [memoryTools.SERVER] } : {}),
+          // §7 — after every tool call, a chance to hand a working agent the
+          // messages other conversations left it, instead of at its next turn.
+          hooks: { PostToolUse: [{ hookCallbackIds: [PEER_HOOK] }] },
+        },
+      }),
+    hook: (requestId, context) =>
+      JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          response: context
+            ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } }
+            : {},
+        },
       }),
     mcp: (requestId, response) =>
       JSON.stringify({
@@ -1433,6 +1463,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     naming: namingIds.has(String(r.id)),
     hiddenAt: r.hidden_at == null ? null : Number(r.hidden_at),
     alongside: !!r.alongside,
+    inbox: inboxOf(String(r.id)),
   }
 }
 
@@ -1946,6 +1977,7 @@ async function launch(
     docs.preambleBlock(docsInfo, !!spec.control?.mcp),
     preamble.trim(),
     peersTools.news(peersNow).replace(/\n---\n\n\n$/, '').trim(),
+    command ? '' : takeInbox(session.id).replace(/\n---\n\n\n$/, '').trim(),
   ]
     .filter(Boolean)
     .join('\n\n')
@@ -2159,6 +2191,15 @@ async function launch(
         case 'control':
           if (ev.requestId && spec.control) child.stdin?.write(spec.control.unsupported(ev.requestId) + '\n')
           break
+
+        // §7 — mid-turn: what other conversations said, read after this call.
+        case 'hook': {
+          if (!ev.requestId || !spec.control?.hook) break
+          const mail = ev.subagent ? '' : takeInbox(session.id)
+          child.stdin?.write(spec.control.hook(ev.requestId, mail) + '\n')
+          if (mail) changed = true
+          break
+        }
 
         // §6 — the memory tools. Answered in this process, which is the point:
         // it is the one that knows which conversation is writing.
@@ -2378,7 +2419,7 @@ async function flushQueue(l: Live): Promise<void> {
   agentBus.emit('changed')
   await checkpointTurn(l.session, turnId, prompt || attachments.summarise(files))
   const command = commandIn(prompt)?.command.run === 'engine'
-  const news = command ? '' : memoryNews(l) + peersNews(l)
+  const news = command ? '' : memoryNews(l) + peersNews(l) + takeInbox(l.session.id)
   const segs = withUltracode(l.spec, attachments.turnSegments(news, prompt, files), ultracode && !command)
   l.child.stdin?.write(encode(attachments.flatten(segs), segs) + '\n')
   agentBus.emit('changed')
@@ -2459,6 +2500,7 @@ function peersFor(c: Conversation): peersTools.Peer[] {
     ]
     const l = live.get(x.id)
     return {
+      id: x.id,
       ref: conversationRef(x.id),
       title: x.title || 'untitled',
       status: l ? (l.busy ? ('working' as const) : ('open' as const)) : ('stopped' as const),
@@ -2468,7 +2510,88 @@ function peersFor(c: Conversation): peersTools.Peer[] {
     }
   })
 }
-peersTools.provide(peersFor)
+peersTools.provide(peersFor, tell)
+
+const PEER_HOOK = 'cockpit_peer_mail'
+
+/** At most this many messages from one conversation in one turn — two working agents can talk, not chatter. */
+const TELL_PER_TURN = 8
+
+/**
+ * §7 — a message from one conversation to another in its folders. Kept until
+ * read; never starts a turn. A working recipient reads it after its next tool
+ * call (`hook`), any other at the top of its next turn (`takeInbox`).
+ */
+function tell(c: Conversation, to: string, text: string): { ok: boolean; text: string } {
+  const peers = peersFor(c)
+  const want = to.trim().toLowerCase()
+  const p = peers.find((x) => x.ref.toLowerCase() === want) ?? peers.find((x) => x.title.toLowerCase() === want)
+  if (!p)
+    return {
+      ok: false,
+      text: peers.length
+        ? 'No conversation “' + to + '” beside you. Send to one of: ' + peers.map((x) => x.ref + ' (“' + x.title + '”)').join(', ') + '.'
+        : 'No other conversation is working in your folders.',
+    }
+  const since = c.history.at(-1)?.startedAt ?? c.startedAt
+  const sent = getDb()
+    .prepare('SELECT COUNT(*) AS n FROM peer_messages WHERE from_session = ? AND sent_at >= ?')
+    .get(c.id, since) as { n: number }
+  if (sent.n >= TELL_PER_TURN)
+    return { ok: false, text: 'Not sent: ' + TELL_PER_TURN + ' messages this turn already. Finish your work and say the rest in your answer.' }
+  const m: PeerMessage = {
+    id: newId('pm_'),
+    fromId: c.id,
+    fromTitle: c.title || 'untitled',
+    toId: p.id,
+    toTitle: p.title,
+    text,
+    sentAt: Date.now(),
+  }
+  getDb()
+    .prepare('INSERT INTO peer_messages (id, from_session, to_session, from_title, to_title, text, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(m.id, m.fromId, m.toId, m.fromTitle, m.toTitle, m.text, m.sentAt)
+  const to_ = get(p.id)
+  append({
+    type: 'agent.peer_message',
+    actor: { kind: 'agent', engine: to_?.engine ?? c.engine, sessionId: p.id },
+    workspaceId: to_?.workspaceIds[0] ?? null,
+    payload: m,
+  })
+  agentBus.emit('changed')
+  return {
+    ok: true,
+    text:
+      p.status === 'working'
+        ? 'Sent. “' + p.title + '” is working; it reads this after its next step.'
+        : 'Sent. “' + p.title + '” is not working right now; it reads this when the person next talks to it. Carry on without waiting for an answer.',
+  }
+}
+
+function inboxOf(sessionId: string): PeerMessage[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM peer_messages WHERE to_session = ? AND delivered_at IS NULL ORDER BY sent_at')
+    .all(sessionId) as Record<string, unknown>[]
+  return rows.map((r) => ({
+    id: String(r.id),
+    fromId: String(r.from_session),
+    fromTitle: String(r.from_title),
+    toId: String(r.to_session),
+    toTitle: String(r.to_title),
+    text: String(r.text),
+    sentAt: Number(r.sent_at),
+  }))
+}
+
+/** The waiting messages as the agent reads them, marked read on the way out. */
+function takeInbox(sessionId: string): string {
+  const msgs = inboxOf(sessionId)
+  if (!msgs.length) return ''
+  getDb()
+    .prepare(`UPDATE peer_messages SET delivered_at = ? WHERE id IN (${msgs.map(() => '?').join(',')})`)
+    .run(Date.now(), ...msgs.map((m) => m.id))
+  return peersTools.mail(msgs.map((m) => ({ ref: conversationRef(m.fromId), title: m.fromTitle, text: m.text })))
+}
 
 function peersSignature(peers: peersTools.Peer[]): string {
   return peers.map((p) => p.ref).sort().join(',')

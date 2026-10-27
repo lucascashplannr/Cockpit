@@ -4,11 +4,11 @@ import type {
   // Aliased: the component that draws one is `Attachment` too, and the file
   // needs both in the same scope.
   Attachment as AttachedFile,
-  AgentAnswers, AgentQuestion, AgentScope, AgentScopePreview, Conversation, AgentTurn, PermissionMode, QuoteSource, Workspace,
+  AgentAnswers, AgentQuestion, AgentScope, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, Hand, Paperclip,
-  Redo2, Undo2, X,
+  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, Hand, MessageSquareText, Paperclip,
+  Redo2, Send, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
 import ToolCall from '../agent/ToolCall.vue'
@@ -26,10 +26,10 @@ import {
   askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, forgetMemoryChoice, memoryLabel, renameConversation, restoreConversation,
-  threadScrollOf, toast, transcriptOf, pickThread, type ThreadScroll,
+  threadScrollOf, toast, transcriptOf, pickThread, type ThreadScroll, answerPeers, openConversation, peerTitle,
 } from '../../core/store.js'
 import {
-  COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, commandOff, isDocument, isHandoff, isMemorize,
+  COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, commandOff, conversationRef, isDocument, isHandoff, isMemorize,
   questionsIn, readPrompt,
 } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
@@ -263,6 +263,7 @@ type Item =
   | { kind: 'docsOffer'; id: string; offerId: string }
   /** Something the agent asked a person, and what it was told. */
   | Asked
+  | Peer
 
 interface Asked {
   kind: 'question'
@@ -289,6 +290,24 @@ type Row =
   | { kind: 'memory'; id: string; section: string; text: string; flag?: boolean }
   | { kind: 'docsOffer'; id: string; offerId: string }
   | Asked
+  | Peer
+
+/**
+ * §7 — a message between two conversations: one it received (`in`, its own
+ * journal entry) or one it sent (`out`, its `tell` call). `msgId` is what the
+ * inbox names, so an unread one can say so.
+ */
+interface Peer {
+  kind: 'peer'
+  id: string
+  dir: 'in' | 'out'
+  whoId: string | null
+  who: string
+  text: string
+  msgId?: string
+  /** `out` only: the tool refused it, and why. */
+  failed?: string
+}
 
 /**
  * Every run of calls folds, down to a run of one.
@@ -322,7 +341,7 @@ function rowsOf(items: Item[]): Row[] {
     // what follows is different from what came before. So does an undo, which
     // is the loudest possible break in what a turn did.
     flush()
-    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'memory' || it.kind === 'docsOffer' || it.kind === 'question') rows.push({ ...it })
+    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'memory' || it.kind === 'docsOffer' || it.kind === 'question' || it.kind === 'peer') rows.push({ ...it })
     else rows.push({ kind: 'text', id: it.id, text: it.text })
   }
   flush()
@@ -360,6 +379,7 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
   if (!turns.length) return buckets
   const byCall = new Map<string, Extract<Item, { kind: 'tool' }>>()
   const byQuestion = new Map<string, Asked>()
+  const byTell = new Map<string, Peer>()
   let ti = 0
 
   for (const e of transcriptOf(sessionId)) {
@@ -389,6 +409,11 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
       })
       continue
     }
+    if (e.type === 'agent.peer_message') {
+      const m = e.payload as PeerMessage
+      into.push({ kind: 'peer', id: e.id, dir: 'in', whoId: m.fromId, who: peerTitle(m.fromId, m.fromTitle), text: m.text, msgId: m.id })
+      continue
+    }
     if (e.type === 'docs.offered') {
       const offerId = (e.payload as { offerId?: string })?.offerId
       if (offerId) into.push({ kind: 'docsOffer', id: e.id, offerId })
@@ -407,6 +432,17 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
       const memo = memoryLine(p?.tool, p?.input)
       if (memo) {
         if (memo !== 'read') into.push({ kind: 'memory', id: e.id, ...memo })
+        continue
+      }
+      // §7 — a message to another conversation is something said, too.
+      if (p?.tool === TELL_TOOL) {
+        const to = String(p.input?.to ?? '').trim()
+        const x = peerByRef(to)
+        const said: Peer = {
+          kind: 'peer', id: e.id, dir: 'out', whoId: x?.id ?? null, who: x?.title || to, text: String(p.input?.message ?? ''),
+        }
+        if (p.toolUseId) byTell.set(p.toolUseId, said)
+        into.push(said)
         continue
       }
       // A question is something said, not something done: it is shown as
@@ -441,6 +477,11 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
         unasked?: PermissionMode
         answers?: AgentAnswers
       }
+      const told = p?.toolUseId ? byTell.get(p.toolUseId) : undefined
+      if (told) {
+        if (p?.isError) told.failed = p.stdout ?? 'not sent'
+        continue
+      }
       const asked = p?.toolUseId ? byQuestion.get(p.toolUseId) : undefined
       if (asked) {
         asked.answers = p?.answers ?? null
@@ -467,6 +508,29 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
 }
 
 const MEMORY_TOOL = /^mcp__cockpit__memory_(note|state|read|outdate)$/
+const TELL_TOOL = 'mcp__cockpit__tell'
+
+/** The conversation a `tell` named: by its ref, as `peers` gave it, or by its title. */
+function peerByRef(to: string): Conversation | undefined {
+  const want = to.toLowerCase()
+  return (
+    state.agents.find((a) => conversationRef(a.id).toLowerCase() === want) ??
+    state.agents.find((a) => a.title.toLowerCase() === want)
+  )
+}
+
+/** §7 — the last message it has not read: where "Let it answer" goes. */
+const lastUnread = computed(() => selected.value?.inbox?.at(-1)?.id ?? null)
+function unread(r: Peer): boolean {
+  return r.dir === 'in' && !!selected.value?.inbox?.some((m) => m.id === r.msgId)
+}
+function openPeer(id: string | null): void {
+  const c = id ? state.agents.find((a) => a.id === id) : undefined
+  if (c) openConversation(c)
+}
+async function letAnswer(): Promise<void> {
+  if (selected.value) await answerPeers(selected.value)
+}
 
 function memoryLine(
   tool: string | undefined,
@@ -1729,6 +1793,26 @@ function ago(ts: number): string {
                 <span class="memo-sec">{{ r.section }}</span>
                 <span class="memo-tx">{{ r.text }}</span>
               </p>
+              <!-- §7 — said between two conversations: to one, or from one. -->
+              <div v-else-if="r.kind === 'peer'" class="peer" :class="[r.dir, { failed: !!r.failed }]" :data-anchor="r.id">
+                <div class="peer-h">
+                  <component :is="r.dir === 'in' ? MessageSquareText : Send" class="sm" />
+                  <span>{{ r.dir === 'in' ? 'From' : 'To' }}</span>
+                  <button class="peer-who" :disabled="!r.whoId" :title="r.whoId ? 'Open it' : undefined" @click="openPeer(r.whoId)">{{ r.who }}</button>
+                  <span v-if="r.failed" class="peer-st" :title="r.failed">not sent</span>
+                  <span v-else-if="unread(r)" class="peer-st">unread</span>
+                  <span class="grow" />
+                  <button
+                    v-if="r.msgId && r.msgId === lastUnread && selected && !isBusy(selected)"
+                    class="peer-go"
+                    title="Start a turn here with the message at its top"
+                    @click="letAnswer"
+                  >
+                    Let it answer
+                  </button>
+                </div>
+                <p class="peer-tx">{{ r.text }}</p>
+              </div>
               <DocsOfferLine v-else-if="r.kind === 'docsOffer'" :data-anchor="r.id" :offer-id="r.offerId" />
               <p v-else-if="r.kind === 'compact'" class="undone compacted" :data-anchor="r.id">
                 <FoldVertical class="sm" />
@@ -2492,6 +2576,51 @@ function ago(ts: number): string {
 .undone.handoff .lucide { width: 11px; height: 11px; color: var(--text-dim); }
 .memo-sec { flex: none; color: var(--text-dim); font-weight: 600; }
 .memo-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* §7 — a message between two conversations: something said, so it is a
+   quote with its sender, not a tool card. Unread ones keep the accent. */
+.peer {
+  margin: 10px 0;
+  padding: 7px 10px 8px;
+  border-left: 2px solid var(--line-strong);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--panel-raised);
+  font-size: var(--fs-sm);
+}
+.peer.in { border-left-color: var(--accent); }
+.peer.failed { opacity: 0.6; }
+.peer-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.peer-h .lucide { flex: none; width: 12px; height: 12px; }
+.peer-who {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.peer-who:not(:disabled):hover { color: var(--text); text-decoration: underline; }
+.peer-st { flex: none; color: var(--accent); }
+.peer.failed .peer-st { color: var(--warn); }
+.peer-go {
+  flex: none;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  background: var(--accent-soft);
+  transition: background var(--dur-1) var(--ease-soft);
+}
+.peer-go:hover { background: var(--accent-soft-strong, var(--accent-soft)); filter: brightness(1.15); }
+.peer-tx { margin: 4px 0 0; white-space: pre-wrap; color: var(--text); line-height: 1.5; }
 
 /* Queued: the same bubble, at the weight of something that has not happened.
    Its ✕ only appears on hover — it is an escape hatch, not a decoration. */

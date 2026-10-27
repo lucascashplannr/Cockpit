@@ -113,8 +113,12 @@
  * the `peers` tool. An older core ignores the flag and refuses the start on
  * the lock, which reads as Alongside not working rather than as a service
  * nobody restarted.
+ *
+ * 2.36 — messages between conversations: the `tell` tool, `Conversation.inbox`
+ * and the `agent.peer_message` event. An older core has no inbox, so nothing
+ * shows as waiting.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 35 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 36 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

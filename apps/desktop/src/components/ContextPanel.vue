@@ -6,7 +6,7 @@ import AgentTab from './tabs/AgentTab.vue'
 import ConversationDrawer from './ConversationDrawer.vue'
 import Wordmark from './brand/Wordmark.vue'
 import {
-  activeAgentScope, activeWorkspace, attentionOf, closeFresh, hasNewTab, closeSplit, closeTab, isBusy, isLive,
+  activeAgentScope, activeWorkspace, attentionOf, closeFresh, hasMail, hasNewTab, closeSplit, closeTab, isBusy, isLive,
   openThreadFor, pairTabs, pickThread, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
   stripFor,
 } from '../core/store.js'
@@ -100,11 +100,17 @@ function commitRename(c: Conversation): void {
 function dotOf(c: Conversation): string {
   if (attentionOf(c) !== 'none') return 'you'
   if (isBusy(c)) return 'work'
+  if (hasMail(c)) return 'mail'
   return isLive(c) ? 'open' : 'done'
+}
+/** A dot only when there is news: working, needs you, or a message waiting. */
+function news(c: Conversation): boolean {
+  const d = dotOf(c)
+  return d === 'work' || d === 'you' || d === 'mail'
 }
 function stateWord(c: Conversation): string {
   const d = dotOf(c)
-  return d === 'you' ? 'needs you' : d === 'work' ? 'working' : d === 'open' ? 'open' : 'finished'
+  return d === 'you' ? 'needs you' : d === 'work' ? 'working' : d === 'mail' ? 'a message is waiting' : d === 'open' ? 'open' : 'finished'
 }
 function press(c: Conversation, e: MouseEvent): void {
   // The click a drag ends on is the end of the drag, not a choice of tab.
@@ -275,13 +281,13 @@ function single(): void {
                   droppair: drag.mode === 'pair' && drag.target === e.key,
                 }"
                 :style="drag.moved && drag.key === e.key ? { transform: 'translateX(' + drag.dx + 'px)' } : undefined"
-                :title="e.conv.title + (dotOf(e.conv) === 'work' || dotOf(e.conv) === 'you' ? ' — ' + stateWord(e.conv) : '')"
+                :title="e.conv.title + (news(e.conv) ? ' — ' + stateWord(e.conv) : '')"
                 @pointerdown="down($event, e)"
                 @click="renaming === e.conv.id || press(e.conv, $event)"
                 @dblclick="startRename(e.conv)"
                 @mousedown.middle.prevent="closeOne(e.conv)"
               >
-                <span v-if="dotOf(e.conv) === 'work' || dotOf(e.conv) === 'you'" class="dot" :class="dotOf(e.conv)" />
+                <span v-if="news(e.conv)" class="dot" :class="dotOf(e.conv)" />
                 <input
                   v-if="renaming === e.conv.id"
                   ref="renameEl"
@@ -313,12 +319,12 @@ function single(): void {
                   <div
                     class="half"
                     :class="{ active: c.id === thread?.id }"
-                    :title="c.title + (dotOf(c) === 'work' || dotOf(c) === 'you' ? ' — ' + stateWord(c) : '')"
+                    :title="c.title + (news(c) ? ' — ' + stateWord(c) : '')"
                     @click="renaming === c.id || press(c, $event)"
                     @dblclick="startRename(c)"
                     @mousedown.middle.prevent="closeOne(c)"
                   >
-                    <span v-if="dotOf(c) === 'work' || dotOf(c) === 'you'" class="dot" :class="dotOf(c)" />
+                    <span v-if="news(c)" class="dot" :class="dotOf(c)" />
                     <input
                       v-if="renaming === c.id"
                       ref="renameEl"
@@ -540,6 +546,8 @@ function single(): void {
 .dot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
 .dot.work { background: var(--agent); }
 .dot.you { box-shadow: inset 0 0 0 1.75px var(--warn); }
+/* §7 — another conversation left it a message, and nothing will read it yet. */
+.dot.mail { box-shadow: inset 0 0 0 1.75px var(--accent); }
 /* A tab arriving or leaving, and the others closing up — short, and only
    about the tab itself. */
 .tab-enter-active, .tab-leave-active { transition: opacity 140ms var(--ease-soft), transform 140ms var(--ease-soft); }

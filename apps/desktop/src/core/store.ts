@@ -2255,13 +2255,34 @@ export function startFresh(scope: AgentScope): void {
 
 /** Worth a place outside History: running, asking for you, or on screen. */
 function inPlay(c: Conversation): boolean {
-  return c.hiddenAt === null && (isLive(c) || attentionOf(c) !== 'none')
+  return c.hiddenAt === null && (isLive(c) || attentionOf(c) !== 'none' || !!c.inbox?.length)
 }
 
-/** Its tab was closed, and nothing has happened in it since. */
+/** Its tab was closed, and nothing has happened in it since — a message left for it counts. */
 function tabClosed(c: Conversation): boolean {
   const at = threads.closedAt[c.id]
-  return at !== undefined && at >= lastActivityAt(c)
+  const mail = c.inbox?.at(-1)?.sentAt ?? 0
+  return at !== undefined && at >= Math.max(lastActivityAt(c), mail)
+}
+
+/**
+ * §7 — another conversation left it a message it has not read, and it is not
+ * working, so nothing will read it until someone starts a turn.
+ */
+export function hasMail(c: Conversation): boolean {
+  return !!c.inbox?.length && !isBusy(c)
+}
+
+/** §7 — the turn a message waits for, started on purpose: the message is at its top. */
+export async function answerPeers(c: Conversation): Promise<boolean> {
+  const from = [...new Set((c.inbox ?? []).map((m) => peerTitle(m.fromId, m.fromTitle)))]
+  if (!from.length) return false
+  return sendTurn(c.id, from.length === 1 ? 'Answer the message from “' + from[0] + '”.' : 'Answer the messages from ' + from.map((t) => '“' + t + '”').join(' and ') + '.')
+}
+
+/** A conversation's title now — it is named after its first turn, which can be after it wrote. */
+export function peerTitle(id: string, fallback: string): string {
+  return state.agents.find((a) => a.id === id)?.title || fallback
 }
 
 /**

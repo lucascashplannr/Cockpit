@@ -213,7 +213,7 @@ export function handle(c: Conversation, own: Set<string>, msg: JsonRpc): Record<
     case 'tools/call': {
       const name = msg.params?.name ?? ''
       if (docsTools.NAMES.includes(name)) return reply(docsTools.call(c, name, msg.params?.arguments ?? {}))
-      if (peersTools.NAMES.includes(name)) return reply(peersTools.call(c, name))
+      if (peersTools.NAMES.includes(name)) return reply(peersTools.call(c, name, msg.params?.arguments ?? {}))
       return reply(call(c, own, name, msg.params?.arguments ?? {}))
     }
     default:
