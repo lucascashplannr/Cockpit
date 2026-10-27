@@ -2440,20 +2440,6 @@ export function pickThread(scope: AgentScope, id: string, beside = false): void 
   pinThread(scope, id)
 }
 
-/**
- * Any conversation beside the one on screen — running or long finished, from
- * History. Already its partner, it just takes the composer.
- */
-export function openBeside(scope: AgentScope, id: string): void {
-  const open = threads.fresh[scopeKey(scope)] ? null : openThreadFor(scope)
-  if (!open || open.id === id) return
-  if (pairOf(scope, open.id)?.includes(id)) {
-    pinThread(scope, id)
-    return
-  }
-  pairTabs(scope, open.id, id)
-}
-
 /** ⌘⇧[ and ⌘⇧] — the next conversation along the strip, round the end. */
 export function stepThread(by: 1 | -1): void {
   const scope = activeAgentScope.value

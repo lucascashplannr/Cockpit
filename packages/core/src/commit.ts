@@ -1,4 +1,5 @@
-import { basename } from 'node:path'
+import { lstatSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { newId } from '@cockpit/shared'
 import type { CommitPreview, PlanPreview, PlanStep } from '@cockpit/shared'
 import { run, which } from './exec.js'
@@ -176,15 +177,20 @@ export async function plan(input: CommitInput): Promise<{
       return { ok: false, detail: w.name + ' has no commit to amend', plan: null, preview: rows }
     }
 
-    const spec = paths ? ' -- ' + paths.map((p) => '"' + p + '"').join(' ') : ''
-    if (paths) {
+    const quote = (list: string[]) => ' -- ' + list.map((p) => '"' + p + '"').join(' ')
+    const spec = paths ? quote(paths) : ''
+    // Only what is still on disk needs adding: `git commit -- <path>` records a
+    // deletion by itself, and `git add` on a deletion already staged has
+    // nothing left to match and stops the whole plan.
+    const present = paths?.filter((p) => onDisk(join(w.path, p))) ?? []
+    if (present.length) {
       steps.push({
-        title: w.name + ': stage ' + paths.length + ' file(s)',
-        command: 'git add -A' + spec,
+        title: w.name + ': stage ' + present.length + ' file(s)',
+        command: 'git add -A' + quote(present),
         cwd: w.path,
         destructive: false,
       })
-    } else if (input.all) {
+    } else if (!paths && input.all) {
       steps.push({
         title: w.name + ': stage everything',
         command: 'git add -A',
@@ -292,6 +298,16 @@ export async function plan(input: CommitInput): Promise<{
 }
 
 export { basename }
+
+/** lstat, not exists: a dangling symlink is still a file to commit. */
+function onDisk(path: string): boolean {
+  try {
+    lstatSync(path)
+    return true
+  } catch {
+    return false
+  }
+}
 
 /**
  * §16 — taking the last commit back, while it is still only here.

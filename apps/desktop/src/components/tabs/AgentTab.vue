@@ -1526,11 +1526,6 @@ function ago(ts: number): string {
           <Hand class="sm" /> needs you
         </span>
         <span class="grow" />
-        <!-- Nothing at this end any more. All three instruments float over the
-             bar from `ContextPanel` — the ✕ and the history because the
-             invitation, which has no bar, needs them in the same corner, and
-             the stop button because it belongs between those two rather than
-             behind them. What this bar carries here is the room they need. -->
       </div>
 
       <!-- The scroller and the one thing that floats over it. Wrapped, so
@@ -1980,11 +1975,7 @@ function ago(ts: number): string {
 }
 
 /* ── the empty conversation: the question is the page ────────────────── */
-/* Both of these carry the anchor the floating instruments hang from
-   (ContextPanel): whichever of the two is on screen *is* the top of the
-   conversation, and the warnings above it are not part of it. */
 .hero {
-  anchor-name: --convtop;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -2054,9 +2045,8 @@ function ago(ts: number): string {
   margin-right: auto;
 }
 .agent { --measure: 780px; --pad: 20px; }
-/* §7 — side by side: the half without the composer. Its bar is not the one
-   the column's instruments hang from, and its box only says what was typed. */
-.agent.passive .tbar { anchor-name: none; }
+/* §7 — side by side: the half without the composer. Its box only says what
+   was typed. */
 .agent.passive .thread { opacity: 0.86; }
 .standin {
   display: block;
@@ -2076,7 +2066,6 @@ function ago(ts: number): string {
 .standin:hover { border-color: var(--line-strong); color: var(--text-muted); }
 
 .tbar {
-  anchor-name: --convtop;
   flex: none;
   display: flex;
   align-items: center;
@@ -2089,17 +2078,9 @@ function ago(ts: number): string {
      to be centred in, and only on the threads that had finished. `--band-h` is
      that tall case made permanent, and the tab strip beside this one is held to
      the same figure so the two rules fall on one line (tokens.css).
-
-     The right padding is not symmetry either: it is the room the three floating
-     instruments need — the history button, the stop and the ✕, none of which
-     live in this bar any more. They sit over it rather than inside it so that
-     the invitation, which has no bar, has them in the same corner. 114 is their
-     box exactly — 12 of margin, then 28 of ✕, 28 of stop and 44 of history a
-     pixel apart. Buttons of one set touch; the 9 that separates the cluster
-     from the title line is this bar's own gap, which falls after the last thing
-     on it because `.grow` is the item that follows. */
+     Drawn only in a side-by-side pane; a single pane has the tab bar. */
   height: var(--band-h);
-  padding: 0 114px 0 20px;
+  padding: 0 20px;
   background: var(--surface-work);
   border-bottom: 1px solid var(--line-soft);
 }

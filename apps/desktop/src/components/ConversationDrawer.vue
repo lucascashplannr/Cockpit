@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 import type { Conversation } from '@cockpit/shared'
 import { ChevronDown, CircleStop, EyeOff, Pencil, Plus, RotateCcw, Sparkles, Trash2, X } from '@lucide/vue'
 import {
-  activeAgentScope, attentionOf, deleteConversation, openBeside, engineName, isBusy, isLive, keptOnRemove,
+  activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive, keptOnRemove,
   openConversation, openThreadFor, pinThread, removedOn, renameConversation, restoreConversation, sessionsForScope, startFresh, state,
   stopConversation,
 } from '../core/store.js'
@@ -41,18 +41,9 @@ const ATTENTION_TEXT: Record<Attention, string> = {
   failed: 'the engine failed',
 }
 
-function open(c: Conversation, e?: MouseEvent): void {
-  if (e && (e.metaKey || e.ctrlKey) && canBeside(c)) return beside(c)
+/** Into a tab of its own; side by side is a drag in the tab bar. */
+function open(c: Conversation): void {
   if (scope.value) pinThread(scope.value, c.id)
-  state.historyOpen = false
-}
-
-/** §7 — side by side with the one on screen, whether or not it is running. */
-function canBeside(c: Conversation): boolean {
-  return !!selected.value && selected.value.id !== c.id
-}
-function beside(c: Conversation): void {
-  if (scope.value) openBeside(scope.value, c.id)
   state.historyOpen = false
 }
 
@@ -210,7 +201,7 @@ function dotClass(c: Conversation): string {
       >
         <!-- A field cannot live in a button, so the row is not one while its
              name is being typed. -->
-        <component :is="editing === c.id ? 'div' : 'button'" class="pick" @click="editing === c.id || open(c, $event)">
+        <component :is="editing === c.id ? 'div' : 'button'" class="pick" @click="editing === c.id || open(c)">
           <span class="crow">
             <span class="dot" :class="dotClass(c)" />
             <input

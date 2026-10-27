@@ -43,29 +43,11 @@ const waiting = computed(
   () => conversations.value.filter((c) => attentionOf(c) !== 'none').length,
 )
 
-/**
- * The ✕, next to the list it belongs with.
- *
- * It was the last thing in the conversation's own bar (AgentTab), which put it
- * on the far side of the history button and made the pair read backwards: the
- * one that opens a list of threads, then the one that shows none of them. They
- * are the same question — which conversation is on screen — so they are one
- * cluster now, in the order you would say them, and the bar keeps the room.
- *
- * There is nothing to hide when no thread is showing, so in the invitation it
- * is simply absent and the history button has the corner to itself.
- */
+/** The conversation that has the composer. */
 const thread = computed(() => openThreadFor(activeAgentScope.value))
 
-function hide(): void {
-  const s = activeAgentScope.value
-  if (s) startFresh(s)
-}
-
 /**
- * §6 — the engine, let go. Between the two above rather than behind them: this
- * is the middle of the three questions the corner answers — which conversation,
- * whether its process is still up, and none of them.
+ * §6 — the engine, let go, beside the history at the end of the tab bar.
  *
  * It was the last thing in the conversation's bar (AgentTab), which is where it
  * had always been; nothing about what it does has changed. A conversation that
@@ -85,7 +67,6 @@ async function stop(): Promise<void> {
  */
 const strip = computed(() => stripFor(activeAgentScope.value))
 const pair = computed(() => splitFor(activeAgentScope.value))
-const showStrip = computed(() => !!activeAgentScope.value)
 
 function closeOne(c: Conversation): void {
   const s = activeAgentScope.value
@@ -274,8 +255,8 @@ function single(): void {
       <!-- The bar that used to head this column is above it now, across the
            window (ScopeBar): none of what it carried was about the
            conversation. What is left here is the conversation. -->
-      <div class="body" :class="{ striped: showStrip }">
-        <nav v-if="showStrip" ref="navEl" class="strip" :class="{ dragging: drag.moved }" aria-label="Conversations here">
+      <div class="body">
+        <nav ref="navEl" class="strip" :class="{ dragging: drag.moved }" aria-label="Conversations here">
           <!-- Browser tabs: one per conversation, the new one added at the end,
                the + always after the last. A dot only when there is news. -->
           <span v-if="drag.moved && drag.target && drag.mode !== 'pair'" class="caret" :style="{ left: drag.caret + 'px' }" />
@@ -382,14 +363,11 @@ function single(): void {
               :passive="c.id !== thread?.id"
             />
           </template>
-          <AgentTab v-else :workspace="w" :bare="showStrip" />
+          <AgentTab v-else :workspace="w" bare />
         </div>
 
-        <!-- Over the conversation's own bar, at the end of it — and over the
-             empty top of the invitation when there is no thread yet, which is
-             the one moment "what did I ask here before" is most worth asking.
-             One place, both states: the bar has room reserved for them (`.tbar`
-             in AgentTab) rather than the buttons having two homes. -->
+        <!-- At the end of the tab bar: the list of every conversation here,
+             closed ones too, and the stop for the one on screen. -->
         <div class="instr">
           <button
             class="hist"
@@ -411,14 +389,6 @@ function single(): void {
             @click="stop"
           >
             <CircleStop class="sm" />
-          </button>
-          <button
-            v-if="thread && !showStrip"
-            class="icon-btn"
-            title="Show an empty composer here — this conversation stays in the history, and keeps running if it is mid-turn"
-            @click="hide"
-          >
-            <X class="sm" />
           </button>
         </div>
 
@@ -625,48 +595,15 @@ function single(): void {
   background: var(--accent);
   pointer-events: none;
 }
-.striped .instr { top: 8px; }
-.striped :deep(.drawer) { top: 44px; }
-.striped :deep(.tbar) { padding-right: 20px; }
+.body :deep(.drawer) { top: 44px; }
 
-/* At the end of the conversation's own bar, and in the same place when there
-   is no bar because there is no thread yet. Drawn here rather than inside
-   `.tbar` for exactly that reason — the invitation has no bar and needs it
-   most. `.tbar` keeps the room free (AgentTab), so the two never overlap.
-
-   Floating over a bar means the bar's own arithmetic is this pair's too: 28
-   tall under 10 of padding is the box `.icon-btn` gets inside `.tbar`, so both
-   marks sit on the same centre line as what is left in the bar. The history
-   button was 26 at 9, which is the same centre line two pixels up — near enough
-   to look like a mistake rather than a difference, which is what it was.
-
-   A fixed width for the same reason. The room `.tbar` keeps free is a constant,
-   so a button that grew with its count set the gap to the ✕: wide at 3, tight
-   at 30, and unpredictable at the moment a tenth conversation appeared. 44 is
-   the icon, its number and the air around them at any count worth showing; with
-   no count at all there is no number to hold, and it is a plain 28 like the ✕. */
-/* One pixel apart: buttons of one set touch, and these three are one set —
-   which conversation is on screen, whether its engine is still up, and none of
-   them. The bar underneath keeps room for all three (`.tbar` in AgentTab), so
-   the stop button appearing when a conversation goes live moves the history
-   button along rather than over anything. */
+/* Over the right end of the tab bar, whose padding keeps the room. One pixel
+   apart: buttons of one set touch. The history button has a fixed width so the
+   count never moves the stop beside it. */
 .instr {
   position: absolute;
   z-index: 5;
-  /* Centred in the bar underneath: `.tbar` is a stated 49px — 48 of content
-     over its 1px rule — so a 28px instrument sits at 10 whether or not the bar
-     is carrying anything else. The invitation has no bar and no ✕; the history
-     button lands in the same corner either way.
-
-     Measured from the top of the conversation rather than the top of the
-     column, because those are not always the same line: a scope with a lock on
-     it opens with a warning band above the bar (AgentTab), and 10 from the
-     column put these instruments *inside* that band — floating on a warning
-     they have nothing to do with. `--convtop` is the bar, or the invitation
-     when there is no bar; the plain 10 stays underneath for anything that
-     cannot resolve an anchor. */
-  top: 10px;
-  top: calc(anchor(--convtop top) + 10px);
+  top: 8px;
   right: 12px;
   display: flex;
   align-items: center;

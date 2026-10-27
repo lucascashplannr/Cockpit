@@ -252,7 +252,7 @@ Le verrou porte sur des **chemins**, jamais sur des topics : ça fonctionne iden
 
 ### Alongside — partager un dossier, sur demande
 
-Exclusif par défaut. Quand la personne le choisit (le verrou de la barre propose *Work alongside*), une seconde conversation démarre dans le même dossier : son bail est **partagé**, et le bail exclusif de la conversation déjà en cours le devient aussi. Un bail sans conversation vivante derrière lui ne se partage jamais. Une conversation qui a travaillé Alongside le reste quand elle est reprise.
+Exclusif par défaut. Quand une conversation en cours tient le dossier, Send reste actif et demande d'abord : « Work alongside another conversation? » (*Send anyway*). Si la personne confirme, la seconde conversation démarre dans le même dossier : son bail est **partagé**, et le bail exclusif de la conversation déjà en cours le devient aussi. Un bail sans conversation vivante derrière lui ne se partage jamais. Une conversation qui a travaillé Alongside le reste quand elle est reprise.
 
 Ce que le partage exige, et qui est livré avec lui :
 
@@ -459,9 +459,11 @@ Trois niveaux, et un seul endroit chacun :
 | le checkout | la barre, toute la largeur | identité, état, verbes git et runtime |
 | la fenêtre | tout à droite de la barre | le contrôle des trois vues |
 | un outil | la bande d'onglets, **dans** la colonne de revue | Diff / Code / Servers / Journal / Terminal / **Mémoire**, et à terme les actions propres à l'outil ouvert |
-| la conversation | flottant en haut à droite du fil | l'historique des conversations, et son tiroir juste dessous |
+| la conversation | la barre d'onglets, au-dessus du fil | une conversation par onglet, `+` pour une nouvelle ; l'historique au bout de la barre |
 
 La barre a un temps porté un boîtier « instruments de la conversation » avec l'Historique et la Mémoire. Ni l'un ni l'autre ne parle du checkout : une seule barre s'était mise à porter deux choses qui n'y avaient rien à faire. La **mémoire est un outil de revue** — c'est un document qu'on lit *pendant* qu'on écrit un prompt, ce qu'un calque par-dessus le fil est précisément incapable de permettre. L'**historique appartient au fil** : il flotte en haut à droite de la conversation, à la place même où son tiroir était déjà accroché, et il y est aussi quand il n'y a pas encore de fil — le moment où « qu'est-ce que j'ai déjà demandé ici » se pose le plus.
+
+*2026-10-26 — la conversation a ses onglets.* Avec Alongside, plusieurs conversations tournent au même endroit ; il fallait les voir et passer de l'une à l'autre. Au-dessus du fil, toujours, même pour une seule : une barre d'onglets comme celle d'un navigateur. Ouvrir une conversation lui donne un onglet ; celles qui travaillent ou attendent la personne en prennent un d'elles-mêmes. `×` ferme l'onglet, pas la conversation (elle reste dans l'Historique et continue de tourner). `+` ouvre « New conversation » à droite du dernier onglet. On glisse un onglet pour le déplacer ; lâché sur un autre, les deux s'ouvrent côte à côte — celui qu'on a pris à droite — et ne font plus qu'un onglet, deux titres séparés d'un filet. Double-clic : renommer. `⌘⇧[` / `⌘⇧]` passent d'un onglet à l'autre. Les conversations ne sont pas dans la liste de gauche : on les y a essayées, elles l'encombraient.
 
 La bande d'onglets est une bande d'onglets, pas un second en-tête : 44px sur le fond de sa colonne, sans surface surélevée — deux bandeaux surélevés empilés se lisaient comme un en-tête dessiné deux fois.
 
