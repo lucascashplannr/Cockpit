@@ -203,6 +203,8 @@ export interface NormalizedEvent {
   mode?: PermissionMode
   /** `hook` only: it fired inside a sub-agent. */
   subagent?: boolean
+  /** `hook` only: which of the callbacks registered at `initialize`. */
+  hook?: string
   /** `permission` / `control` / `control_done` / `control_error`: the id of the request. */
   requestId?: string
   /** `mcp` only: which hosted server, and the JSON-RPC message for it. */
@@ -311,6 +313,8 @@ export interface EngineSpec {
     mcp?(requestId: string, response: Record<string, unknown> | null): string
     /** The answer to a `hook`: text the model reads after the tool's result, or nothing. */
     hook?(requestId: string, context: string): string
+    /** The answer to the edit hook: why the edit is held, or nothing to let it through. */
+    hold?(requestId: string, reason: string): string
   }
 }
 
@@ -589,8 +593,20 @@ const claudeEngine: EngineSpec = {
         return [{ kind: 'mcp', requestId, server: String(r.server_name ?? ''), message: r.message as Record<string, unknown> }]
       // `agent_id` is there only inside a sub-agent, whose context is not the
       // conversation's: a message read there is a message the agent never sees.
-      if (r.subtype === 'hook_callback')
-        return [{ kind: 'hook', requestId, subagent: !!(r.input as { agent_id?: unknown } | undefined)?.agent_id }]
+      if (r.subtype === 'hook_callback') {
+        const h = (r.input ?? {}) as { agent_id?: unknown; tool_name?: unknown; tool_input?: unknown }
+        return [
+          {
+            kind: 'hook',
+            requestId,
+            hook: String(r.callback_id ?? ''),
+            toolUseId: r.tool_use_id == null ? undefined : String(r.tool_use_id),
+            subagent: !!h.agent_id,
+            tool: typeof h.tool_name === 'string' ? h.tool_name : undefined,
+            input: h.tool_input && typeof h.tool_input === 'object' ? (h.tool_input as Record<string, unknown>) : undefined,
+          },
+        ]
+      }
       if (r.subtype !== 'can_use_tool') return [{ kind: 'control', requestId }]
       const input = (r.input ?? {}) as Record<string, unknown>
       return [
@@ -728,7 +744,22 @@ const claudeEngine: EngineSpec = {
           ...(memory ? { sdkMcpServers: [memoryTools.SERVER] } : {}),
           // §7 — after every tool call, a chance to hand a working agent the
           // messages other conversations left it, instead of at its next turn.
-          hooks: { PostToolUse: [{ hookCallbackIds: [PEER_HOOK] }] },
+          hooks: {
+            PostToolUse: [{ hookCallbackIds: [PEER_HOOK] }],
+            // §7 — an edit to a file another running conversation changed.
+            PreToolUse: [{ matcher: [...EDIT_TOOLS].join('|'), hookCallbackIds: [HOLD_HOOK] }],
+          },
+        },
+      }),
+    hold: (requestId, reason) =>
+      JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          response: reason
+            ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
+            : {},
         },
       }),
     hook: (requestId, context) =>
@@ -966,7 +997,7 @@ interface Live {
   /** A turn is in flight: the next one queues instead of being written. */
   busy: boolean
   /** What a tool was called with, kept until its result comes back. */
-  calls: Map<string, { tool: string; input: Record<string, unknown>; mode: PermissionMode }>
+  calls: Map<string, { tool: string; input: Record<string, unknown>; mode: PermissionMode; at: number }>
   /** Calls the engine asked a person about, by tool use id — see `ranUnasked`. */
   asked: Set<string>
   /**
@@ -1000,6 +1031,8 @@ interface Live {
   memoryOwn: Set<string>
   /** §7 — which conversations it was last told were working beside it. See `peersNews`. */
   peersSeen: string
+  /** §7 — files whose edit was held once, and when: held again only after another change. See `heldEdit`. */
+  held: Map<string, number>
   /** §16 — what the turn in flight has reported, until its row is written. */
   usage: NormalizedEvent['usage'] | null
   /** The window as the most recent call left it. See `contextTokens`. */
@@ -2022,6 +2055,7 @@ async function launch(
     idle: null,
     memorySeen,
     memoryOwn: new Set(),
+    held: new Map(),
     peersSeen: peersSignature(peersNow),
   }
   live.set(session.id, l)
@@ -2110,7 +2144,7 @@ async function launch(
         case 'tool': {
           const id = ev.toolUseId ?? ''
           const input = ev.input ?? {}
-          l.calls.set(id, { tool: ev.tool ?? 'tool', input, mode: l.engineMode ?? l.mode })
+          l.calls.set(id, { tool: ev.tool ?? 'tool', input, mode: l.engineMode ?? l.mode, at: Date.now() })
           append({
             type: 'agent.tool_use',
             actor,
@@ -2123,7 +2157,10 @@ async function launch(
             },
           })
           // §12 — attribution: this is what makes the diff splittable later.
-          for (const path of ev.paths ?? []) {
+          // Only for a call that writes: a Read was recorded as a change, so an
+          // agent "changed" every file it looked at — in the Diff, in `peers`,
+          // and in what per-file Undo leaves alone.
+          if (EDIT_TOOLS.has(ev.tool ?? '')) for (const path of ev.paths ?? []) {
             for (const wsId of session.workspaceIds)
               recordTouch(wsId, relativeTo(cwd, path), actor, session.id)
           }
@@ -2194,7 +2231,14 @@ async function launch(
 
         // §7 — mid-turn: what other conversations said, read after this call.
         case 'hook': {
-          if (!ev.requestId || !spec.control?.hook) break
+          if (!ev.requestId) break
+          if (ev.hook === HOLD_HOOK) {
+            if (!spec.control?.hold) break
+            const reason = heldEdit(l, ev.tool ?? '', ev.input ?? {}, ev.toolUseId)
+            child.stdin?.write(spec.control.hold(ev.requestId, reason) + '\n')
+            break
+          }
+          if (!spec.control?.hook) break
           const mail = ev.subagent ? '' : takeInbox(session.id)
           child.stdin?.write(spec.control.hook(ev.requestId, mail) + '\n')
           if (mail) changed = true
@@ -2513,9 +2557,104 @@ function peersFor(c: Conversation): peersTools.Peer[] {
 peersTools.provide(peersFor, tell)
 
 const PEER_HOOK = 'cockpit_peer_mail'
+const HOLD_HOOK = 'cockpit_hold_edit'
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
-/** At most this many messages from one conversation in one turn — two working agents can talk, not chatter. */
-const TELL_PER_TURN = 8
+/**
+ * §7 — a soft claim. An edit to a file another *running* conversation changed
+ * since this one last wrote it is held once, with who and when, so the agent
+ * looks before it writes over half of someone else's change. Asked again, it
+ * goes through: the agent has been told, and the decision is its own.
+ *
+ * Nothing is claimed explicitly — what an agent changed is what it is working
+ * on, and the touches already say that.
+ */
+export const HELD = 'Held by Cockpit: '
+
+function heldEdit(l: Live, tool: string, input: Record<string, unknown>, toolUseId?: string): string {
+  if (!EDIT_TOOLS.has(tool)) return ''
+  const raw = String(input.file_path ?? input.notebook_path ?? '')
+  if (!raw) return ''
+  const abs = isAbsolute(raw) ? resolve(raw) : resolve(l.session.paths[0] ?? '', raw)
+  const others = [...live.values()].filter((o) => o !== l && covers(o.session, abs))
+  if (!others.length) return ''
+  // The call being asked about was recorded as a touch when it arrived, a
+  // moment before this hook: it is not a write that has happened.
+  const before = (toolUseId && l.calls.get(toolUseId)?.at) || Date.now()
+  const mine = lastTouch(l.session, abs, before)
+  let by: { c: Conversation; at: number; busy: boolean } | null = null
+  for (const o of others) {
+    const at = lastTouch(o.session, abs)
+    if (at && (!by || at > by.at)) by = { c: o.session, at, busy: o.busy }
+  }
+  if (!by || by.at <= Math.max(mine, l.held.get(abs) ?? 0)) return ''
+  l.held.set(abs, Date.now())
+  forgetTouch(l.session, abs, before)
+  const ago = Math.max(1, Math.round((Date.now() - by.at) / 60_000))
+  const rel = relative(l.session.paths[0] ?? '', abs) || abs
+  return (
+    HELD + '“' + by.c.title + '” (' + conversationRef(by.c.id) + ') changed ' + rel + ' ' + ago + ' min ago' +
+    (by.busy ? ' and is working right now' : '') + '. ' +
+    'If you have not read the file since, read it so you edit what is there now; do not undo its change. ' +
+    'If your edit changes something it relies on, say so with mcp__cockpit__tell. Then make the edit again — it will go through.'
+  )
+}
+
+/**
+ * §7 — for the Diff: which conversations changed each of these files (paths
+ * relative to the workspace) since `since`. A touch is stored relative to the
+ * workspace or to the conversation's working directory; both are tried.
+ */
+export function changedBy(workspaceId: string, paths: string[], since: number): Map<string, { id: string; title: string }[]> {
+  const out = new Map<string, { id: string; title: string }[]>()
+  const wsPath = getWorkspace(workspaceId)?.path
+  if (!wsPath || !paths.length) return out
+  const want = new Set(paths)
+  const rows = getDb()
+    .prepare(
+      "SELECT DISTINCT session_id AS sid, path FROM touches WHERE workspace_id = ? AND actor = 'agent' AND session_id IS NOT NULL AND ts >= ?",
+    )
+    .all(workspaceId, since) as { sid: string; path: string }[]
+  const convs = new Map<string, Conversation | null>()
+  for (const r of rows) {
+    if (!convs.has(r.sid)) convs.set(r.sid, get(r.sid))
+    const c = convs.get(r.sid)
+    if (!c) continue
+    const bases = isAbsolute(r.path) ? [''] : [wsPath, c.paths[0]].filter((b): b is string => !!b)
+    for (const b of bases) {
+      const rel = relative(wsPath, resolve(b, r.path))
+      if (!want.has(rel)) continue
+      const list = out.get(rel) ?? []
+      if (!list.some((x) => x.id === c.id)) list.push({ id: c.id, title: c.title || 'untitled' })
+      out.set(rel, list)
+      break
+    }
+  }
+  return out
+}
+
+/** This conversation's touches of this file, by any reading of the stored path, newest first. */
+function touchesOf(c: Conversation, abs: string): { rowid: number; ts: number }[] {
+  const rows = getDb()
+    .prepare("SELECT rowid, workspace_id AS ws, path, ts FROM touches WHERE session_id = ? AND actor = 'agent' ORDER BY ts DESC LIMIT 500")
+    .all(c.id) as { rowid: number; ws: string; path: string; ts: number }[]
+  return rows.filter((r) => {
+    const bases = isAbsolute(r.path) ? [''] : [getWorkspace(r.ws)?.path, c.paths[0]].filter((b): b is string => !!b)
+    return bases.some((b) => resolve(b, r.path) === abs)
+  })
+}
+
+/** The last time this conversation changed this file, before `before`. */
+function lastTouch(c: Conversation, abs: string, before = Infinity): number {
+  return touchesOf(c, abs).find((r) => r.ts < before)?.ts ?? 0
+}
+
+/** A held edit changed nothing: the touch its call left is taken back, or the Diff would credit it. */
+function forgetTouch(c: Conversation, abs: string, since: number): void {
+  const del = getDb().prepare('DELETE FROM touches WHERE rowid = ?')
+  for (const r of touchesOf(c, abs)) if (r.ts >= since) del.run(r.rowid)
+}
+
 
 /**
  * §7 — a message from one conversation to another in its folders. Kept until
@@ -2537,8 +2676,18 @@ function tell(c: Conversation, to: string, text: string): { ok: boolean; text: s
   const sent = getDb()
     .prepare('SELECT COUNT(*) AS n FROM peer_messages WHERE from_session = ? AND sent_at >= ?')
     .get(c.id, since) as { n: number }
-  if (sent.n >= TELL_PER_TURN)
-    return { ok: false, text: 'Not sent: ' + TELL_PER_TURN + ' messages this turn already. Finish your work and say the rest in your answer.' }
+  if (sent.n >= peersTools.PER_TURN)
+    return { ok: false, text: 'Not sent: ' + peersTools.PER_TURN + ' messages this turn already. Finish your work and say the rest in your answer.' }
+  // One unread at a time per pair: a second note before the first is read is
+  // the first one, split in two.
+  const waiting = getDb()
+    .prepare('SELECT COUNT(*) AS n FROM peer_messages WHERE from_session = ? AND to_session = ? AND delivered_at IS NULL')
+    .get(c.id, p.id) as { n: number }
+  if (waiting.n)
+    return {
+      ok: false,
+      text: 'Not sent: “' + p.title + '” has not read your last message yet. It will; do not add to it unless what it should do has changed since — and then the person can say so.',
+    }
   const m: PeerMessage = {
     id: newId('pm_'),
     fromId: c.id,

@@ -53,7 +53,17 @@ export function provide(fn: (c: Conversation) => Peer[], tell: Send): void {
 }
 
 /** At most this long: a message is a note between colleagues, not a hand-over. */
-const TELL_MAX = 2000
+const TELL_MAX = 1200
+
+/** At most this many messages from one conversation in one turn. Enforced in agents.ts. */
+export const PER_TURN = 3
+
+/**
+ * A message that only acknowledges. It changes nothing for the one reading it,
+ * and costs it a step: refused, so two polite agents cannot thank each other
+ * back and forth.
+ */
+const ACK = /^(ok(ay)?|thanks?( you)?|thx|got it|noted|ack(nowledged)?|understood|sounds good|will do|great|perfect|done|roger|agreed|no problem|np|cool|👍|✅)\b[\s!.,:;—-]*([a-z' ]{0,30}[.!]?)?$/i
 
 export function peersOf(c: Conversation): Peer[] {
   return source(c)
@@ -72,8 +82,10 @@ export const TOOLS = [
   {
     name: TELL,
     description:
-      'Send a short message to another conversation working in your folders (its ref comes from `peers`). ' +
-      'Use it to coordinate: say you are about to change a file it is working on, ask it to hold off, or answer a message it sent you. ' +
+      'Send a message to another conversation working in your folders (its ref comes from `peers`) — only when it changes what that agent should do: ' +
+      'you are about to change a file it is working on, your change breaks something it relies on, you need it to hold off, or it asked you something. ' +
+      'Never to acknowledge, thank, agree, report progress or say you are done: that goes in your answer to the person, and the other agent loses time reading it. ' +
+      'One message with everything in it, not several. At most ' + PER_TURN + ' per turn. ' +
       'It does not wake an agent that is not working: a working one reads it after its next step, an idle one when the person next talks to it. ' +
       'Do not wait for a reply.',
     inputSchema: {
@@ -97,6 +109,8 @@ export function call(c: Conversation, name: string, args: Record<string, unknown
     if (!to || !message) return text('Not sent: both `to` and `message` are needed.', true)
     if (message.length > TELL_MAX)
       return text('Not sent: ' + message.length + ' characters, and a message is at most ' + TELL_MAX + '. Say it shorter.', true)
+    if (ACK.test(message))
+      return text('Not sent: an acknowledgement changes nothing for the other agent. Carry on; tell the person in your answer if it matters.', true)
     const r = send(c, to, message)
     return text(r.text, !r.ok)
   }
@@ -145,7 +159,7 @@ export function mail(msgs: { ref: string; title: string; text: string }[]): stri
     'Sent with `mcp__cockpit__tell` by an agent working in the same folders.',
     '',
     ...msgs.flatMap((m) => ['From “' + m.title + '” (' + m.ref + '):', ...m.text.split('\n').map((l) => '> ' + l), '']),
-    'If it needs an answer, reply with `mcp__cockpit__tell` (to: its ref). Then carry on with what you were asked.',
+    'Act on it if it changes your work. Reply with `mcp__cockpit__tell` (to: its ref) only if it asked you something or your reply changes what it does — never just to acknowledge. Then carry on with what you were asked.',
     '',
     '---',
     '',

@@ -251,6 +251,8 @@ type Item =
       denied: boolean
       /** The mode that let it run without the question Manual would have asked. */
       unasked: PermissionMode | null
+      /** §7 — Cockpit held it: another running conversation had changed the file. Why, in full. */
+      held?: string
     }
   /** §16 — a turn's work put back. It happened to the code, so it is in the
    *  thread rather than only in a toast that has since gone. */
@@ -291,6 +293,7 @@ type Row =
   | { kind: 'docsOffer'; id: string; offerId: string }
   | Asked
   | Peer
+  | { kind: 'held'; id: string; text: string; why: string }
 
 /**
  * §7 — a message between two conversations: one it received (`in`, its own
@@ -333,6 +336,12 @@ function rowsOf(items: Item[]): Row[] {
   }
 
   for (const it of items) {
+    // §7 — nothing ran, and it is not a failure: a line, not a card.
+    if (it.kind === 'tool' && it.held) {
+      flush()
+      rows.push({ kind: 'held', id: it.id, text: heldLine(it.held), why: it.held })
+      continue
+    }
     if (it.kind === 'tool') {
       run.push(it)
       continue
@@ -479,7 +488,7 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
       }
       const told = p?.toolUseId ? byTell.get(p.toolUseId) : undefined
       if (told) {
-        if (p?.isError) told.failed = p.stdout ?? 'not sent'
+        if (p?.isError) told.failed = p.stdout || 'not sent'
         continue
       }
       const asked = p?.toolUseId ? byQuestion.get(p.toolUseId) : undefined
@@ -501,6 +510,8 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
         interrupted: !!p?.interrupted,
       }
       call.denied = !!p?.isError && DENIED.test(stdout)
+      const held = p?.isError ? HELD.exec(stdout) : null
+      if (held) call.held = held[1]!.trim()
       call.unasked = p?.unasked ?? null
     }
   }
@@ -509,6 +520,13 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
 
 const MEMORY_TOOL = /^mcp__cockpit__memory_(note|state|read|outdate)$/
 const TELL_TOOL = 'mcp__cockpit__tell'
+
+/** §7 — the core's reason for holding an edit (agents.ts `HELD`). */
+const HELD = /Held by Cockpit: ([\s\S]*)/
+/** Its first sentence, without the ref: who changed the file, and when. */
+function heldLine(why: string): string {
+  return (why.split(/\.\s/)[0] ?? why).replace(/\s*\([A-Z0-9]{6,}\)/, '')
+}
 
 /** The conversation a `tell` named: by its ref, as `peers` gave it, or by its title. */
 function peerByRef(to: string): Conversation | undefined {
@@ -1791,6 +1809,12 @@ function ago(ts: number): string {
               >
                 <BookMarked class="sm" />
                 <span class="memo-sec">{{ r.section }}</span>
+                <span class="memo-tx">{{ r.text }}</span>
+              </p>
+              <!-- §7 — an edit held because another conversation changed the file. -->
+              <p v-else-if="r.kind === 'held'" class="undone compacted memo held" :data-anchor="r.id" :title="r.why">
+                <Hand class="sm" />
+                <span class="memo-sec">Held</span>
                 <span class="memo-tx">{{ r.text }}</span>
               </p>
               <!-- §7 — said between two conversations: to one, or from one. -->

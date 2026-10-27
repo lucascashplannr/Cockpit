@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { DiffFile, DiffHunkLine, FileDiff } from '@cockpit/shared'
 import { git } from './git.js'
 import { attributionFor } from './journal.js'
+import { changedBy } from './agents.js'
 import { requireWorkspace } from './registry.js'
 
 /**
@@ -65,6 +66,13 @@ export async function files(workspaceId: string, base?: string): Promise<DiffFil
 
   const paths = [...statusByPath.keys()]
   const attribution = attributionFor(workspaceId, paths)
+  // §7 — who among the conversations, since the last commit: what was
+  // committed before is not this change, whoever made it.
+  let by = new Map<string, { id: string; title: string }[]>()
+  if (!base) {
+    const head = await git(ws.path, ['log', '-1', '--format=%ct', 'HEAD'])
+    by = changedBy(workspaceId, paths, (Number(head.stdout.trim()) || 0) * 1000)
+  }
 
   return paths
     .map((p) => {
@@ -78,6 +86,7 @@ export async function files(workspaceId: string, base?: string): Promise<DiffFil
         deletions: c.del,
         attribution: (attribution.get(p) ?? 'unknown') as DiffFile['attribution'],
         binary: c.binary,
+        ...(by.get(p) || (s.oldPath && by.get(s.oldPath)) ? { by: by.get(p) ?? by.get(s.oldPath!) } : {}),
       }
     })
     .sort((a, b) => a.path.localeCompare(b.path))

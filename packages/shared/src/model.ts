@@ -1205,6 +1205,12 @@ export interface DiffFile {
   /** §12 — the human/agent split, resolved from the journal. */
   attribution: 'human' | 'agent' | 'mixed' | 'unknown'
   binary: boolean
+  /**
+   * §7 — the conversations whose edits made this change, since the last
+   * commit. More than one is a file two of them worked on. Uncommitted view
+   * only; absent from an older core.
+   */
+  by?: { id: string; title: string }[]
 }
 
 export interface DiffHunkLine {

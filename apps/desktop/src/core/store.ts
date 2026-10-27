@@ -2277,7 +2277,7 @@ export function hasMail(c: Conversation): boolean {
 export async function answerPeers(c: Conversation): Promise<boolean> {
   const from = [...new Set((c.inbox ?? []).map((m) => peerTitle(m.fromId, m.fromTitle)))]
   if (!from.length) return false
-  return sendTurn(c.id, from.length === 1 ? 'Answer the message from “' + from[0] + '”.' : 'Answer the messages from ' + from.map((t) => '“' + t + '”').join(' and ') + '.')
+  return sendTurn(c.id, 'Read the message' + (from.length === 1 ? ' from “' + from[0] + '”' : 's from ' + from.map((t) => '“' + t + '”').join(' and ')) + ' and act on it.')
 }
 
 /** A conversation's title now — it is named after its first turn, which can be after it wrote. */

@@ -396,6 +396,42 @@ function toggleAll() {
   picked.value = allPicked.value ? [] : files.value.map((f) => f.path)
 }
 
+/* ── §7 — the change, by conversation ────────────────────────────────────
+ *
+ * Two agents in one folder leave one diff. Each conversation is a chip over
+ * the list; pressing it ticks the files it changed, so the commit box commits
+ * that conversation's work and nothing else. A file two of them changed is in
+ * both, and says so on its row.
+ */
+const byConv = computed(() => {
+  const m = new Map<string, { id: string; title: string; paths: string[]; shared: number }>()
+  for (const f of files.value)
+    for (const c of f.by ?? []) {
+      const e = m.get(c.id) ?? { id: c.id, title: c.title, paths: [], shared: 0 }
+      e.paths.push(f.path)
+      if ((f.by?.length ?? 0) > 1) e.shared++
+      m.set(c.id, e)
+    }
+  const list = [...m.values()]
+  // One conversation that made every change is not a split worth offering.
+  const alone = list.length === 1 && list[0]!.paths.length === files.value.length
+  return alone ? [] : list
+})
+function convPicked(c: { paths: string[] }): boolean {
+  return picked.value.length === c.paths.length && c.paths.every((p) => picked.value.includes(p))
+}
+function pickConv(c: { paths: string[] }): void {
+  picked.value = convPicked(c) ? [] : [...c.paths]
+}
+function convTip(c: { title: string; paths: string[]; shared: number }): string {
+  const n = c.paths.length
+  return 'Select the ' + n + ' file' + (n === 1 ? '' : 's') + ' “' + c.title + '” changed' +
+    (c.shared ? ' — ' + c.shared + ' also changed by another conversation' : '')
+}
+function byTip(f: DiffFile): string {
+  return 'Changed by ' + (f.by ?? []).map((c) => '“' + c.title + '”').join(' and ')
+}
+
 /** Which hunk each meta line opens, so its button knows what it discards. */
 const hunkOf = computed(() => {
   let n = -1
@@ -1133,6 +1169,20 @@ const mark: Record<string, Component> = {
         />
       </div>
 
+      <div v-if="byConv.length" class="byconv" aria-label="Changes by conversation">
+        <button
+          v-for="c in byConv"
+          :key="c.id"
+          class="conv"
+          :class="{ on: convPicked(c) }"
+          :title="convTip(c)"
+          @click="pickConv(c)"
+        >
+          <span class="ct">{{ c.title }}</span>
+          <span class="cn num">{{ c.paths.length }}</span>
+        </button>
+      </div>
+
       <div class="scroll">
         <div
           v-for="f in files"
@@ -1153,6 +1203,7 @@ const mark: Record<string, Component> = {
             <span class="fname">{{ baseName(f.path) }}</span>
             <span v-if="dirName(f.path)" class="fdir">{{ dirName(f.path) }}</span>
           </span>
+          <UsersRound v-if="(f.by?.length ?? 0) > 1" class="both" :title="byTip(f)" />
           <span class="counts num">
             <span v-if="f.additions" class="add">+{{ f.additions }}</span>
             <span v-if="f.deletions" class="del">−{{ f.deletions }}</span>
@@ -2009,6 +2060,29 @@ const mark: Record<string, Component> = {
 .del { color: var(--danger); }
 
 .scroll { flex: 1; overflow-y: auto; padding: 0 6px 6px; }
+
+/* §7 — one chip per conversation that changed something here. */
+.byconv { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 8px; }
+.conv {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft), border-color var(--dur-1) var(--ease-soft);
+}
+.conv:hover { color: var(--text); background: var(--hover); }
+.conv.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.conv .ct { min-width: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv .cn { flex: none; color: var(--text-dim); }
+.conv.on .cn { color: inherit; }
+/* A file two conversations changed: committing one's work takes the other's lines too. */
+.frow .both { flex: none; width: 12px; height: 12px; color: var(--warn); }
 
 .frow {
   display: flex;
