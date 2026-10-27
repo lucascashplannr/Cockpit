@@ -68,6 +68,12 @@
   --surface-review: light-dark(#ffffff, #121217); /* the review column, all tools */
   --surface-dock: light-dark(#ffffff, #121217);   /* pinned footers in review    */
   --surface-input: light-dark(#f2f2f6, #1a1a21);  /* the composer's well        */
+  /* The conversation's tabs: the resting ones sunk into the bar, the one on
+     screen lifted out of it. On white a raised white is no step, so resting
+     is the step down. */
+  --tab-rest: light-dark(#ececf1, #1d1d24);
+  --tab-rest-hover: light-dark(#e3e3ea, #24242c);
+  --tab-on: light-dark(#ffffff, #2c2c36);
 
   /* Hairlines. Three weights: barely there, there, and structural. */
   --line-soft: light-dark(#ececf1, #1c1c23);

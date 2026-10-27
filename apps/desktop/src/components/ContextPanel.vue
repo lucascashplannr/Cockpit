@@ -470,8 +470,9 @@ function fresh(): void {
   overflow: hidden;
 }
 .tabs { display: flex; align-items: center; gap: 4px; min-width: 0; }
-/* Equal widths that give way together. Every tab is a box of its own — the
-   one on screen raised and lit, the others the same box at rest. */
+/* Equal widths that give way together. Every tab is a box of its own: the
+   resting ones sunk into the bar, the one on screen lifted out of it — bold,
+   with a stronger edge — so it reads at a glance in both themes. */
 .tab {
   position: relative;
   flex: 0 1 184px;
@@ -489,12 +490,14 @@ function fresh(): void {
   user-select: none;
   transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
-.tab {
-  background: color-mix(in srgb, var(--panel-raised) 50%, transparent);
-  box-shadow: inset 0 0 0 1px var(--line-soft);
+.tab { background: var(--tab-rest); color: var(--text-muted); box-shadow: inset 0 0 0 1px var(--line); }
+.tab:hover { background: var(--tab-rest-hover); color: var(--text); }
+.tab.on {
+  background: var(--tab-on);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), inset 0 0 0 1px var(--line-strong);
 }
-.tab:hover { background: color-mix(in srgb, var(--panel-raised) 80%, transparent); color: var(--text-muted); }
-.tab.on { background: var(--panel-raised); color: var(--text); box-shadow: var(--shadow-xs), inset 0 0 0 1px var(--line); }
+.tab.on:not(.pairtab), .tab.pairtab.on .half.active { font-weight: 600; }
 .tab.paired:not(.on) { color: var(--text-muted); }
 .add { position: relative; margin-left: 2px; }
 .pt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -562,7 +565,7 @@ function fresh(): void {
   gap: 7px;
   height: 100%;
   padding: 0 4px 0 10px;
-  color: var(--text-dim);
+  color: inherit;
 }
 .tab.pairtab.on .half { color: var(--text-muted); }
 .tab.pairtab.on .half.active { color: var(--text); }
@@ -577,7 +580,7 @@ function fresh(): void {
 .tab { touch-action: none; }
 .tab.lifted {
   z-index: 3;
-  background: var(--panel-raised);
+  background: var(--tab-on);
   color: var(--text);
   box-shadow: var(--shadow-md), inset 0 0 0 1px var(--line);
   cursor: grabbing;
