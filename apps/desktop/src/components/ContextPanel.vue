@@ -475,8 +475,9 @@ function fresh(): void {
 }
 .tabs { display: flex; align-items: center; gap: 4px; min-width: 0; }
 /* Equal widths that give way together. Every tab is a box of its own: the
-   resting ones sunk into the bar, the one on screen lifted out of it — bold,
-   with a stronger edge — so it reads at a glance in both themes. */
+   resting ones sunk into the bar, the one on screen in the list's own
+   selected tint, bold. No outline on either: a white box with an edge and a ×
+   read as a text field. */
 .tab {
   position: relative;
   flex: 0 1 184px;
@@ -494,12 +495,11 @@ function fresh(): void {
   user-select: none;
   transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
-.tab { background: var(--tab-rest); color: var(--text-muted); box-shadow: inset 0 0 0 1px var(--line); }
+.tab { background: var(--tab-rest); color: var(--text-muted); }
 .tab:hover { background: var(--tab-rest-hover); color: var(--text); }
-.tab.on {
-  background: var(--tab-on);
+.tab.on, .tab.on:hover {
+  background: var(--selected);
   color: var(--text);
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06), inset 0 0 0 1px var(--line-strong);
 }
 .tab.on:not(.pairtab), .tab.pairtab.on .half.active { font-weight: 600; }
 .tab.paired:not(.on) { color: var(--text-muted); }

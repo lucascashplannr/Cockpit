@@ -206,7 +206,13 @@ const ATTENTION_TEXT: Record<string, string> = {
               <span class="pick"><span class="title">{{ opening.name }}</span></span>
             </div>
           </div>
-        <div class="group" :class="{ topic: !!(g.title && g.topicId) }">
+        <div
+          class="group"
+          :class="{
+            topic: !!(g.title && g.topicId),
+            open: !!(g.title && g.topicId) && !collapsedTopics[g.topicId!] && g.workspaces.length > 0,
+          }"
+        >
           <!-- A topic is a decoration (§4): no topic, no header. And a
                header you can stand on: selecting it is selecting its scope. -->
           <!-- On the strip the header is one tile: what it leads with, and
@@ -475,28 +481,35 @@ const ATTENTION_TEXT: Record<string, string> = {
    repository's are the same shape — a glyph over a word — and a different
    glyph was not enough to tell which rows belonged to which. The frame says
    it without either tile having to: what is inside is the topic's, what is
-   outside is the project's own. It takes the rule's place between groups. */
-.list.narrow .group.topic {
+   outside is the project's own. It takes the rule's place between groups.
+
+   Only while it is open. Folded, a frame holds one tile and nothing else, and
+   a run of folded topics became a stack of cards that read as buttons and
+   looked nothing like the repositories under them. Folded, a topic is a
+   plain tile, and the topics sit together with no rule between them. */
+.list.narrow .group.topic:not(.open) + .group.topic:not(.open) { margin-top: 2px; padding-top: 0; }
+.list.narrow .group.topic + .group.topic::before { display: none; }
+.list.narrow .group.topic.open {
   margin: 0 -3px;
   padding: 2px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background: var(--panel);
 }
-.list.narrow .group + .group.topic { margin-top: 8px; padding-top: 2px; }
-.list.narrow .group + .group.topic::before { display: none; }
-.list.narrow .group.topic .group-tile {
+.list.narrow .group + .group.topic.open,
+.list.narrow .group.topic.open + .group.topic { margin-top: 8px; padding-top: 2px; }
+.list.narrow .group + .group.topic.open::before { display: none; }
+.list.narrow .group.topic.open .group-tile {
   border-radius: calc(var(--radius) - 3px) calc(var(--radius) - 3px) var(--radius-sm) var(--radius-sm);
 }
 /* Inside the frame a row's tint runs wall to wall, so it is square where it
    meets a neighbour and takes the frame's own curve only at the foot. */
-.list.narrow .group.topic .row { border-radius: 0; }
-.list.narrow .group.topic .row:last-child {
+.list.narrow .group.topic.open .row { border-radius: 0; }
+.list.narrow .group.topic.open .row:last-child {
   border-radius: 0 0 calc(var(--radius) - 3px) calc(var(--radius) - 3px);
 }
-/* The head's own floor, only while there is something under it: folded, the
-   frame's edge is already there. */
-.list.narrow .group.topic .group-tile:not(:last-child) {
+/* The head's own floor, under the rows it holds. */
+.list.narrow .group.topic.open .group-tile:not(:last-child) {
   border-bottom: 1px solid var(--line);
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
