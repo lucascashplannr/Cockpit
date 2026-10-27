@@ -199,7 +199,7 @@ const ATTENTION_TEXT: Record<string, string> = {
           <div v-if="opening && i === openingAt" class="group topic opening" :title="'Creating ' + opening.name + '…'">
             <span v-if="narrow" class="group-tile">
               <span class="lead"><LoaderCircle class="sm spin" /></span>
-              <span class="title">{{ opening.name }}</span>
+              <span class="title">{{ opening.name.slice(0, 3) }}</span>
             </span>
             <div v-else class="group-head">
               <span class="twist"><LoaderCircle class="sm spin" /></span>
@@ -232,7 +232,7 @@ const ATTENTION_TEXT: Record<string, string> = {
             <span class="lead" :class="topicLead(g.topicId).cls">
               <component :is="topicLead(g.topicId).icon" class="sm" :class="{ 'agent-star': topicMark(g.topicId)?.turning }" />
             </span>
-            <span class="title">{{ g.title }}</span>
+            <span class="title">{{ g.title.slice(0, 3) }}</span>
           </button>
           <div
             v-else-if="g.title"
@@ -323,7 +323,7 @@ const ATTENTION_TEXT: Record<string, string> = {
         <div v-if="opening && openingAt === groups.length" class="group topic opening" :title="'Creating ' + opening.name + '…'">
             <span v-if="narrow" class="group-tile">
               <span class="lead"><LoaderCircle class="sm spin" /></span>
-              <span class="title">{{ opening.name }}</span>
+              <span class="title">{{ opening.name.slice(0, 3) }}</span>
             </span>
             <div v-else class="group-head">
               <span class="twist"><LoaderCircle class="sm spin" /></span>
@@ -494,7 +494,6 @@ const ATTENTION_TEXT: Record<string, string> = {
   padding: 2px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
-  background: var(--panel);
 }
 .list.narrow .group + .group.topic.open,
 .list.narrow .group.topic.open + .group.topic { margin-top: 8px; padding-top: 2px; }

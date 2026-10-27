@@ -106,10 +106,12 @@ const ATTENTION_TEXT: Record<string, string> = {
  * the repository menu shows (`repoMark`). A branch keeps its name, which in a
  * project whose repositories are all `cashplannr-something` is the something.
  */
+// Three letters on the strip: a cut-off name with an ellipsis said less than a
+// clean prefix, and the full name is in the hover.
 const short = computed(() =>
   w.value.kind === 'main'
     ? repoMark(w.value, state.workspaces.filter((x) => x.projectId === w.value.projectId))
-    : shortName(w.value.name, activeProject.value?.name),
+    : shortName(w.value.name, activeProject.value?.name).slice(0, 3),
 )
 
 /**
