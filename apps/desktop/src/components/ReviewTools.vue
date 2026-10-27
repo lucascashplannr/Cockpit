@@ -11,7 +11,7 @@ import CommitsTab from './tabs/CommitsTab.vue'
 import OutputTab from './tabs/OutputTab.vue'
 import TerminalTab from './tabs/TerminalTab.vue'
 import ProjectRepoMenu from './ProjectRepoMenu.vue'
-import { changeCount, goTo, onProject, reviewSpan, reviewTools, shownReviewTool, spanDiffRepo, spanRepo, spanTerminal, state } from '../core/store.js'
+import { changeCount, goTo, onProject, reviewSpan, reviewTools, shownReviewTool, spanDiffAll, spanDiffRepo, spanRepo, spanTerminal, state } from '../core/store.js'
 import type { ReviewTool } from '../core/store.js'
 
 /**
@@ -162,7 +162,7 @@ watch(shownReviewTool, () => nextTick(fit))
     <div class="body" data-tool>
       <!-- The Diff's other reading, in its place: see `diffMode`. -->
       <CommitsTab v-if="shownReviewTool === 'diff' && state.diffMode === 'commits'" :workspace="diffRepo" />
-      <DiffTab v-else-if="shownReviewTool === 'diff'" :workspace="diffRepo" />
+      <DiffTab v-else-if="shownReviewTool === 'diff'" :workspace="diffRepo" :repos="spanDiffAll" />
       <MemoryTab v-else-if="shownReviewTool === 'memory'" :workspace="workspace" />
       <DocsTab v-else-if="shownReviewTool === 'docs'" :workspace="workspace" />
       <CodeTab v-else-if="shownReviewTool === 'code'" :workspace="repo" />

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
+import { attentionIcon } from './agent/attention.js'
 import { Asterisk, CircleStop, Hand, History, MousePointerClick, Plus, X } from '@lucide/vue'
 import type { Conversation } from '@cockpit/shared'
 import AgentTab from './tabs/AgentTab.vue'
@@ -288,6 +289,7 @@ function fresh(): void {
               >
                 <Hand v-if="dotOf(e.conv) === 'ask'" class="ask" />
                 <Asterisk v-else-if="dotOf(e.conv) === 'work'" class="star agent-star" />
+                <component :is="attentionIcon(attentionOf(e.conv))" v-else-if="dotOf(e.conv) === 'you'" class="att" :class="attentionOf(e.conv)" />
                 <span v-else-if="news(e.conv)" class="dot" :class="dotOf(e.conv)" />
                 <input
                   v-if="renaming === e.conv.id"
@@ -327,6 +329,7 @@ function fresh(): void {
                   >
                     <Hand v-if="dotOf(c) === 'ask'" class="ask" />
                     <Asterisk v-else-if="dotOf(c) === 'work'" class="star agent-star" />
+                    <component :is="attentionIcon(attentionOf(c))" v-else-if="dotOf(c) === 'you'" class="att" :class="attentionOf(c)" />
                     <span v-else-if="news(c)" class="dot" :class="dotOf(c)" />
                     <input
                       v-if="renaming === c.id"
@@ -464,7 +467,8 @@ function fresh(): void {
   display: flex;
   align-items: center;
   gap: 2px;
-  height: 44px;
+  /* The tools strip's height: in `split` the two bars are one band across the window. */
+  height: var(--band-h);
   padding: 0 96px 0 10px;
   border-bottom: 1px solid var(--line-soft);
   overflow: hidden;
@@ -495,7 +499,7 @@ function fresh(): void {
 .tab.on {
   background: var(--tab-on);
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), inset 0 0 0 1px var(--line-strong);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06), inset 0 0 0 1px var(--line-strong);
 }
 .tab.on:not(.pairtab), .tab.pairtab.on .half.active { font-weight: 600; }
 .tab.paired:not(.on) { color: var(--text-muted); }
@@ -544,7 +548,10 @@ function fresh(): void {
 .star { flex: none; width: 13px; height: 13px; stroke-width: 2.4; color: var(--agent); }
 /* It asked you something: the hand the thread's own "needs you" carries. */
 .ask { flex: none; width: 12px; height: 12px; stroke-width: 2.2; color: var(--warn); }
-.dot.you { box-shadow: inset 0 0 0 1.75px var(--warn); }
+/* It needs you — most often an answer not read yet: the icon the list's rows carry, in their colours. */
+.att { flex: none; width: 13px; height: 13px; color: var(--agent); }
+.att.blocked { color: var(--warn); }
+.att.failed { color: var(--danger); }
 /* §7 — another conversation left it a message, and nothing will read it yet. */
 .dot.mail { box-shadow: inset 0 0 0 1.75px var(--accent); }
 /* A tab arriving or leaving, and the others closing up — short, and only
@@ -602,7 +609,7 @@ function fresh(): void {
   background: var(--accent);
   pointer-events: none;
 }
-.body :deep(.drawer) { top: 44px; }
+.body :deep(.drawer) { top: var(--band-h); }
 
 /* Over the right end of the tab bar, whose padding keeps the room. One pixel
    apart: buttons of one set touch. The history button has a fixed width so the
@@ -610,7 +617,9 @@ function fresh(): void {
 .instr {
   position: absolute;
   z-index: 5;
-  top: 8px;
+  /* Centred in the bar above its rule, whatever height the bar is. */
+  top: 0;
+  height: calc(var(--band-h) - 1px);
   right: 12px;
   display: flex;
   align-items: center;

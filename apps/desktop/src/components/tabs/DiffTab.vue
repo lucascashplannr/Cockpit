@@ -5,7 +5,7 @@ import type { Component } from 'vue'
 import {
   Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, Code, Columns2, Eye, FileCode, Rows2, GitBranch, LoaderCircle,
   ChevronUp, FileText, GitCommitHorizontal, Save, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
-  Copy, FilePen, FolderOpen, GitGraph, Info, Undo2, User, UsersRound,
+  Copy, FilePen, FolderOpen, GitGraph, Info, SquareDot, Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
@@ -16,7 +16,7 @@ import { paintDiff } from '../../core/editor.js'
 import { useFindKey, useTextFind } from '../../core/find.js'
 import {
   LAYOUT_DEFAULTS, LAYOUT_LIMITS, busyVerb, busyWord, gitBusy, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
-  pickSpanRepo, resetCommitHeight, reviewSpan, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
+  activeProject, changeCount, pickSpanRepo, resetCommitHeight, reviewSpan, shortName, saveLayout, savePlaceWidth, selectWorkspace, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
 /**
@@ -26,7 +26,14 @@ import {
  * by the mark on the row rather than by a filter over the list.
  */
 
-const props = defineProps<{ workspace: Workspace }>()
+/**
+ * `repos`: on the project, or a topic across repositories, with "All
+ * repositories" picked — every one of them listed, grouped (`spanDiffAll`).
+ * Everything else here still acts on `workspace`, the repository of the file
+ * being read: a file in another group turns the Diff to its repository first,
+ * so the commit box below always commits where the open file lives.
+ */
+const props = defineProps<{ workspace: Workspace; repos?: Workspace[] | null }>()
 
 /* ── one column, or two ───────────────────────────────────────────────────
  *
@@ -449,15 +456,18 @@ function hunkLines(index: number) {
   return out
 }
 
-async function discardFiles(paths: string[]) {
+async function discardFiles(paths: string[], workspaceId = props.workspace.id) {
   if (!paths.length || discarding.value) return
   discarding.value = true
-  const ok = await discard({ workspaceId: props.workspace.id, paths })
+  const ok = await discard({ workspaceId, paths })
   discarding.value = false
-  if (ok) {
-    picked.value = picked.value.filter((p) => !paths.includes(p))
-    await afterDiscard()
+  if (!ok) return
+  if (workspaceId !== props.workspace.id) {
+    await Promise.all([loadOthers(), refreshStashes()])
+    return
   }
+  picked.value = picked.value.filter((p) => !paths.includes(p))
+  await afterDiscard()
 }
 
 async function discardHunk(index: number) {
@@ -490,17 +500,77 @@ async function reloadCurrent() {
 
 watch(discardTick, () => void afterDiscard())
 
+/* ── every repository at once ─────────────────────────────────────────────
+ *
+ * The list in groups, one per repository, read from each. The group the Diff
+ * is on is `files` itself — the list everything else here works from — and
+ * the others are read beside it, only to be listed. Picking a file in one of
+ * them turns the Diff there (`elsewhere`), and its group becomes `files`.
+ */
+const others = ref<Record<string, DiffFile[]>>({})
+
+async function loadOthers() {
+  const ws = (props.repos ?? []).filter((w) => w.id !== props.workspace.id)
+  const read = await Promise.all(
+    ws.map(async (w) => [w.id, (await guard(() => client.call('diff.files', { workspaceId: w.id }))) ?? []] as const),
+  )
+  others.value = Object.fromEntries(read)
+}
+
+// A topic's worktrees share its name; the repository is what tells them apart.
+function repoLabel(w: Workspace): string {
+  return reviewSpan.value?.topicId ? w.repoName : shortName(w.name, activeProject.value?.name)
+}
+
+/** What the list shows: one group per repository with "All", else the one list without a heading. */
+const sections = computed(() => {
+  if (!props.repos) return [{ w: props.workspace, here: true, files: files.value }]
+  return props.repos
+    .map((w) => {
+      const here = w.id === props.workspace.id
+      return { w, here, files: here ? files.value : (others.value[w.id] ?? []) }
+    })
+    // A heading over nothing says less than "Clean" does — empty groups go, the one the Diff is on too.
+    .filter((g) => g.files.length)
+})
+const listed = computed(() => sections.value.flatMap((g) => g.files))
+
+/** Opened from another group: once its repository's list is in, the file opens (and is ticked, when that was the click). */
+let wanted: { path: string; tick: boolean } | null = null
+
+function goElsewhere(workspaceId: string, path: string, tick: boolean) {
+  leaveEdit(() => {
+    wanted = { path, tick }
+    picked.value = []
+    selected.value = path
+    current.value = null
+    pickSpanRepo(workspaceId)
+  })
+}
+
 const totals = computed(() => ({
-  add: files.value.reduce((n, f) => n + f.additions, 0),
-  del: files.value.reduce((n, f) => n + f.deletions, 0),
+  add: listed.value.reduce((n, f) => n + f.additions, 0),
+  del: listed.value.reduce((n, f) => n + f.deletions, 0),
 }))
 
 async function load() {
   loading.value = true
-  const r = await guard(() => client.call('diff.files', { workspaceId: props.workspace.id }))
+  const forId = props.workspace.id
+  if (props.repos) void loadOthers()
+  const r = await guard(() => client.call('diff.files', { workspaceId: forId }))
+  // Turned to another repository while this one was being read.
+  if (forId !== props.workspace.id) return
   files.value = r ?? []
   loading.value = false
   picked.value = picked.value.filter((p) => files.value.some((f) => f.path === p))
+  if (wanted && files.value.some((f) => f.path === wanted!.path)) {
+    const w = wanted
+    wanted = null
+    if (w.tick) picked.value = [w.path]
+    void open(w.path)
+    return
+  }
+  wanted = null
   const still = files.value.some((f) => f.path === selected.value)
   if (!files.value.length) {
     selected.value = null
@@ -1080,6 +1150,14 @@ const unifiedNew = computed(() => (current.value?.lines ?? []).map((l) => (l.kin
 const splitNew = computed(() => splitRows.value.map((r) => ('meta' in r ? null : r.right.num)))
 
 watch(() => props.workspace.id, load, { immediate: true })
+// The other groups follow their own repositories' counts, as this one does below.
+watch(
+  () => props.repos?.map((w) => w.id + ':' + changeCount(w)).join(),
+  (key) => {
+    if (key) void loadOthers()
+    else others.value = {}
+  },
+)
 // The core re-pushes workspaces whenever the watcher fires; refresh with it.
 watch(
   () => props.workspace.git && props.workspace.git.staged + props.workspace.git.unstaged + props.workspace.git.untracked,
@@ -1138,7 +1216,7 @@ const mark: Record<string, Component> = {
            them. The box on its right is the rows' own box, one row up. -->
       <div class="ftop" :class="{ picking: picked.length > 0 }">
         <span class="section-label">
-          {{ picked.length ? picked.length + ' selected' : 'files (' + files.length + ')' }}
+          {{ picked.length ? picked.length + ' selected' : 'files (' + listed.length + ')' }}
         </span>
         <span class="grow" />
         <template v-if="picked.length">
@@ -1169,7 +1247,8 @@ const mark: Record<string, Component> = {
         />
       </div>
 
-      <div v-if="byConv.length" class="byconv" aria-label="Changes by conversation">
+      <!-- One repository's conversations: over every repository's list they would tick only one group. -->
+      <div v-if="byConv.length && !repos" class="byconv" aria-label="Changes by conversation">
         <button
           v-for="c in byConv"
           :key="c.id"
@@ -1184,16 +1263,22 @@ const mark: Record<string, Component> = {
       </div>
 
       <div class="scroll">
+        <template v-for="g in sections" :key="g.w.id">
+        <div v-if="repos" class="rgroup" :class="{ here: g.here }" :title="g.w.path">
+          <SquareDot class="sm" />
+          <span class="rname">{{ repoLabel(g.w) }}</span>
+          <span class="num">{{ g.files.length }}</span>
+        </div>
         <div
-          v-for="f in files"
-          :key="f.path"
+          v-for="f in g.files"
+          :key="g.w.id + f.path"
           class="fline"
-          :class="{ picking: picked.length > 0, ticked: picked.includes(f.path) }"
+          :class="{ picking: g.here && picked.length > 0, ticked: g.here && picked.includes(f.path) }"
         >
         <button
           class="frow"
-          :class="{ on: f.path === selected }"
-          @click="$event.metaKey ? togglePick(f.path) : select(f.path)"
+          :class="{ on: g.here && f.path === selected }"
+          @click="!g.here ? goElsewhere(g.w.id, f.path, $event.metaKey) : $event.metaKey ? togglePick(f.path) : select(f.path)"
         >
           <span class="attr" :class="f.attribution" :title="'written by: ' + f.attribution">
             <component :is="mark[f.attribution]" class="sm" />
@@ -1216,20 +1301,21 @@ const mark: Record<string, Component> = {
               class="icon-btn"
               :disabled="discarding"
               :title="'Discard changes to ' + f.path + ' — kept under Set aside, with Undo'"
-              @click="discardFiles([f.path])"
+              @click="discardFiles([f.path], g.w.id)"
             >
               <Undo2 class="sm" />
             </button>
             <input
               type="checkbox"
-              :checked="picked.includes(f.path)"
+              :checked="g.here && picked.includes(f.path)"
               :title="'Select ' + f.path + ' (⌘-click the row does the same)'"
-              @change="togglePick(f.path)"
+              @change="g.here ? togglePick(f.path) : goElsewhere(g.w.id, f.path, true)"
             />
           </span>
         </div>
+        </template>
 
-        <div v-if="!files.length && !loading" class="empty">
+        <div v-if="!listed.length && !loading" class="empty">
           <FileCode />
           <strong>Clean</strong>
           <span>Nothing uncommitted here.</span>
@@ -1342,7 +1428,8 @@ const mark: Record<string, Component> = {
           <!-- The topic's other repositories: named, counted, and one click
                away — but committed on their own terms, with their own message,
                once you are standing in them. -->
-          <div v-if="elsewhere.length" class="cscope">
+          <!-- With every repository listed above, the list is already this door. -->
+          <div v-if="elsewhere.length && !repos" class="cscope">
             <span class="section-label">also in this topic</span>
             <button
               v-for="e in elsewhere"
@@ -1376,6 +1463,8 @@ const mark: Record<string, Component> = {
               <template v-else>
                 <GitCommitHorizontal class="sm" />
                 <span class="clead">Commit to</span>
+                <!-- Every repository listed above: which of them this commits. -->
+                <span v-if="repos" class="crepo">{{ repoLabel(workspace) }}</span>
                 <span v-if="git?.branch" class="cwhere">{{ git.branch }}</span>
                 <span v-else class="cwhere warn">detached HEAD</span>
                 <span v-if="git?.ahead" class="cahead num" :title="git.ahead + ' commit(s) not pushed yet'">
@@ -1868,6 +1957,7 @@ const mark: Record<string, Component> = {
   color: var(--text);
 }
 .cwhere.warn { color: var(--warn); }
+.crepo { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; }
 .cahead { font-size: 11px; color: var(--text-dim); }
 .cbox.amending .chead,
 .cbox.amending .chead > .lucide { color: var(--warn); }
@@ -2149,6 +2239,23 @@ const mark: Record<string, Component> = {
 /* The row's own verbs sit over its counts and take their place on hover —
    the counts are for scanning, the verbs for the row under the pointer. */
 .fline { position: relative; }
+/* A repository's heading, with "All repositories": its name, and how many files under it. */
+.rgroup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  margin-top: 6px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.rgroup:first-child { margin-top: 0; }
+.rgroup .lucide { width: 12px; height: 12px; flex: none; color: var(--text-dim); }
+.rgroup.here .lucide { color: var(--accent); }
+.rgroup .rname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rgroup .num { font-weight: 400; color: var(--text-dim); }
 .facts {
   position: absolute;
   top: 0;

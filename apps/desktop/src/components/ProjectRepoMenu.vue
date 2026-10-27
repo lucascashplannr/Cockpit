@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { Check, ChevronDown, FolderTree, SquareDot } from '@lucide/vue'
+import { Check, ChevronDown, FolderTree, Layers, SquareDot } from '@lucide/vue'
 import {
-  activeProject, changeCount, pickSpanRepo, repoMark, reviewSpan, shortName, spanDiffRepo, spanDiffRepos, spanFolder, spanRepo, spanTerminal,
+  activeProject, changeCount, pickSpanDiffAll, pickSpanRepo, repoMark, reviewSpan, shortName, spanDiffAll, spanDiffRepo, spanDiffRepos,
+  spanFolder, spanRepo, spanTerminal,
 } from '../core/store.js'
 import type { Workspace } from '@cockpit/shared'
 
@@ -15,7 +16,8 @@ import type { Workspace } from '@cockpit/shared'
  *
  * `diff` offers what the Diff offers (`spanDiffRepos`); the others, any.
  * `terminal` adds the span's folder above them (`spanFolder`): a shell there is
- * in every repository at once.
+ * in every repository at once. `diff` adds every repository at once too
+ * (`spanDiffAll`): their changes listed together, grouped.
  */
 const props = defineProps<{ diff?: boolean; terminal?: boolean }>()
 
@@ -23,7 +25,17 @@ const current = computed(() =>
   props.diff ? spanDiffRepo.value : props.terminal ? spanTerminal.value : spanRepo.value,
 )
 const folder = computed(() => (props.terminal ? spanFolder.value : null))
-const atFolder = computed(() => !!folder.value && current.value?.id === folder.value.id)
+/** Whether this menu has an "All repositories" row: the folder for the Terminal, every one for the Diff. */
+const hasAll = computed(() => (props.diff ? spanDiffRepos.value.length > 1 : !!folder.value))
+const atAll = computed(() =>
+  props.diff ? !!spanDiffAll.value : !!folder.value && current.value?.id === folder.value.id,
+)
+/** What the trigger counts: on the Diff's All, every repository's changes. */
+const count = computed(() =>
+  props.diff && atAll.value
+    ? spanDiffRepos.value.reduce((n, w) => n + changeCount(w), 0)
+    : current.value ? changeCount(current.value) : 0,
+)
 // A topic's worktrees are named for the topic — the same name on every row —
 // so there the repository is what tells them apart.
 const name = (w: { name: string; repoName: string }) =>
@@ -39,15 +51,15 @@ const name = (w: { name: string; repoName: string }) =>
  * for it (`bare` in ReviewTools) — set per repository in the project's
  * settings (`repoMark`), "All" for the folder.
  */
-const label = computed(() => (atFolder.value ? 'All repositories' : current.value ? name(current.value) : ''))
+const label = computed(() => (atAll.value ? 'All repositories' : current.value ? name(current.value) : ''))
 const labels = computed(() => [
-  ...(folder.value ? ['All repositories'] : []),
+  ...(hasAll.value ? ['All repositories'] : []),
   ...(reviewSpan.value?.repos ?? []).map(name),
 ])
 const markOf = (w: Workspace) => (w.id === folder.value?.id ? 'All' : repoMark(w, reviewSpan.value?.repos ?? []))
-const mark = computed(() => (current.value ? markOf(current.value) : ''))
+const mark = computed(() => (atAll.value ? 'All' : current.value ? markOf(current.value) : ''))
 const marks = computed(() => [
-  ...(folder.value ? ['All'] : []),
+  ...(hasAll.value ? ['All'] : []),
   ...(reviewSpan.value?.repos ?? []).map(markOf),
 ])
 const repos = computed(() =>
@@ -63,7 +75,12 @@ const open = ref(false)
 const root = ref<HTMLElement | null>(null)
 
 function pick(id: string): void {
-  pickSpanRepo(id, props.terminal)
+  pickSpanRepo(id, props.terminal ? 'terminal' : props.diff ? 'diff' : null)
+  open.value = false
+}
+function pickAll(): void {
+  if (props.diff) pickSpanDiffAll()
+  else if (folder.value) pickSpanRepo(folder.value.id)
   open.value = false
 }
 
@@ -93,28 +110,31 @@ onBeforeUnmount(() => {
     <button
       class="trigger"
       :class="{ open }"
-      :title="atFolder ? 'All repositories — from the folder they sit in' : name(current) + (changeCount(current) ? ' — ' + changeCount(current) + ' uncommitted' : '')"
-      :disabled="repos.length + (folder ? 1 : 0) < 2"
+      :title="atAll ? (diff ? 'All repositories — every change, grouped' : 'All repositories — from the folder they sit in') : name(current) + (count ? ' — ' + count + ' uncommitted' : '')"
+      :disabled="repos.length + (hasAll ? 1 : 0) < 2"
       @click="open = !open"
     >
-      <FolderTree v-if="atFolder" class="sm lead" />
+      <Layers v-if="atAll && diff" class="sm lead" />
+      <FolderTree v-else-if="atAll" class="sm lead" />
       <SquareDot v-else class="sm lead" />
       <span class="nm"><span v-for="l in new Set(labels)" :key="l" :class="{ ghost: l !== label }">{{ l }}</span></span>
       <span class="ini"><span v-for="m in new Set(marks)" :key="m" :class="{ ghost: m !== mark }">{{ m }}</span></span>
-      <span v-if="changeCount(current)" class="n num">{{ changeCount(current) }}</span>
-      <ChevronDown v-if="repos.length + (folder ? 1 : 0) > 1" class="sm chev" />
+      <span v-if="count" class="n num">{{ count }}</span>
+      <ChevronDown v-if="repos.length + (hasAll ? 1 : 0) > 1" class="sm chev" />
     </button>
     <div v-if="open" class="menu">
-      <template v-if="folder">
-        <button :title="folder.path" @click="pick(folder.id)">
-          <Check class="tick" :class="{ hidden: !atFolder }" />
-          <FolderTree />
+      <template v-if="hasAll">
+        <button :title="diff ? 'Every repository\'s changes, grouped' : folder?.path" @click="pickAll">
+          <Check class="tick" :class="{ hidden: !atAll }" />
+          <Layers v-if="diff" />
+          <FolderTree v-else />
           <span class="mn">All repositories</span>
+          <span class="mk">All</span>
         </button>
         <div class="rule" />
       </template>
       <button v-for="r in repos" :key="r.w.id" :title="r.w.path" @click="pick(r.w.id)">
-        <Check class="tick" :class="{ hidden: r.w.id !== current.id }" />
+        <Check class="tick" :class="{ hidden: atAll || r.w.id !== current.id }" />
         <SquareDot />
         <span class="mn">{{ r.name }}</span>
         <span v-if="r.changed" class="n num">{{ r.changed }}</span>

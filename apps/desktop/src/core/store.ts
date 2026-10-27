@@ -303,6 +303,12 @@ export const state = reactive({
    */
   spanAtFolder: {} as Record<string, boolean>,
   /**
+   * Same key: the span's Diff lists every repository's changes at once
+   * (`spanDiffAll`). The one picked is still where the commit box, the stash
+   * and the discard act — the repository of the file being read.
+   */
+  spanDiffAll: {} as Record<string, boolean>,
+  /**
    * What is being written, per conversation.
    *
    * One draft for the whole window meant a half-typed question followed you
@@ -1269,18 +1275,26 @@ export const spanRepo = computed<Workspace | null>(() => {
 /**
  * Turn the span's Diff, Code and Terminal to one of its repositories — or the
  * Terminal to its folder. A Terminal standing at the folder stays there until
- * a repository is picked from the Terminal itself (`fromTerminal`): picking one
- * for the Diff, or opening a file, is not asking the shell to move.
+ * a repository is picked from the Terminal itself (`from`): picking one for the
+ * Diff, or opening a file, is not asking the shell to move. The Diff showing
+ * every repository is the same: only a pick from the Diff's own menu narrows it.
  */
-export function pickSpanRepo(workspaceId: string, fromTerminal = false): void {
+export function pickSpanRepo(workspaceId: string, from: 'terminal' | 'diff' | null = null): void {
   const span = reviewSpan.value
   if (!span) return
   if (workspaceId === spanFolder.value?.id) {
     state.spanAtFolder[span.key] = true
   } else if (span.repos.some((w) => w.id === workspaceId)) {
     state.spanRepo[span.key] = workspaceId
-    if (fromTerminal) delete state.spanAtFolder[span.key]
+    if (from === 'terminal') delete state.spanAtFolder[span.key]
+    if (from === 'diff') delete state.spanDiffAll[span.key]
   }
+}
+
+/** The span's Diff on every repository at once — see `spanDiffAll`. */
+export function pickSpanDiffAll(): void {
+  const span = reviewSpan.value
+  if (span) state.spanDiffAll[span.key] = true
 }
 
 /**
@@ -1303,6 +1317,18 @@ export const spanDiffRepo = computed<Workspace | null>(() => {
   if (!span) return null
   const ws = spanDiffRepos.value
   return ws.find((w) => w.id === state.spanRepo[span.key]) ?? ws[0] ?? null
+})
+
+/**
+ * The Diff listing every repository the span offers, grouped — when asked for,
+ * and when there is more than one to list. One left with changes is just that
+ * one, and the Diff reads as it always does.
+ */
+export const spanDiffAll = computed<Workspace[] | null>(() => {
+  const span = reviewSpan.value
+  if (!span || !state.spanDiffAll[span.key]) return null
+  const ws = spanDiffRepos.value
+  return ws.length > 1 ? ws : null
 })
 
 function setProjectOnly(projectId: string, ids: string[]): void {
