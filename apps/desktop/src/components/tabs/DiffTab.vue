@@ -903,6 +903,26 @@ const dirty = computed(() => rows.value.some((r) => r.staged + r.unstaged > 0))
  */
 const stashScope = computed(() => props.workspace.topicId)
 
+/** Folded or not, remembered across topics: the count stays on the header, so
+ *  a folded list still says there is something parked. */
+const STASH_KEY = 'cockpit.stashOpen'
+const stashOpen = ref(readStashOpen())
+function readStashOpen(): boolean {
+  try {
+    return localStorage.getItem(STASH_KEY) !== 'closed'
+  } catch {
+    return true
+  }
+}
+function toggleStashes(): void {
+  stashOpen.value = !stashOpen.value
+  try {
+    localStorage.setItem(STASH_KEY, stashOpen.value ? 'open' : 'closed')
+  } catch {
+    /* remembered for this session only */
+  }
+}
+
 async function refreshStashes() {
   stashes.value = await stashList(stashScope.value, props.workspace.id)
 }
@@ -1333,8 +1353,11 @@ const mark: Record<string, Component> = {
              through a conflict: a pop that half-applied is exactly when you
              need to see that the entry is still there. -->
         <div v-if="stashes.length" class="cstash">
-          <span class="section-label">set aside ({{ stashes.length }})</span>
-          <div v-for="e in stashes" :key="e.workspaceId + e.ref" class="srow">
+          <button class="shead" :aria-expanded="stashOpen" @click="toggleStashes">
+            <span class="section-label">set aside ({{ stashes.length }})</span>
+            <ChevronRight class="schev" :class="{ open: stashOpen }" />
+          </button>
+          <div v-for="e in stashOpen ? stashes : []" :key="e.workspaceId + e.ref" class="srow">
             <Archive class="sm" />
             <span class="sbody">
               <span class="ssub" :class="{ untitled: !e.titled }">{{ nameOf(e) }}</span>
@@ -1823,6 +1846,10 @@ const mark: Record<string, Component> = {
 
 /* §16 — parked work, listed above the box it would have been committed from. */
 .cstash { margin: 0 0 10px; }
+.cstash .shead { display: flex; align-items: center; gap: 4px; }
+.cstash .shead:hover .section-label { color: var(--text); }
+.schev { width: 12px; height: 12px; color: var(--text-dim); transition: transform 0.12s; }
+.schev.open { transform: rotate(90deg); }
 .srow {
   display: flex;
   align-items: center;
