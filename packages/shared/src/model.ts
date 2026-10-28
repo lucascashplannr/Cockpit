@@ -1,3 +1,4 @@
+import type { CommitRules } from './commitRules.js'
 import type { DocsContract } from './docs.js'
 
 /**
@@ -1548,6 +1549,11 @@ export interface CockpitSettings {
   devRoot: string | null
   /** Command run to open a workspace in an editor. */
   ide: string
+  /**
+   * How a commit message is written — Draft follows it ahead of its own
+   * format. Off means the built-in one line, in the repository's own style.
+   */
+  commitRules: CommitRules
 }
 
 /** §7 — how a project comes into existence. Three sources, one layout. */

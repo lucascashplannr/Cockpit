@@ -6,7 +6,7 @@ import {
   AppWindow, ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookMarked, Box, Check, CloudDownload,
   Columns2, FileCode,
   FolderOpen,
-  FolderGit2, FolderPlus, GitBranch, GitCompareArrows, GitGraph, GitMerge, Globe, History, Layers, PanelLeftClose, PanelLeftOpen, Pause, Play, RefreshCw,
+  FolderGit2, FolderPlus, GitBranch, GitCommitHorizontal, GitCompareArrows, GitGraph, GitMerge, Globe, History, Layers, PanelLeftClose, PanelLeftOpen, Pause, Play, RefreshCw,
   Search, Settings, SlidersHorizontal, Sparkles, SquareDot, SquareTerminal, Stamp, TextSearch,
   Terminal, Trash2, Undo2,
   RotateCcw, Archive, Zap, Activity,
@@ -785,11 +785,24 @@ function buildCommands(lvl: Level): Item[] {
   out.push({
     id: 'settings',
     label: 'Settings…',
-    hint: 'the Dev folder, the editor',
+    hint: 'theme, Dev folder, editor',
     group: 'Cockpit',
     icon: SlidersHorizontal,
     keywords: 'preferences',
     run: act(() => {
+      state.settingsSection = 'general'
+      state.settingsOpen = true
+    }),
+  })
+  out.push({
+    id: 'settings.commits',
+    label: 'Commit message rules…',
+    hint: 'what Draft follows',
+    group: 'Cockpit',
+    icon: GitCommitHorizontal,
+    keywords: 'conventional commit format draft settings',
+    run: act(() => {
+      state.settingsSection = 'commits'
       state.settingsOpen = true
     }),
   })

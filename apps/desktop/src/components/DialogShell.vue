@@ -17,6 +17,10 @@ import { X } from '@lucide/vue'
  *   `--bg-sunken`, `--fs-lg` title. What Topic, Project and Settings use.
  * - `question` — a decision. 480px, no rules, `--fs-md` title, the buttons
  *   sitting straight on the card. What Confirm uses.
+ *
+ * A `side` slot turns a sheet into one with a section list down its left —
+ * Settings. The head, body and foot keep their own numbers on the right, so
+ * a sheet with sections is still the same sheet.
  */
 
 const props = withDefaults(
@@ -25,6 +29,11 @@ const props = withDefaults(
     variant?: 'sheet' | 'question'
     /** Overrides the variant's own width, for the rare dialog that needs it. */
     width?: number
+    /**
+     * A fixed height rather than the content's: a sheet with sections would
+     * otherwise jump each time a shorter one is picked.
+     */
+    height?: number
     /** Escape and a click outside close it; off while something is in flight. */
     dismissible?: boolean
     /**
@@ -34,7 +43,7 @@ const props = withDefaults(
      */
     onEscape?: () => void
   }>(),
-  { variant: 'sheet', width: 0, dismissible: true },
+  { variant: 'sheet', width: 0, height: 0, dismissible: true },
 )
 
 const emit = defineEmits<{ close: [] }>()
@@ -58,11 +67,16 @@ function onEsc(): void {
   >
     <div
       class="dlg"
-      :class="variant"
-      :style="width ? { width: 'min(' + width + 'px, 94vw)' } : undefined"
+      :class="[variant, { split: !!$slots.side }]"
+      :style="{
+        ...(width ? { width: 'min(' + width + 'px, 94vw)' } : {}),
+        ...(height ? { height: 'min(' + height + 'px, 84vh)' } : {}),
+      }"
       role="dialog"
       aria-modal="true"
     >
+      <nav v-if="$slots.side" class="side"><slot name="side" /></nav>
+      <div class="main">
       <header class="head">
         <!-- Before the title: a back arrow, an icon, whatever the dialog leads with. -->
         <slot name="lead" />
@@ -80,6 +94,7 @@ function onEsc(): void {
       <div class="body"><slot /></div>
 
       <footer v-if="$slots.foot" class="foot"><slot name="foot" /></footer>
+      </div>
     </div>
   </div>
 </template>
@@ -117,6 +132,18 @@ function onEsc(): void {
   to { opacity: 1; transform: none; }
 }
 .dlg.sheet { width: min(560px, 92vw); }
+.main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.dlg.split { flex-direction: row; }
+.side {
+  flex: none;
+  width: 184px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 10px 14px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
 /* Narrower on purpose: it is a question, and a question the width of a
    terminal reads as a report. */
 .dlg.question { width: min(480px, 92vw); max-height: 80vh; }

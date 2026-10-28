@@ -3,7 +3,7 @@ import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
   MEMORIZE_PROMPT, MEMORY_NEW, MEMORY_OFF, PROJECT_MEMORY, PROTOCOL_VERSION, contractText, documentPrompt, handoffPrompt, isHandoff,
-  isMemorize, topicMemoryId,
+  isMemorize, normalizeCommitRules, topicMemoryId,
 } from '@cockpit/shared'
 import type {
   AgentAnswers, AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
@@ -94,7 +94,7 @@ function status(): CoreStatus {
 /** §15 — the machine-local settings, plus what the registry can suggest. */
 function configView(): ConfigView {
   const c = loadConfig()
-  const settings: CockpitSettings = { devRoot: c.devRoot ?? null, ide: c.ide }
+  const settings: CockpitSettings = { devRoot: c.devRoot ?? null, ide: c.ide, commitRules: normalizeCommitRules(c.commitRules) }
   return { settings, suggestedDevRoot: scaffold.suggestedDevRoot() }
 }
 
@@ -458,6 +458,8 @@ const handlers: Record<string, Handler> = {
     updateConfig((c) => {
       if ('devRoot' in p) c.devRoot = p.devRoot?.trim() ? resolve(p.devRoot.trim()) : null
       if (p.ide?.trim()) c.ide = p.ide.trim()
+      // Merged over what is stored, then normalized: a patch may carry one rule.
+      if (p.commitRules) c.commitRules = normalizeCommitRules({ ...c.commitRules, ...p.commitRules })
     })
     return configView()
   },

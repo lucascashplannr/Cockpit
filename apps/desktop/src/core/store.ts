@@ -388,8 +388,10 @@ export const state = reactive({
   newProjectMode: 'scratch' as NewProjectSource['kind'],
   /** §7 — the sheet that adds a repository to a project that already exists. */
   addRepoProjectId: null as string | null,
-  /** §15 — machine-local settings: the Dev folder, the editor. */
+  /** §15 — machine-local settings: the Dev folder, the editor, commit rules. */
   settingsOpen: false,
+  /** The section the sheet shows; set before opening it to land somewhere. */
+  settingsSection: 'general' as 'general' | 'projects' | 'commits',
   settings: null as CockpitSettings | null,
   /** Where projects already live, offered when no Dev folder is set. */
   suggestedDevRoot: null as string | null,

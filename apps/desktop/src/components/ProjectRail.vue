@@ -169,7 +169,7 @@ function tileTitle(name: string, root: string, projectId: string): string {
         <i v-if="serviceStale || (state.booted && state.connection === 'disconnected')" class="flag" />
       </button>
 
-      <button class="icon-btn" title="Settings — theme, dev folder, editor" @click="state.settingsOpen = true">
+      <button class="icon-btn" title="Settings" @click="state.settingsSection = 'general'; state.settingsOpen = true">
         <SlidersHorizontal />
       </button>
     </div>

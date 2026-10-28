@@ -1,7 +1,8 @@
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import type { ProjectSettings } from '@cockpit/shared'
+import { COMMIT_RULES_DEFAULTS, normalizeCommitRules } from '@cockpit/shared'
+import type { CommitRules, ProjectSettings } from '@cockpit/shared'
 
 /**
  * §15 — what lives on the machine, as opposed to in the repo: which workspaces
@@ -56,6 +57,8 @@ export interface LocalConfig {
   /** Reserved because something else on the machine already owns them. */
   portBlocklist: number[]
   ide: string
+  /** §16 — the house style for commit messages, read by the drafter. */
+  commitRules: CommitRules
   shell: string | null
   journalRetentionDays: number
 }
@@ -67,6 +70,7 @@ const DEFAULTS: LocalConfig = {
   portRange: [7800, 8799],
   portBlocklist: [8081],
   ide: process.env.COCKPIT_IDE ?? 'code',
+  commitRules: COMMIT_RULES_DEFAULTS,
   shell: null,
   journalRetentionDays: 30,
 }
@@ -92,6 +96,8 @@ export function loadConfig(): LocalConfig {
   try {
     const parsed = JSON.parse(readFileSync(p, 'utf8')) as Partial<LocalConfig>
     cache = { ...DEFAULTS, ...parsed }
+    // Read through the normalizer: a config from the free-text version holds a string.
+    cache.commitRules = normalizeCommitRules(parsed.commitRules)
   } catch {
     cache = { ...DEFAULTS }
   }

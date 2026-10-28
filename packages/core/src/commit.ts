@@ -1,7 +1,9 @@
 import { lstatSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { newId } from '@cockpit/shared'
+import { commitRuleLines, normalizeCommitRules } from '@cockpit/shared'
 import type { CommitPreview, PlanPreview, PlanStep } from '@cockpit/shared'
+import { loadConfig } from './config.js'
 import { run, which } from './exec.js'
 import { git } from './git.js'
 import { append } from './journal.js'
@@ -579,13 +581,18 @@ export async function draftMessage(input: DraftInput): Promise<DraftResult> {
   const first = resolveTargets(input)[0]
   const examples = first ? await styleExamples(first.path) : []
   const hint = (input.hint ?? '').trim()
+  // The house style from Settings. When there is one it is the format, and the
+  // log is demoted to a source of scopes and words: a repository whose history
+  // predates the rule would otherwise teach the draft to break it.
+  const rules = normalizeCommitRules(loadConfig().commitRules)
+  const house = commitRuleLines(rules)
 
   const prompt = [
     'Write the commit message for the change below. Reply with the message and nothing else:',
     'no preamble, no explanation, no code fences, no quotation marks around it.',
     '',
     'Rules:',
-    '- One line only, no body: imperative, concrete, at most 72 characters.',
+    ...(house.length ? [] : ['- One line only, no body: imperative, concrete, at most 72 characters.']),
     '- Say what changed, and why when it fits. Never describe the diff mechanically',
     '  ("update file X"), and never invent a reason the diff does not support.',
     '- It is not a code review: do not point out bugs, risks or missing pieces.',
@@ -593,8 +600,14 @@ export async function draftMessage(input: DraftInput): Promise<DraftResult> {
       ? ['- This message will be used for ' + ctx.repos.length + ' repositories (' +
          ctx.repos.join(', ') + ') committed together. Describe the change, not each repo.']
       : []),
+    ...(house.length
+      ? ['', 'The author\'s rules for every commit message. Follow them exactly; where anything',
+         'else here disagrees with them, they win:', ...house.map((l) => '  - ' + l)]
+      : []),
     ...(examples.length
-      ? ['', 'Recent subjects from this repository — follow their convention:',
+      ? ['', house.length
+          ? 'Recent subjects from this repository — use them for its scopes and vocabulary only; the rules above decide the format:'
+          : 'Recent subjects from this repository — follow their convention:',
          ...examples.map((s) => '  ' + s)]
       : []),
     ...(hint ? ['', 'What the author says this change is about: ' + hint] : []),
@@ -633,7 +646,7 @@ export async function draftMessage(input: DraftInput): Promise<DraftResult> {
     }
   }
 
-  const message = cleanDraft(r.stdout)
+  const message = cleanDraft(r.stdout, rules.on ? rules : null)
   if (!message) {
     return { ok: false, detail: 'the engine returned nothing', message: '', engine, truncated: ctx.truncated }
   }
@@ -663,11 +676,15 @@ export async function draftMessage(input: DraftInput): Promise<DraftResult> {
  * draft that came back with an apostrophe-as-quote would otherwise be rejected
  * by the button that offered it.
  */
-function cleanDraft(raw: string): string {
+function cleanDraft(raw: string, rules: { noTickets: boolean; noEmoji: boolean } | null): string {
   let t = raw.trim()
   const fence = /^```[a-z]*\n([\s\S]*?)\n```$/.exec(t)
   if (fence) t = fence[1]!.trim()
   t = t.replace(/^(here('s| is)[^\n:]*:|commit message:)\s*/i, '').trim()
   if (t.length > 1 && t.startsWith('"') && t.endsWith('"')) t = t.slice(1, -1).trim()
-  return t.replace(/"/g, "'").trim()
+  // What a rule forbids and a pattern can find is removed rather than trusted
+  // to the model: a `(#123)` copied from the log is the usual way it slips in.
+  if (rules?.noTickets) t = t.replace(/\s*\(#\d+\)/g, '').replace(/(^|\s)#\d+\b/g, '$1')
+  if (rules?.noEmoji) t = t.replace(/\p{Extended_Pictographic}\uFE0F?\s?/gu, '')
+  return t.replace(/"/g, "'").replace(/[ \t]{2,}/g, ' ').trim()
 }
