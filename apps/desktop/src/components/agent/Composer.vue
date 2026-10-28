@@ -1019,6 +1019,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
           class="input prompt selectable"
           rows="1"
           :placeholder="placeholder"
+          :title="boxDraft ? undefined : placeholder"
           @keydown="onKey"
           @keyup="track"
           @click="track"
@@ -1198,6 +1199,14 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
      scroll ranges. */
   display: block;
 }
+/* `field-sizing: content` measures the placeholder too, so in a narrow pane a
+   long one wrapped and the empty box stood two lines tall. Empty, it is held
+   to one line and what does not fit is cut at a word; the whole of it is in
+   the tooltip. No ellipsis: Chromium pins a textarea's placeholder to
+   `pre-wrap` in its own sheet, and `text-overflow` and a line clamp were both
+   tried on `::placeholder` and ignored. Only while empty, so the box still
+   grows with what is typed. */
+.prompt:placeholder-shown { overflow: hidden; max-height: calc(1lh + 8px); }
 /* `background` too, and that is not belt-and-braces.
    `.input:focus` in base.css sets an opaque `--panel-raised`, and it has the
    same specificity as this component's `.prompt` — so which one wins comes
@@ -1253,7 +1262,46 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
 /* Under the well, on the conversation's own ground, so nothing here needs a
    box of its own: the controls are ghosts until the pointer is on one. The
    pickers are other components, hence `:deep`. */
-.row { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; padding: 6px 2px 0; }
+/* One line at every width. Wrapping sent the permission and the meter down to
+   a second row of their own, which read as a broken bar; a narrow pane sheds
+   detail instead (below). No `overflow: hidden` here — the pickers' menus open
+   out of this row and would be cut off. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  padding: 6px 2px 0;
+  container-type: inline-size;
+}
+.row > * { flex: none; }
+/* The one control that gives way when nothing else is left to shed: a memory's
+   name, which ellipsizes. */
+.row .opt.mem,
+.row :deep(.mp) { flex: 0 1 auto; min-width: 31px; }
+.row :deep(.mp .trigger) { max-width: 100%; }
+
+/* The steps are set by measure: the full row is ~520px, the first step brings
+   it to ~430, the second to ~315, the third to ~290. */
+
+/* Narrow: what repeats the value goes first — the chevrons (the hover already
+   says it opens) and the "Effort" / "Memory" prefixes (the tooltip keeps them). */
+@container (max-width: 530px) {
+  .row :deep(.trigger .chev),
+  .row :deep(.trigger .lbl) { display: none; }
+  .row :deep(.trigger) { padding: 0 7px; }
+}
+/* Narrower: the memory chip keeps its glyph, the meter keeps its ring and
+   percentage; the name and the cost stay in their tooltips. */
+@container (max-width: 440px) {
+  .row .opt.mem .nm,
+  .row :deep(.trigger .cost) { display: none; }
+}
+/* Narrowest: the meter is its ring alone. */
+@container (max-width: 320px) {
+  .row :deep(.meter .trigger .num) { display: none; }
+}
 /* The far end of the row, and the only thing there: everything to its left is
    a decision about the next turn, and this is the one report. */
 .row .meter { margin-left: auto; }

@@ -102,6 +102,7 @@ onBeforeUnmount(() => {
       :class="{ open }"
       aria-haspopup="dialog"
       :aria-expanded="open"
+      :title="'Effort: ' + current?.label"
       @click="open = !open"
     >
       <span class="lbl">Effort</span>
