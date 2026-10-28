@@ -341,8 +341,12 @@ button:disabled,
   color: var(--text);
   font-weight: 600;
   font-size: var(--fs-lg);
+  line-height: 1.35;
   letter-spacing: -0.01em;
 }
+/* A title and the line under it are one statement: the column's gap is for
+   the glyph above and the button below, not between these two. */
+.empty strong + span { margin-top: -6px; }
 .empty span { max-width: 42ch; }
 
 .spin {

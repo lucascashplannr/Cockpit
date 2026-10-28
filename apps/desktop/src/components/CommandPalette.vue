@@ -189,6 +189,16 @@ function toggleMode(m: Mode) {
   void nextTick(() => input.value?.focus())
 }
 
+/** ⌥⇥ — the pills in turn, then none, the way ⇥ walks the scopes. The term
+ *  rides along, so switching from Files to Text keeps what was typed. */
+const CYCLE: Mode[] = ['default', 'command', 'file', 'text']
+function stepMode(by: 1 | -1) {
+  if (asking.value) return
+  const i = CYCLE.indexOf(mode.value)
+  const next = CYCLE[(i + by + CYCLE.length) % CYCLE.length]!
+  query.value = (MODES.find((x) => x.mode === next)?.prefix ?? '') + term.value
+}
+
 const leadIcon = computed<Component>(() =>
   asking.value
     ? asking.value.icon
@@ -1162,11 +1172,18 @@ function indexOfItem(item: Item): number {
   return flat.value.indexOf(item)
 }
 
-const emptyText = computed(() => {
-  if (mode.value === 'text' && term.value.length < 2) return 'Type at least two characters.'
-  if (mode.value === 'file' && loadingFiles.value) return 'Reading the file list…'
-  if (mode.value === 'text' && searching.value) return 'Searching…'
-  return scope.value.level === 'all' ? 'No match.' : 'Nothing in ' + where.value + '.'
+/** The window's empty state (`.empty` in base.css): a glyph, a title, at most a line. */
+const empty = computed<{ icon: Component; title: string; line?: string; busy?: boolean }>(() => {
+  if (mode.value === 'text' && term.value.length < 2) {
+    return { icon: TextSearch, title: 'Search the text', line: 'Type at least two characters.' }
+  }
+  if (mode.value === 'file' && loadingFiles.value) return { icon: RefreshCw, title: 'Reading the file list…', busy: true }
+  if (mode.value === 'text' && searching.value) return { icon: RefreshCw, title: 'Searching…', busy: true }
+  return {
+    icon: mode.value === 'file' ? FolderOpen : mode.value === 'text' ? TextSearch : Search,
+    title: 'Nothing matches',
+    ...(scope.value.level === 'all' ? {} : { line: 'Nothing in ' + where.value + '.' }),
+  }
 })
 
 onMounted(() => {
@@ -1190,7 +1207,9 @@ onMounted(() => {
           @keydown.up.prevent="move(-1)"
           @keydown.enter.prevent="choose"
           @keydown.tab.exact.prevent="stepScope(1)"
-          @keydown.shift.tab.prevent="stepScope(-1)"
+          @keydown.shift.tab.exact.prevent="stepScope(-1)"
+          @keydown.alt.tab.exact.prevent="stepMode(1)"
+          @keydown.alt.shift.tab.exact.prevent="stepMode(-1)"
           @keydown.backspace="onBackspace"
           @keydown.esc="onEscape"
         />
@@ -1221,7 +1240,7 @@ onMounted(() => {
             :key="m.mode"
             class="mode"
             :class="{ on: mode === m.mode }"
-            :title="'Type ' + m.prefix + ' first'"
+            :title="'Type ' + m.prefix + ' first  ⌥⇥'"
             @mousedown.prevent
             @click="toggleMode(m.mode)"
           >
@@ -1273,16 +1292,10 @@ onMounted(() => {
           </button>
         </template>
 
-        <div v-if="!flat.length" class="none">
-          <span>{{ emptyText }}</span>
-          <button
-            v-if="scope.level !== 'all' && term && !searching && !loadingFiles"
-            class="linkish"
-            @mousedown.prevent
-            @click="pickScope('all')"
-          >
-            Search everywhere <span class="kbd">⇥</span>
-          </button>
+        <div v-if="!flat.length" class="empty">
+          <component :is="empty.icon" :class="{ spin: empty.busy }" />
+          <strong>{{ empty.title }}</strong>
+          <span v-if="empty.line">{{ empty.line }}</span>
         </div>
       </div>
     </div>
@@ -1464,14 +1477,6 @@ onMounted(() => {
 }
 .row .kbd { flex: none; }
 
-.none {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 28px;
-  text-align: center;
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
+/* The window's empty state, at the list's height rather than a pane's. */
+.list > .empty { height: auto; min-height: min(300px, 40vh); padding: 40px 24px; }
 </style>
