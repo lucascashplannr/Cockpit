@@ -1532,6 +1532,12 @@ interface ThreadMemory {
    */
   pairs: Record<string, [string, string][]>
   /**
+   * §7 — `left+right` → how much of the width the left half takes, 0–1.
+   * A share rather than pixels, so a wider window widens both. No entry is
+   * the even split.
+   */
+  pairShare: Record<string, number>
+  /**
    * §7 — the tab bar. session id → when it was opened as a tab (its place in
    * the bar), and → when its tab was closed. A running conversation, or one
    * that needs you, has a tab without being opened; closing it hides it until
@@ -1553,7 +1559,7 @@ interface ThreadMemory {
 export const threads = reactive<ThreadMemory>(readThreads())
 
 function readThreads(): ThreadMemory {
-  const empty: ThreadMemory = { pinned: {}, read: {}, unread: {}, fresh: {}, pairs: {}, tabAt: {}, closedAt: {}, newTab: {}, since: Date.now() }
+  const empty: ThreadMemory = { pinned: {}, read: {}, unread: {}, fresh: {}, pairs: {}, pairShare: {}, tabAt: {}, closedAt: {}, newTab: {}, since: Date.now() }
   try {
     const raw = JSON.parse(localStorage.getItem(THREADS_KEY) ?? 'null') as Partial<ThreadMemory> | null
     if (!raw || typeof raw !== 'object') return empty
@@ -1568,6 +1574,7 @@ function readThreads(): ThreadMemory {
         Object.fromEntries(
           Object.entries((raw as { pair?: Record<string, [string, string]> }).pair ?? {}).map(([k, v]) => [k, [v]]),
         ),
+      pairShare: raw.pairShare ?? {},
       tabAt: raw.tabAt ?? {},
       closedAt: raw.closedAt ?? {},
       newTab: raw.newTab ?? {},
@@ -2373,6 +2380,23 @@ function unpair(scope: AgentScope, id: string): void {
   if (!p) return
   threads.pairs[key] = (threads.pairs[key] ?? []).filter((x) => x !== p)
   if (!threads.pairs[key]!.length) delete threads.pairs[key]
+  delete threads.pairShare[p.join('+')]
+}
+
+/** How much of the width the left half of this pair takes, 0–1. */
+export function pairShareOf(left: string, right: string): number {
+  return threads.pairShare[left + '+' + right] ?? 0.5
+}
+
+/** The divider between the pair, dragged. Saved on `savePairShare`, when the drag ends. */
+export function setPairShare(left: string, right: string, share: number | null): void {
+  const key = left + '+' + right
+  if (share === null) delete threads.pairShare[key]
+  else threads.pairShare[key] = share
+}
+
+export function savePairShare(): void {
+  saveThreads()
 }
 
 /**

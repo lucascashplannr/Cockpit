@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { attentionIcon } from './agent/attention.js'
 import { Asterisk, CircleStop, Hand, History, MousePointerClick, Plus, X } from '@lucide/vue'
 import type { Conversation } from '@cockpit/shared'
 import AgentTab from './tabs/AgentTab.vue'
+import Splitter from './Splitter.vue'
 import ConversationDrawer from './ConversationDrawer.vue'
 import Wordmark from './brand/Wordmark.vue'
 import {
   activeAgentScope, activeWorkspace, attentionOf, closeFresh, hasMail, hasNewTab, closeTab, isBusy, isLive,
-  openThreadFor, pairTabs, pickThread, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
+  openThreadFor, pairShareOf, pairTabs, pickThread, savePairShare, setPairShare, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
   stripFor,
 } from '../core/store.js'
 
@@ -68,6 +69,34 @@ async function stop(): Promise<void> {
  */
 const strip = computed(() => stripFor(activeAgentScope.value))
 const pair = computed(() => splitFor(activeAgentScope.value))
+
+/* ── §7 — the line between the pair, draggable ───────────────────────────
+ *
+ * Kept as a share of the width, per pair: a wider window widens both halves,
+ * and each pair keeps the split it was given. The Splitter speaks pixels, so
+ * the panes are measured to convert.
+ */
+const panesEl = ref<HTMLElement | null>(null)
+const panesW = ref(0)
+const panesObs = new ResizeObserver(([e]) => { panesW.value = e?.contentRect.width ?? 0 })
+watch(panesEl, (el, old) => {
+  if (old) panesObs.unobserve(old)
+  if (el) panesObs.observe(el)
+})
+onBeforeUnmount(() => panesObs.disconnect())
+
+/** Below this a conversation's composer stops fitting its own controls. */
+const PANE_MIN = 320
+const share = computed(() => (pair.value ? pairShareOf(pair.value[0].id, pair.value[1].id) : 0.5))
+const leftPx = computed(() => Math.round(share.value * panesW.value))
+const leftMin = computed(() => Math.min(PANE_MIN, panesW.value / 2))
+const leftMax = computed(() => Math.max(panesW.value - PANE_MIN, panesW.value / 2))
+function resizePair(px: number | null): void {
+  const p = pair.value
+  if (!p || !panesW.value) return
+  setPairShare(p[0].id, p[1].id, px === null ? null : px / panesW.value)
+  if (px === null) savePairShare()
+}
 
 function closeOne(c: Conversation): void {
   const s = activeAgentScope.value
@@ -363,15 +392,35 @@ function fresh(): void {
           </TransitionGroup>
           <button class="add" title="New conversation" @click="fresh"><Plus class="sm" /></button>
         </nav>
-        <div class="panes">
+        <div ref="panesEl" class="panes">
           <template v-if="pair">
             <AgentTab
-              v-for="c in pair"
-              :key="c.id"
+              :key="pair[0].id"
+              class="pane"
+              :style="{ flex: `0 0 ${share * 100}%` }"
+              :workspace="w"
+              :thread-id="pair[0].id"
+              :passive="pair[0].id !== thread?.id"
+            />
+            <Splitter
+              v-if="panesW"
+              :style="{ left: `calc(${share * 100}% - 3px)` }"
+              :size="leftPx"
+              :min="leftMin"
+              :max="leftMax"
+              grows="right"
+              label="Width of the left conversation"
+              :snap="[Math.round(panesW / 2)]"
+              @resize="resizePair"
+              @done="savePairShare"
+              @reset="resizePair(null)"
+            />
+            <AgentTab
+              :key="pair[1].id"
               class="pane"
               :workspace="w"
-              :thread-id="c.id"
-              :passive="c.id !== thread?.id"
+              :thread-id="pair[1].id"
+              :passive="pair[1].id !== thread?.id"
             />
           </template>
           <AgentTab v-else :workspace="w" bare />
@@ -456,9 +505,11 @@ function fresh(): void {
 }
 
 .body { position: relative; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-.panes { flex: 1; min-height: 0; display: flex; }
+.panes { position: relative; flex: 1; min-height: 0; display: flex; }
 .panes > * { flex: 1; min-width: 0; }
-.panes > .pane + .pane { border-left: 1px solid var(--line); }
+/* The Splitter sits between the two, absolute, over this border: its 1px line
+   is 3px into its 7px, and this border is the right pane's first pixel. */
+.panes > .pane ~ .pane { border-left: 1px solid var(--line); }
 
 /* §7 — the strip. The instruments come up into it: they act on the thread
    that has the composer, and over two panes there is no one bar to sit on. */
