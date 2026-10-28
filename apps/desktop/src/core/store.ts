@@ -5,9 +5,9 @@ import type {
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, DocsInfo, DocsOffer, DocsPage, DocsProposalSet, DocsSignals, ErasedMemory, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
-  ProjectSettings, QuoteSource, ServerBoardRow, StashEntry, Workspace,
+  ProjectSettings, QuoteSource, RpcResult, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
-import { anchorsIn, handleFor, matchesBranch, protectedPatterns, slugify, splitPrompt } from '@cockpit/shared'
+import { anchorsIn, handleFor, matchesBranch, newId, protectedPatterns, slugify, splitPrompt } from '@cockpit/shared'
 import { CoreClient, CoreError } from './client.js'
 import type { ConnectionState } from './client.js'
 
@@ -5426,34 +5426,89 @@ export async function lastCommitMessage(workspaceId: string): Promise<string | n
 }
 
 /**
+ * The commit box of one repository — what is being written, the amend mode,
+ * and a draft in flight.
+ *
+ * It lives here rather than in the Diff tab because the tab does not last:
+ * switching tool or repository unmounts it, and a draft that came back to a
+ * component that was gone used to land nowhere — the "too large" toast fired,
+ * the box stayed empty. Kept per repository, a draft started on one lands in
+ * that one's box, and what was typed is still there on the way back.
+ */
+export interface CommitBox {
+  subject: string
+  body: string
+  amending: boolean
+  /** What was being written before Amend filled the box, put back on leaving it. */
+  beforeAmend: { subject: string; body: string } | null
+  /** The running draft's id, or null. */
+  drafting: string | null
+}
+
+export const commitBoxes = reactive<Record<string, CommitBox>>({})
+
+export function commitBox(workspaceId: string): CommitBox {
+  // Made on the raw record: this is read inside a computed, and a write
+  // through the proxy there would invalidate the computed while it runs.
+  // Nothing can be watching a box no one has asked for yet.
+  const raw = toRaw(commitBoxes)
+  raw[workspaceId] ??= { subject: '', body: '', amending: false, beforeAmend: null, drafting: null }
+  return commitBoxes[workspaceId]!
+}
+
+/**
  * §16 — a first sentence out of the diff, into the box a person types in.
  *
- * It returns the draft rather than setting it: the field is the user's, and a
- * function that wrote into it directly would be one keystroke away from
- * overwriting a message someone had already begun.
+ * Whatever is already in the box is a hint, not a thing to protect: someone
+ * who types "fixes the TVA rounding" and presses Draft is asking for that note
+ * turned into a message, not preserved beside one.
  */
-export async function draftCommitMessage(
-  topicId: string | null,
-  workspaceId: string,
-  all: boolean,
-  hint?: string,
-): Promise<string | null> {
-  const res = await guard(() =>
-    client.call('git.draftMessage', {
-      ...(topicId ? { topicId } : { workspaceIds: [workspaceId] }),
+export async function draftCommitMessage(workspaceId: string, all: boolean): Promise<void> {
+  const box = commitBox(workspaceId)
+  if (box.drafting) return
+  const draftId = newId()
+  box.drafting = draftId
+  const hint = box.subject.trim()
+  let res: RpcResult<'git.draftMessage'>
+  try {
+    res = await client.call('git.draftMessage', {
+      workspaceIds: [workspaceId],
       all,
+      draftId,
       ...(hint ? { hint } : {}),
-    }),
-  )
-  if (!res) return null
+    })
+  } catch (err) {
+    // Cancelled while the call was out: whatever it says is no longer asked for.
+    if (box.drafting !== draftId) return
+    box.drafting = null
+    toast('error', err instanceof Error ? err.message : String(err))
+    return
+  }
+  // Cancelled, or a newer draft took its place: this answer is not wanted.
+  if (box.drafting !== draftId) return
+  box.drafting = null
+  if (res.cancelled) return
   if (!res.ok) {
     // A core from before the engine's own words were passed on answers with
     // an empty detail, and a toast with nothing in it is not an answer.
     toast('error', res.detail || 'Draft failed, and the engine did not say why — is the claude CLI signed in?')
-    return null
+    return
   }
   if (res.truncated) toast('warn', 'The diff was too large to send whole — the largest files were abridged. Read the draft closely.')
-  return res.message
+  // The summary line only — there is nowhere for a body to go.
+  box.subject = res.message.trim().split('\n')[0] ?? ''
+  box.body = ''
+}
+
+/** Stops the draft running in this repository's box; the box is left as it was. */
+export function cancelCommitDraft(workspaceId: string): void {
+  const box = commitBox(workspaceId)
+  const draftId = box.drafting
+  if (!draftId) return
+  box.drafting = null
+  // A core from before cancel answers with an error; the result is dropped
+  // here either way, so the engine finishing on its own is harmless.
+  client.call('git.cancelDraft', { draftId }).catch(() => undefined)
 }
 
 /* ── stash ───────────────────────────────────────────────────────────────

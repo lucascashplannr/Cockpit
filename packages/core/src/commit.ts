@@ -397,10 +397,15 @@ export async function lastMessage(workspaceId: string): Promise<string | null> {
 
 /**
  * Enough diff to write about; past this, the summary carries the rest. In
- * characters, across every repository of the commit — about 30k tokens, which
- * an engine reads in the time it takes to notice the button was pressed.
+ * characters, across every repository of the commit — about 100k tokens.
+ *
+ * It was 120k characters, and an ordinary docs commit (2.6k lines of prose,
+ * 135k characters) tripped it every time: the draft came with a warning to
+ * distrust it over a diff the engine could have read whole in a few seconds.
+ * The cap is for the change that is mostly generated or moved code, not for
+ * a day's writing.
  */
-const DRAFT_DIFF_BUDGET = 120_000
+const DRAFT_DIFF_BUDGET = 400_000
 
 /**
  * Files whose patch says nothing the filename does not. A regenerated lockfile
@@ -486,6 +491,8 @@ export function fitPatches(patches: string[], budget: number): { texts: string[]
 export interface DraftInput extends CommitScope {
   /** What the person already knows and the diff does not say. Optional. */
   hint?: string
+  /** Names this draft so `cancelDraft` can stop it. */
+  draftId?: string
 }
 
 export interface DraftResult {
@@ -495,6 +502,8 @@ export interface DraftResult {
   engine: string
   /** The diff did not fit and the draft was written from part of it. */
   truncated: boolean
+  /** Stopped by `cancelDraft` — not a failure, nothing to report. */
+  cancelled?: boolean
 }
 
 /**
@@ -558,8 +567,31 @@ async function styleExamples(cwd: string): Promise<string[]> {
   return r.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
 }
 
+/** Drafts running now, by the id the window gave them. */
+const drafts = new Map<string, AbortController>()
+
+/** Stops a draft: the engine process is killed, the call answers `cancelled`. */
+export function cancelDraft(draftId: string): boolean {
+  const c = drafts.get(draftId)
+  if (!c) return false
+  c.abort()
+  return true
+}
+
 export async function draftMessage(input: DraftInput): Promise<DraftResult> {
+  const ctl = new AbortController()
+  if (input.draftId) drafts.set(input.draftId, ctl)
+  try {
+    return await draftWith(input, ctl.signal)
+  } finally {
+    if (input.draftId) drafts.delete(input.draftId)
+  }
+}
+
+async function draftWith(input: DraftInput, signal: AbortSignal): Promise<DraftResult> {
   const engine = 'claude'
+  const stopped = (truncated: boolean): DraftResult =>
+    ({ ok: false, detail: 'cancelled', message: '', engine, truncated, cancelled: true })
   const bin = await which(engine)
   if (!bin) {
     // Named rather than papered over: the box still takes a typed message, and
@@ -574,6 +606,7 @@ export async function draftMessage(input: DraftInput): Promise<DraftResult> {
   }
 
   const ctx = await draftContext(input)
+  if (signal.aborted) return stopped(ctx.truncated)
   if (!ctx.text.trim()) {
     return { ok: false, detail: 'nothing to describe', message: '', engine, truncated: false }
   }
@@ -630,8 +663,9 @@ export async function draftMessage(input: DraftInput): Promise<DraftResult> {
     '--restricted',
     '--strict-mcp-config',
     '--output-format', 'text',
-  ], { input: prompt, timeoutMs: 90_000, maxBuffer: 256 * 1024 })
+  ], { input: prompt, timeoutMs: 90_000, maxBuffer: 256 * 1024, signal })
 
+  if (signal.aborted) return stopped(ctx.truncated)
   if (!r.ok) {
     return {
       ok: false,

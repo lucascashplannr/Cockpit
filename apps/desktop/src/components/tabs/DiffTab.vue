@@ -4,7 +4,7 @@ import type { CommitPreview, DiffFile, FileDiff, StashEntry, Workspace } from '@
 import type { Component } from 'vue'
 import {
   Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, Code, Columns2, Eye, FileCode, Rows2, LoaderCircle,
-  ChevronUp, FileText, GitCommitHorizontal, Save, ArrowLeft, PencilLine, Sparkles, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
+  ChevronUp, FileText, GitCommitHorizontal, Save, ArrowLeft, PencilLine, Sparkles, Square, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
   Copy, FilePen, FolderOpen, GitGraph, Info, SquareDot, Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
@@ -15,7 +15,7 @@ import FindBar from '../FindBar.vue'
 import { paintDiff } from '../../core/editor.js'
 import { useFindKey, useTextFind } from '../../core/find.js'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, busyVerb, busyWord, gitBusy, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, guard, layout, resetPlaceWidth,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, busyVerb, busyWord, gitBusy, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, cancelCommitDraft, commitBox, guard, layout, resetPlaceWidth,
   activeProject, changeCount, pickSpanRepo, resetCommitHeight, reviewSpan, shortName, saveLayout, savePlaceWidth, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
@@ -617,8 +617,9 @@ async function open(path: string) {
  * `body` still exists for one case. Amending a commit that already has a body
  * keeps it as it was, rather than an unseen field quietly deleting it.
  */
-const subject = ref('')
-const body = ref('')
+const box = computed(() => commitBox(props.workspace.id))
+const subject = computed({ get: () => box.value.subject, set: (v: string) => { box.value.subject = v } })
+const body = computed({ get: () => box.value.body, set: (v: string) => { box.value.body = v } })
 const message = computed(() => {
   const head = subject.value.trim()
   const rest = body.value.trim()
@@ -775,14 +776,13 @@ const git = computed(() => props.workspace.git)
  * message so what gets rewritten is visible and editable first, and leaving
  * the mode puts back whatever was being written before.
  */
-const amending = ref(false)
-let beforeAmend: { subject: string; body: string } | null = null
+const amending = computed({ get: () => box.value.amending, set: (v: boolean) => { box.value.amending = v } })
 
 async function startAmend() {
   menuOpen.value = false
   if (amending.value || !git.value?.lastCommit) return
   const full = (await lastCommitMessage(props.workspace.id)) ?? git.value.lastCommit.subject
-  beforeAmend = { subject: subject.value, body: body.value }
+  box.value.beforeAmend = { subject: subject.value, body: body.value }
   const [head, ...rest] = full.split('\n')
   subject.value = head ?? ''
   body.value = rest.join('\n').trim()
@@ -792,11 +792,12 @@ async function startAmend() {
 
 function stopAmend() {
   amending.value = false
-  if (beforeAmend) {
-    subject.value = beforeAmend.subject
-    body.value = beforeAmend.body
+  const before = box.value.beforeAmend
+  if (before) {
+    subject.value = before.subject
+    body.value = before.body
   }
-  beforeAmend = null
+  box.value.beforeAmend = null
 }
 
 async function doCommit(opts: { push?: boolean } = {}) {
@@ -822,7 +823,7 @@ async function doCommit(opts: { push?: boolean } = {}) {
     subject.value = ''
     body.value = ''
     amending.value = false
-    beforeAmend = null
+    box.value.beforeAmend = null
   }
 }
 
@@ -868,25 +869,14 @@ const commitLabel = computed(() => {
 
 const subjectEl = ref<HTMLInputElement | null>(null)
 
-const drafting = ref(false)
+/** Kept in the store, so a draft outlives this tab being closed or switched. */
+const drafting = computed(() => !!box.value.drafting)
 
-async function draftMessage() {
-  if (drafting.value || !fileCount.value) return
-  drafting.value = true
-  // Whatever is already in the box is a hint, not a thing to protect: someone
-  // who types "fixes the TVA rounding" and presses Draft is asking for that
-  // note turned into a message, not preserved beside one.
-  const text = await draftCommitMessage(
-    null,
-    props.workspace.id,
-    include.value !== 'staged',
-    subject.value.trim() || undefined,
-  )
-  drafting.value = false
-  if (!text) return
-  // The summary line only — there is nowhere for a body to go.
-  subject.value = text.trim().split('\n')[0] ?? ''
-  body.value = ''
+/** One button: Draft when idle, Stop while drafting. */
+function toggleDraft() {
+  if (drafting.value) return cancelCommitDraft(props.workspace.id)
+  if (!fileCount.value) return
+  void draftCommitMessage(props.workspace.id, include.value !== 'staged')
 }
 
 /* ── §16 — set aside, and see that you did ───────────────────────────────
@@ -1462,18 +1452,21 @@ const mark: Record<string, Component> = {
                 v-if="!amending"
                 class="icon-btn cdraft"
                 :class="{ on: drafting }"
-                :disabled="!fileCount || drafting"
-                :aria-label="drafting ? 'Drafting…' : 'Draft a message'"
+                :disabled="!fileCount && !drafting"
+                :aria-label="drafting ? 'Stop drafting' : 'Draft a message'"
                 :title="
                   drafting
-                    ? 'Drafting…'
+                    ? 'Drafting… — click to stop'
                     : subject.trim()
                       ? 'Draft a message from this diff — what you wrote is used as a hint'
                       : 'Draft a message from this diff'
                 "
-                @click="draftMessage"
+                @click="toggleDraft"
               >
-                <LoaderCircle v-if="drafting" class="spin" />
+                <template v-if="drafting">
+                  <LoaderCircle class="spin" />
+                  <Square class="stop" />
+                </template>
                 <Sparkles v-else />
               </button>
             </div>
@@ -1916,6 +1909,10 @@ const mark: Record<string, Component> = {
   transform: translateY(-50%);
 }
 .cdraft .lucide { width: 14px; height: 14px; }
+/* Drafting: the spinner says it is working, hovering it offers the stop. */
+.cdraft .stop { display: none; fill: currentColor; width: 10px; height: 10px; }
+.cdraft.on:hover .spin { display: none; }
+.cdraft.on:hover .stop { display: block; }
 
 /* What goes in: three answers, the width of the box, each counted. */
 /* The shared `.seg` well is drawn for a raised surface; on this sunken panel

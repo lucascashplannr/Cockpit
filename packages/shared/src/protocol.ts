@@ -655,9 +655,11 @@ export interface Rpc {
    * and §12 could not attribute.
    */
   'git.draftMessage': {
-    params: { topicId?: string; workspaceIds?: string[]; all: boolean; hint?: string }
-    result: { ok: boolean; detail: string; message: string; engine: string; truncated: boolean }
+    params: { topicId?: string; workspaceIds?: string[]; all: boolean; hint?: string; draftId?: string }
+    result: { ok: boolean; detail: string; message: string; engine: string; truncated: boolean; cancelled?: boolean }
   }
+  /** Stops a running draft by the id it was started with; false when none was running. */
+  'git.cancelDraft': { params: { draftId: string }; result: boolean }
 
   /**
    * §16 — every stash this app makes, listed where the work was taken from.

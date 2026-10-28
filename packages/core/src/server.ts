@@ -620,6 +620,7 @@ const handlers: Record<string, Handler> = {
   'git.lastMessage': (p: { workspaceId: string }) => commit.lastMessage(p.workspaceId),
   /** §16 — a draft for the box, never a commit. See `commit.draftMessage`. */
   'git.draftMessage': (p: commit.DraftInput) => commit.draftMessage(p),
+  'git.cancelDraft': (p: { draftId: string }) => commit.cancelDraft(p.draftId),
 
   'git.stashList': (p: stash.StashScope) => stash.list(p),
   'git.stash': (p: stash.StashInput) => stash.plan(p),

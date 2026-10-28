@@ -18,6 +18,8 @@ export interface RunOptions {
   maxBuffer?: number
   /** Windows: start the child hidden (default). GUI apps honour it too. */
   windowsHide?: boolean
+  /** Aborting it stops the child; the result comes back with code 130. */
+  signal?: AbortSignal
 }
 
 const IS_WIN = process.platform === 'win32'
@@ -104,7 +106,14 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       if (done) return
       done = true
       clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
       resolveRun({ code, stdout, stderr, ok: code === 0 })
+    }
+
+    function onAbort() {
+      child.kill('SIGTERM')
+      stderr += '\n[cockpit] cancelled'
+      finish(130)
     }
 
     const timer = setTimeout(() => {
@@ -124,6 +133,8 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       finish(127)
     })
     child.on('close', (code) => finish(code ?? 0))
+    if (opts.signal?.aborted) onAbort()
+    else opts.signal?.addEventListener('abort', onAbort, { once: true })
 
     if (opts.input !== undefined) {
       child.stdin?.write(opts.input)
