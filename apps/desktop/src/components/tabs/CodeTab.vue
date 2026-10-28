@@ -21,15 +21,16 @@ import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import type { BlameCommit, FileEntry, Workspace } from '@cockpit/shared'
 import {
-  ChevronDown, ChevronRight, Code, Copy, Eye, FileCode, Folder, FolderOpen, GitCommitVertical, Info, Save, Search,
+  ArrowLeft, ChevronDown, ChevronRight, Code, Copy, Eye, FileCode, Folder, FolderOpen, GitCommitVertical, Info, Save, Search,
   SquareArrowOutUpRight, UserPen,
 } from '@lucide/vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
 import Splitter from '../Splitter.vue'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, client, goTo, guard, layout, openCommits, resetPlaceWidth, savePlaceWidth,
-  setColumnWidth, state, stopSaveOnProtected, toast,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, changeCount, client, goTo, guard, layout, openCommits, resetPlaceWidth,
+  savePlaceWidth, setColumnWidth, state, stopSaveOnProtected, toast,
 } from '../../core/store.js'
+import { buildMarks, changeMarks, noMarks, setMarks } from '../../core/changeMarks.js'
 import { cockpitTheme, languageFor } from '../../core/editor.js'
 import { editorFind, findInEditor, useFindKey } from '../../core/find.js'
 import { blameGutter, blameMarks, blameOn } from '../../core/blame.js'
@@ -46,36 +47,31 @@ const props = defineProps<{ workspace: Workspace }>()
 
 /* ── the tree against the editor ──────────────────────────────────────────
  *
- * Beside it when there is room, above it when there is not — under 620px a
- * tree column would leave the editor too little to be worth opening. Either
- * way the line between them is a handle, and where it was left belongs to the
- * place (see `savePlaceWidth`): the width and the height are kept apart, since
- * the one says nothing about the other.
+ * Beside it when there is room, with a handle between them whose place
+ * belongs to the place (see `savePlaceWidth`). Under 620px there is no beside
+ * left, and the panel does what the Diff does: the tree is the screen, a file
+ * opens over it, and the back arrow returns. Stacking them instead left the
+ * file a few clipped lines under a tree you were done with.
  *
- * Measured here rather than by the container query in ReviewTools that used
- * to stack it: the handle has to know which of the two it is moving.
+ * Measured here rather than by a container query: opening a file has to know
+ * which of the two it is doing.
  */
 const root = ref<HTMLElement | null>(null)
-const stacked = ref(false)
+const narrow = ref(false)
+/** Narrow only: the file is open over the tree. */
+const drilled = ref(false)
 const panelW = ref(0)
-const panelH = ref(0)
 const treeMax = computed(() => Math.max(LAYOUT_LIMITS.tree.min, Math.min(LAYOUT_LIMITS.tree.max, panelW.value - 320)))
-const treeHMax = computed(() =>
-  Math.max(LAYOUT_LIMITS.treeHeight.min, Math.min(LAYOUT_LIMITS.treeHeight.max, panelH.value - 140)),
-)
 const treeW = computed(() => Math.min(layout.tree, treeMax.value))
-const treeH = computed(() => Math.min(layout.treeHeight, treeHMax.value))
 /** Where the line holds on the way past: half, and the default. */
 const treeSnaps = computed(() => [Math.round(panelW.value / 2), LAYOUT_DEFAULTS.tree])
-const treeHSnaps = computed(() => [Math.round(panelH.value / 2), LAYOUT_DEFAULTS.treeHeight])
 
 let ro: ResizeObserver | null = null
 onMounted(() => {
   ro = new ResizeObserver(([e]) => {
     if (!e) return
-    stacked.value = e.contentRect.width < 620
+    narrow.value = e.contentRect.width < 620
     panelW.value = e.contentRect.width
-    panelH.value = e.contentRect.height
   })
   if (root.value) ro.observe(root.value)
 })
@@ -130,7 +126,11 @@ async function loadRoot() {
   // Back where it was left — first, so that an edit kept there is on screen
   // before anything asked for meanwhile can ask to replace it.
   const was = left.get(props.workspace.id)
-  if (was) await openFile(was.path)
+  drilled.value = false
+  if (was) {
+    drilled.value = true
+    await openFile(was.path)
+  }
   takeRequest()
 }
 
@@ -149,6 +149,7 @@ function takeRequest() {
  * that edit, as the Diff's question says.
  */
 function goToFile(path: string, line: number | null = null) {
+  drill(true)
   if (path === openPath.value && view.value) {
     if (line) toLine(view.value, line)
     return
@@ -167,6 +168,17 @@ function goToFile(path: string, line: number | null = null) {
     },
   }
 }
+
+/** Over the tree, or back to it. Hidden, the editor measured nothing; shown
+ *  again, it has to find its size. */
+function drill(on: boolean) {
+  drilled.value = on
+  if (on) requestAnimationFrame(() => view.value?.requestMeasure())
+}
+// Narrowed with a file on screen, that file stays the screen.
+watch(narrow, (n) => {
+  if (n) drill(!!openPath.value)
+})
 
 /** A search hit is a line, not a file: land on it, in the middle of the
  *  screen, where the eye is already going. */
@@ -259,6 +271,7 @@ async function openFile(path: string, line: number | null = null) {
         langCompartment.of(languageFor(path)),
         cockpitTheme,
         findInEditor,
+        changeMarks,
         EditorView.updateListener.of((u) => {
           if (!u.docChanged) return
           dirty.value = true
@@ -271,6 +284,7 @@ async function openFile(path: string, line: number | null = null) {
   if (kept?.draft) dirty.value = true
   // Blame reads the disk; over a kept edit its lines would be off by what was typed.
   if (blameOn.value && !dirty.value) void loadBlame()
+  if (!dirty.value) void loadMarks()
   if (line) toLine(view.value, line)
   else if (kept) {
     const v = view.value
@@ -307,6 +321,34 @@ async function save() {
   // What was saved is what the next blame reads: the edited lines become
   // not committed, and the ones around them find their commits again.
   if (blameOn.value) void loadBlame()
+  void loadMarks()
+}
+
+/* ── what changed ──────────────────────────────────────────────────────────
+ *
+ * The file is read as the Diff's File view reads it: what is not committed is
+ * marked on it — added lines tinted, removed ones drawn back in where they
+ * were. The marks come from the same diff, so the two agree. They are laid
+ * only on the disk's copy: over an edit, or over a file that moved on disk
+ * since it was opened, the lines would not be the diff's lines.
+ */
+let marksSeq = 0
+async function loadMarks() {
+  const path = openPath.value
+  const v = view.value
+  if (!path || !v || image.value) return
+  const mine = ++marksSeq
+  if (!props.workspace.repo) {
+    v.dispatch({ effects: setMarks.of(noMarks) })
+    return
+  }
+  const [d, r] = await Promise.all([
+    guard(() => client.call('diff.file', { workspaceId: props.workspace.id, path })),
+    guard(() => client.call('fs.read', { workspaceId: props.workspace.id, rel: path })),
+  ])
+  if (mine !== marksSeq || view.value !== v || openPath.value !== path || dirty.value || !d || !r) return
+  if (d.binary || r.binary || r.content !== v.state.doc.toString()) return
+  v.dispatch({ effects: setMarks.of(buildMarks(v.state.doc, d.lines).marks) })
 }
 
 /* ── who wrote it ──────────────────────────────────────────────────────────
@@ -371,6 +413,13 @@ watch(
   () => [props.workspace.git?.lastCommit?.hash, props.workspace.git?.branch].join('|'),
   () => {
     if (blameOn.value && !dirty.value) void loadBlame()
+  },
+)
+// A commit, a discard or an agent's edit moves what is marked.
+watch(
+  () => [props.workspace.git?.lastCommit?.hash, props.workspace.git?.branch, changeCount(props.workspace)].join('|'),
+  () => {
+    if (!dirty.value) void loadMarks()
   },
 )
 
@@ -559,8 +608,8 @@ onBeforeUnmount(() => {
   <div
     ref="root"
     class="code"
-    :class="{ stacked }"
-    :style="{ '--tree-w': treeW + 'px', '--tree-h': treeH + 'px' }"
+    :class="{ narrow, drilled: narrow && drilled }"
+    :style="{ '--tree-w': treeW + 'px' }"
   >
     <aside class="tree">
       <div class="ttop">
@@ -595,7 +644,7 @@ onBeforeUnmount(() => {
     </aside>
 
     <Splitter
-      v-if="!stacked"
+      v-if="!narrow"
       :style="{ left: treeW - 4 + 'px' }"
       :size="treeW"
       :min="LAYOUT_LIMITS.tree.min"
@@ -607,24 +656,15 @@ onBeforeUnmount(() => {
       @done="savePlaceWidth('tree')"
       @reset="resetPlaceWidth('tree')"
     />
-    <Splitter
-      v-else
-      :size="treeH"
-      :min="LAYOUT_LIMITS.treeHeight.min"
-      :max="treeHMax"
-      grows="down"
-      :snap="treeHSnaps"
-      label="Height of the file tree"
-      @resize="setColumnWidth('treeHeight', $event)"
-      @done="savePlaceWidth('treeHeight')"
-      @reset="resetPlaceWidth('treeHeight')"
-    />
 
     <div class="editor">
       <div class="ehead" v-if="openPath">
         <!-- The name alone, as in the Diff: the folders are in the tree beside
              it, and the rest is one click away. -->
         <div ref="detailRoot" class="ename">
+          <button v-if="narrow" class="icon-btn back" title="Back to the files" @click="drill(false)">
+            <ArrowLeft class="sm" />
+          </button>
           <span class="mono ep" :title="openPath">{{ baseName(openPath) }}</span>
           <!-- Unsaved is a mark on the name it is about, as every editor tab
                has it — not a badge floating somewhere in the header. -->
@@ -729,9 +769,11 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .code { position: relative; display: flex; height: 100%; }
-/* Stacked, the tree is a band across the top and the line under it is the
-   boundary — a border the eye can find, with the handle over it. */
-.code.stacked { flex-direction: column; }
+/* Narrow, one of the two is the screen: the tree, or the file opened over it. */
+.code.narrow .tree { flex: 1; width: auto; border-right: none; }
+.code.narrow .editor { display: none; }
+.code.narrow.drilled .tree { display: none; }
+.code.narrow.drilled .editor { display: flex; }
 
 .tree {
   flex: none;
@@ -741,12 +783,6 @@ onBeforeUnmount(() => {
   border-right: 1px solid var(--line);
   background: var(--surface-review);
   min-height: 0;
-}
-.code.stacked .tree {
-  width: auto;
-  height: var(--tree-h, 240px);
-  border-right: none;
-  border-bottom: 1px solid var(--line);
 }
 .ttop {
   display: flex;
@@ -797,7 +833,7 @@ onBeforeUnmount(() => {
   gap: 10px;
   height: 40px;
   /* The right edge matches the tree's header, so Save and the file search
-     line up when the two are stacked. */
+     line up across the two. */
   padding: 0 8px 0 14px;
   border-bottom: 1px solid var(--line);
 }
@@ -809,6 +845,8 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .ename { position: relative; min-width: 0; display: flex; align-items: center; gap: 2px; }
+/* As the Diff's: the arrow, then the name it is the way back from. */
+.ename .back { flex: none; width: 26px; height: 26px; margin: 0 6px 0 -4px; }
 .einfo { width: 24px; height: 24px; }
 .einfo .lucide { width: 13px; height: 13px; }
 .einfo.on { background: var(--active); color: var(--text); }
