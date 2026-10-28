@@ -116,10 +116,21 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       finish(130)
     }
 
+    // SIGTERM first: git removes its lock files (.git/index.lock) on SIGTERM
+    // but cannot on SIGKILL, and a lock left behind stops every later git call
+    // in that repository with exit 128. The result waits for the process to
+    // go, so the per-repository queue never starts the next git while this one
+    // still holds the lock; SIGKILL only if it ignores the first signal.
+    let timedOut = false
+    let killer: NodeJS.Timeout | undefined
     const timer = setTimeout(() => {
-      child.kill('SIGKILL')
+      timedOut = true
       stderr += '\n[cockpit] timed out after ' + (opts.timeoutMs ?? 60000) + 'ms'
-      finish(124)
+      child.kill('SIGTERM')
+      killer = setTimeout(() => {
+        child.kill('SIGKILL')
+        finish(124)
+      }, 3000)
     }, opts.timeoutMs ?? 60_000)
 
     child.stdout?.on('data', (d: Buffer) => {
@@ -132,7 +143,10 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       stderr += String(err)
       finish(127)
     })
-    child.on('close', (code) => finish(code ?? 0))
+    child.on('close', (code) => {
+      clearTimeout(killer)
+      finish(timedOut ? 124 : (code ?? 0))
+    })
     if (opts.signal?.aborted) onAbort()
     else opts.signal?.addEventListener('abort', onAbort, { once: true })
 

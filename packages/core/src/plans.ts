@@ -617,7 +617,7 @@ export async function apply(planId: string): Promise<ApplyResult> {
         payload: { operation: stored.operation, step: step.title, code: r.code, output: r.stderr.slice(-2000) },
       })
       lines.push('')
-      lines.push('[cockpit] stopped at "' + step.title + '" (exit ' + r.code + ').')
+      lines.push('[cockpit] stopped at "' + step.title + '" (exit ' + r.code + ')' + failureReason(r.stderr))
 
       // §3.7 — a plan spanning several repositories is all-or-nothing. Leaving
       // two of three worktrees behind is worse than not starting: the topic
@@ -645,6 +645,29 @@ export async function apply(planId: string): Promise<ApplyResult> {
   // Only now is the intent real enough to record (§3.4).
   if (stored.onApplied) await stored.onApplied({ output })
   return { ok: true, output, restorePoint }
+}
+
+/**
+ * Why a step failed, as git said it — ": <reason>." or "." when it said
+ * nothing usable. The toast shows only the "stopped at" line, and "exit 128"
+ * on its own names no cause.
+ *
+ * A lock file left by a git that was killed mid-way gets its own sentence:
+ * it is the common one, git's wording ("another git process seems to be
+ * running") sends people looking for a process that is not there, and the fix
+ * is one file.
+ */
+export function failureReason(stderr: string): string {
+  const lock = /Unable to create '([^']+\.lock)': File exists/.exec(stderr)
+  if (lock) {
+    return ': ' + lock[1] + ' is in the way, left by a git that did not finish. ' +
+      'If no git is running in this repository, delete it and try again.'
+  }
+  const said = stderr
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => /^(fatal|error):/.test(l))
+  return said ? ': ' + said.replace(/^(fatal|error):\s*/, '') : '.'
 }
 
 /**
