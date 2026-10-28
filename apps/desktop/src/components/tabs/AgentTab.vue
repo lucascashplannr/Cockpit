@@ -772,18 +772,21 @@ const canSend = computed(() => {
 const queueing = computed(() => !!selected.value && isBusy(selected.value))
 
 /**
- * `/clear` and `/next` — the same scope, an empty thread, and this one removed.
+ * `/clear`, `/next` and `/new` — the same scope, an empty thread, and this one
+ * removed.
  *
  * `/next` has the agent bring the memory up to date first, and the new
- * conversation starts on that memory. `/clear` asks nothing of the agent and
- * erases the memory too: the next conversation knows nothing of this one.
+ * conversation starts on that memory. `/new` asks nothing of the agent and
+ * starts on the memory as it is. `/clear` asks nothing of the agent and erases
+ * the memory too: the next conversation knows nothing of this one.
  *
  * Removed the way the drawer's Remove removes it; its journal never goes. Its
  * engine is let go first, if it is sitting open: an open conversation holds
  * the lock on the scope, and the new one would be refused by the old.
  */
-async function clearThread(handoff = false, confirmed = false): Promise<void> {
+async function clearThread(mode: 'erase' | 'keep' | 'handoff' = 'erase', confirmed = false): Promise<void> {
   const s = selected.value
+  const handoff = mode === 'handoff'
   if (handoff && (!s || !continuing.value)) {
     toast('info', 'there is no conversation to carry on from yet')
     return
@@ -803,7 +806,7 @@ async function clearThread(handoff = false, confirmed = false): Promise<void> {
     return
   }
   // A memory other conversations are writing to is theirs as well: asked.
-  const others = s && !handoff && hasFile(s.memory) ? state.agents.filter((c) => c.id !== s.id && c.memory === s.memory) : []
+  const others = s && mode === 'erase' && hasFile(s.memory) ? state.agents.filter((c) => c.id !== s.id && c.memory === s.memory) : []
   if (others.length && !confirmed) {
     state.pendingConfirm = {
       title: 'Erase "' + memoryLabel(props.workspace.projectId, s!.memory) + '"?',
@@ -816,7 +819,7 @@ async function clearThread(handoff = false, confirmed = false): Promise<void> {
       done: 'memory erased',
       danger: true,
       run: async () => {
-        await clearThread(false, true)
+        await clearThread('erase', true)
         return true
       },
     }
@@ -844,7 +847,7 @@ async function clearThread(handoff = false, confirmed = false): Promise<void> {
     if (skipped) return
     if (r?.ok && r.docsSetId) toast('ok', 'docs proposals are waiting in the Docs tool')
   }
-  await leave(s?.id, on, handoff)
+  await leave(s?.id, on, mode !== 'erase')
 }
 
 /** A memory with a file behind it, rather than "new" or "off". */
@@ -939,7 +942,8 @@ async function send(): Promise<void> {
       return
     }
     if (cmd.command.name === 'clear') return clearThread()
-    if (cmd.command.name === 'next') return clearThread(true)
+    if (cmd.command.name === 'next') return clearThread('handoff')
+    if (cmd.command.name === 'new') return clearThread('keep')
     if (cmd.command.name === 'document') return documentThread()
     if (cmd.command.name === 'memorize') return memorizeThread()
     const no = refuseCommand(cmd.command.name, cmd.command.run, !!cmd.command.thread)
