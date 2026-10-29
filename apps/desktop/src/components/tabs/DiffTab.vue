@@ -5,7 +5,7 @@ import type { Component } from 'vue'
 import {
   Archive, ArchiveRestore, Check, ChevronRight, CircleDashed, Code, Columns2, Eye, FileCode, Rows2, LoaderCircle,
   ChevronUp, FileText, GitCommitHorizontal, Save, ArrowLeft, PencilLine, Sparkles, Square, Upload, X, SquareArrowOutUpRight, Trash2, TriangleAlert,
-  Copy, FilePen, FolderOpen, GitGraph, Info, SquareDot, Undo2, User, UsersRound,
+  Copy, FilePen, FolderOpen, GitGraph, Info, MessagesSquare, SquareDot, Undo2, User, UsersRound,
 } from '@lucide/vue'
 import Splitter from '../Splitter.vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
@@ -396,18 +396,19 @@ function togglePick(path: string) {
  * carry, so ticking it means what ticking a row means — all of them, and
  * ticking it back means none.
  */
-const allPicked = computed(() => files.value.length > 0 && picked.value.length === files.value.length)
+const allPicked = computed(() => shown.value.length > 0 && picked.value.length === shown.value.length)
 const somePicked = computed(() => picked.value.length > 0 && !allPicked.value)
 
 function toggleAll() {
-  picked.value = allPicked.value ? [] : files.value.map((f) => f.path)
+  picked.value = allPicked.value ? [] : shown.value.map((f) => f.path)
 }
 
 /* ── §7 — the change, by conversation ────────────────────────────────────
  *
- * Two agents in one folder leave one diff. Each conversation is a chip over
- * the list; pressing it ticks the files it changed, so the commit box commits
- * that conversation's work and nothing else. A file two of them changed is in
+ * Two agents in one folder leave one diff. One icon in the header opens the
+ * conversations that changed something here; picking one narrows the list to
+ * the files it changed and ticks them, so the commit box commits that
+ * conversation's work and nothing else. A file two of them changed is in
  * both, and says so on its row.
  */
 const byConv = computed(() => {
@@ -424,15 +425,31 @@ const byConv = computed(() => {
   const alone = list.length === 1 && list[0]!.paths.length === files.value.length
   return alone ? [] : list
 })
-function convPicked(c: { paths: string[] }): boolean {
-  return picked.value.length === c.paths.length && c.paths.every((p) => picked.value.includes(p))
+const convId = ref<string | null>(null)
+/** The conversation the list is narrowed to — gone with its last change, or with the repository. */
+const conv = computed(() => byConv.value.find((c) => c.id === convId.value) ?? null)
+watch(conv, (c) => { if (!c) convId.value = null })
+watch(() => props.workspace.id, () => { convId.value = null })
+/** This repository's files, as the list shows them: all, or one conversation's. */
+const shown = computed(() => (conv.value ? files.value.filter((f) => conv.value!.paths.includes(f.path)) : files.value))
+
+const convOpen = ref(false)
+const convRoot = ref<HTMLElement | null>(null)
+function pickConv(c: { id: string; paths: string[] }): void {
+  convOpen.value = false
+  convId.value = c.id
+  picked.value = [...c.paths]
+  if (!narrow.value && !c.paths.includes(selected.value ?? '')) select(c.paths[0]!)
 }
-function pickConv(c: { paths: string[] }): void {
-  picked.value = convPicked(c) ? [] : [...c.paths]
+function everyChange(): void {
+  convOpen.value = false
+  if (!convId.value) return
+  convId.value = null
+  picked.value = []
 }
 function convTip(c: { title: string; paths: string[]; shared: number }): string {
   const n = c.paths.length
-  return 'Select the ' + n + ' file' + (n === 1 ? '' : 's') + ' “' + c.title + '” changed' +
+  return 'The ' + n + ' file' + (n === 1 ? '' : 's') + ' “' + c.title + '” changed' +
     (c.shared ? ' — ' + c.shared + ' also changed by another conversation' : '')
 }
 function byTip(f: DiffFile): string {
@@ -524,7 +541,7 @@ function repoLabel(w: Workspace): string {
 
 /** What the list shows: one group per repository with "All", else the one list without a heading. */
 const sections = computed(() => {
-  if (!props.repos) return [{ w: props.workspace, here: true, files: files.value }]
+  if (!props.repos) return [{ w: props.workspace, here: true, files: shown.value }]
   return props.repos
     .map((w) => {
       const here = w.id === props.workspace.id
@@ -833,9 +850,10 @@ const menuRoot = ref<HTMLElement | null>(null)
 function onDocDown(e: MouseEvent) {
   if (menuRoot.value && !menuRoot.value.contains(e.target as Node)) menuOpen.value = false
   if (detailRoot.value && !detailRoot.value.contains(e.target as Node)) detailOpen.value = false
+  if (convRoot.value && !convRoot.value.contains(e.target as Node)) convOpen.value = false
 }
 function onDocKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') detailOpen.value = false
+  if (e.key === 'Escape') detailOpen.value = convOpen.value = false
 }
 onMounted(() => {
   document.addEventListener('mousedown', onDocDown)
@@ -1224,6 +1242,29 @@ const mark: Record<string, Component> = {
           {{ picked.length ? picked.length + ' selected' : 'files (' + listed.length + ')' }}
         </span>
         <span class="grow" />
+        <div v-if="byConv.length && !repos" ref="convRoot" class="convpick">
+          <button
+            class="icon-btn"
+            :class="{ on: conv || convOpen }"
+            title="Show one conversation's changes"
+            @click="convOpen = !convOpen"
+          >
+            <MessagesSquare class="sm" />
+          </button>
+          <div v-if="convOpen" class="menu convmenu" aria-label="Changes by conversation">
+            <button @click="everyChange">
+              <Check v-if="!conv" class="ck" /><span v-else class="ck" />
+              <span class="ct">Every change</span>
+              <span class="cn num">{{ files.length }}</span>
+            </button>
+            <div class="rule" />
+            <button v-for="c in byConv" :key="c.id" :title="convTip(c)" @click="pickConv(c)">
+              <Check v-if="conv?.id === c.id" class="ck" /><span v-else class="ck" />
+              <span class="ct">{{ c.title }}</span>
+              <span class="cn num">{{ c.paths.length }}</span>
+            </button>
+          </div>
+        </div>
         <template v-if="picked.length">
           <!-- The same undo mark the rows carry, so the verb on the selection
                and the verb on one file are plainly the same verb. -->
@@ -1235,7 +1276,6 @@ const mark: Record<string, Component> = {
           >
             <Undo2 class="sm" />
           </button>
-          <button class="btn ghost tiny" @click="picked = []">Clear</button>
         </template>
         <span v-else class="tot num">
           <span class="add">+{{ totals.add }}</span>
@@ -1253,18 +1293,10 @@ const mark: Record<string, Component> = {
       </div>
 
       <!-- One repository's conversations: over every repository's list they would tick only one group. -->
-      <div v-if="byConv.length && !repos" class="byconv" aria-label="Changes by conversation">
-        <button
-          v-for="c in byConv"
-          :key="c.id"
-          class="conv"
-          :class="{ on: convPicked(c) }"
-          :title="convTip(c)"
-          @click="pickConv(c)"
-        >
-          <span class="ct">{{ c.title }}</span>
-          <span class="cn num">{{ c.paths.length }}</span>
-        </button>
+      <div v-if="conv && !repos" class="convbar" :title="convTip(conv)">
+        <MessagesSquare class="sm" />
+        <span class="ct">{{ conv.title }}</span>
+        <button class="icon-btn" title="Show every change" @click="everyChange"><X class="sm" /></button>
       </div>
 
       <div class="scroll">
@@ -2101,9 +2133,8 @@ const mark: Record<string, Component> = {
   padding: 12px 15px 8px;
   transition: color var(--dur-1) var(--ease-soft);
 }
-.ftop .btn { height: 22px; padding: 0 7px; font-size: var(--fs-xs); }
-/* Discard is the mark alone: at this size the word crowded Clear, and the
-   mark is the one the rows already use. */
+/* Discard is the mark alone, the one the rows already use. No Clear beside
+   it: the box at the end empties the selection (twice from a partial one). */
 .ftop .icon-btn { width: 22px; height: 22px; }
 .ftop .icon-btn.danger { color: var(--danger); }
 .ftop .icon-btn.danger:hover:not(:disabled) { color: var(--danger); background: var(--danger-soft); }
@@ -2119,26 +2150,33 @@ const mark: Record<string, Component> = {
 
 .scroll { flex: 1; overflow-y: auto; padding: 0 6px 6px; }
 
-/* §7 — one chip per conversation that changed something here. */
-.byconv { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 8px; }
-.conv {
-  display: inline-flex;
+/* §7 — the conversations that changed something here: one icon, a menu under it. */
+.convpick { position: relative; display: flex; margin-right: 4px; }
+.ftop .convpick .icon-btn.on { color: var(--accent); background: var(--accent-soft); }
+/* A fixed width: anchored to a 22px icon, shrink-to-fit cut every title short. */
+.convmenu { top: calc(100% + 6px); right: -4px; width: 320px; max-width: calc(100vw - 32px); }
+.convmenu .ck { width: var(--ic-sm); height: var(--ic-sm); flex: none; }
+.convmenu .lucide.ck { color: var(--accent); }
+.convmenu .ct { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.convmenu .cn { flex: none; padding-left: 14px; font-size: var(--fs-xs); color: var(--text-dim); }
+/* The one the list is narrowed to, with the way back. */
+.convbar {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
+  gap: 7px;
+  height: 26px;
+  margin: 0 12px 8px;
+  padding: 0 2px 0 9px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: var(--fs-xs);
-  color: var(--text-muted);
-  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft), border-color var(--dur-1) var(--ease-soft);
+  font-weight: 500;
 }
-.conv:hover { color: var(--text); background: var(--hover); }
-.conv.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.conv .ct { min-width: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.conv .cn { flex: none; color: var(--text-dim); }
-.conv.on .cn { color: inherit; }
+.convbar .lucide { flex: none; }
+.convbar .ct { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.convbar .icon-btn { width: 22px; height: 22px; color: var(--accent); }
+.convbar .icon-btn:hover { background: var(--accent-soft); }
 /* A file two conversations changed: committing one's work takes the other's lines too. */
 .frow .both { flex: none; width: 12px; height: 12px; color: var(--warn); }
 
