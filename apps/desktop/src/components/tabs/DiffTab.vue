@@ -15,8 +15,8 @@ import FindBar from '../FindBar.vue'
 import { paintDiff } from '../../core/editor.js'
 import { useFindKey, useTextFind } from '../../core/find.js'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, busyVerb, busyWord, gitBusy, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, cancelCommitDraft, commitBox, guard, layout, resetPlaceWidth,
-  activeProject, changeCount, pickSpanRepo, resetCommitHeight, reviewSpan, shortName, saveLayout, savePlaceWidth, setColumnWidth, setCommitHeight, stash, stashList, toast, client, state,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, busyAmong, busyVerb, busyWord, gitBusy, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, cancelCommitDraft, commitBox, guard, layout, resetPlaceWidth,
+  activeProject, changeCount, pickSpanRepo, resetCommitHeight, reviewSpan, shortName, saveLayout, savePlaceWidth, setColumnWidth, setCommitHeight, spanBoxKey, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
 /**
@@ -634,7 +634,11 @@ async function open(path: string) {
  * `body` still exists for one case. Amending a commit that already has a body
  * keeps it as it was, rather than an unseen field quietly deleting it.
  */
-const box = computed(() => commitBox(props.workspace.id))
+/** "All" writes one message for every repository listed, so it has one box of its own. */
+const boxKey = computed(() =>
+  props.repos && reviewSpan.value ? spanBoxKey(reviewSpan.value.key) : props.workspace.id,
+)
+const box = computed(() => commitBox(boxKey.value))
 const subject = computed({ get: () => box.value.subject, set: (v: string) => { box.value.subject = v } })
 const body = computed({ get: () => box.value.body, set: (v: string) => { box.value.body = v } })
 const message = computed(() => {
@@ -653,11 +657,12 @@ const include = ref<Include>('all')
 const stageAll = computed(() => include.value === 'all')
 const committing = ref(false)
 /**
- * A plan running aside on this checkout — usually the commit this box just
- * sent, confirmed and gone from the screen. The box stays usable to write in,
- * but it cannot send a second one into a tree the first is still changing.
+ * A plan running aside on any checkout this commits — usually the commit this
+ * box just sent, confirmed and gone from the screen. The box stays usable to
+ * write in, but it cannot send a second one into a tree the first is still
+ * changing.
  */
-const running = computed(() => busyVerb(gitBusy[props.workspace.id]))
+const running = computed(() => busyVerb(busyAmong(scope.value) ?? undefined))
 const sending = computed(() => running.value === 'commit' || running.value === 'amend')
 
 // Ticking a file is choosing what to commit; clearing the ticks gives it back.
@@ -671,24 +676,46 @@ watch(
 const rows = ref<CommitPreview[]>([])
 
 /**
- * The commit is this repository's, and only this repository's.
+ * Where the commit goes: the repository the Diff is on, or — on "All" — every
+ * repository the list shows.
  *
- * It used to be the topic's: one message, one commit per repository, in one
- * click. That was right about the gesture and wrong about the words. Two
- * repositories in a topic are two different diffs — a field added to the API
- * and a form that reads it — and one message committed to both describes at
- * most one of them. The commit that got "test commit" in the backend because
- * that is what the frontend needed to say is a commit nobody can read later,
- * and §12's whole argument is that history has to stay readable.
+ * Picking one repository from the Diff's menu commits that one, with words
+ * about that one's diff. Picking "All" is asking for the work as a whole: one
+ * message, one commit per repository, and a draft written from every diff at
+ * once so the message describes the change across them rather than one side.
  *
- * So the box commits where you are standing, and the topic's other
- * repositories are listed under it as somewhere to go rather than something to
- * sweep up. What *is* still topic-wide is Push, which carries no words and so
- * cannot lie in any of them.
+ * Two things stay with the repository the Diff is on even then. Ticked files
+ * are paths, and a path means nothing across repositories. And Amend rewrites
+ * a commit that already has its own words — that is one repository's history.
  */
+const multi = computed(() => !!props.repos && include.value !== 'picked' && !amending.value)
+const scope = computed(() => (multi.value ? props.repos!.map((w) => w.id) : [props.workspace.id]))
+
+let previewFor = ''
 async function refreshCommit() {
-  rows.value = await commitPreview(null, props.workspace.id, stageAll.value)
+  const ids = scope.value
+  const key = ids.join() + '|' + stageAll.value
+  previewFor = key
+  const r = await commitPreview(ids, stageAll.value)
+  // The scope moved while this was being read — "All" to one repository, say.
+  if (previewFor === key) rows.value = r
 }
+
+/** The repositories this commit lands in, as the header names them. */
+const landing = computed(() => {
+  if (!multi.value) return null
+  const ws = props.repos!
+  const ids = new Set(willCommit.value.map((r) => r.workspaceId))
+  const into = ids.size ? ws.filter((w) => ids.has(w.id)) : ws
+  const branches = [...new Set(into.map((w) => w.git?.branch ?? null))]
+  return {
+    names: into.map((w) => repoLabel(w)).join(' + '),
+    tip: into.map((w) => repoLabel(w) + ' · ' + (w.git?.branch ?? 'detached HEAD')).join('\n'),
+    count: into.length,
+    branch: branches.length === 1 ? branches[0] : undefined,
+    detached: branches.includes(null),
+  }
+})
 
 /**
  * The rest of the topic that is holding changes — counted on Set aside, which
@@ -828,7 +855,7 @@ async function doCommit(opts: { push?: boolean } = {}) {
           return f?.oldPath ? [p, f.oldPath] : [p]
         })
       : undefined
-  const ok = await commit(null, props.workspace.id, message.value, stageAll.value, {
+  const ok = await commit(scope.value, message.value, stageAll.value, {
     ...(paths ? { paths } : {}),
     ...(amending.value ? { amend: true } : {}),
     ...(opts.push ? { push: true } : {}),
@@ -892,9 +919,11 @@ const drafting = computed(() => !!box.value.drafting)
 
 /** One button: Draft when idle, Stop while drafting. */
 function toggleDraft() {
-  if (drafting.value) return cancelCommitDraft(props.workspace.id)
+  if (drafting.value) return cancelCommitDraft(boxKey.value)
   if (!fileCount.value) return
-  void draftCommitMessage(props.workspace.id, include.value !== 'staged')
+  // Only the repositories with something to commit: a clean one has nothing to say.
+  const ids = willCommit.value.map((r) => r.workspaceId)
+  void draftCommitMessage(boxKey.value, ids.length ? ids : scope.value, include.value !== 'staged')
 }
 
 /* ── §16 — set aside, and see that you did ───────────────────────────────
@@ -1022,7 +1051,7 @@ watch(
 
 /** The same moment for a plan that ran aside: the dialog closed before it finished. */
 watch(
-  () => gitBusy[props.workspace.id],
+  () => busyAmong([props.workspace.id, ...scope.value]),
   (now, before) => {
     if (before && !now) {
       void refreshStashes()
@@ -1032,10 +1061,12 @@ watch(
   },
 )
 
-watch([() => props.workspace.id, stageAll], () => void refreshCommit(), { immediate: true })
+watch([() => scope.value.join(), stageAll], () => void refreshCommit(), { immediate: true })
 watch(() => props.workspace.id, () => void refreshStashes(), { immediate: true })
-// The counts come from the core's own probe, so they follow every push.
+// The counts come from the core's own probe, so they follow every push — of
+// every repository the commit takes.
 watch(() => props.workspace.git, () => void refreshCommit())
+watch(() => (multi.value ? props.repos!.map((w) => w.git) : null), () => void refreshCommit())
 
 // Asked for from the bar. The field is disabled until the preview has counted
 // the files, and a disabled field refuses the caret — so the ask waits for it.
@@ -1472,6 +1503,8 @@ const mark: Record<string, Component> = {
               <template v-if="amending">
                 <PencilLine class="sm" />
                 <span class="clead">Amending</span>
+                <!-- On "All", Amend is still one repository's: say which. -->
+                <span v-if="repos" class="crepo">{{ repoLabel(workspace) }}</span>
                 <span class="cwhere" :title="git?.lastCommit?.subject">{{ git?.lastCommit?.hash.slice(0, 7) }}</span>
                 <span class="grow" />
                 <button class="btn ghost tiny" title="Back to a new commit" @click="stopAmend">
@@ -1481,13 +1514,22 @@ const mark: Record<string, Component> = {
               <template v-else>
                 <GitCommitHorizontal class="sm" />
                 <span class="clead">Commit to</span>
-                <!-- Every repository listed above: which of them this commits. -->
-                <span v-if="repos" class="crepo">{{ repoLabel(workspace) }}</span>
-                <span v-if="git?.branch" class="cwhere">{{ git.branch }}</span>
-                <span v-else class="cwhere warn">detached HEAD</span>
-                <span v-if="git?.ahead" class="cahead num" :title="git.ahead + ' commit(s) not pushed yet'">
-                  ↑{{ git.ahead }}
-                </span>
+                <!-- "All": every repository listed above, one message. -->
+                <template v-if="landing">
+                  <span class="crepo many" :title="landing.tip">{{ landing.names }}</span>
+                  <span v-if="landing.detached" class="cwhere warn" :title="landing.tip">detached HEAD</span>
+                  <span v-else-if="landing.branch" class="cwhere">{{ landing.branch }}</span>
+                  <span v-else class="cwhere" :title="landing.tip">{{ landing.count }} branches</span>
+                </template>
+                <template v-else>
+                  <!-- Every repository listed above: which of them this commits. -->
+                  <span v-if="repos" class="crepo">{{ repoLabel(workspace) }}</span>
+                  <span v-if="git?.branch" class="cwhere">{{ git.branch }}</span>
+                  <span v-else class="cwhere warn">detached HEAD</span>
+                  <span v-if="git?.ahead" class="cahead num" :title="git.ahead + ' commit(s) not pushed yet'">
+                    ↑{{ git.ahead }}
+                  </span>
+                </template>
               </template>
             </div>
 
@@ -1512,9 +1554,10 @@ const mark: Record<string, Component> = {
                 :title="
                   drafting
                     ? 'Drafting… — click to stop'
-                    : subject.trim()
-                      ? 'Draft a message from this diff — what you wrote is used as a hint'
-                      : 'Draft a message from this diff'
+                    : (landing && landing.count > 1
+                        ? 'Draft one message for the ' + landing.count + ' repositories'
+                        : 'Draft a message from this diff') +
+                      (subject.trim() ? ' — what you wrote is used as a hint' : '')
                 "
                 @click="toggleDraft"
               >
@@ -1954,6 +1997,8 @@ const mark: Record<string, Component> = {
 }
 .cwhere.warn { color: var(--warn); }
 .crepo { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; }
+/* Several names: they give way before the branch does. */
+.crepo.many { flex: 0 1 auto; min-width: 0; max-width: none; }
 .cahead { font-size: 11px; color: var(--text-dim); }
 .cbox.amending .chead,
 .cbox.amending .chead > .lucide { color: var(--warn); }

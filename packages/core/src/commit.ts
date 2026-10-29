@@ -139,7 +139,7 @@ export async function plan(input: CommitInput): Promise<{
   const repos: string[] = []
   /** Where each commit lands, said afterwards: how it is worded depends on
    *  whether there turned out to be one repository or several. */
-  const landings: { repo: string; branch: string | null; files: number }[] = []
+  const landings: { repo: string; branch: string | null }[] = []
 
   for (const w of targets) {
     const row = rows.find((r) => r.workspaceId === w.id)
@@ -244,7 +244,7 @@ export async function plan(input: CommitInput): Promise<{
     // Which repository and which branch is the whole of what there is to get
     // wrong here — the message is already on screen, and the diff was the
     // screen before it.
-    landings.push({ repo: w.name, branch: row.branch, files })
+    landings.push({ repo: w.name, branch: row.branch })
   }
 
   if (!steps.length) {
@@ -256,32 +256,16 @@ export async function plan(input: CommitInput): Promise<{
     }
   }
 
-  // One repository: the count is already in the question, so the sentence is
-  // only about the place. Several: each needs its own number.
-  for (const l of landings) {
-    const where = l.repo + (l.branch ? ', on ' + l.branch : '')
-    warnings.push(
-      landings.length === 1
-        ? 'Into ' + where + '.'
-        : l.files + (l.files === 1 ? ' file into ' : ' files into ') + where + '.',
-    )
-  }
-
-  warnings.push(
-    paths
-      ? 'Only the ' + (paths.length === 1 ? 'file' : paths.length + ' files') +
-          ' you picked go in, as they stand; everything else stays where it is.'
-      : input.all
-        ? 'Everything in the working tree is staged first, untracked files included.'
-        : 'Only what is already staged goes in; the rest stays in the working tree.',
-  )
-  if (input.push) warnings.push('Then the branch is pushed to origin — the step that leaves your machine.')
-
-  if (repos.length > 1) {
-    warnings.push(
-      'One message, ' + repos.length + ' commits — one per repository. Git has no cross-repo commit; this is as close as it gets.',
-    )
-  }
+  // Where it lands, in one sentence, and first: the count and the message are
+  // already in the question. What goes in (all, staged, picked) was said on the
+  // control that chose it, and "and push" is in the title — saying either again
+  // here only buried the warnings that follow.
+  const branches = new Set(landings.map((l) => l.branch))
+  const into =
+    branches.size === 1
+      ? and(landings.map((l) => l.repo)) + (landings[0]!.branch ? ', on ' + landings[0]!.branch : '')
+      : and(landings.map((l) => l.repo + (l.branch ? ' on ' + l.branch : '')))
+  warnings.unshift('Into ' + into + '.')
 
   const p: PlanPreview = {
     planId: newId('plan_'),
@@ -300,6 +284,11 @@ export async function plan(input: CommitInput): Promise<{
 }
 
 export { basename }
+
+/** "a", "a and b", "a, b and c". */
+function and(list: string[]): string {
+  return list.length < 2 ? (list[0] ?? '') : list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1]
+}
 
 /** lstat, not exists: a dangling symlink is still a file to commit. */
 function onDisk(path: string): boolean {

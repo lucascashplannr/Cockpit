@@ -1300,31 +1300,28 @@ export function pickSpanDiffAll(): void {
 }
 
 /**
- * The repositories the span's Diff offers: the ones with something to read. A
- * clean one has no diff to show, only its history — so it is offered only when
- * every one is clean, and the Diff is then the way to their commits.
+ * The repositories the span's Diff offers: every one, like the Code does. A
+ * clean one still has something to show — "Clean", and its history behind the
+ * last-commit line — and a menu that changed its rows as work was committed
+ * was one you could not find your way around.
  */
-export const spanDiffRepos = computed<Workspace[]>(() => {
-  const ws = (reviewSpan.value?.repos ?? []).filter((w) => w.git)
-  const changed = ws.filter((w) => changeCount(w) > 0)
-  return changed.length ? changed : ws
-})
+export const spanDiffRepos = computed<Workspace[]>(() => (reviewSpan.value?.repos ?? []).filter((w) => w.git))
 
 /**
- * Which of them the Diff is on: the one picked, if it is still offered — one
- * committed clean drops out, and the Diff moves on to the next with changes.
+ * Which of them the Diff is on: the one picked, clean or not — committing it
+ * clean does not move you. Nothing picked, the first with changes.
  */
 export const spanDiffRepo = computed<Workspace | null>(() => {
   const span = reviewSpan.value
   if (!span) return null
   const ws = spanDiffRepos.value
-  return ws.find((w) => w.id === state.spanRepo[span.key]) ?? ws[0] ?? null
+  return ws.find((w) => w.id === state.spanRepo[span.key]) ?? ws.find((w) => changeCount(w) > 0) ?? ws[0] ?? null
 })
 
 /**
- * The Diff listing every repository the span offers, grouped — when asked for,
- * and when there is more than one to list. One left with changes is just that
- * one, and the Diff reads as it always does.
+ * The Diff listing every repository at once, grouped — when asked for. Clean
+ * ones are in it too; the list leaves out a group with nothing in it, and the
+ * commit skips a repository with nothing to commit.
  */
 export const spanDiffAll = computed<Workspace[] | null>(() => {
   const span = reviewSpan.value
@@ -5334,16 +5331,13 @@ export async function applyPendingPlan(): Promise<void> {
  * every repository the topic spans, like opening and rebasing it.
  */
 
-export async function commitPreview(
-  topicId: string | null,
-  workspaceId: string,
-  all: boolean,
-): Promise<CommitPreview[]> {
+/**
+ * What a commit over these repositories would take. One id is the Diff on one
+ * repository; several is the Diff on "All", which commits them together.
+ */
+export async function commitPreview(workspaceIds: string[], all: boolean): Promise<CommitPreview[]> {
   try {
-    return await client.call('git.commitPreview', {
-      ...(topicId ? { topicId } : { workspaceIds: [workspaceId] }),
-      all,
-    })
+    return await client.call('git.commitPreview', { workspaceIds, all })
   } catch {
     // A core older than this window has no such method; the Diff tab still
     // shows the diff, which is the part that matters.
@@ -5352,16 +5346,15 @@ export async function commitPreview(
 }
 
 export async function commit(
-  topicId: string | null,
-  workspaceId: string,
+  workspaceIds: string[],
   message: string,
   all: boolean,
   opts: { paths?: string[]; amend?: boolean; push?: boolean } = {},
 ): Promise<boolean> {
-  if (stillBusy(topicId ? topicWorkspaceIds(topicId) : [workspaceId])) return false
+  if (stillBusy(workspaceIds)) return false
   const res = await guard(() =>
     client.call('git.commit', {
-      ...(topicId ? { topicId } : { workspaceIds: [workspaceId] }),
+      workspaceIds,
       message,
       all,
       ...opts,
@@ -5426,8 +5419,10 @@ export async function lastCommitMessage(workspaceId: string): Promise<string | n
 }
 
 /**
- * The commit box of one repository — what is being written, the amend mode,
- * and a draft in flight.
+ * The commit box of one repository — or of the Diff on "All", which writes
+ * one message for every repository it lists — what is being written, the
+ * amend mode, and a draft in flight. `key` is the repository's id, or
+ * `spanBoxKey` for "All".
  *
  * It lives here rather than in the Diff tab because the tab does not last:
  * switching tool or repository unmounts it, and a draft that came back to a
@@ -5447,13 +5442,18 @@ export interface CommitBox {
 
 export const commitBoxes = reactive<Record<string, CommitBox>>({})
 
-export function commitBox(workspaceId: string): CommitBox {
+export function commitBox(key: string): CommitBox {
   // Made on the raw record: this is read inside a computed, and a write
   // through the proxy there would invalidate the computed while it runs.
   // Nothing can be watching a box no one has asked for yet.
   const raw = toRaw(commitBoxes)
-  raw[workspaceId] ??= { subject: '', body: '', amending: false, beforeAmend: null, drafting: null }
-  return commitBoxes[workspaceId]!
+  raw[key] ??= { subject: '', body: '', amending: false, beforeAmend: null, drafting: null }
+  return commitBoxes[key]!
+}
+
+/** The box of the span's Diff on "All": one per topic or project, never a repository's. */
+export function spanBoxKey(spanKey: string): string {
+  return 'span:' + spanKey
 }
 
 /**
@@ -5463,16 +5463,18 @@ export function commitBox(workspaceId: string): CommitBox {
  * who types "fixes the TVA rounding" and presses Draft is asking for that note
  * turned into a message, not preserved beside one.
  */
-export async function draftCommitMessage(workspaceId: string, all: boolean): Promise<void> {
-  const box = commitBox(workspaceId)
+export async function draftCommitMessage(key: string, workspaceIds: string[], all: boolean): Promise<void> {
+  const box = commitBox(key)
   if (box.drafting) return
   const draftId = newId()
   box.drafting = draftId
   const hint = box.subject.trim()
   let res: RpcResult<'git.draftMessage'>
   try {
+    // Several repositories are one draft: the engine is shown every diff and
+    // asked for the message that describes them together.
     res = await client.call('git.draftMessage', {
-      workspaceIds: [workspaceId],
+      workspaceIds,
       all,
       draftId,
       ...(hint ? { hint } : {}),
@@ -5500,9 +5502,9 @@ export async function draftCommitMessage(workspaceId: string, all: boolean): Pro
   box.body = ''
 }
 
-/** Stops the draft running in this repository's box; the box is left as it was. */
-export function cancelCommitDraft(workspaceId: string): void {
-  const box = commitBox(workspaceId)
+/** Stops the draft running in this box; the box is left as it was. */
+export function cancelCommitDraft(key: string): void {
+  const box = commitBox(key)
   const draftId = box.drafting
   if (!draftId) return
   box.drafting = null

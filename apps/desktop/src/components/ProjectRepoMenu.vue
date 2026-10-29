@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, ChevronDown, FolderTree, Layers, SquareDot } from '@lucide/vue'
 import {
-  activeProject, pickSpanDiffAll, pickSpanRepo, repoMark, reviewSpan, shortName, spanDiffAll, spanDiffRepo, spanDiffRepos,
+  activeProject, changeCount, pickSpanDiffAll, pickSpanRepo, repoMark, reviewSpan, shortName, spanDiffAll, spanDiffRepo, spanDiffRepos,
   spanFolder, spanRepo, spanTerminal,
 } from '../core/store.js'
 import type { Workspace } from '@cockpit/shared'
@@ -14,7 +14,7 @@ import type { Workspace } from '@cockpit/shared'
  * A row of its own under the strip made the column three bands deep before
  * anything in it could be read.
  *
- * `diff` offers what the Diff offers (`spanDiffRepos`); the others, any.
+ * Every tool offers every repository; the Diff counts each one's changes beside it.
  * `terminal` adds the span's folder above them (`spanFolder`): a shell there is
  * in every repository at once. `diff` adds every repository at once too
  * (`spanDiffAll`): their changes listed together, grouped.
@@ -122,6 +122,8 @@ onBeforeUnmount(() => {
         <Check class="tick" :class="{ hidden: atAll || r.w.id !== current.id }" />
         <SquareDot />
         <span class="mn">{{ r.name }}</span>
+        <!-- Clean ones are offered too: the count says which have something to read. -->
+        <span v-if="diff && changeCount(r.w)" class="cn num">{{ changeCount(r.w) }}</span>
         <span class="mk">{{ r.mark }}</span>
       </button>
     </div>
@@ -157,6 +159,7 @@ onBeforeUnmount(() => {
 .menu .tick { color: var(--accent); }
 .menu .tick.hidden { visibility: hidden; }
 .mn { flex: 1; }
+.cn { flex: none; margin-left: 12px; font-size: var(--fs-xs); font-weight: 600; color: var(--accent); }
 /* The letters the trigger shows, so the two can be matched. */
 .mk {
   flex: none;
