@@ -372,6 +372,8 @@ export const state = reactive({
    * conversation switched underneath it would take the picture away with it.
    */
   pendingView: null as AttachmentView | null,
+  /** A Mermaid diagram from a markdown preview, open full-window (its SVG markup). */
+  diagramView: null as string | null,
 
   paletteOpen: false,
   /** What the palette opens with: `/` lands on files, `#` on text search. */

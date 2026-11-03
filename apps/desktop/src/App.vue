@@ -12,6 +12,7 @@ import DeclarationsDialog from './components/DeclarationsDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import DetailsDialog from './components/DetailsDialog.vue'
 import AttachmentViewer from './components/AttachmentViewer.vue'
+import DiagramViewer from './components/DiagramViewer.vue'
 import PlanDialog from './components/PlanDialog.vue'
 import ProjectDialog from './components/ProjectDialog.vue'
 import NewProjectDialog from './components/NewProjectDialog.vue'
@@ -107,6 +108,7 @@ function onKey(e: KeyboardEvent) {
     // First, because it is on top of everything: a picture opened over a
     // dialog closes back to the dialog, not past it.
     if (state.pendingView) state.pendingView = null
+    else if (state.diagramView) state.diagramView = null
     else if (state.newProjectOpen) state.newProjectOpen = false
     else if (state.addRepoProjectId) state.addRepoProjectId = null
     else if (state.settingsOpen) state.settingsOpen = false
@@ -374,6 +376,7 @@ onUnmounted(() => {
     />
     <CommandPalette v-if="state.paletteOpen" />
     <AttachmentViewer />
+    <DiagramViewer />
     <PlanDialog v-if="state.pendingPlan" />
     <ConfirmDialog v-if="state.pendingConfirm" />
     <RunCommandDialog v-if="state.pendingCommand" />

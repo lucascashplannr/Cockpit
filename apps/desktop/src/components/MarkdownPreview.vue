@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { headingAnchor } from '@cockpit/shared'
 import { createMarked, escapeHtml } from '../core/markdown.js'
+import { renderMermaid } from '../core/mermaid.js'
+import { state } from '../core/store.js'
 
 /**
  * A markdown file as it reads, rather than as it is written.
@@ -67,6 +69,15 @@ md.use({
     },
   ],
   renderer: {
+    // A diagram is drawn after the block lands (see `drawDiagrams`); until then,
+    // and if it does not parse, it reads as the fence it is.
+    code({ text, lang }) {
+      if ((lang ?? '').split(/\s+/)[0]?.toLowerCase() !== 'mermaid') return false
+      return (
+        '<div class="mmd" data-src="' + escapeHtml(text) + '">' +
+        '<pre class="cm-code" data-lang="mermaid"><code>' + escapeHtml(text) + '</code></pre></div>'
+      )
+    },
     // A relative `.md` link is a page too, in a reader that can follow it.
     link({ href, tokens }) {
       const m = /^(?!\w+:)([^#?]*\.(?:md|mdx|markdown))(?:#(.*))?$/i.exec(href)
@@ -82,6 +93,12 @@ md.use({
 })
 
 function onClick(e: MouseEvent): void {
+  // A drawn diagram opens full-window, where its words can be read.
+  const diagram = (e.target as HTMLElement).closest<HTMLElement>('.mmd.ok')
+  if (diagram && !window.getSelection()?.toString()) {
+    state.diagramView = diagram.innerHTML
+    return
+  }
   const a = (e.target as HTMLElement).closest<HTMLElement>('a.wiki.live')
   if (!a) return
   e.preventDefault()
@@ -147,6 +164,48 @@ function holds(set: ReadonlySet<number> | undefined, b: Block, i: number): boole
   return false
 }
 
+/**
+ * ```mermaid fences, drawn in place once the blocks are in the DOM. A block
+ * whose HTML did not change keeps its drawn diagram (`v-html` leaves it
+ * alone); one that did is redrawn from the cache in the same frame.
+ */
+const root = ref<HTMLElement | null>(null)
+const media = window.matchMedia('(prefers-color-scheme: dark)')
+const systemDark = ref(media.matches)
+const onScheme = (e: MediaQueryListEvent) => (systemDark.value = e.matches)
+const dark = computed(() => state.theme === 'dark' || (state.theme === 'system' && systemDark.value))
+
+function drawDiagrams(): void {
+  const isDark = dark.value
+  for (const el of root.value?.querySelectorAll<HTMLElement>('.mmd') ?? []) {
+    const src = el.dataset.src ?? ''
+    const key = (isDark ? 'd:' : 'l:') + src
+    if (el.dataset.drawn === key) continue
+    el.dataset.drawn = key
+    renderMermaid(src, isDark).then(
+      (svg) => {
+        if (el.dataset.drawn !== key) return
+        el.innerHTML = svg
+        el.title = 'Open full size'
+        el.classList.add('ok')
+        el.classList.remove('bad')
+      },
+      (err: unknown) => {
+        if (el.dataset.drawn !== key) return
+        el.classList.add('bad')
+        el.title = 'Not drawn: ' + (err instanceof Error ? err.message : String(err)).split('\n')[0]
+      },
+    )
+  }
+}
+
+onMounted(() => {
+  media.addEventListener('change', onScheme)
+  drawDiagrams()
+})
+onBeforeUnmount(() => media.removeEventListener('change', onScheme))
+watch([blocks, dark], drawDiagrams, { flush: 'post' })
+
 /** Frontmatter lines count too: a changed `updated:` is a change. */
 const frontChanged = computed(() => {
   const f = front.value
@@ -157,7 +216,7 @@ const frontChanged = computed(() => {
 </script>
 
 <template>
-  <article class="mdp selectable" @click="onClick">
+  <article ref="root" class="mdp selectable" @click="onClick">
     <div v-if="front" class="front" :class="{ chg: frontChanged }">
       <dl v-if="front.rows">
         <template v-for="[k, v] in front.rows" :key="k">
@@ -302,6 +361,19 @@ const frontChanged = computed(() => {
   text-transform: uppercase;
   color: var(--text-dim);
 }
+/* A diagram sits where its fence was, at its own size up to the measure. */
+.mdp :deep(.mmd.ok) {
+  margin: 0 0 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  text-align: center;
+  cursor: zoom-in;
+}
+.mdp :deep(.mmd.ok:hover) { border-color: var(--line-strong); }
+.mdp :deep(.mmd.ok svg) { max-width: 100%; height: auto; }
+.mdp :deep(.mmd.bad pre.cm-code) { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
 /* A wide table scrolls inside its own box rather than pushing the page. */
 .mdp :deep(table) {
   display: block;
