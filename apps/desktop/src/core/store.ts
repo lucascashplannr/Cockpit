@@ -5465,7 +5465,12 @@ export function spanBoxKey(spanKey: string): string {
  * who types "fixes the TVA rounding" and presses Draft is asking for that note
  * turned into a message, not preserved beside one.
  */
-export async function draftCommitMessage(key: string, workspaceIds: string[], all: boolean): Promise<void> {
+export async function draftCommitMessage(
+  key: string,
+  workspaceIds: string[],
+  all: boolean,
+  paths?: string[],
+): Promise<void> {
   const box = commitBox(key)
   if (box.drafting) return
   const draftId = newId()
@@ -5480,6 +5485,7 @@ export async function draftCommitMessage(key: string, workspaceIds: string[], al
       all,
       draftId,
       ...(hint ? { hint } : {}),
+      ...(paths?.length ? { paths } : {}),
     })
   } catch (err) {
     // Cancelled while the call was out: whatever it says is no longer asked for.

@@ -844,17 +844,20 @@ function stopAmend() {
   box.value.beforeAmend = null
 }
 
+/** The ticked files as git needs them — a rename brings its old path along. */
+function pickedPaths(): string[] | undefined {
+  if (include.value !== 'picked') return undefined
+  return picked.value.flatMap((p) => {
+    const f = files.value.find((x) => x.path === p)
+    return f?.oldPath ? [p, f.oldPath] : [p]
+  })
+}
+
 async function doCommit(opts: { push?: boolean } = {}) {
   menuOpen.value = false
   if (!canCommit.value) return
   committing.value = true
-  const paths =
-    include.value === 'picked'
-      ? picked.value.flatMap((p) => {
-          const f = files.value.find((x) => x.path === p)
-          return f?.oldPath ? [p, f.oldPath] : [p]
-        })
-      : undefined
+  const paths = pickedPaths()
   const ok = await commit(scope.value, message.value, stageAll.value, {
     ...(paths ? { paths } : {}),
     ...(amending.value ? { amend: true } : {}),
@@ -923,6 +926,10 @@ function toggleDraft() {
   if (!fileCount.value) return
   // Only the repositories with something to commit: a clean one has nothing to say.
   const ids = willCommit.value.map((r) => r.workspaceId)
+  // Ticked files are the commit, so they are the draft too: one repository,
+  // those paths and nothing else lying around.
+  const paths = pickedPaths()
+  if (paths) return void draftCommitMessage(boxKey.value, scope.value, true, paths)
   void draftCommitMessage(boxKey.value, ids.length ? ids : scope.value, include.value !== 'staged')
 }
 

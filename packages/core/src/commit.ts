@@ -482,6 +482,11 @@ export interface DraftInput extends CommitScope {
   hint?: string
   /** Names this draft so `cancelDraft` can stop it. */
   draftId?: string
+  /**
+   * Only these paths — the files ticked in the Diff tab, the same list the
+   * commit would take. One repository only, as for `CommitInput.paths`.
+   */
+  paths?: string[]
 }
 
 export interface DraftResult {
@@ -511,21 +516,26 @@ async function draftContext(
   const heads: string[] = []
   const patches: string[] = []
   const repos: string[] = []
+  const paths = input.paths?.length ? [...new Set(input.paths)] : null
+  const targets = resolveTargets(input)
+  if (paths && targets.length !== 1) throw new Error('picking files works in one repository at a time')
 
-  for (const w of resolveTargets(input)) {
+  for (const w of targets) {
     const row = rows.find((r) => r.workspaceId === w.id)
-    if (!row?.willCommit) continue
+    if (!row || (!paths && !row.willCommit)) continue
     repos.push(w.name)
 
-    // `--cached` when the Diff tab was used to pick, the whole worktree when
-    // "stage everything" is on: the draft has to describe what will be
+    // `--cached` for "Staged", the whole worktree for "All", and only the
+    // ticked files for "Selected" — staged or not, since `git commit -- <path>`
+    // takes them as they stand. The draft has to describe what will be
     // committed, not what happens to be lying around.
-    const scope = input.all ? ['HEAD'] : ['--cached']
+    const scope = paths || input.all ? ['HEAD'] : ['--cached']
+    const spec = paths ? ['--', ...paths] : []
     const [stat, patch, untracked] = await Promise.all([
-      git(w.path, ['diff', ...scope, '--stat=200'], 20_000),
-      git(w.path, ['diff', ...scope, '--no-color', '--unified=3'], 30_000),
-      input.all
-        ? git(w.path, ['ls-files', '--others', '--exclude-standard'], 20_000)
+      git(w.path, ['diff', ...scope, '--stat=200', ...spec], 20_000),
+      git(w.path, ['diff', ...scope, '--no-color', '--unified=3', ...spec], 30_000),
+      paths || input.all
+        ? git(w.path, ['ls-files', '--others', '--exclude-standard', ...spec], 20_000)
         : Promise.resolve({ ok: true, stdout: '', stderr: '', code: 0 }),
     ])
 
@@ -534,7 +544,16 @@ async function draftContext(
     const news = untracked.stdout.split('\n').filter(Boolean)
     if (news.length) head.push('new files: ' + news.join(', '))
     heads.push(head.join('\n'))
-    patches.push(patch.stdout)
+    // Ticked files are few and chosen: a new one is the change itself, and its
+    // name alone would leave the draft guessing. `--no-index` exits 1 on any
+    // difference, so its output is read whatever the code; the budget below
+    // still abridges a large one.
+    const added = paths
+      ? await Promise.all(
+          news.map((p) => git(w.path, ['diff', '--no-index', '--no-color', '--unified=3', '--', '/dev/null', p], 20_000)),
+        )
+      : []
+    patches.push([patch.stdout, ...added.map((r) => r.stdout)].filter((t) => t.trim()).join('\n'))
   }
 
   const fit = fitPatches(patches, DRAFT_DIFF_BUDGET)

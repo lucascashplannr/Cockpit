@@ -655,7 +655,7 @@ export interface Rpc {
    * and §12 could not attribute.
    */
   'git.draftMessage': {
-    params: { topicId?: string; workspaceIds?: string[]; all: boolean; hint?: string; draftId?: string }
+    params: { topicId?: string; workspaceIds?: string[]; all: boolean; hint?: string; draftId?: string; paths?: string[] }
     result: { ok: boolean; detail: string; message: string; engine: string; truncated: boolean; cancelled?: boolean }
   }
   /** Stops a running draft by the id it was started with; false when none was running. */
