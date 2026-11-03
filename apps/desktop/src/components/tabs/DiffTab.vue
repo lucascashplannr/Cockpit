@@ -16,7 +16,7 @@ import { paintDiff } from '../../core/editor.js'
 import { useFindKey, useTextFind } from '../../core/find.js'
 import {
   LAYOUT_DEFAULTS, LAYOUT_LIMITS, busyAmong, busyVerb, busyWord, gitBusy, commit, commitPreview, openCommits, discard, lastCommitMessage, discardTick, draftCommitMessage, cancelCommitDraft, commitBox, guard, layout, resetPlaceWidth,
-  activeProject, changeCount, pickSpanRepo, resetCommitHeight, reviewSpan, shortName, saveLayout, savePlaceWidth, setColumnWidth, setCommitHeight, spanBoxKey, stash, stashList, toast, client, state,
+  activeProject, changeCount, pickSpanRepo, reviewSpan, shortName, saveLayout, savePlaceWidth, setColumnWidth, spanBoxKey, stash, stashList, toast, client, state,
 } from '../../core/store.js'
 
 /**
@@ -59,36 +59,10 @@ const narrow = ref(false)
 const drilled = ref(false)
 
 /**
- * The commit box's own height, watched so the handle has somewhere to start.
- *
- * Left alone the box is as tall as what is in it, and `layout.commit` is null
- * — so the first pixel of a drag has no number to work from unless one is
- * being kept. Measuring it also means the handle picks up where the box
- * actually is after a draft grew the message or a stash appeared, rather than
- * jumping to whatever it was worth the last time anyone dragged it.
- */
-const bar = ref<HTMLElement | null>(null)
-const measuredCommit = ref(LAYOUT_LIMITS.commit.min)
-
-/**
- * The ceiling on the box is the panel, not the constant.
- *
- * 560 is the most anyone should want; it is not always available. A short
- * panel dragged to it would leave the file list at nothing, and a list of zero
- * files above a commit box is the panel forgetting what it is for — so the
- * handle stops with 140px of list still standing, and a window that shrinks
- * afterwards pulls the box back down with it rather than swallowing the list.
- */
-const panelH = ref(0)
-const commitMax = computed(() =>
-  Math.max(LAYOUT_LIMITS.commit.min, Math.min(LAYOUT_LIMITS.commit.max, panelH.value - 140)),
-)
-
-/**
- * The file list's width, and its ceiling. Like the commit box, the limit is
- * the panel as much as the constant: the list stops where the viewer would
- * drop below 320px, and a panel that shrinks afterwards narrows the list
- * rather than squeezing the diff out.
+ * The file list's width, and its ceiling. The limit is the panel as much as
+ * the constant: the list stops where the viewer would drop below 320px, and a
+ * panel that shrinks afterwards narrows the list rather than squeezing the
+ * diff out.
  */
 const panelW = ref(0)
 const filesMax = computed(() =>
@@ -99,32 +73,16 @@ const filesSnaps = computed(() => [Math.round(panelW.value / 2), LAYOUT_DEFAULTS
 const filesW = computed(() => Math.min(layout.files, filesMax.value))
 
 let ro: ResizeObserver | null = null
-let barRo: ResizeObserver | null = null
 onMounted(() => {
   ro = new ResizeObserver(([e]) => {
     if (!e) return
     narrow.value = e.contentRect.width < 620
     panelW.value = e.contentRect.width
-    panelH.value = e.contentRect.height
-    if (layout.commit && layout.commit > commitMax.value) setCommitHeight(commitMax.value)
   })
   if (root.value) ro.observe(root.value)
-  barRo = new ResizeObserver(([e]) => {
-    // The whole box, padding included — that is what the handle sits on.
-    if (e) measuredCommit.value = (e.target as HTMLElement).offsetHeight
-  })
-  watch(
-    bar,
-    (el, old) => {
-      if (old) barRo?.unobserve(old)
-      if (el) barRo?.observe(el)
-    },
-    { immediate: true },
-  )
 })
 onBeforeUnmount(() => {
   ro?.disconnect()
-  barRo?.disconnect()
 })
 
 const files = ref<DiffFile[]>([])
@@ -1397,26 +1355,12 @@ const mark: Record<string, Component> = {
         </div>
       </div>
 
-      <!-- The boundary between the list and the box, made draggable like the
-           columns are: how much of the panel each deserves depends on the work
-           in front of you, not on a number we picked. -->
-      <Splitter
-        :size="measuredCommit"
-        :min="LAYOUT_LIMITS.commit.min"
-        :max="commitMax"
-        grows="up"
-        label="Height of the commit box"
-        @resize="setCommitHeight"
-        @done="saveLayout"
-        @reset="resetCommitHeight"
-      />
-
       <!-- §16 — the commit lives against the review, and commits every
            repository of the topic at once because that is the unit the work
            was done in. -->
-      <!-- A ceiling, not a height: a box dragged taller than what is in it used
-           to keep the difference as an empty band under the button. -->
-      <div ref="bar" class="commitbar" :style="layout.commit ? { maxHeight: layout.commit + 'px' } : undefined">
+      <!-- As tall as what is in it: no handle. A box you could drag shorter than
+           its own controls hid them, and one with a floor could not grow. -->
+      <div class="commitbar">
         <!-- §16 — work that is parked, where the work it was taken from would
              be. A stash nothing mentions is the failure mode this feature is
              built around; see `stash.ts` in the core. It stays on screen
@@ -1919,9 +1863,6 @@ const mark: Record<string, Component> = {
   bottom: 0;
   z-index: 2;
   flex: none;
-  /* Only when it has been dragged to a height of its own: a box shorter than
-     its contents scrolls rather than clipping the button off the end of it. */
-  overflow-y: auto;
   padding: 12px 12px 12px;
   border-top: 1px solid var(--line);
   background: var(--surface-dock);

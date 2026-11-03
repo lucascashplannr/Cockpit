@@ -10,9 +10,8 @@ import { computed, ref } from 'vue'
  * wants a wide list, and reading a long diff wants a wide review.
  *
  * It takes rows as well as columns, because the same argument arrived a second
- * time one level down: how tall the file list should be against the commit box
- * under it depends on whether you are picking through forty files or writing
- * three sentences about two. `grows` says which way the pane it belongs to
+ * time one level down: how tall a pane should be against what is above it
+ * depends on the work in it. `grows` says which way the pane it belongs to
  * opens up, and that alone decides the axis — a splitter that grows `down` is
  * a horizontal line, and there is no second prop to contradict it.
  *

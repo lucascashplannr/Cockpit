@@ -286,7 +286,7 @@ const running = computed(() =>
 const currentWord = computed(() => (props.workspace.topicId ? 'this topic' : 'current'))
 
 /*
- * The list's height, draggable like the commit box: left alone it is as tall
+ * The list's height, draggable: left alone it is as tall
  * as its rows up to a third of the pane, and a drag turns that into a number.
  * Measured, so the first pixel of a drag starts from where the list is.
  */

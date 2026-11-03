@@ -1656,19 +1656,8 @@ export const LAYOUT_LIMITS = {
   memorySide: { min: 240, max: 4000 },
   memorySideHeight: { min: 120, max: 4000 },
   /**
-   * The commit box under the file list in the Diff tab.
-   *
-   * A boundary one level down from the columns, and it earned a handle for the
-   * same reason they did: forty changed files want the list, a message with a
-   * drafted body and three stashes wants the box, and neither of those is a
-   * property of the app. The floor leaves the message and its two buttons
-   * standing — below that the box would be a scroll region pretending to be a
-   * form.
-   */
-  commit: { min: 132, max: 560 },
-  /**
    * The list of what is running in the project, under the Output. Content-sized
-   * until dragged, like the commit box; the floor is the heading and one row.
+   * until dragged; the floor is the heading and one row.
    */
   running: { min: 72, max: 600 },
 }
@@ -1681,10 +1670,9 @@ export const LAYOUT_DEFAULTS = {
 export const layout = reactive(readLayout())
 
 /**
- * The commit box is the one pane with no default height: left alone it is as
- * tall as what is in it, which is right nearly always — a number here would mean padding an empty box out or scrolling a
- * full one for no reason. Null is therefore a real value and not a missing
- * one, and it is what a double-click on the handle goes back to.
+ * The running list has no default height: left alone it is as tall as what is
+ * in it. Null is therefore a real value and not a missing one, and it is what
+ * a double-click on the handle goes back to.
  */
 function readLayout(): {
   list: number
@@ -1695,13 +1683,11 @@ function readLayout(): {
   treeHeight: number
   memorySide: number
   memorySideHeight: number | null
-  commit: number | null
   running: number | null
 } {
   const fallback = {
     ...LAYOUT_DEFAULTS,
     listOpen: true,
-    commit: null as number | null,
     running: null as number | null,
     memorySideHeight: null as number | null,
   }
@@ -1720,8 +1706,6 @@ function readLayout(): {
       memorySide: clampTo(raw.memorySide ?? fallback.memorySide, LAYOUT_LIMITS.memorySide),
       memorySideHeight:
         typeof raw.memorySideHeight === 'number' ? clampTo(raw.memorySideHeight, LAYOUT_LIMITS.memorySideHeight) : null,
-      commit:
-        typeof raw.commit === 'number' ? clampTo(raw.commit, LAYOUT_LIMITS.commit) : null,
       running:
         typeof raw.running === 'number' ? clampTo(raw.running, LAYOUT_LIMITS.running) : null,
     }
@@ -1739,23 +1723,13 @@ export function setColumnWidth(which: keyof typeof LAYOUT_DEFAULTS, px: number):
   layout[which] = clampTo(px, LAYOUT_LIMITS[which])
 }
 
-export function setCommitHeight(px: number): void {
-  layout.commit = clampTo(px, LAYOUT_LIMITS.commit)
-}
-
-/** Back to a box the size of its contents — see `readLayout`. */
-export function resetCommitHeight(): void {
-  layout.commit = null
-  saveLayout()
-}
-
 export function setRunningHeight(px: number): void {
   layout.running = clampTo(px, LAYOUT_LIMITS.running)
 }
 
 /**
- * The Memory tool's side, stacked under the memory. Like the commit box it has
- * no default height: left alone it is as tall as the form in it, and null is
+ * The Memory tool's side, stacked under the memory. Like the running list it
+ * has no default height: left alone it is as tall as the form in it, and null is
  * what a double-click goes back to.
  */
 export function setMemorySideHeight(px: number): void {
