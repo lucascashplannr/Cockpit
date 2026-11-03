@@ -1339,7 +1339,7 @@ const mark: Record<string, Component> = {
 
       <div class="scroll">
         <template v-for="g in sections" :key="g.w.id">
-        <div v-if="repos" class="rgroup" :class="{ here: g.here }" :title="g.w.path">
+        <div v-if="repos" class="rgroup" :title="g.w.path">
           <SquareDot class="sm" />
           <span class="rname">{{ repoLabel(g.w) }}</span>
           <span class="num">{{ g.files.length }}</span>
@@ -1529,8 +1529,9 @@ const mark: Record<string, Component> = {
                   <span v-else class="cwhere" :title="landing.tip">{{ landing.count }} branches</span>
                 </template>
                 <template v-else>
-                  <!-- Every repository listed above: which of them this commits. -->
-                  <span v-if="repos" class="crepo">{{ repoLabel(workspace) }}</span>
+                  <!-- On the project or a topic across repositories, which one this commits —
+                       the menu above shows only its letters. -->
+                  <span v-if="reviewSpan" class="crepo">{{ repoLabel(workspace) }}</span>
                   <span v-if="git?.branch" class="cwhere">{{ git.branch }}</span>
                   <span v-else class="cwhere warn">detached HEAD</span>
                   <span v-if="git?.ahead" class="cahead num" :title="git.ahead + ' commit(s) not pushed yet'">
@@ -2311,7 +2312,6 @@ const mark: Record<string, Component> = {
 }
 .rgroup:first-child { margin-top: 0; }
 .rgroup .lucide { width: 12px; height: 12px; flex: none; color: var(--text-dim); }
-.rgroup.here .lucide { color: var(--accent); }
 .rgroup .rname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rgroup .num { font-weight: 400; color: var(--text-dim); }
 .facts {
