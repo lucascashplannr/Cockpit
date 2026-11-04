@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import {
-  Check, ChevronDown, CircleAlert, CircleCheck, CircleStop, Clock, Copy, Hand, Info,
+  Check, ChevronDown, CircleAlert, CircleCheck, CircleStop, Clock, Copy, GitFork, Hand, Info,
   MessageSquareDot, Play, RefreshCw, Save, Server, TriangleAlert, Trash2, Undo2, X,
 } from '@lucide/vue'
 import type { ToastItem } from '../core/store.js'
@@ -38,6 +38,7 @@ const BY_ICON = {
   undo: Undo2,
   save: Save,
   discard: Trash2,
+  fork: GitFork,
   // The same two the badges draw (agent/attention.ts), so a toast about a
   // conversation looks like the dot it will leave behind in the list.
   reply: MessageSquareDot,

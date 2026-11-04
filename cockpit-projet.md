@@ -154,6 +154,7 @@ vocabulaire à réapprendre à chaque écran.
 | relire l'état depuis le disque | **Refresh** | probe, re-probe, rescan, reconcile |
 | archiver un topic | **Close / Reopen** | archive, park |
 | revenir en arrière | **Undo** | roll back |
+| copier une conversation jusqu'à un message, qui continue de son côté | **Fork** | branch (c'est git), duplicate, copy |
 | git | **Push / Sync / Commit** | (inchangé — §2 : on ne cache pas git) |
 
 **L'exception à « on ne cache pas git » (§2), assumée.** `Rebase` et `Merge`

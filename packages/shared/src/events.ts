@@ -133,6 +133,11 @@ export type EventType =
   | 'agent.reverted'
   /** The engine summarised its own conversation to make room — `/compact`. */
   | 'agent.compacted'
+  /**
+   * §16 — a conversation forked from another at one of its turns, journalled
+   * under the fork (payload: `{ from, turnId, turns }`).
+   */
+  | 'agent.forked'
   | 'agent.session_ended'
   // leases
   | 'lease.acquired'

@@ -3403,7 +3403,7 @@ export type ToastKind = 'ok' | 'info' | 'warn' | 'error'
  */
 export type ToastIcon =
   | 'copy' | 'stop' | 'play' | 'clock' | 'restart' | 'server' | 'undo' | 'save' | 'discard'
-  | 'reply' | 'approval'
+  | 'reply' | 'approval' | 'fork'
 
 export type ToastItem = {
   id: number
@@ -6733,7 +6733,13 @@ export async function askUndo(sessionId: string, turn: AgentTurn, redo: boolean)
   // another turn asked about, while this was in flight.
   const open = state.pendingConfirm
   if (!open || toRaw(open) !== q) return
-  open.body = say(filesSentence(plan, redo))
+  // A turn a Fork copied in: what it did to the files happened in the
+  // conversation it came from, and stays.
+  open.body = say(
+    turn.branched && !plan.length
+      ? 'The files stay as they are — this turn came from the conversation this one was forked from.'
+      : filesSentence(plan, redo),
+  )
   // Nothing at all to do is a real answer, not an error: an undo that could
   // only move the files, over files that have not moved.
   if (!convo && !plan.length) {
@@ -6741,6 +6747,27 @@ export async function askUndo(sessionId: string, turn: AgentTurn, redo: boolean)
     return
   }
   open.waiting = false
+}
+
+/**
+ * §16 — Fork: a new conversation holding this one up to and including a turn,
+ * opened in a tab of its own with an empty box. The original stays as it is.
+ *
+ * Not asked first: nothing is changed or thrown away, and the fork is one ×
+ * away from gone.
+ */
+export async function forkConversation(sessionId: string, turnId: string): Promise<void> {
+  const r = await guard(() => client.call('agent.fork', { sessionId, turnId }))
+  if (!r) return
+  if (!r.ok) {
+    toast('error', r.reason)
+    return
+  }
+  const from = state.agents.find((a) => a.id === sessionId)
+  const made = state.agents.find((a) => a.id === r.sessionId)
+  if (made) openConversation(made)
+  else if (from) pinThread(from.scope, r.sessionId)
+  toast('info', 'forked', { icon: 'fork' })
 }
 
 /**

@@ -117,8 +117,11 @@
  * 2.36 — messages between conversations: the `tell` tool, `Conversation.inbox`
  * and the `agent.peer_message` event. An older core has no inbox, so nothing
  * shows as waiting.
+ *
+ * 2.37 — Fork: `agent.fork`, `AgentTurn.branched` / `forkable` and
+ * `Conversation.forkedFrom`. An older core answers `unknown_method`.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 36 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 37 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

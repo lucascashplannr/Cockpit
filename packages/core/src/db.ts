@@ -373,6 +373,19 @@ function migrate(d: Db): void {
   // has been asked since — and "since" is a time, not a position in the thread.
   addColumn(d, 'agent_turns', 'undone_at', 'INTEGER')
 
+  // §16 — a Fork: a conversation copied up to one turn of another, carrying
+  // on by itself. `forked_from` + `forked_cut` say whose journal its copied
+  // turns read their messages from, and up to when. `fork_engine` +
+  // `fork_at` are the engine session and message its first launch forks
+  // from; both are cleared once the engine has announced the fork's own id.
+  // `branched` marks a copied turn: its files were never this conversation's,
+  // so an undo there takes back the conversation only.
+  addColumn(d, 'agent_sessions', 'forked_from', 'TEXT')
+  addColumn(d, 'agent_sessions', 'forked_cut', 'INTEGER')
+  addColumn(d, 'agent_sessions', 'fork_engine', 'TEXT')
+  addColumn(d, 'agent_sessions', 'fork_at', 'TEXT')
+  addColumn(d, 'agent_turns', 'branched', 'INTEGER NOT NULL DEFAULT 0')
+
   remapVocabulary(d)
   backfillScopes(d)
 }

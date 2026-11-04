@@ -998,6 +998,17 @@ export interface AgentTurn {
    * here brings back exactly the ones it took.
    */
   undoneBy: string | null
+  /**
+   * §16 — copied in when this conversation was forked from another. Its files
+   * were never this conversation's, so undoing from here takes back the
+   * conversation only — and whatever this conversation itself changed since.
+   */
+  branched?: boolean
+  /**
+   * §16 — whether a Fork can start from here: a finished turn still in the
+   * thread, whose last message the engine can be resumed at.
+   */
+  forkable?: boolean
   /** §16 — what it cost and how full the window was. Null before it lands. */
   usage: TurnUsage | null
   /**
@@ -1183,6 +1194,12 @@ export interface Conversation {
    * next tool call, an idle one at the top of its next turn.
    */
   inbox?: PeerMessage[]
+  /**
+   * §16 — the conversation this one was forked from, and the turn it was
+   * forked at. Kept after that conversation is removed: it is where the
+   * copied turns came from, not a link that has to stay live.
+   */
+  forkedFrom?: { sessionId: string; title: string } | null
 }
 
 /** §7 — one conversation's message to another (`mcp__cockpit__tell`). */

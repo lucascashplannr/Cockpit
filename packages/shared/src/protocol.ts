@@ -1078,6 +1078,15 @@ export interface Rpc {
     params: { sessionId: string; turnId: string; redo: boolean }
     result: { ok: boolean; detail: string }
   }
+  /**
+   * §16 — a new conversation holding this one up to and including a turn,
+   * which carries on by itself. The original is left exactly as it is. The
+   * engine forks at that turn's last message on the new one's first turn.
+   */
+  'agent.fork': {
+    params: { sessionId: string; turnId: string }
+    result: { ok: true; sessionId: string } | { ok: false; reason: string }
+  }
 
   /**
    * §6 — the memories a conversation in this project can be pointed at, most

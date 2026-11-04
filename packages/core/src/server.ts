@@ -1078,17 +1078,23 @@ const handlers: Record<string, Handler> = {
    * read from the top, and paging one would mean deciding what "the top" is
    * before the person has scrolled.
    */
-  'agent.transcript': (p: { sessionId: string }) => forSession(p.sessionId),
+  'agent.transcript': (p: { sessionId: string }) => agents.transcript(p.sessionId),
   /**
    * §3.7 — what reverting to a turn would throw away, before it is thrown.
    */
-  'agent.revertPreview': (p: { sessionId: string; turnId: string }) =>
-    checkpoints.preview(
+  'agent.revertPreview': async (p: { sessionId: string; turnId: string }) => {
+    // A turn copied in by a Fork puts back only what the fork itself changed
+    // since (`agents.filesTurn`), which may be nothing at all.
+    const redo = p.turnId.startsWith('redo_')
+    const own = agents.filesTurn(p.sessionId, redo ? p.turnId.slice(5) : p.turnId, redo)
+    if (!own) return []
+    return checkpoints.preview(
       p.sessionId,
-      p.turnId,
+      redo ? 'redo_' + own : own,
       (id) => registry.getWorkspace(id)?.name ?? id,
-      agents.undoLimit(p.sessionId, p.turnId, false),
-    ),
+      agents.undoLimit(p.sessionId, own, false),
+    )
+  },
   /**
    * §16 — a turn undone, files and conversation, or brought back.
    *
@@ -1096,6 +1102,12 @@ const handlers: Record<string, Handler> = {
    * in the list are now wrong by exactly the size of what was undone, and the
    * thread has lost (or regained) the turns it took.
    */
+  /** §16 — a new conversation, this one up to and including a turn. */
+  'agent.fork': async (p: { sessionId: string; turnId: string }) => {
+    const r = await agents.fork(p.sessionId, p.turnId)
+    if (r.ok) pushAgentActivity()
+    return r
+  },
   'agent.undo': async (p: { sessionId: string; turnId: string; redo: boolean }) => {
     const r = await agents.undo(p.sessionId, p.turnId, !!p.redo)
     if (r.ok) {

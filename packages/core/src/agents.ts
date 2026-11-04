@@ -1,16 +1,16 @@
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
-import { isAbsolute, relative, resolve } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, commandIn, conversationRef, newId } from '@cockpit/shared'
 import type {
-  AgentAnswers, AgentScope, Attachment, AttachmentInput, Conversation, AgentTurn, MemorySource, PeerMessage, PermissionMode,
+  AgentAnswers, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, AgentTurn, MemorySource, PeerMessage, PermissionMode,
   PermissionRequest, TurnUsage,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
-import { append, recordTouch, touchedBy } from './journal.js'
+import { append, forSession, recordTouch, touchedBy } from './journal.js'
 import { run, which } from './exec.js'
 import * as leases from './leases.js'
 import * as checkpoints from './checkpoints.js'
@@ -277,7 +277,7 @@ export interface EngineSpec {
    * outlive the daemon, and "work on it over several days" is a fiction: every
    * morning would start from an empty context against a stale memory.
    */
-  buildResumeArgs(prompt: string, engineSessionId: string, ctx: LaunchContext, at?: string): string[]
+  buildResumeArgs(prompt: string, engineSessionId: string, ctx: LaunchContext, at?: string, fork?: boolean): string[]
   /**
    * §16 — the engine's id for a message it has just written, when the line is
    * one. Only an engine that can be resumed *at* such an id has this: it is
@@ -499,13 +499,17 @@ const claudeEngine: EngineSpec = {
   bin: 'claude',
   streaming: true,
   buildArgs: (_prompt, ctx) => ['-p', '--input-format', 'stream-json', ...claudeCommon(ctx)],
-  buildResumeArgs: (_prompt, id, ctx, at) => [
+  buildResumeArgs: (_prompt, id, ctx, at, fork) => [
     '-p', '--input-format', 'stream-json', ...claudeCommon(ctx), '--resume', id,
     // The conversation as it stood after that message, and nothing later: an
     // undo's turns are dropped from what the engine reads, not merely hidden.
     // What it answers next is a branch from there, and a plain `--resume`
     // afterwards follows that branch.
     ...(at ? ['--resume-session-at', at] : []),
+    // §16 — a Fork: the same, written into a transcript of its own under a new
+    // id, so the conversation it came from is not touched. Message ids are
+    // kept, which is what lets an undo inside the fork still find them.
+    ...(fork ? ['--fork-session'] : []),
   ],
   anchorIn(line) {
     const o = safeJson(line)
@@ -1031,6 +1035,11 @@ interface Live {
   memoryOwn: Set<string>
   /** §7 — which conversations it was last told were working beside it. See `peersNews`. */
   peersSeen: string
+  /**
+   * §16 — the engine session this launch forks from, until the engine
+   * announces the fork's own id. See `fork`.
+   */
+  forkedFrom?: string
   /** §7 — files whose edit was held once, and when: held again only after another change. See `heldEdit`. */
   held: Map<string, number>
   /** §16 — what the turn in flight has reported, until its row is written. */
@@ -1211,11 +1220,13 @@ export function turnsOf(sessionId: string): AgentTurn[] {
   // One query for the conversation rather than one per turn: a thread of forty
   // turns is hydrated on every push.
   const withCheckpoint = new Set(checkpoints.turnsWithCheckpoints(sessionId))
-  const sess = d.prepare('SELECT engine, engine_session_id FROM agent_sessions WHERE id = ?').get(sessionId) as
-    | { engine: string; engine_session_id: string | null }
+  const sess = d.prepare('SELECT engine, engine_session_id, fork_engine FROM agent_sessions WHERE id = ?').get(sessionId) as
+    | { engine: string; engine_session_id: string | null; fork_engine: string | null }
     | undefined
   const anchored = !!ENGINES[sess?.engine ?? '']?.anchorIn
-  const current = sess?.engine_session_id ?? null
+  // A fork that has not run yet still reads its turns' anchors as those of the
+  // engine session it came from — the one its first launch forks.
+  const current = sess?.fork_engine ?? sess?.engine_session_id ?? null
 
   const undoneBy = rows.map((r) => (r.undone_by == null ? null : String(r.undone_by)))
   // Whether the engine can be resumed at a point before each turn: the first
@@ -1260,6 +1271,8 @@ export function turnsOf(sessionId: string): AgentTurn[] {
       restorable: withCheckpoint.has(id),
       forgettable: forgettable[i]!,
       undoneBy: undoneBy[i]!,
+      branched: !!r.branched,
+      forkable: anchored && !undoneBy[i] && String(r.status) !== 'running' && usableAnchor(r, current),
       // An undo that could only move the files keeps the old rule: its own
       // snapshot is filed under a turn id derived from this one, and while it
       // is there the files can go forward again.
@@ -1483,7 +1496,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     engineSessionId,
     // §6 — an ended session is not a dead one. As long as the engine still
     // holds the conversation, picking it back up tomorrow is one click.
-    resumable: !!engineSessionId && (status === 'ended' || status === 'failed'),
+    resumable: (!!engineSessionId || !!r.fork_engine) && (status === 'ended' || status === 'failed'),
     prompt: r.prompt == null ? '' : String(r.prompt),
     scope: readScope(r),
     title: r.title == null || String(r.title) === '' ? String(r.prompt ?? '') : String(r.title),
@@ -1497,7 +1510,16 @@ function hydrate(r: Record<string, unknown>): Conversation {
     hiddenAt: r.hidden_at == null ? null : Number(r.hidden_at),
     alongside: !!r.alongside,
     inbox: inboxOf(String(r.id)),
+    forkedFrom: r.forked_from == null ? null : { sessionId: String(r.forked_from), title: titleOf(String(r.forked_from)) },
   }
+}
+
+/** A conversation's name, read on its own — kept even once it is hidden. */
+function titleOf(sessionId: string): string {
+  const r = getDb().prepare('SELECT title, prompt FROM agent_sessions WHERE id = ?').get(sessionId) as
+    | { title: string | null; prompt: string | null }
+    | undefined
+  return r ? String(r.title || r.prompt || '') : ''
 }
 
 /**
@@ -1798,10 +1820,14 @@ export async function resumeAgent(
 ): Promise<StartAgentResult> {
   const prev = get(sessionId)
   if (!prev) return { denied: true, reason: 'unknown session: ' + sessionId }
+  // §16 — a fork that has not run yet: its first launch forks the engine
+  // session it came from, at the turn it was forked at (or earlier, after an
+  // undo inside it).
+  const forking = pendingFork(sessionId)
   // §16 — after an undo, what the engine reads next is the conversation as it
   // now stands on screen, not as it stood before the undo.
-  const at = resumePoint(sessionId, prev.engineSessionId)
-  if (!prev.engineSessionId && at !== null) {
+  const at = resumePoint(sessionId, forking?.engine ?? prev.engineSessionId)
+  if (!prev.engineSessionId && !forking && at !== null) {
     return {
       denied: true,
       reason:
@@ -1855,7 +1881,12 @@ export async function resumeAgent(
   // and the id it announces becomes the conversation's.
   if (at === null) {
     session.engineSessionId = null
+    if (forking) clearFork(sessionId)
     return launch(session, spec, preamble, false, allow, opts, files)
+  }
+  if (forking) {
+    session.engineSessionId = null
+    return launch(session, spec, preamble, true, allow, opts, files, at ?? forking.at, forking.engine)
   }
   return launch(session, spec, preamble, true, allow, opts, files, at)
 }
@@ -1924,6 +1955,8 @@ async function launch(
   files: Attachment[] = [],
   /** §16 — resume at this message rather than at the end. See `resumePoint`. */
   at?: string,
+  /** §16 — the engine session a Fork's first launch forks from. See `fork`. */
+  forkFrom?: string,
 ): Promise<StartAgentResult> {
   // §7 — the lease is what makes two overlapping agents impossible. It is taken
   // on paths, so a topic-wide session and a repo session inside it collide
@@ -2021,7 +2054,7 @@ async function launch(
   )
   const withFiles = attachments.flatten(segs)
   const args = resuming
-    ? spec.buildResumeArgs(withFiles, session.engineSessionId!, ctx, at)
+    ? spec.buildResumeArgs(withFiles, forkFrom ?? session.engineSessionId!, ctx, at, !!forkFrom)
     : spec.buildArgs(withFiles, ctx)
   const child = spawn(spec.bin, args, {
     cwd,
@@ -2057,6 +2090,7 @@ async function launch(
     memoryOwn: new Set(),
     held: new Map(),
     peersSeen: peersSignature(peersNow),
+    forkedFrom: forkFrom,
   }
   live.set(session.id, l)
 
@@ -2099,6 +2133,10 @@ async function launch(
       if (eid) {
         session.engineSessionId = eid
         persist(session)
+        if (l.forkedFrom) {
+          adoptFork(session.id, l.forkedFrom, eid)
+          l.forkedFrom = undefined
+        }
       }
     }
 
@@ -2995,16 +3033,19 @@ export async function undo(
 
   // The files first: they are the half that can fail, and a conversation
   // taken back over files that stayed put would be two different states.
-  const snapshot = redo ? 'redo_' + turnId : turnId
+  // A turn copied in by a Fork moves only what this conversation changed
+  // itself — see `filesTurn`.
+  const own = filesTurn(sessionId, turnId, redo)
+  const snapshot = own ? (redo ? 'redo_' + own : own) : null
   let files = 0
   let workspaces = 0
   let failures: string[] = []
   let leftAlone: string[] = []
-  if (checkpoints.has(sessionId, snapshot)) {
+  if (own && snapshot && checkpoints.has(sessionId, snapshot)) {
     const paths = checkpoints.pathsOf(sessionId, snapshot)
     for (const p of paths) undoWriting.set(p, Infinity)
     try {
-      const r = await checkpoints.revert(sessionId, snapshot, redo ? 'redo of a turn' : 'undo of a turn', undoLimit(sessionId, turnId, redo))
+      const r = await checkpoints.revert(sessionId, snapshot, redo ? 'redo of a turn' : 'undo of a turn', undoLimit(sessionId, own, redo))
       if (!r.ok) return { ok: false, detail: r.detail }
       ;({ files, workspaces, failures, leftAlone } = r)
     } finally {
@@ -3049,6 +3090,211 @@ export async function undo(
       ' as ' + (leftAlone.length === 1 ? 'it is' : 'they are') + ': another conversation here changed ' +
       (leftAlone.length === 1 ? 'it' : 'them') + ' since'
   return { ok: true, detail: failures.length ? detail + ' — ' + failures.join('; ') : detail }
+}
+
+/**
+ * §16 — whose snapshot an undo from this turn puts the files back to.
+ *
+ * The turn's own, as a rule. A turn copied in by a Fork has none: what it did
+ * to the files happened in the conversation it was copied from, and is not
+ * this one's to take back. Undoing from there still takes away the fork's own
+ * turns after it, so the files go back to before the first of those — the
+ * tree as it stood when the fork started working. Null when there is nothing
+ * of the fork's own to put back.
+ */
+export function filesTurn(sessionId: string, turnId: string, redo: boolean): string | null {
+  const d = getDb()
+  const t = d.prepare('SELECT seq, branched FROM agent_turns WHERE session_id = ? AND id = ?').get(sessionId, turnId) as
+    | { seq: number; branched: number }
+    | undefined
+  if (!t) return null
+  if (!t.branched) return turnId
+  const first = (
+    redo
+      ? d
+          .prepare('SELECT id FROM agent_turns WHERE session_id = ? AND undone_by = ? AND branched = 0 ORDER BY seq ASC LIMIT 1')
+          .get(sessionId, turnId)
+      : d
+          .prepare(
+            'SELECT id FROM agent_turns WHERE session_id = ? AND seq > ? AND undone_by IS NULL AND branched = 0 ORDER BY seq ASC LIMIT 1',
+          )
+          .get(sessionId, t.seq)
+  ) as { id: string } | undefined
+  return first?.id ?? null
+}
+
+/* ── §16, the Fork ─────────────────────────────────────────────────────── */
+
+/**
+ * §16 — a new conversation holding this one up to and including a turn, which
+ * carries on by itself. The original is left exactly as it was.
+ *
+ * Three things make it a conversation and not a picture of one:
+ *
+ *   - the turns are copied, so the thread lists them, Undo can take them back,
+ *     and the context meter reads the last one's level. Their files are not:
+ *     a copied turn has no snapshot, and undoing there moves the conversation
+ *     only (`filesTurn`). Their cost is not either — it was paid once;
+ *   - the messages are not copied. The journal is never a second copy of
+ *     itself: the fork reads the original's events up to the cut (`transcript`);
+ *   - the engine forks at the turn's last message on the fork's first launch
+ *     (`--fork-session`), so the agent remembers exactly what the thread shows
+ *     and nothing the original said after.
+ *
+ * The attachments are copied, so removing the original does not take the
+ * fork's pictures with it.
+ */
+export async function fork(
+  sessionId: string,
+  turnId: string,
+): Promise<{ ok: true; sessionId: string } | { ok: false; reason: string }> {
+  const d = getDb()
+  const s = get(sessionId)
+  if (!s) return { ok: false, reason: 'no such conversation' }
+  const t = s.history.find((x) => x.id === turnId)
+  if (!t) return { ok: false, reason: 'no such turn' }
+  if (t.status === 'running') return { ok: false, reason: 'that turn is still running' }
+  if (!t.forkable) return { ok: false, reason: 'the engine cannot be picked up at that turn' }
+  const at = d.prepare('SELECT engine_anchor, anchor_session FROM agent_turns WHERE id = ?').get(turnId) as {
+    engine_anchor: string
+    anchor_session: string
+  }
+
+  const id = newId('agent_')
+  const now = Date.now()
+  // Where the forked turn's messages end: where the next turn began, or now.
+  const next = d.prepare('SELECT MIN(started_at) AS n FROM agent_turns WHERE session_id = ? AND seq > ?').get(sessionId, t.seq) as {
+    n: number | null
+  }
+  const cut = next.n ?? now
+
+  const copy: Conversation = {
+    ...s,
+    id,
+    status: 'ended',
+    startedAt: now,
+    endedAt: now,
+    turns: s.history.filter((x) => x.seq <= t.seq).length,
+    leaseId: null,
+    lastMessage: null,
+    engineSessionId: null,
+    resumable: true,
+    prompt: t.prompt,
+    title: (s.title || t.prompt).slice(0, 190) + ' (fork)',
+    history: [],
+    denials: [],
+    queued: [],
+    pending: [],
+    naming: false,
+    hiddenAt: null,
+  }
+
+  const cols = (d.prepare('PRAGMA table_info(agent_turns)').all() as { name: string }[]).map((c) => c.name)
+  const rows = d.prepare('SELECT * FROM agent_turns WHERE session_id = ? AND seq <= ? ORDER BY seq ASC').all(sessionId, t.seq) as Record<
+    string,
+    unknown
+  >[]
+  const ids = new Map(rows.map((r) => [String(r.id), newId('turn_')]))
+  const insert = d.prepare(
+    'INSERT INTO agent_turns (' + cols.join(', ') + ') VALUES (' + cols.map(() => '?').join(', ') + ')',
+  )
+  d.transaction(() => {
+    persist(copy)
+    d.prepare('UPDATE agent_sessions SET forked_from = ?, forked_cut = ?, fork_engine = ?, fork_at = ? WHERE id = ?').run(
+      sessionId,
+      cut,
+      at.anchor_session,
+      at.engine_anchor,
+      id,
+    )
+    for (const r of rows) {
+      const row: Record<string, unknown> = {
+        ...r,
+        id: ids.get(String(r.id)),
+        session_id: id,
+        undone_by: r.undone_by == null ? null : (ids.get(String(r.undone_by)) ?? String(r.undone_by)),
+        attachments: JSON.stringify(copyAttachments(attachmentsOf(r), sessionId, id)),
+        cost_usd: 0,
+        branched: 1,
+      }
+      insert.run(...cols.map((c) => row[c] ?? null))
+    }
+  })()
+
+  // An open, idle original holds the folder's lock and would make the fork's
+  // first turn ask to work alongside it. It is let go instead — its next turn
+  // picks it back up, exactly as after an undo. One still answering keeps it.
+  const l = live.get(sessionId)
+  if (l && !l.busy && !l.queue.length) await release(l)
+
+  append({
+    type: 'agent.forked',
+    actor: { kind: 'agent', engine: s.engine, sessionId: id },
+    workspaceId: s.workspaceIds[0] ?? null,
+    payload: { from: sessionId, turnId, turns: rows.length },
+  })
+  agentBus.emit('changed')
+  return { ok: true, sessionId: id }
+}
+
+/** The attachments of a copied turn, as files of the fork's own. */
+function copyAttachments(files: Attachment[], from: string, to: string): Attachment[] {
+  const root = attachments.attachmentsRoot()
+  const src = join(root, from) + sep
+  return files.map((a) => {
+    if (!a.path.startsWith(src)) return a
+    const path = join(root, to, a.path.slice(src.length))
+    try {
+      mkdirSync(dirname(path), { recursive: true })
+      copyFileSync(a.path, path)
+      return { ...a, path }
+    } catch {
+      return a
+    }
+  })
+}
+
+/** §16 — the fork a conversation's first launch still has to make, if any. */
+function pendingFork(sessionId: string): { engine: string; at: string } | null {
+  const r = getDb().prepare('SELECT fork_engine, fork_at FROM agent_sessions WHERE id = ?').get(sessionId) as
+    | { fork_engine: string | null; fork_at: string | null }
+    | undefined
+  return r?.fork_engine && r.fork_at ? { engine: r.fork_engine, at: r.fork_at } : null
+}
+
+function clearFork(sessionId: string): void {
+  getDb().prepare('UPDATE agent_sessions SET fork_engine = NULL, fork_at = NULL WHERE id = ?').run(sessionId)
+}
+
+/**
+ * §16 — the engine has forked and announced the fork's own session. The
+ * copied turns' anchors name messages the fork kept under the same ids, so
+ * they now belong to it; an undo inside the fork resumes there.
+ */
+function adoptFork(sessionId: string, from: string, eid: string): void {
+  const d = getDb()
+  d.transaction(() => {
+    d.prepare('UPDATE agent_turns SET anchor_session = ? WHERE session_id = ? AND anchor_session = ?').run(eid, sessionId, from)
+    clearFork(sessionId)
+  })()
+}
+
+/**
+ * §3.3 — a conversation's transcript: the journal filtered by it, and for a
+ * fork, what the conversation it came from said up to the cut, read as its
+ * own. The journal is never copied; this is where the two are put together.
+ */
+export function transcript(sessionId: string, depth = 0): CockpitEvent[] {
+  const own = forSession(sessionId)
+  const r = getDb().prepare('SELECT forked_from, forked_cut FROM agent_sessions WHERE id = ?').get(sessionId) as
+    | { forked_from: string | null; forked_cut: number | null }
+    | undefined
+  if (!r?.forked_from || r.forked_cut == null || depth > 16) return own
+  const cut = r.forked_cut
+  const before = transcript(r.forked_from, depth + 1)
+    .filter((e) => e.ts < cut)
+    .map((e) => (e.actor.kind === 'agent' ? { ...e, actor: { ...e.actor, sessionId } } : e))
+  return [...before, ...own]
 }
 
 /**

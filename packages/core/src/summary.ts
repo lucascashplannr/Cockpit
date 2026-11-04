@@ -1,7 +1,6 @@
 import type { AgentTurn, CockpitEvent, ConversationSummary } from '@cockpit/shared'
 import { readPrompt } from '@cockpit/shared'
 import * as agents from './agents.js'
-import { forSession } from './journal.js'
 import { run, which } from './exec.js'
 
 /**
@@ -49,7 +48,7 @@ async function write(sessionId: string): Promise<ConversationSummary | null> {
   if (hit?.stamp === stamp) return hit.value
 
   const title = c.title || 'untitled'
-  const parts = outline(turns, forSession(sessionId, 20_000))
+  const parts = outline(turns, agents.transcript(sessionId).slice(-20_000))
   const drafted = await draft(title, fit(parts))
   const value: ConversationSummary = drafted
     ? { title, summary: drafted, drafted: true }

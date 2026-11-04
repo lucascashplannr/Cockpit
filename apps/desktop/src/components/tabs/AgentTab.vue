@@ -7,7 +7,7 @@ import type {
   AgentAnswers, AgentQuestion, AgentScope, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, Hand, MessageSquareText, Paperclip,
+  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, GitFork, Hand, MessageSquareText, Paperclip,
   Redo2, Send, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -23,7 +23,7 @@ import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
   activeAgentScope, activeDraftKey, alongsideChosen, draftKey, type DraftFile, chooseAlongside, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
-  askUndo, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
+  askUndo, forkConversation, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, forgetMemoryChoice, memoryLabel, renameConversation, restoreConversation,
   threadScrollOf, toast, transcriptOf, pickThread, type ThreadScroll, answerPeers, openConversation, peerTitle,
@@ -558,6 +558,26 @@ const lastUnread = computed(() => selected.value?.inbox?.at(-1)?.id ?? null)
 function unread(r: Peer): boolean {
   return r.dir === 'in' && !!selected.value?.inbox?.some((m) => m.id === r.msgId)
 }
+/**
+ * §16 — where a fork's own conversation begins: under the last turn it
+ * copied, one quiet line naming the conversation it came from.
+ */
+const forkedAt = computed(() => {
+  const s = selected.value
+  if (!s?.forkedFrom) return -1
+  let at = -1
+  exchanges.value.forEach((x, i) => {
+    if (x.turn.branched) at = i
+  })
+  return at
+})
+function openForkedFrom(): void {
+  const id = selected.value?.forkedFrom?.sessionId
+  const c = id ? (state.agents.find((a) => a.id === id) ?? state.keptAgents.find((a) => a.id === id)) : undefined
+  if (c) openConversation(c)
+  else toast('info', 'that conversation has been removed')
+}
+
 function openPeer(id: string | null): void {
   const c = id ? state.agents.find((a) => a.id === id) : undefined
   if (c) openConversation(c)
@@ -1771,14 +1791,28 @@ function ago(ts: number): string {
                   v-if="(x.turn.restorable || x.turn.forgettable) && !x.turn.undoneBy && !queueing && selected.hiddenAt === null"
                   class="act"
                   :title="
-                    x.turn.forgettable
-                      ? 'Undo from here — the conversation and the files go back to before this turn'
-                      : 'Undo from here — put the files back to how they were before this turn'
+                    x.turn.branched
+                      ? 'Undo from here — the conversation goes back to before this turn; files from before the fork stay'
+                      : x.turn.forgettable
+                        ? 'Undo from here — the conversation and the files go back to before this turn'
+                        : 'Undo from here — put the files back to how they were before this turn'
                   "
                   aria-label="Undo from here"
                   @click="askUndo(selected.id, x.turn, false)"
                 >
                   <Undo2 class="sm" />
+                </button>
+                <!-- §16 — a new conversation with everything up to this
+                     answer, in a tab of its own; this one stays as it is.
+                     Nothing to confirm: nothing is changed or lost. -->
+                <button
+                  v-if="x.turn.forkable && selected.hiddenAt === null"
+                  class="act"
+                  title="Fork from here — a new conversation with everything up to this answer"
+                  aria-label="Fork from here"
+                  @click="forkConversation(selected.id, x.turn.id)"
+                >
+                  <GitFork class="sm" />
                 </button>
               </div>
             </div>
@@ -1952,6 +1986,14 @@ function ago(ts: number): string {
               </button>
             </div>
             </div>
+          </div>
+          <!-- §16 — the fork's own conversation starts under this line. -->
+          <div v-if="i === forkedAt" class="fold forked">
+            <GitFork class="sm" />
+            <span>Forked from</span>
+            <button class="lnk" title="Open it" @click="openForkedFrom">
+              {{ selected.forkedFrom?.title || 'another conversation' }}
+            </button>
           </div>
           </template>
 
@@ -2561,6 +2603,13 @@ function ago(ts: number): string {
   transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
 }
 .fold .lnk:hover { color: var(--text); background: var(--hover); }
+/* A conversation's name can be a sentence long; the rules keep their room. */
+.fold.forked .lnk {
+  max-width: 40%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 /* Unfolded to be read, not to be worked on: dimmed, and nothing under it can
    be pressed except the copy buttons, which take nothing from anyone. */
 .ex.gone { opacity: 0.5; }
