@@ -12,10 +12,13 @@ interface Left {
   draft: { content: string; mtimeMs: number | null } | null
 }
 const left = new Map<string, Left>()
+
+/** Per workspace: which folders of the tree were open, and how far down it was. */
+const trees = new Map<string, { open: Set<string>; scroll: number }>()
 </script>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
@@ -85,6 +88,9 @@ interface Node {
 }
 
 const roots = ref<Node[]>([])
+const treeScroll = ref<HTMLElement | null>(null)
+/** The workspace `roots` was read for — none until the first read lands. */
+let treeFor: string | null = null
 const openPath = ref<string | null>(null)
 const openMtime = ref<number | null>(null)
 const dirty = ref(false)
@@ -104,6 +110,17 @@ async function loadDir(rel: string): Promise<FileEntry[]> {
 
 /** Where this workspace's file was left, kept for the way back. */
 function leave(workspaceId: string) {
+  const open = new Set<string>()
+  const walk = (nodes: Node[]) => {
+    for (const n of nodes) {
+      if (!n.expanded) continue
+      open.add(n.entry.path)
+      if (n.children) walk(n.children)
+    }
+  }
+  walk(roots.value)
+  // Left before the tree came in: what was kept still stands.
+  if (treeFor === workspaceId) trees.set(workspaceId, { open, scroll: treeScroll.value?.scrollTop ?? 0 })
   const v = view.value
   const path = openPath.value
   if (!path) return
@@ -116,13 +133,21 @@ function leave(workspaceId: string) {
 }
 
 async function loadRoot() {
+  treeFor = null
   openPath.value = null
   dirty.value = false
   image.value = null
   view.value?.destroy()
   view.value = null
+  const id = props.workspace.id
   const entries = await loadDir('.')
-  roots.value = entries.map((e) => ({ entry: e, depth: 0, expanded: false, children: null }))
+  const tree = trees.get(id)
+  const nodes = entries.map((e): Node => ({ entry: e, depth: 0, expanded: false, children: null }))
+  if (tree) await reopen(nodes, tree.open)
+  if (props.workspace.id !== id) return
+  roots.value = nodes
+  treeFor = props.workspace.id
+  if (tree) void nextTick(() => treeScroll.value && (treeScroll.value.scrollTop = tree.scroll))
   // Back where it was left — first, so that an edit kept there is on screen
   // before anything asked for meanwhile can ask to replace it.
   const was = left.get(props.workspace.id)
@@ -198,6 +223,19 @@ async function toggle(node: Node) {
     const entries = await loadDir(node.entry.path)
     node.children = entries.map((e) => ({ entry: e, depth: node.depth + 1, expanded: false, children: null }))
   }
+}
+
+/** The folders that were open, open again — gone ones are simply not there. */
+async function reopen(nodes: Node[], open: Set<string>): Promise<void> {
+  await Promise.all(
+    nodes.map(async (n) => {
+      if (n.entry.kind !== 'dir' || !open.has(n.entry.path)) return
+      const entries = await loadDir(n.entry.path)
+      n.children = entries.map((e) => ({ entry: e, depth: n.depth + 1, expanded: false, children: null }))
+      n.expanded = true
+      await reopen(n.children, open)
+    }),
+  )
 }
 
 function flatten(nodes: Node[]): Node[] {
@@ -409,17 +447,23 @@ function fileCommits() {
 
 // A commit moves the lines it took from not committed to its own; a switch
 // of branch can move every one of them.
+// Both keyed by the workspace too: another workspace is not a commit here.
+// Its file is not open yet, and asking it for this one's fails — `loadRoot`
+// reads what belongs there.
 watch(
-  () => [props.workspace.git?.lastCommit?.hash, props.workspace.git?.branch].join('|'),
-  () => {
-    if (blameOn.value && !dirty.value) void loadBlame()
+  [() => props.workspace.id, () => [props.workspace.git?.lastCommit?.hash, props.workspace.git?.branch].join('|')],
+  ([id], [was]) => {
+    if (id === was && blameOn.value && !dirty.value) void loadBlame()
   },
 )
 // A commit, a discard or an agent's edit moves what is marked.
 watch(
-  () => [props.workspace.git?.lastCommit?.hash, props.workspace.git?.branch, changeCount(props.workspace)].join('|'),
-  () => {
-    if (!dirty.value) void loadMarks()
+  [
+    () => props.workspace.id,
+    () => [props.workspace.git?.lastCommit?.hash, props.workspace.git?.branch, changeCount(props.workspace)].join('|'),
+  ],
+  ([id], [was]) => {
+    if (id === was && !dirty.value) void loadMarks()
   },
 )
 
@@ -618,7 +662,7 @@ onBeforeUnmount(() => {
           <Search class="sm" />
         </button>
       </div>
-      <div class="scroll">
+      <div ref="treeScroll" class="scroll">
         <button
           v-for="n in flatten(roots)"
           :key="n.entry.path"
