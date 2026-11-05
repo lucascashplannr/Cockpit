@@ -50,6 +50,9 @@ const ide = ref('')
 const rules = reactive<CommitRules>(normalizeCommitRules(null))
 /** Set while the sheet loads its values, so the rules watcher does not save them back. */
 let loading = false
+/** A rules save waiting for the typing to stop. Declared before the watcher
+ *  below, which runs at once and may save on its way. */
+let rulesTimer: ReturnType<typeof setTimeout> | null = null
 
 watch(
   () => state.settingsOpen,
@@ -86,8 +89,6 @@ async function saveIde() {
   if (!next) ide.value = state.settings.ide
   else if (next !== state.settings.ide) await saveSettings({ ide: next })
 }
-
-let rulesTimer: ReturnType<typeof setTimeout> | null = null
 
 async function saveRules() {
   if (rulesTimer) clearTimeout(rulesTimer)

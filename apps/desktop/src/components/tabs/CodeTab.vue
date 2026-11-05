@@ -1,31 +1,58 @@
 <script lang="ts">
+import { Compartment, type EditorState as CMState } from '@codemirror/state'
+import type { BlameCommit } from '@cockpit/shared'
+import { blameGutter } from '../../core/blame.js'
+
 /**
- * Per workspace: the file the Code tab had open, where the caret and the
- * scroll were, and — if it was not saved — what had been typed. Leaving the
- * tab or the workspace is looking elsewhere, not closing the file: it is all
- * there on the way back. Kept for as long as the window, not past it.
+ * One open file. Off screen it keeps the editor as it was left — text, caret,
+ * undo — and how far down it was, so coming back to it is coming back, not
+ * opening it again. Only a tab with an edit not saved trusts what it kept; a
+ * clean one reads the disk again on the way back, since an agent may have
+ * written there meanwhile.
  */
-interface Left {
+interface OpenFile {
   path: string
-  anchor: number
+  /** When the disk's copy was read: a save refuses if the file moved since. */
+  mtime: number | null
+  dirty: boolean
+  es: CMState | null
   scroll: number
-  draft: { content: string; mtimeMs: number | null } | null
 }
-const left = new Map<string, Left>()
+
+/**
+ * Per workspace: the files open in the Code tab, in the order of their tabs,
+ * and the one on screen. Leaving the tab or the workspace is looking
+ * elsewhere, not closing them. Kept for as long as the window, not past it.
+ */
+const opened = new Map<string, { files: OpenFile[]; active: string | null }>()
+
+/**
+ * A kept editor outlives the mount that made it — the Code tab closes when
+ * the Diff is looked at — so its keys and its gutter reach whichever mount is
+ * on screen now, not the one they were built in.
+ */
+const live: {
+  save?: () => void
+  edited?: (path: string) => void
+  blamed?: (c: BlameCommit) => void
+} = {}
+const langCompartment = new Compartment()
+const blameCompartment = new Compartment()
+const blameExt = blameGutter((c) => live.blamed?.(c))
 
 /** Per workspace: which folders of the tree were open, and how far down it was. */
 const trees = new Map<string, { open: Set<string>; scroll: number }>()
 </script>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, toRaw, watch, type Ref } from 'vue'
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view'
-import { EditorState, Compartment } from '@codemirror/state'
+import { EditorState } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import type { BlameCommit, FileEntry, Workspace } from '@cockpit/shared'
+import type { FileEntry, Workspace } from '@cockpit/shared'
 import {
   ArrowLeft, ChevronDown, ChevronRight, Code, Copy, Eye, FileCode, Folder, FolderOpen, GitCommitVertical, Info, Save, Search,
-  SquareArrowOutUpRight, UserPen,
+  SquareArrowOutUpRight, UserPen, X,
 } from '@lucide/vue'
 import MarkdownPreview from '../MarkdownPreview.vue'
 import Splitter from '../Splitter.vue'
@@ -36,7 +63,7 @@ import {
 import { buildMarks, changeMarks, noMarks, setMarks } from '../../core/changeMarks.js'
 import { cockpitTheme, languageFor } from '../../core/editor.js'
 import { editorFind, findInEditor, useFindKey } from '../../core/find.js'
-import { blameGutter, blameMarks, blameOn } from '../../core/blame.js'
+import { blameMarks, blameOn } from '../../core/blame.js'
 import FileIcon from '../FileIcon.vue'
 
 /**
@@ -91,14 +118,23 @@ const roots = ref<Node[]>([])
 const treeScroll = ref<HTMLElement | null>(null)
 /** The workspace `roots` was read for — none until the first read lands. */
 let treeFor: string | null = null
+/** The tabs of this workspace, in order. */
+// Cast: the kept editor is marked raw, so it is not unwrapped as the type says.
+const files = ref<OpenFile[]>([]) as Ref<OpenFile[]>
+/** The one on screen. */
 const openPath = ref<string | null>(null)
-const openMtime = ref<number | null>(null)
-const dirty = ref(false)
+const cur = computed(() => files.value.find((f) => f.path === openPath.value) ?? null)
+const openMtime = computed({
+  get: () => cur.value?.mtime ?? null,
+  set: (v) => cur.value && (cur.value.mtime = v),
+})
+const dirty = computed({
+  get: () => cur.value?.dirty ?? false,
+  set: (v) => cur.value && (cur.value.dirty = v),
+})
 const host = ref<HTMLElement | null>(null)
 const view = shallowRef<EditorView | null>(null)
-const langCompartment = new Compartment()
 useFindKey(() => editorFind(view.value))
-const blameCompartment = new Compartment()
 /** Bumped on every edit and every open, so what reads the document follows it. */
 const docTick = ref(0)
 
@@ -108,7 +144,7 @@ async function loadDir(rel: string): Promise<FileEntry[]> {
   return r ?? []
 }
 
-/** Where this workspace's file was left, kept for the way back. */
+/** Where this workspace's tree and tabs were left, kept for the way back. */
 function leave(workspaceId: string) {
   const open = new Set<string>()
   const walk = (nodes: Node[]) => {
@@ -121,25 +157,33 @@ function leave(workspaceId: string) {
   walk(roots.value)
   // Left before the tree came in: what was kept still stands.
   if (treeFor === workspaceId) trees.set(workspaceId, { open, scroll: treeScroll.value?.scrollTop ?? 0 })
-  const v = view.value
-  const path = openPath.value
-  if (!path) return
-  left.set(workspaceId, {
-    path,
-    anchor: v?.state.selection.main.head ?? 0,
-    scroll: v?.scrollDOM.scrollTop ?? 0,
-    draft: v && dirty.value ? { content: v.state.doc.toString(), mtimeMs: openMtime.value } : null,
-  })
+  if (filesFor !== workspaceId) return
+  stash()
+  opened.set(workspaceId, { files: toRaw(files.value).map((f) => toRaw(f)), active: openPath.value })
 }
+
+/** The workspace `files` belongs to — none while another one's are coming in. */
+let filesFor: string | null = null
 
 async function loadRoot() {
   treeFor = null
+  filesFor = null
   openPath.value = null
-  dirty.value = false
   image.value = null
   view.value?.destroy()
   view.value = null
   const id = props.workspace.id
+  const kept = opened.get(id)
+  files.value = kept?.files ?? []
+  filesFor = id
+  drilled.value = false
+  // Back where it was left, while the tree is still being read — once
+  // mounted: on the way into the tool the editor has nowhere to go yet.
+  const active = kept?.active
+  if (active) {
+    drilled.value = true
+    void nextTick(() => show(active))
+  }
   const entries = await loadDir('.')
   const tree = trees.get(id)
   const nodes = entries.map((e): Node => ({ entry: e, depth: 0, expanded: false, children: null }))
@@ -148,30 +192,21 @@ async function loadRoot() {
   roots.value = nodes
   treeFor = props.workspace.id
   if (tree) void nextTick(() => treeScroll.value && (treeScroll.value.scrollTop = tree.scroll))
-  // Back where it was left — first, so that an edit kept there is on screen
-  // before anything asked for meanwhile can ask to replace it.
-  const was = left.get(props.workspace.id)
-  drilled.value = false
-  if (was) {
-    drilled.value = true
-    await openFile(was.path)
-  }
   takeRequest()
 }
 
 /** A file the palette asked for, once this is the workspace it is in. */
 function takeRequest() {
   const r = state.codeRequest
-  if (!r || r.workspaceId !== props.workspace.id) return
+  if (!r || r.workspaceId !== props.workspace.id || filesFor !== props.workspace.id) return
   state.codeRequest = null
   goToFile(r.path, r.line)
 }
 
 /**
- * Every way of opening a file comes through here. The file already open is
- * not read again — that would put the disk's copy over what was typed — and
- * another one, over an edit not saved, is asked for first: nothing else keeps
- * that edit, as the Diff's question says.
+ * Every way of opening a file comes through here. A file already open is
+ * turned to, not read again — that would put the disk's copy over what was
+ * typed; any other gets a tab of its own at the end, as a browser does.
  */
 function goToFile(path: string, line: number | null = null) {
   drill(true)
@@ -179,19 +214,55 @@ function goToFile(path: string, line: number | null = null) {
     if (line) toLine(view.value, line)
     return
   }
-  if (!dirty.value) return void openFile(path, line)
+  if (!files.value.some((f) => f.path === path)) {
+    files.value.push({ path, mtime: null, dirty: false, es: null, scroll: 0 })
+  }
+  void show(path, line)
+}
+
+/** What is on screen, kept in its tab while another one is looked at. */
+function stash() {
+  const v = view.value
+  const f = cur.value
+  if (!v || !f) return
+  f.es = markRaw(v.state)
+  f.scroll = v.scrollDOM.scrollTop
+}
+
+/** A tab, closed. An edit not saved in it is asked for first: nothing else
+ *  keeps it, as the Diff's question says. */
+function closeFile(path: string) {
+  const f = files.value.find((x) => x.path === path)
+  if (!f) return
+  if (!f.dirty) return drop(path)
   state.pendingConfirm = {
     title: 'Drop your edit?',
-    body: ['What you typed in ' + baseName(openPath.value ?? '') + ' is not saved, and nothing keeps a copy of it.'],
+    body: ['What you typed in ' + baseName(path) + ' is not saved, and nothing keeps a copy of it.'],
     verb: 'Drop the edit',
     cancel: 'Keep editing',
     done: 'Edit dropped',
     danger: true,
     run: async () => {
-      void openFile(path, line)
+      drop(path)
       return true
     },
   }
+}
+
+/** Gone from the bar; the one on screen gives way to its right-hand
+ *  neighbour, or its left when it was the last. */
+function drop(path: string) {
+  const i = files.value.findIndex((x) => x.path === path)
+  if (i < 0) return
+  files.value.splice(i, 1)
+  if (openPath.value !== path) return
+  const next = files.value[i] ?? files.value[i - 1]
+  if (next) return void show(next.path)
+  openPath.value = null
+  image.value = null
+  view.value?.destroy()
+  view.value = null
+  drill(false)
 }
 
 /** Over the tree, or back to it. Hidden, the editor measured nothing; shown
@@ -259,76 +330,93 @@ function isImage(path: string): boolean {
   return IMAGE_EXT.has(path.split('.').pop()?.toLowerCase() ?? '')
 }
 
-async function openImage(path: string) {
-  const r = await guard(() => client.call('fs.readImage', { workspaceId: props.workspace.id, rel: path }))
-  if (!r) return
-  if (!left.get(props.workspace.id)?.draft) left.delete(props.workspace.id)
-  openPath.value = path
-  openMtime.value = r.mtimeMs
-  dirty.value = false
-  view.value?.destroy()
-  view.value = null
-  image.value = { url: r.data ? 'data:' + r.mediaType + ';base64,' + r.data : null, bytes: r.bytes }
+/** Everything an editor of `path` is made of. */
+function extensionsFor(path: string) {
+  return [
+    // Before the numbers: who, then which line, then the line.
+    blameCompartment.of(blameOn.value ? blameExt : []),
+    lineNumbers(),
+    history(),
+    highlightActiveLine(),
+    keymap.of([
+      ...defaultKeymap,
+      ...historyKeymap,
+      indentWithTab,
+      { key: 'Mod-s', preventDefault: true, run: () => (live.save?.(), true) },
+    ]),
+    langCompartment.of(languageFor(path)),
+    cockpitTheme,
+    findInEditor,
+    changeMarks,
+    EditorView.updateListener.of((u) => {
+      if (u.docChanged) live.edited?.(path)
+    }),
+  ]
 }
 
-async function openFile(path: string, line: number | null = null) {
-  if (isImage(path)) return openImage(path)
-  const r = await guard(() => client.call('fs.read', { workspaceId: props.workspace.id, rel: path }))
-  if (!r) return
-  // What was left here unsaved goes back over the disk's copy, with the
-  // mtime it was opened at — so a save still refuses if the file moved since.
-  const was = left.get(props.workspace.id)
-  const kept = was?.path === path ? was : null
-  // Another file's kept edit is not this one to drop.
-  if (kept || !was?.draft) left.delete(props.workspace.id)
-  openPath.value = path
-  openMtime.value = kept?.draft ? kept.draft.mtimeMs : r.mtimeMs
-  dirty.value = false
-  image.value = null
+/**
+ * A tab, put on screen. The one it replaces stays on screen until this one is
+ * ready, and is kept in its own tab only then — so a quick second click wins
+ * over a slow first one, and nothing typed meanwhile is lost.
+ */
+let showSeq = 0
+async function show(path: string, line: number | null = null) {
+  const id = props.workspace.id
+  const seq = ++showSeq
+  const f = files.value.find((x) => x.path === path)
+  if (!f) return
+  const ready = () => seq === showSeq && props.workspace.id === id && files.value.includes(f)
 
-  const doc = kept?.draft ? kept.draft.content : r.binary ? '' : r.content
+  if (isImage(path)) {
+    const r = await guard(() => client.call('fs.readImage', { workspaceId: id, rel: path }))
+    if (!ready()) return
+    if (!r) return void drop(path)
+    stash()
+    openPath.value = path
+    f.mtime = r.mtimeMs
+    view.value?.destroy()
+    view.value = null
+    image.value = { url: r.data ? 'data:' + r.mediaType + ';base64,' + r.data : null, bytes: r.bytes }
+    return
+  }
+
+  // An edit not saved comes back as it was left, with the mtime it was
+  // opened at — so a save still refuses if the file moved since.
+  let es = f.dirty ? f.es : null
+  if (!es) {
+    const r = await guard(() => client.call('fs.read', { workspaceId: id, rel: path }))
+    if (!ready()) return
+    if (!r) return void drop(path)
+    const doc = r.binary ? '' : r.content
+    f.mtime = r.mtimeMs
+    // The disk as it was left: the same editor, its undo with it.
+    if (f.es && f.es.doc.toString() === doc) es = f.es
+    else {
+      const anchor = Math.min(f.es?.selection.main.head ?? 0, doc.length)
+      es = EditorState.create({ doc, selection: { anchor }, extensions: extensionsFor(path) })
+    }
+  }
   const el = host.value
   if (!el) return
+  stash()
+  openPath.value = path
+  image.value = null
   view.value?.destroy()
-  view.value = new EditorView({
-    parent: el,
-    state: EditorState.create({
-      doc,
-      extensions: [
-        // Before the numbers: who, then which line, then the line.
-        blameCompartment.of(blameOn.value ? blameExt : []),
-        lineNumbers(),
-        history(),
-        highlightActiveLine(),
-        keymap.of([
-          ...defaultKeymap,
-          ...historyKeymap,
-          indentWithTab,
-          { key: 'Mod-s', preventDefault: true, run: () => (void save(), true) },
-        ]),
-        langCompartment.of(languageFor(path)),
-        cockpitTheme,
-        findInEditor,
-        changeMarks,
-        EditorView.updateListener.of((u) => {
-          if (!u.docChanged) return
-          dirty.value = true
-          docTick.value++
-        }),
-      ],
-    }),
-  })
+  const v = new EditorView({ parent: el, state: es })
+  view.value = v
+  // Authors may have been switched while this one was off screen.
+  v.dispatch({ effects: blameCompartment.reconfigure(blameOn.value ? blameExt : []) })
   docTick.value++
-  if (kept?.draft) dirty.value = true
   // Blame reads the disk; over a kept edit its lines would be off by what was typed.
-  if (blameOn.value && !dirty.value) void loadBlame()
-  if (!dirty.value) void loadMarks()
-  if (line) toLine(view.value, line)
-  else if (kept) {
-    const v = view.value
-    v.dispatch({ selection: { anchor: Math.min(kept.anchor, v.state.doc.length) } })
+  if (!f.dirty) {
+    if (blameOn.value) void loadBlame()
+    void loadMarks()
+  }
+  if (line) toLine(v, line)
+  else {
+    const top = f.scroll
     requestAnimationFrame(() => {
-      if (view.value === v) v.scrollDOM.scrollTop = kept.scroll
+      if (view.value === v) v.scrollDOM.scrollTop = top
     })
   }
 }
@@ -337,15 +425,17 @@ async function openFile(path: string, line: number | null = null) {
  *  silently overwriting one another. */
 async function save() {
   const v = view.value
-  if (!v || !openPath.value) return
+  const f = cur.value
+  if (!v || !f) return
   // §16 — asked before the write, so the edit is still in the editor after.
   if (stopSaveOnProtected(props.workspace)) return
+  const path = f.path
   const res = await guard(() =>
     client.call('fs.write', {
       workspaceId: props.workspace.id,
-      rel: openPath.value!,
+      rel: path,
       content: v.state.doc.toString(),
-      expectMtimeMs: openMtime.value,
+      expectMtimeMs: f.mtime,
     }),
   )
   if (!res) return
@@ -353,14 +443,23 @@ async function save() {
     toast('error', 'File changed on disk since it was opened — reload before saving')
     return
   }
-  openMtime.value = res.mtimeMs
-  dirty.value = false
-  toast('ok', 'saved ' + openPath.value, { icon: 'save' })
+  f.mtime = res.mtimeMs
+  f.dirty = false
+  toast('ok', 'saved ' + path, { icon: 'save' })
+  if (view.value !== v) return
   // What was saved is what the next blame reads: the edited lines become
   // not committed, and the ones around them find their commits again.
   if (blameOn.value) void loadBlame()
   void loadMarks()
 }
+
+live.save = save
+live.edited = (path) => {
+  const f = files.value.find((x) => x.path === path)
+  if (f) f.dirty = true
+  docTick.value++
+}
+live.blamed = (c) => openBlamed(c)
 
 /* ── what changed ──────────────────────────────────────────────────────────
  *
@@ -395,7 +494,6 @@ async function loadMarks() {
  * click on it opens this file's commits on that one, where the change it made
  * can be read; on a line not committed yet, the changes themselves.
  */
-const blameExt = blameGutter(openBlamed)
 /** False when git knows nothing of the file — the toggle says so and draws nothing. */
 const blameTracked = ref(true)
 
@@ -637,6 +735,117 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocKey)
 })
 
+/* ── the tabs ──────────────────────────────────────────────────────────────
+ *
+ * The agents' bar, without the pairs: one tab per open file, the newest at
+ * the end, the one on screen in the selected tint. Two of the same name say
+ * which folder each is in. A file with an edit not saved carries the dot
+ * where its × will be, as every editor's tab does.
+ */
+const tabsEl = ref<HTMLElement | null>(null)
+
+/** The name, and the folder it is in only when another tab has the same name. */
+function tabLabel(path: string): { name: string; dir: string } {
+  const name = baseName(path)
+  const twin = files.value.some((f) => f.path !== path && baseName(f.path) === name)
+  if (!twin) return { name, dir: '' }
+  const cut = lastSep(path)
+  return { name, dir: cut > 0 ? baseName(path.slice(0, cut)) : '' }
+}
+
+function pick(path: string) {
+  if (fileDrag.ended) return
+  goToFile(path)
+}
+
+// The tab on screen is always in sight, however many there are.
+watch(openPath, (p) => {
+  if (!p) return
+  void nextTick(() => {
+    const el = tabsEl.value?.querySelector<HTMLElement>('[data-path="' + CSS.escape(p) + '"]')
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  })
+})
+
+/**
+ * Grabbed and moved along the bar, as the agents' tabs are: the tab follows
+ * the cursor and a caret marks the gap it will land in.
+ */
+const fileDrag = reactive({
+  path: null as string | null,
+  moved: false,
+  ended: false,
+  dx: 0,
+  /** The index it would land at, in the bar without it; null when nowhere new. */
+  to: null as number | null,
+  caret: 0,
+})
+let dragX = 0
+let dragRects: { path: string; left: number; right: number }[] = []
+
+function tabDown(ev: PointerEvent, path: string) {
+  if (ev.button !== 0 || (ev.target as HTMLElement).closest('.fx')) return
+  dragX = ev.clientX
+  fileDrag.path = path
+  fileDrag.moved = false
+  fileDrag.dx = 0
+  fileDrag.to = null
+  window.addEventListener('pointermove', tabMove)
+  window.addEventListener('pointerup', tabUp)
+}
+
+function tabMove(ev: PointerEvent) {
+  const dx = ev.clientX - dragX
+  if (!fileDrag.moved) {
+    if (Math.abs(dx) < 4) return
+    fileDrag.moved = true
+    dragRects = [...(tabsEl.value?.querySelectorAll<HTMLElement>('[data-path]') ?? [])].map((el) => {
+      const r = el.getBoundingClientRect()
+      return { path: el.dataset.path!, left: r.left, right: r.right }
+    })
+  }
+  fileDrag.dx = dx
+  const from = dragRects.findIndex((r) => r.path === fileDrag.path)
+  const x = ev.clientX
+  // The gap it is over: before the first tab whose middle is past the cursor.
+  let gap = dragRects.findIndex((r) => x < (r.left + r.right) / 2)
+  if (gap < 0) gap = dragRects.length
+  if (gap === from || gap === from + 1 || !dragRects.length) {
+    fileDrag.to = null
+    return
+  }
+  fileDrag.to = gap > from ? gap - 1 : gap
+  const bar = tabsEl.value?.getBoundingClientRect().left ?? 0
+  const scroll = tabsEl.value?.scrollLeft ?? 0
+  const edge = gap < dragRects.length ? dragRects[gap]!.left - 2 : dragRects[dragRects.length - 1]!.right + 2
+  fileDrag.caret = edge - bar + scroll
+}
+
+function tabUp() {
+  window.removeEventListener('pointermove', tabMove)
+  window.removeEventListener('pointerup', tabUp)
+  if (fileDrag.moved && fileDrag.to !== null) {
+    const i = files.value.findIndex((f) => f.path === fileDrag.path)
+    if (i >= 0) {
+      const [f] = files.value.splice(i, 1)
+      files.value.splice(fileDrag.to, 0, f!)
+    }
+  }
+  if (fileDrag.moved) {
+    // The click a drag ends on is the end of the drag, not a choice of tab.
+    fileDrag.ended = true
+    setTimeout(() => (fileDrag.ended = false), 0)
+  }
+  fileDrag.path = null
+  fileDrag.moved = false
+  fileDrag.dx = 0
+  fileDrag.to = null
+}
+onBeforeUnmount(() => {
+  window.removeEventListener('pointermove', tabMove)
+  window.removeEventListener('pointerup', tabUp)
+})
+
 /** The palette, opened on files — the button says what ⌘P does. */
 function openFinder() {
   state.paletteSeed = '/'
@@ -645,6 +854,11 @@ function openFinder() {
 onBeforeUnmount(() => {
   leave(props.workspace.id)
   view.value?.destroy()
+  if (live.save === save) {
+    live.save = undefined
+    live.edited = undefined
+    live.blamed = undefined
+  }
 })
 </script>
 
@@ -702,17 +916,42 @@ onBeforeUnmount(() => {
     />
 
     <div class="editor">
-      <div class="ehead" v-if="openPath">
-        <!-- The name alone, as in the Diff: the folders are in the tree beside
-             it, and the rest is one click away. -->
-        <div ref="detailRoot" class="ename">
-          <button v-if="narrow" class="icon-btn back" title="Back to the files" @click="drill(false)">
-            <ArrowLeft class="sm" />
-          </button>
-          <span class="mono ep" :title="openPath">{{ baseName(openPath) }}</span>
-          <!-- Unsaved is a mark on the name it is about, as every editor tab
-               has it — not a badge floating somewhere in the header. -->
-          <span v-if="dirty" class="edirty" title="Unsaved changes" aria-label="Unsaved changes" />
+      <div class="ehead" v-if="files.length">
+        <button v-if="narrow" class="icon-btn back" title="Back to the files" @click="drill(false)">
+          <ArrowLeft class="sm" />
+        </button>
+        <!-- One tab per open file, as the agents' bar has them: the newest at
+             the end, the one on screen tinted. -->
+        <div ref="tabsEl" class="ftabs" role="tablist" aria-label="Open files" :class="{ dragging: fileDrag.moved }">
+          <span v-if="fileDrag.moved && fileDrag.to !== null" class="caret" :style="{ left: fileDrag.caret + 'px' }" />
+          <TransitionGroup name="ftab">
+            <div
+              v-for="f in files"
+              :key="f.path"
+              class="ftab"
+              role="tab"
+              :data-path="f.path"
+              :aria-selected="f.path === openPath"
+              :class="{ on: f.path === openPath, dirty: f.dirty, lifted: fileDrag.moved && fileDrag.path === f.path }"
+              :style="fileDrag.moved && fileDrag.path === f.path ? { transform: 'translateX(' + fileDrag.dx + 'px)' } : undefined"
+              :title="f.path + (f.dirty ? ' — not saved' : '')"
+              @pointerdown="tabDown($event, f.path)"
+              @click="pick(f.path)"
+              @mousedown.middle.prevent="closeFile(f.path)"
+            >
+              <FileIcon class="fi" :name="baseName(f.path)" :plain="f.path === openPath" />
+              <span class="pt">
+                {{ tabLabel(f.path).name }}<span v-if="tabLabel(f.path).dir" class="pd">{{ tabLabel(f.path).dir }}</span>
+              </span>
+              <!-- Unsaved is a mark on the tab it is about, where its × is. -->
+              <button class="fx" :title="f.dirty ? 'Close — not saved' : 'Close tab'" aria-label="Close tab" @click.stop="closeFile(f.path)">
+                <span class="fdot" /><X class="xs" />
+              </button>
+            </div>
+          </TransitionGroup>
+        </div>
+        <div class="etools">
+        <div v-if="openPath" ref="detailRoot" class="ename">
           <button
             class="icon-btn einfo"
             :class="{ on: detailOpen }"
@@ -752,9 +991,7 @@ onBeforeUnmount(() => {
             <button @click="revealFolder"><FolderOpen />Open folder</button>
           </div>
         </div>
-        <span class="grow" />
-        <div class="etools">
-        <div v-if="!image && (previewKind || workspace.repo)" class="seg" role="group" aria-label="File view">
+        <div v-if="openPath && !image && (previewKind || workspace.repo)" class="seg" role="group" aria-label="File view">
           <button :class="{ on: reading === 'code' }" title="Code" aria-label="Code" @click="read('code')">
             <Code /><span class="vlabel">Code</span>
           </button>
@@ -771,7 +1008,7 @@ onBeforeUnmount(() => {
             <Eye /><span class="vlabel">Preview</span>
           </button>
         </div>
-        <!-- Only when there is something to write: the dot on the name already
+        <!-- Only when there is something to write: the dot on the tab already
              says so, and ⌘S works either way. -->
         <button
           v-if="!image && dirty"
@@ -802,7 +1039,7 @@ onBeforeUnmount(() => {
           <span v-if="drawSize" class="drawsize num">{{ drawSize.w }} × {{ drawSize.h }}</span>
         </template>
       </div>
-      <div v-if="!openPath" class="empty">
+      <div v-if="!files.length" class="empty">
         <FileCode />
         <strong>No file open</strong>
         <span>Pick one on the left, or press <span class="kbd">⌘P</span> to jump straight to it.</span>
@@ -878,25 +1115,111 @@ onBeforeUnmount(() => {
   height: 40px;
   /* The right edge matches the tree's header, so Save and the file search
      line up across the two. */
-  padding: 0 8px 0 14px;
+  padding: 0 8px 0 6px;
   border-bottom: 1px solid var(--line);
 }
-.ep {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* As the Diff's: the arrow, then the file it is the way back from. */
+.ehead .back { flex: none; width: 26px; height: 26px; margin: 0 -4px 0 2px; }
+
+/* ── the tabs — the agents' bar, one box per file ───────────────────────── */
+.ftabs {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
-.ename { position: relative; min-width: 0; display: flex; align-items: center; gap: 2px; }
-/* As the Diff's: the arrow, then the name it is the way back from. */
-.ename .back { flex: none; width: 26px; height: 26px; margin: 0 6px 0 -4px; }
+.ftabs::-webkit-scrollbar { display: none; }
+/* Equal widths that give way together, down to a name still readable; past
+   that the bar scrolls, and the one on screen is kept in sight. */
+.ftab {
+  position: relative;
+  flex: 0 1 184px;
+  width: 184px;
+  min-width: 108px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  border-radius: var(--radius-sm);
+  background: var(--tab-rest);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  cursor: default;
+  user-select: none;
+  touch-action: none;
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
+}
+.ftab:hover { background: var(--tab-rest-hover); color: var(--text); }
+.ftab.on, .ftab.on:hover { background: var(--selected); color: var(--text); font-weight: 600; }
+.ftab .fi { flex: none; }
+.ftab.on .fi { color: var(--accent); }
+.pt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Which folder, only when two tabs share a name. */
+.pd { margin-left: 6px; font-weight: 400; color: var(--text-dim); }
+/* Always there, seen only on the tab on screen or under the cursor — or as
+   the dot of an edit not saved, which the × takes the place of on hover. */
+.fx {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: var(--text-dim);
+  visibility: hidden;
+}
+.ftab:hover .fx, .ftab.on .fx, .ftab.dirty .fx { visibility: visible; }
+.fx:hover { background: var(--active); color: var(--text); }
+.fx .xs { width: 11px; height: 11px; }
+.fdot { display: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+.ftab.dirty .fdot { display: block; }
+.ftab.dirty .fx .xs { display: none; }
+.ftab.dirty .fx:hover .fdot { display: none; }
+.ftab.dirty .fx:hover .xs { display: block; }
+/* Grabbed: it lifts and follows the cursor. */
+.ftab.lifted {
+  z-index: 3;
+  background: var(--tab-on);
+  color: var(--text);
+  box-shadow: var(--shadow-md), inset 0 0 0 1px var(--line);
+  cursor: grabbing;
+  transition: none;
+}
+/* Dropped here, it goes in this gap. */
+.caret {
+  position: absolute;
+  z-index: 4;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+/* A tab arriving or leaving, and the others closing up — short, and only
+   about the tab itself. */
+.ftab-enter-active, .ftab-leave-active { transition: opacity 140ms var(--ease-soft), transform 140ms var(--ease-soft); }
+.ftab-enter-from, .ftab-leave-to { opacity: 0; transform: translateY(3px); }
+.ftab-leave-active { position: absolute; }
+.ftab-move { transition: transform 160ms var(--ease-soft); }
+.ftabs.dragging .ftab-move { transition: none; }
+
+.ename { position: relative; flex: none; display: flex; align-items: center; }
 .einfo { width: 24px; height: 24px; }
 .einfo .lucide { width: 13px; height: 13px; }
 .einfo.on { background: var(--active); color: var(--text); }
 .edetail {
   top: calc(100% + 6px);
-  left: -6px;
+  right: -4px;
+  left: auto;
   width: 300px;
   max-width: calc(100cqw - 16px);
   padding: 10px 5px 5px;
@@ -917,15 +1240,6 @@ onBeforeUnmount(() => {
 }
 .dfacts dt { color: var(--text-dim); }
 .dfacts dd { margin: 0; color: var(--text-muted); }
-.grow { flex: 1; }
-.edirty {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  margin: 0 3px 0 5px;
-  border-radius: 50%;
-  background: var(--warn);
-}
 /* The switch and Save are one set, closer to each other than to the name. */
 .etools { flex: none; display: flex; align-items: center; gap: 4px; }
 .esave { width: 26px; height: 26px; }

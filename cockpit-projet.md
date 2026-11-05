@@ -521,6 +521,8 @@ Ce qui remplace, et qui suffit :
 
 Conséquence de design : **l'arbre de fichiers n'est pas la navigation principale.** Il sert à l'exploration occasionnelle ; le clavier fait le reste.
 
+**Onglets.** Chaque fichier ouvert a son onglet, comme les conversations (§7) mais sans paires : le nouveau à la fin, glisser pour réordonner, clic du milieu pour fermer. Par repository, gardés le temps de la fenêtre. Un onglet garde son édition non enregistrée, son curseur et son historique d'annulation ; seul le fermer demande « Drop your edit? ».
+
 ### Budget de clics — à tenir, pas à espérer
 
 | Action | Budget |
