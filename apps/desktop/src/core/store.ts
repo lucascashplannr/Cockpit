@@ -2418,6 +2418,16 @@ export function closeSplit(scope: AgentScope): void {
 }
 
 /**
+ * One half dragged out of its pair: two tabs again, in the order `keys` gives
+ * (tab keys as they will be once apart), the dragged one on screen.
+ */
+export function splitOff(scope: AgentScope, id: string, keys: string[]): void {
+  unpair(scope, id)
+  pinThread(scope, id)
+  reorderTabs(scope, keys)
+}
+
+/**
  * A tab closed. The conversation stays in History, and keeps running if it
  * was; its partner, when it was half of a pair, stays on screen alone; else
  * the tab beside it takes the screen, or an empty composer when it was the last.

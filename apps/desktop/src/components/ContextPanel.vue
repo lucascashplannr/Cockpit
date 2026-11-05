@@ -9,7 +9,7 @@ import ConversationDrawer from './ConversationDrawer.vue'
 import Wordmark from './brand/Wordmark.vue'
 import {
   activeAgentScope, activeWorkspace, attentionOf, closeFresh, hasMail, hasNewTab, closeTab, isBusy, isLive,
-  openThreadFor, pairShareOf, pairTabs, pickThread, savePairShare, setPairShare, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
+  openThreadFor, pairShareOf, pairTabs, pickThread, savePairShare, setPairShare, splitOff, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
   stripFor,
 } from '../core/store.js'
 
@@ -158,6 +158,8 @@ function press(c: Conversation, e: MouseEvent): void {
  * cursor, with no ghost image, and the bar is the only place it can land.
  * Over the middle half of a single tab, a single tab pairs with it (the
  * grabbed one on the right); anywhere else it goes before or after.
+ * Half of a pair can be grabbed on its own: dropped outside the pair it is a
+ * tab again, dropped on a single tab it pairs with that one instead.
  */
 const entries = computed(() => tabEntriesFor(activeAgentScope.value))
 const isOn = (e: TabEntry) =>
@@ -166,6 +168,11 @@ const isOn = (e: TabEntry) =>
 const navEl = ref<HTMLElement | null>(null)
 const drag = reactive({
   key: null as string | null,
+  /** Grabbed by one half: that conversation's id, `key` being its pair. */
+  half: null as string | null,
+  /** Where that half stood in its pair: it keeps floating from there while the pair closes up. */
+  halfLeft: 0,
+  halfW: 0,
   moved: false,
   dx: 0,
   target: null as string | null,
@@ -185,11 +192,17 @@ function measure(): void {
   })
 }
 
-function down(ev: PointerEvent, e: TabEntry): void {
+function down(ev: PointerEvent, e: TabEntry, half: string | null = null): void {
   if (ev.button !== 0 || renaming.value) return
   if ((ev.target as HTMLElement).closest('.px, input')) return
   startX = ev.clientX
   drag.key = e.key
+  drag.half = half
+  if (half) {
+    const el = ev.currentTarget as HTMLElement
+    drag.halfLeft = el.offsetLeft
+    drag.halfW = el.offsetWidth
+  }
   drag.moved = false
   drag.dx = 0
   window.addEventListener('pointermove', move)
@@ -202,18 +215,25 @@ function move(ev: PointerEvent): void {
     if (Math.abs(dx) < 4) return
     drag.moved = true
     measure()
+  } else if (drag.half) {
+    // The pair is closing up to one tab under the cursor: the bar moves with it.
+    measure()
   }
   drag.dx = dx
   const me = rects.find((r) => r.key === drag.key)
-  const others = rects.filter((r) => r.key !== drag.key)
+  // A half leaves its own pair, so the pair is somewhere it can land beside.
+  const others = drag.half ? rects : rects.filter((r) => r.key !== drag.key)
   const x = ev.clientX
   let target: (typeof rects)[number] | undefined
   let mode: typeof drag.mode = null
   for (const r of others) {
     if (x < r.left || x > r.right) continue
+    // Still over its own pair: nothing changes yet.
+    if (drag.half && r.key === drag.key) break
     const w = r.right - r.left
     target = r
-    if (me?.kind === 'one' && r.kind === 'one' && x > r.left + w * 0.25 && x < r.right - w * 0.25) mode = 'pair'
+    const single = me?.kind === 'one' || !!drag.half
+    if (single && r.kind === 'one' && x > r.left + w * 0.25 && x < r.right - w * 0.25) mode = 'pair'
     else mode = x < r.left + w / 2 ? 'before' : 'after'
     break
   }
@@ -224,7 +244,7 @@ function move(ev: PointerEvent): void {
   // Back over its own slot, or into the gap it already stands in: nowhere new.
   const keys = rects.map((r) => r.key)
   const from = keys.indexOf(drag.key!)
-  if (target && mode !== 'pair') {
+  if (target && mode !== 'pair' && !drag.half) {
     const to = keys.indexOf(target.key) + (mode === 'after' ? 1 : 0)
     if (to === from || to === from + 1) [target, mode] = [undefined, null]
   }
@@ -240,7 +260,21 @@ function up(): void {
   const s = activeAgentScope.value
   if (drag.moved && s && drag.key && drag.target && drag.mode) {
     const list = entries.value
-    if (drag.mode === 'pair') {
+    const from = list.find((e) => e.key === drag.key)
+    if (drag.half && from?.kind === 'pair') {
+      const half = drag.half
+      const partner = from.convs.find((c) => c.id !== half)!.id
+      const target = list.find((e) => e.key === drag.target)
+      if (drag.mode === 'pair') {
+        if (target?.kind === 'one') pairTabs(s, target.conv.id, half)
+      } else {
+        // The bar as it will be once apart: the pair stands where the partner does.
+        const keys = list.map((e) => (e.key === drag.key ? partner : e.key))
+        const at = keys.indexOf(drag.target === drag.key ? partner : drag.target)
+        keys.splice(drag.mode === 'before' ? at : at + 1, 0, half)
+        splitOff(s, half, keys)
+      }
+    } else if (drag.mode === 'pair') {
       const left = list.find((e) => e.key === drag.target)
       const right = list.find((e) => e.key === drag.key)
       if (left?.kind === 'one' && right?.kind === 'one') pairTabs(s, left.conv.id, right.conv.id)
@@ -256,6 +290,7 @@ function up(): void {
     setTimeout(() => (dragEnded = false), 0)
   }
   drag.key = null
+  drag.half = null
   drag.moved = false
   drag.dx = 0
   drag.target = null
@@ -342,15 +377,23 @@ function fresh(): void {
                 :data-tab="e.key"
                 data-kind="pair"
                 :aria-selected="isOn(e)"
-                :class="{ on: isOn(e), lifted: drag.moved && drag.key === e.key }"
-                :style="drag.moved && drag.key === e.key ? { transform: 'translateX(' + drag.dx + 'px)' } : undefined"
+                :class="{
+                  on: isOn(e),
+                  lifted: drag.moved && drag.key === e.key && !drag.half,
+                  tearing: drag.moved && drag.key === e.key && !!drag.half,
+                }"
+                :style="drag.moved && drag.key === e.key && !drag.half ? { transform: 'translateX(' + drag.dx + 'px)' } : undefined"
                 @pointerdown="down($event, e)"
               >
                 <template v-for="(c, i) in e.convs" :key="c.id">
-                  <span v-if="i === 1" class="split" />
+                  <span v-if="i === 1" class="split" title="Move both" />
                   <div
                     class="half"
-                    :class="{ active: c.id === thread?.id }"
+                    :class="{ active: c.id === thread?.id, lifted: drag.moved && drag.half === c.id }"
+                    :style="drag.moved && drag.half === c.id
+                      ? { left: drag.halfLeft + 'px', width: drag.halfW + 'px', transform: 'translateX(' + drag.dx + 'px)' }
+                      : undefined"
+                    @pointerdown.stop="down($event, e, c.id)"
                     :title="c.title + (news(c) ? ' — ' + stateWord(c) : '')"
                     @click="renaming === c.id || press(c, $event)"
                     @dblclick="startRename(c)"
@@ -632,7 +675,20 @@ function fresh(): void {
 .half:hover .px, .tab.on .half.active .px { visibility: visible; }
 .tab.pairtab .px { visibility: hidden; }
 .tab.pairtab .half:hover .px, .tab.pairtab.on .half.active .px { visibility: visible; }
-.split { flex: none; width: 1px; height: 14px; background: var(--line-strong); }
+/* The line between is also the pair's handle: a half grabbed leaves the pair,
+   the line grabbed moves both. Wider than it looks, so it can be caught. */
+.split { position: relative; flex: none; width: 9px; height: 100%; cursor: grab; }
+.split::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 1px;
+  height: 14px;
+  transform: translateY(-50%);
+  background: var(--line-strong);
+}
+.split:hover::before { width: 3px; left: 3px; border-radius: 2px; background: var(--text-dim); }
 
 /* ── grabbed ───────────────────────────────────────────────────────────── */
 .tab { touch-action: none; }
@@ -645,6 +701,24 @@ function fresh(): void {
   transition: none;
 }
 .strip.dragging .tab:not(.lifted) { transition: background var(--dur-1) var(--ease-soft); }
+/* One half pulled out of its pair: it lifts alone, and the pair closes up to
+   a single tab behind it — opening again if the half is let go back home. */
+.tab.pairtab, .strip.dragging .tab.pairtab.tearing {
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft),
+    flex-basis 140ms var(--ease-soft), width 140ms var(--ease-soft);
+}
+.tab.pairtab.tearing { flex-basis: 184px; width: 184px; }
+.half.lifted {
+  position: absolute;
+  top: 0;
+  z-index: 3;
+  border-radius: var(--radius-sm);
+  background: var(--tab-on);
+  color: var(--text);
+  box-shadow: var(--shadow-md), inset 0 0 0 1px var(--line);
+  cursor: grabbing;
+}
+.tab.tearing .split { display: none; }
 
 /* Dropped here, the two open side by side. */
 .tab.droppair { background: var(--accent-soft); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent); }
