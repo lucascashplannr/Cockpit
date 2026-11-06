@@ -550,6 +550,14 @@ export interface Rpc {
     params: { topicId: string }
     result: { ok: boolean; detail: string; plan: PlanPreview | null }
   }
+  /**
+   * §7 — the same push for a project conversation: the current branch of each
+   * repository it is on, to origin, in one plan.
+   */
+  'project.push': {
+    params: { workspaceIds: string[] }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null }
+  }
   /** Archiving is not a one-way door; this is how a closed topic comes back. */
   'topic.reopen': { params: { topicId: string }; result: { ok: boolean; detail: string } }
   /**

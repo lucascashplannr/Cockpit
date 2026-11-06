@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { GitBranch, Layers, ShieldCheck } from '@lucide/vue'
 import BranchMenu from './BranchMenu.vue'
 import LockChip from './LockChip.vue'
+import ProjectActions from './ProjectActions.vue'
 import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
@@ -226,9 +227,10 @@ const offline = computed(() => scope.value?.kind === 'workspace' && w.value?.git
          went to the thing it is about; this bar is about the checkout. -->
     <span class="acts">
       <TopicActions v-if="selectedTopicGroup" :group="selectedTopicGroup" />
-      <!-- On the project there is no one checkout to start, push or open:
-           the verbs are a repository's, and a row is one click away. -->
-      <WorkspaceActions v-else-if="!onProject" />
+      <!-- On the project: push and the servers of the repositories it is
+           on — every one, or the ones it was narrowed to. -->
+      <ProjectActions v-else-if="onProject" />
+      <WorkspaceActions v-else />
 
       <!-- §12 — how the right of the window is divided. It ends the bar
            because it is the only control here that is about the *window*

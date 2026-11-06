@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import {
-  ArrowUp, Check, ChevronDown, ExternalLink, GitCompareArrows, GitMerge, LoaderCircle, Play, TriangleAlert,
-} from '@lucide/vue'
-import type { DeclaredServer, Workspace } from '@cockpit/shared'
+import { computed } from 'vue'
+import { ArrowUp, GitCompareArrows, GitMerge, LoaderCircle, TriangleAlert } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
+import ServerSwitch from './ServerSwitch.vue'
 import type { ListGroup } from '../core/store.js'
 import {
-  busyAmong, busyVerb, busyWord, client, guard, mergeTopic, pushTopic, rebaseTopic, refreshCommands, rerunTopicSetup, runningServers, runtimeBusy, showSetupLog, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
+  busyAmong, busyVerb, busyWord, mergeTopic, pushTopic, rebaseTopic, rerunTopicSetup, showSetupLog, state,
 } from '../core/store.js'
 
 /**
@@ -129,85 +127,13 @@ const pushTitle = computed(
     (ahead.value ? ' — ' + ahead.value + ' commit(s)' : ' — one has never been pushed'),
 )
 
-/* ── what the topic runs (§8) ──────────────────────────────────────────
- *
- * The switch is the topic's and nothing else: one press starts every server
- * on `start:` in every repository the topic spans, and the project's own in
- * the topic's folder. The menu beside it is that same stack by name — each
- * row starts or stops one server, and says whether Start includes it. That
- * last part is written to the manifest, so it holds for every topic, the
- * ones not opened yet included.
- *
- * Servers only. The project's commands are not on this bar: a command is
- * pressed where it runs, on a repository or on the project.
- */
+/* ── what the topic runs (§8) — see ServerSwitch ──────────────────── */
 
 /** The topic's folder, which is the checkout the project's declarations run in. */
 const folder = computed(
   () => state.workspaces.find((w) => w.kind === 'group' && w.topicId === f.value?.id) ?? null,
 )
 
-/** Every checkout of the topic that runs something: its folder, then its repositories. */
-const hosts = computed(() =>
-  [...(folder.value ? [folder.value] : []), ...ws.value].filter((w) => w.runtime),
-)
-
-/** A declared server and the checkout it runs in here. */
-type Row = DeclaredServer & { ws: Workspace }
-
-const servers = ref<Row[]>([])
-
-async function load(): Promise<void> {
-  const topicId = f.value?.id
-  const s = await Promise.all(
-    hosts.value.map(async (h) =>
-      (await client.call('runtime.servers', { workspaceId: h.id }).catch(() => [])).map(
-        (x): Row => ({ ...x, ws: h }),
-      ),
-    ),
-  )
-  // An answer for a topic nobody is looking at any more is not an answer.
-  if (f.value?.id !== topicId) return
-  servers.value = s.flat()
-}
-
-// A checkout's runtime appears once the core has read a server for it, and the
-// lists change whenever the manifest is written from the window.
-watch(
-  [
-    () => folder.value?.id,
-    () => hosts.value.map((h) => h.id + ':' + h.runtime?.impl).join(),
-    () => state.declarations,
-    () => state.commands,
-  ],
-  () => void load(),
-  { immediate: true },
-)
-
-/** Read off the checkout the store holds now, not the one the row was built with. */
-const isAlive = (s: Row) =>
-  runningServers(state.workspaces.find((w) => w.id === s.ws.id) ?? s.ws).has(s.name)
-
-/**
- * A server started by name leaves the topic's own state alone, so the switch
- * asks the checkouts as well: something up is something Stop has to stop.
- */
-const running = computed(
-  () =>
-    f.value?.state === 'running' ||
-    hosts.value.some((w) => w.runtime?.status === 'up' || w.runtime?.status === 'starting'),
-)
-/**
- * Pressed and not answered yet — the topic's own switch, or one of its
- * servers by name, which holds its checkout (see `runtimeBusy`).
- */
-const pending = computed(
-  () => (f.value && runtimeBusy[f.value.id]) || hosts.value.map((h) => runtimeBusy[h.id]).find(Boolean) || null,
-)
-/** Always "all": the switch is every server of every repository the topic spans. */
-const switchLabel = computed(() =>
-  pending.value ? (pending.value === 'start' ? 'Starting…' : 'Stopping…') : running.value ? 'Stop all' : 'Start all',
-)
 /* ── the worktrees' setup (§7) ─────────────────────────────────────────
  *
  * `worktrees.setup` runs once the topic's folders exist. While it runs the
@@ -227,83 +153,6 @@ const prepTitle = computed(() => {
   ]
   return lines.join('\n\n') + '\n\n' + (p.state === 'running' ? 'Click to see its output' : 'Click to run it again')
 })
-
-const switchTitle = computed(() => {
-  if (running.value) return 'Stop the servers — the branches stay where they are'
-  if (prep.value?.state === 'running') return 'Start waits for the setup to finish'
-  const names = servers.value.filter((s) => s.inStart).map((s) => s.name)
-  return names.length ? 'Start ' + names.join(', ') : 'Start the servers for every repository in this topic'
-})
-
-const urlOf = (w: Workspace | null | undefined) => {
-  const p = w?.runtime?.preview
-  return (p?.kind === 'url' && p.value) || null
-}
-
-/**
- * Where the topic's servers answer, while they do — see WorkspaceActions.
- *
- * The topic's folder first, since that is the project's own. Otherwise the
- * one repository that serves a page: with a single address there is no
- * question which one the arrow means. Two or more and the arrow would be a
- * guess, so it is left to their rows in the menu.
- */
-const opener = computed(() => {
-  if (urlOf(folder.value)) return folder.value
-  const serving = ws.value.filter((w) => urlOf(w))
-  return serving.length === 1 ? serving[0]! : null
-})
-const openable = computed(() => urlOf(opener.value))
-
-async function openPreview() {
-  const w = opener.value
-  if (w) await guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'browser' }))
-}
-
-/** A row's own address, while it answers and is a page. */
-const rowUrl = (s: Row) => (s.url && s.open && isAlive(s) ? s.url : null)
-
-function openRow(s: Row) {
-  const url = rowUrl(s)
-  if (url) window.open(url, '_blank')
-}
-
-async function toggle() {
-  const topic = f.value
-  if (!topic) return
-  if (running.value) await stopTopic(topic.id)
-  else await startTopic(topic.id)
-}
-
-async function toggleServer(s: Row) {
-  await toggleWorkspaceRuntime(state.workspaces.find((w) => w.id === s.ws.id) ?? s.ws, s.name)
-}
-
-/** On or off `start:` — the project's list, so every topic's. */
-async function setOnStart(s: Row) {
-  const res = await guard(() =>
-    client.call('declare.setStart', { projectId: s.ws.projectId, name: s.name, inStart: !s.inStart }),
-  )
-  if (!res) return
-  if (!res.ok) {
-    toast('error', res.detail)
-    return
-  }
-  await Promise.all([load(), refreshCommands()])
-}
-
-function noteOf(s: Row): string {
-  if (s.unresolved.length) return 'nothing named ' + s.unresolved.map((u) => '{{' + u + '}}').join(', ')
-  return ''
-}
-
-/** The port beside the name, while something is bound to it. */
-const portOf = (s: Row) => (isAlive(s) && s.port ? s.port : null)
-
-const startTitle = (s: Row) =>
-  s.inStart
-    ? 'Start includes ' + s.name + ', in every topic — click to leave it out'
-    : 'Start skips ' + s.name + ' — click to include it'
 
 </script>
 
@@ -395,92 +244,8 @@ const startTitle = (s: Row) =>
     >
       <TriangleAlert /><span class="vl">Retry setup</span>
     </button>
-    <!-- Always: it is the switch, and always the whole topic's. Split once
-         there are servers to name: the menu is the stack, one row each. -->
-    <button
-      v-if="!servers.length && !openable"
-      class="btn ghost sw solo"
-      :class="{ on: running, working: pending }"
-      :disabled="!!pending"
-      :title="switchTitle"
-      @click="toggle"
-    >
-      <LoaderCircle v-if="pending" class="spin" />
-      <i v-else-if="running" class="live" />
-      <Play v-else />
-      <span class="vl">{{ switchLabel }}</span>
-    </button>
-    <!-- While the servers answer somewhere, the way there is a half of the
-         switch's own chip — see WorkspaceActions. -->
-    <div v-else-if="!servers.length" class="split" :class="{ working: pending }">
-      <button class="btn ghost run sw" :disabled="!!pending" :title="switchTitle" @click="toggle">
-        <LoaderCircle v-if="pending" class="spin" />
-        <i v-else-if="running" class="live" />
-        <Play v-else />
-        <span class="vl">{{ switchLabel }}</span>
-      </button>
-      <span class="div" />
-      <button
-        class="btn ghost half"
-        :title="'Open ' + openable"
-        :aria-label="'Open ' + openable"
-        @click="openPreview"
-      >
-        <ExternalLink />
-      </button>
-    </div>
-    <div v-else class="split" :class="{ working: pending }">
-      <button class="btn ghost run sw" :class="{ on: running }" :disabled="!!pending" :title="switchTitle" @click="toggle">
-        <LoaderCircle v-if="pending" class="spin" />
-        <i v-else-if="running" class="live" />
-        <Play v-else />
-        <span class="vl">{{ switchLabel }}</span>
-      </button>
-      <template v-if="openable">
-        <span class="div" />
-        <button
-          class="btn ghost half"
-          :title="'Open ' + openable"
-          :aria-label="'Open ' + openable"
-          @click="openPreview"
-        >
-          <ExternalLink />
-        </button>
-      </template>
-      <span class="div" />
-      <OverflowMenu class="pick" label="The servers of this topic" :disabled="!!pending">
-        <template #trigger><ChevronDown /></template>
-        <div v-for="s in servers" :key="s.ws.id + s.name" class="srow">
-          <button
-            class="one"
-            :title="(isAlive(s) ? 'Stop ' : 'Start ') + s.name + ' in ' + s.ws.name"
-            @click="toggleServer(s)"
-          >
-            <i class="sd" :class="{ on: isAlive(s), bad: s.unresolved.length }" />
-            {{ s.name }}
-            <span v-if="portOf(s)" class="pt">({{ portOf(s) }})</span>
-            <span v-if="noteOf(s)" class="sc">{{ noteOf(s) }}</span>
-          </button>
-          <!-- Where it answers, on its own row: the bar's arrow is one address,
-               and a topic serving two pages has no single one to give it. -->
-          <button
-            v-if="rowUrl(s)"
-            class="go"
-            :title="'Open ' + rowUrl(s)"
-            :aria-label="'Open ' + rowUrl(s)"
-            @click="openRow(s)"
-          >
-            <ExternalLink />
-          </button>
-          <!-- Stopped here, so the menu stays open: ticking three of these in
-               a row is the ordinary case, and it switches nothing. -->
-          <button class="st" :class="{ on: s.inStart }" :title="startTitle(s)" @click.stop="setOnStart(s)">
-            <Check v-if="s.inStart" />{{ s.inStart ? 'on Start' : 'not on Start' }}
-          </button>
-        </div>
-      </OverflowMenu>
-    </div>
-
+    <!-- Always: it is the switch, and always the whole topic's. -->
+    <ServerSwitch :folder="folder" :repos="ws" :topic="f" :waiting="prep?.state === 'running'" />
   </div>
 </template>
 
@@ -522,79 +287,16 @@ const startTitle = (s: Row) =>
 /* A setup that failed is in the way of Start, so it is the one amber word. */
 .verbs .btn.failed { color: var(--warn); }
 
-/* Running is one dot in the glyph's slot, not a green switch — the repository
-   bar's reasoning, drawn the same. */
-.live { flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; }
-.live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
-.verbs .split .btn.half { padding: 0 6px; }
-.verbs .split .btn.half:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
-
-/* ── the split buttons, drawn as the repository bar draws them ─────── */
-.split {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  height: 26px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-sunken);
-}
-.verbs .btn.solo { background: var(--bg-sunken); }
-.verbs .btn.solo:hover:not(:disabled) { background: var(--hover); }
-.verbs .split :deep(.btn:hover:not(:disabled)) { border-color: transparent; }
-.verbs .split :deep(.btn) { height: 26px; border-radius: 0; }
-.verbs .split .btn.run { padding: 0 6px 0 8px; border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
-.split .div { flex: none; width: 1px; height: 12px; background: var(--line); }
-.verbs .split :deep(.pick .btn) { padding: 0 4px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 .sep { flex: none; width: 1px; height: 16px; margin: 0 6px; background: var(--line); }
-.verbs .split :deep(.pick .lucide) { width: 13px; height: 13px; }
-.sd {
-  flex: none;
-  width: var(--ic-sm);
-  height: var(--ic-sm);
-  border-radius: 50%;
-  box-shadow: inset 0 0 0 1.5px var(--text-dim);
-  transform: scale(0.5);
-}
-.sd.on { background: var(--ok); box-shadow: none; }
-.sd.bad { background: var(--warn); box-shadow: none; }
-
-/* A row is two acts: the server itself, and whether Start includes it. The
-   second is a word rather than a checkbox because it is the word the sheet
-   and the repository's menu already use for the same fact. */
-.srow { display: flex; align-items: center; gap: 1px; }
-.srow .one { flex: 1; min-width: 0; }
-.menu .srow .st {
-  flex: none;
-  gap: 4px;
-  margin-left: 10px;
-  padding: 0 7px;
-  font-size: 11px;
-  color: var(--text-dim);
-}
-.menu .srow .st.on { color: var(--text); }
-.menu .srow .go { flex: none; padding: 0 7px; color: var(--text-dim); }
-.menu .srow .go:hover { color: var(--text); }
-.menu .srow .go .lucide { width: 13px; height: 13px; }
-.pt { margin-left: -4px; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.menu .srow .st .lucide { width: 12px; height: 12px; color: var(--accent); }
-
-.sc {
-  margin-left: auto;
-  padding-left: 14px;
-  font-size: 11px;
-  color: var(--text-dim);
-}
 
 /* Narrow column: the switch drops its word — its icon is a play triangle and
    nothing else here is. The promoted git verbs keep theirs, which is the whole
    reason they were promoted. */
 @container (max-width: 620px) {
-  .verbs .btn.sw .vl { display: none; }
   .verbs .btn { padding: 0 6px; }
 }
 /* Pressed and on its way (`runtimeBusy`): off, but not dimmed — a dimmed
    spinner reads as "not available", and this is the opposite. */
-.verbs .split.working :deep(.btn:disabled),
 .verbs .btn.working:disabled { opacity: 1; cursor: progress; }
 .verbs .btn .spin { color: var(--accent); }
 </style>

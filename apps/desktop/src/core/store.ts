@@ -5687,6 +5687,19 @@ export async function pushTopic(topicId: string): Promise<void> {
   )
 }
 
+/** §7 — the project's push: the repositories a project conversation is on, each on its own branch. */
+export async function pushProject(workspaceIds: string[]): Promise<void> {
+  if (stillBusy(workspaceIds)) return
+  const res = await guard(() => client.call('project.push', { workspaceIds }))
+  if (!res) return
+  if (!res.ok || !res.plan) {
+    toast('info', res.detail)
+    return
+  }
+  const n = res.plan.repos?.length ?? res.plan.steps.length
+  askPush(res.plan, n > 1 ? n + ' branches to origin' : (res.plan.repos?.[0] ?? 'this branch') + ' to origin')
+}
+
 /**
  * §4 — the second half of a Catch up, for a branch origin already has.
  *
@@ -6400,6 +6413,39 @@ export async function toggleWorkspaceRuntime(w: Workspace, name?: string | null)
     if (!res) return
     reportStart({ servers: [{ name: label, ok: res.ok, status: res.status, log: res.log }] })
   })
+}
+
+/**
+ * §7 — the project's switch: every checkout given, as one act and one report.
+ * Each checkout is held in `runtimeBusy` while it answers, as it is when
+ * switched on its own.
+ */
+export async function switchWorkspaces(ws: Workspace[], way: 'start' | 'stop'): Promise<void> {
+  const hosts = ws.filter(
+    (w) => w.runtime && !runtimeBusy[w.id] &&
+      (way === 'start' || w.runtime.status === 'up' || w.runtime.status === 'starting'),
+  )
+  if (!hosts.length) return
+  for (const w of hosts) runtimeBusy[w.id] = way
+  try {
+    if (way === 'stop') {
+      await Promise.all(hosts.map((w) => guard(() => client.call('runtime.down', { workspaceId: w.id }))))
+      await refreshBoard()
+      toast('info', 'stopped', { icon: 'stop' })
+      return
+    }
+    // One after another, as a topic starts: ports are handed out as each
+    // checkout comes up, and two at once could reach for the same one.
+    const servers: { name: string; ok: boolean; status: string; log: string }[] = []
+    for (const w of hosts) {
+      const r = await guard(() => client.call('runtime.up', { workspaceId: w.id }))
+      if (r) servers.push({ name: w.name, ok: r.ok, status: r.status, log: r.log })
+    }
+    await refreshBoard()
+    if (servers.length) reportStart({ servers })
+  } finally {
+    for (const w of hosts) delete runtimeBusy[w.id]
+  }
 }
 
 /**

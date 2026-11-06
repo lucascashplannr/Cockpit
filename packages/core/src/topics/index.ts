@@ -782,7 +782,27 @@ export async function pushPlan(
 
   const trees = workspacesOf(topicId).filter((w) => w.repo && w.kind !== 'group')
   if (!trees.length) return { ok: false, detail: 'no repository in this topic', plan: null }
+  return pushPlanOf(trees)
+}
 
+/**
+ * §7 — the same push, for the repositories a project conversation is on: each
+ * main checkout's current branch to origin. Protection still applies per
+ * repository (`pushRefusal`), so a protected base sits out and says why.
+ */
+export async function pushPlanForWorkspaces(
+  workspaceIds: string[],
+): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
+  const trees = workspaceIds
+    .map((id) => registry.requireWorkspace(id))
+    .filter((w) => w.repo && w.kind !== 'group')
+  if (!trees.length) return { ok: false, detail: 'no repository to push', plan: null }
+  return pushPlanOf(trees)
+}
+
+async function pushPlanOf(
+  trees: Workspace[],
+): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
   const steps: PlanStep[] = []
   const warnings: string[] = []
   const names: string[] = []
