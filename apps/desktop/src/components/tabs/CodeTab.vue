@@ -688,7 +688,7 @@ async function copyPath() {
   if (!openPath.value) return
   await navigator.clipboard.writeText(openPath.value)
   detailOpen.value = false
-  toast('info', 'Path copied')
+  toast('info', 'Path copied', { icon: 'copy', lines: [openPath.value] })
 }
 
 async function openInIde() {

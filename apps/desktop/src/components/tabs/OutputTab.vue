@@ -260,7 +260,12 @@ async function copy() {
     .map((r) => '── ' + r.label + ' · ' + clock(r.at) + ' · ' + stateWord(r) + '\n' + r.lines.map((l) => l.text).join('\n'))
     .join('\n\n')
   await navigator.clipboard.writeText(text)
-  toast('ok', filtering.value ? 'copied what is shown' : 'copied', { icon: 'copy' })
+  const n = text.split('\n').length
+  const from = [...new Set(shown.value.map((r) => r.label))]
+  toast('ok', 'Copied ' + n + ' line' + (n === 1 ? '' : 's') + (filtering.value ? ' — only what is shown' : ''), {
+    icon: 'copy',
+    lines: from.length ? ['from ' + from.join(', ')] : [],
+  })
 }
 
 /* ── the rest of the project ───────────────────────────────────────── */

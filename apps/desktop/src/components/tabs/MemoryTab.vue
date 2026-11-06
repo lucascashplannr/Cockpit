@@ -331,7 +331,7 @@ async function copyPath() {
   if (!doc.value) return
   await navigator.clipboard.writeText(doc.value.path)
   detailOpen.value = false
-  toast('info', 'Path copied')
+  toast('info', 'Path copied', { icon: 'copy', lines: [doc.value.path] })
 }
 
 function onDocDown(e: MouseEvent) {

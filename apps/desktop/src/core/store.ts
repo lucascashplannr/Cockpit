@@ -2293,6 +2293,12 @@ export function peerTitle(id: string, fallback: string): string {
   return state.agents.find((a) => a.id === id)?.title || fallback
 }
 
+/** `“Fix the login”`, or `the conversation` for one not named yet — for a toast. */
+function quoted(sessionId: string): string {
+  const t = peerTitle(sessionId, '')
+  return t ? '“' + t + '”' : 'the conversation'
+}
+
 /**
  * §7 — the tab bar: the conversations opened here, every one running or
  * waiting for you that was not closed since, and whatever is on screen. In the
@@ -2518,8 +2524,10 @@ export function openContextMenu(e: MouseEvent, target: ListTarget): void {
 }
 
 export async function renameTopic(topicId: string, name: string): Promise<boolean> {
-  const res = await guard(() => client.call('topic.rename', { topicId, name }), 'topic renamed')
+  const was = state.topics.find((t) => t.id === topicId)?.name
+  const res = await guard(() => client.call('topic.rename', { topicId, name }))
   if (!res) return false
+  toast('ok', 'Topic renamed to “' + name + '”', was && was !== name ? { lines: ['was “' + was + '”'] } : undefined)
   await refreshTopics()
   return true
 }
@@ -2559,7 +2567,9 @@ export async function answerPermission(
 }
 
 export async function stopConversation(sessionId: string): Promise<void> {
-  await guard(() => client.call('agent.stop', { sessionId }), 'conversation stopped')
+  const what = quoted(sessionId)
+  const r = await guard(() => client.call('agent.stop', { sessionId }))
+  if (r) toast('info', 'Stopped ' + what, { icon: 'stop' })
 }
 
 export async function deleteConversation(sessionId: string, opts: { letGo?: boolean } = {}): Promise<boolean> {
@@ -2654,7 +2664,8 @@ export async function renameConversation(sessionId: string, title: string): Prom
 }
 
 export async function restoreConversation(sessionId: string): Promise<void> {
-  await guard(() => client.call('agent.restore', { sessionId }), 'back in the list')
+  const r = await guard(() => client.call('agent.restore', { sessionId }))
+  if (r) toast('ok', quoted(sessionId) + ' is back in the list')
 }
 
 /* ── the transcript, and what is being written into it ─────────────────── */
@@ -3727,8 +3738,9 @@ export async function createProject(input: {
   parent: string
   source: NewProjectSource
 }): Promise<boolean> {
-  const created = await guard(() => client.call('project.create', input), 'project created')
+  const created = await guard(() => client.call('project.create', input))
   if (!created) return false
+  toast('ok', 'Created project “' + created.name + '”', { lines: [created.root] })
   state.newProjectOpen = false
   await selectCreatedProject(created.id)
   // The Dev folder is set the first time one is used, so the second project
@@ -3762,7 +3774,9 @@ export async function addRepo(input: {
   const r = await guard(() => client.call('project.addRepo', input))
   if (!r) return false
   state.addRepoProjectId = null
-  toast('ok', r.wrapped ? 'repository added; the first one moved into ' + r.wrapped + '/' : 'repository added')
+  toast('ok', 'Added repository ' + (r.repoPath.split('/').pop() || r.repoPath), {
+    lines: [r.repoPath, ...(r.wrapped ? ['the first one moved into ' + r.wrapped + '/'] : [])],
+  })
   // The commit is the one failure worth surviving: the repository is real
   // either way, and a missing user.email is not this sheet's problem to solve.
   if (r.note) toast('warn', 'the first commit failed — ' + r.note)
@@ -3826,8 +3840,10 @@ export async function moveProject(
 }
 
 export async function renameProject(projectId: string, name: string | null): Promise<boolean> {
-  const next = await guard(() => client.call('project.rename', { projectId, name }), 'project renamed')
+  const was = state.projects.find((p) => p.id === projectId)?.name
+  const next = await guard(() => client.call('project.rename', { projectId, name }))
   if (!next) return false
+  toast('ok', 'Project renamed to “' + next.name + '”', was && was !== next.name ? { lines: ['was “' + was + '”'] } : undefined)
   await refreshProjects()
   return true
 }
@@ -3853,8 +3869,10 @@ export async function setProjectSettings(
   projectId: string,
   patch: Partial<ProjectSettings>,
 ): Promise<boolean> {
-  const res = await guard(() => client.call('project.settings', { projectId, patch }), 'saved')
+  const res = await guard(() => client.call('project.settings', { projectId, patch }))
   if (!res) return false
+  const project = state.projects.find((p) => p.id === projectId)?.name
+  toast('ok', project ? 'Saved the settings of “' + project + '”' : 'Settings saved', { icon: 'save' })
   await refreshProjects()
   return true
 }
@@ -4375,7 +4393,8 @@ export function askEraseMemory(workspaceId: string, doc: { id: string; name: str
       'It can be restored from the Memory tab for 30 days.',
     ],
     verb: 'Erase',
-    done: 'memory erased',
+    done: 'Erased “' + doc.name + '”',
+    doneLines: ['restorable from the Memory tab for 30 days'],
     danger: true,
     run: async () => {
       if (!(await guard(() => client.call('memory.erase', { workspaceId, memoryId: doc.id })))) return false
@@ -4614,8 +4633,10 @@ export async function refreshMemories(projectId: string): Promise<void> {
 
 /** An erased memory back in the list. Answers which memory it is now. */
 export async function restoreMemory(projectId: string, key: string): Promise<string | null> {
-  const r = await guard(() => client.call('memory.restore', { projectId, key }), 'memory restored')
+  const name = state.erasedMemories[projectId]?.find((m) => m.key === key)?.name
+  const r = await guard(() => client.call('memory.restore', { projectId, key }))
   if (!r) return null
+  toast('ok', name ? 'Restored “' + name + '”' : 'Memory restored', { icon: 'undo' })
   await refreshMemories(projectId)
   return r.memoryId
 }
@@ -4629,7 +4650,7 @@ export function askPurgeMemory(projectId: string, m: ErasedMemory): void {
       'Conversations you removed that were kept for its notes are deleted with it.',
     ],
     verb: 'Delete',
-    done: 'memory deleted',
+    done: 'Deleted “' + m.name + '” for good',
     danger: true,
     run: async () => {
       if (!(await guard(() => client.call('memory.purge', { projectId, key: m.key })))) return false
@@ -5151,6 +5172,7 @@ async function settlePlan(
   /** What to say when it worked, for a caller whose button had its own word
    *  for it — "put back" beats "stash pop applied". */
   okMessage?: string,
+  okLines: string[] = [],
 ): Promise<boolean> {
   if (!res) return false
   // The topic row is written by the plan's own apply hook, so the list is
@@ -5184,8 +5206,20 @@ async function settlePlan(
     )
     return false
   }
-  toast('ok', okMessage ?? plan.operation + ' applied')
+  toast('ok', okMessage ?? plan.operation + ' applied', { lines: [...okLines, ...planLines(plan)] })
   return true
+}
+
+/**
+ * Where a plan reached, for the toast after it: each repository and what it
+ * caught up onto, or just the repositories by name.
+ */
+function planLines(plan: PlanPreview): string[] {
+  if (plan.targets?.length)
+    return plan.targets.map((t) =>
+      t.name + ' · ' + (t.behind ? t.behind + ' commit' + (t.behind === 1 ? '' : 's') + ' from ' : 'onto ') + t.onto,
+    )
+  return plan.repos?.length ? [plan.repos.join(' · ')] : []
 }
 
 /* ── a plan you do not need to read ──────────────────────────────────
@@ -5212,6 +5246,8 @@ interface ConfirmBase {
   verb: string
   /** What the toast says afterwards. */
   done: string
+  /** Facts under it — what it was about, beyond the headline (see `ToastItem.lines`). */
+  doneLines?: string[]
   /**
    * The user's own words, shown back to them.
    *
@@ -5287,7 +5323,7 @@ export async function applyPendingConfirm(): Promise<void> {
     state.pendingConfirm = null
     // `danger` is the table's own word for "this took something away", and a
     // green tick is the wrong face for that however well it went.
-    toast(c.danger ? 'info' : 'ok', c.done, c.danger ? { icon: 'discard' } : undefined)
+    toast(c.danger ? 'info' : 'ok', c.done, { ...(c.danger ? { icon: 'discard' as const } : {}), lines: c.doneLines })
     return
   }
   // §4 — it belonged to the question, and the question is answered.
@@ -5305,7 +5341,7 @@ export async function applyPendingConfirm(): Promise<void> {
     if (res === undefined) return
     // Its own wording rather than settlePlan's "<operation> applied": the button
     // said "Put it back", and the toast that follows should agree with it.
-    ok = await settlePlan(c.plan, res, c.done)
+    ok = await settlePlan(c.plan, res, c.done, c.doneLines)
   } finally {
     if (deleting) {
       delete deletingTopics[deleting]
@@ -5384,7 +5420,10 @@ export async function commit(
     body: res.plan.warnings,
     quote: message,
     verb: opts.amend ? 'Amend' : opts.push ? 'Commit & push' : 'Commit',
-    done: opts.amend ? 'amended' : opts.push ? 'committed and pushed' : 'committed',
+    done: opts.amend
+      ? 'Amended the last commit' + (opts.push ? ' and pushed' : '')
+      : 'Committed ' + files + (opts.push ? ' and pushed' : ''),
+    doneLines: [message.split('\n')[0]!.slice(0, 120)].filter(Boolean),
     danger: res.plan.steps.some((s) => s.destructive),
     plan: res.plan,
   }
@@ -5407,7 +5446,8 @@ export async function undoCommit(workspaceId: string, hash: string, subject: str
     body: res.plan.warnings,
     quote: subject,
     verb: 'Undo commit',
-    done: 'commit undone',
+    done: 'Commit undone — its changes are back in the files',
+    doneLines: [subject.slice(0, 120)],
     danger: false,
     plan: res.plan,
   }
@@ -5564,30 +5604,30 @@ export async function stashList(
 /** What each verb is called, in the question and on the button. */
 const STASH_WORDS: Record<
   'push' | 'pop' | 'apply' | 'drop',
-  { title: (label?: string) => string; verb: string; done: string; danger: boolean }
+  { title: (label?: string) => string; verb: string; done: (label?: string) => string; danger: boolean }
 > = {
   push: {
     title: () => 'Set this work aside?',
     verb: 'Set aside',
-    done: 'set aside — listed under the files',
+    done: () => 'Work set aside — listed under the files',
     danger: false,
   },
   pop: {
     title: (l) => (l ? 'Put back “' + l + '”?' : 'Put this back?'),
     verb: 'Put it back',
-    done: 'put back into the working tree',
+    done: (l) => (l ? 'Put back “' + l + '”' : 'Put back into the working tree'),
     danger: false,
   },
   apply: {
     title: (l) => (l ? 'Copy back “' + l + '”?' : 'Copy this back?'),
     verb: 'Copy it back',
-    done: 'copied back — the entry is still there',
+    done: (l) => (l ? 'Copied back “' + l + '”' : 'Copied back') + ' — the entry is still there',
     danger: false,
   },
   drop: {
     title: (l) => (l ? 'Drop “' + l + '”?' : 'Drop this entry?'),
     verb: 'Drop it',
-    done: 'entry dropped',
+    done: (l) => (l ? 'Dropped “' + l + '”' : 'Entry dropped'),
     danger: true,
   },
 }
@@ -5613,16 +5653,19 @@ export async function discard(params: {
   toast('info', res.detail + ' — kept under Set aside', {
     icon: 'discard',
     ...(entry
-      ? { action: { label: 'Undo', run: () => void undoDiscard(params.workspaceId, entry) } }
+      ? { action: { label: 'Undo', run: () => void undoDiscard(params.workspaceId, entry, res.detail) } }
       : {}),
   })
   return true
 }
 
-export async function undoDiscard(workspaceId: string, entry: string): Promise<void> {
+export async function undoDiscard(workspaceId: string, entry: string, what?: string): Promise<void> {
   const res = await guard(() => client.call('git.discardUndo', { workspaceId, entry }))
   if (!res) return
-  toast(res.ok ? 'ok' : 'error', res.ok ? 'Put back' : res.detail, res.ok ? { icon: 'undo' } : undefined)
+  const where = state.workspaces.find((w) => w.id === workspaceId)?.repoName
+  if (res.ok)
+    toast('ok', 'Discard undone' + (where ? ' in ' + where : ''), { icon: 'undo', lines: what ? ['was: ' + what] : [] })
+  else toast('error', res.detail)
   discardTick.value++
 }
 
@@ -5663,7 +5706,7 @@ export async function stash(
     title: w.title(label),
     body: res.plan.warnings,
     verb: w.verb,
-    done: w.done,
+    done: w.done(label),
     danger: w.danger,
     plan: res.plan,
   }
@@ -5826,7 +5869,7 @@ function askPull(plan: PlanPreview, branch: string): void {
     title: 'Pull ' + branch + ' from origin?',
     body,
     verb: 'Pull',
-    done: 'pulled from origin',
+    done: 'Pulled ' + branch + ' from origin',
     danger: false,
     plan,
   }
@@ -6225,7 +6268,8 @@ export async function openTopic(input: {
         : []),
     ],
     verb: 'Create topic',
-    done: 'topic created',
+    done: 'Created topic “' + name + '”',
+    doneLines: ['on ' + onBranch.replace(/^the |^a /, '')],
     danger: false,
     plan: res.plan,
   }
@@ -6415,7 +6459,10 @@ async function startTopicNow(topicId: string): Promise<void> {
           await refreshTopics()
           await refreshBoard()
           if (forced.stoppedTopics.length)
-            toast('info', 'stopped ' + forced.stoppedTopics.join(', '), { icon: 'stop' })
+            toast('info', 'Stopped ' + forced.stoppedTopics.join(', ') + ' to free the ports', {
+              icon: 'stop',
+              lines: res.conflicts,
+            })
           reportStart(forced, topicName(topicId))
           // `reportStart` says what came up, in more detail than a toast saying
           // "started" would, so the dialog's own word is not wanted on top of it.
@@ -6705,6 +6752,16 @@ export async function refreshStatus(): Promise<void> {
   }
 }
 
+/** Every repository fetched and looked at again — the Refresh in the rail and the palette. */
+export async function refreshEverything(): Promise<void> {
+  const r = await guard(() => client.call('core.reconcile', {}))
+  if (!r) return
+  toast('ok', 'Refreshed ' + r.changed + ' repositor' + (r.changed === 1 ? 'y' : 'ies'), {
+    icon: 'restart',
+    lines: ['fetched from origin and checked again'],
+  })
+}
+
 export function revealLogs(): void {
   if (host?.revealLogs) void host.revealLogs()
   else toast('info', 'the logs are in ' + (state.status?.home ?? '~/.cockpit') + '/logs')
@@ -6732,7 +6789,14 @@ export async function restartCore(): Promise<void> {
     return
   }
   client.reconnectNow()
-  toast('ok', 'service restarted', { icon: 'restart' })
+  // Read afresh so the toast can say which service answered.
+  await new Promise((r) => setTimeout(r, 400))
+  await refreshStatus()
+  const st = state.status
+  toast('ok', 'Service restarted', {
+    icon: 'restart',
+    lines: st ? [['v' + st.version, st.port ? 'port ' + st.port : null, 'pid ' + st.pid].filter(Boolean).join(' · ')] : [],
+  })
 }
 
 /** §6 — the conversation is still there; the memory has moved on since. */
@@ -6962,7 +7026,7 @@ export async function forkConversation(sessionId: string, turnId: string): Promi
   const made = state.agents.find((a) => a.id === r.sessionId)
   if (made) openConversation(made)
   else if (from) pinThread(from.scope, r.sessionId)
-  toast('info', 'forked', { icon: 'fork' })
+  toast('info', 'Forked ' + quoted(sessionId) + ' into a new tab', { icon: 'fork' })
 }
 
 /**
@@ -7021,7 +7085,7 @@ export async function resumeSession(
     return false
   }
   if (together && c) delete state.alongside[scopeKey(c.scope)]
-  toast('info', 'resumed', { icon: 'play' })
+  toast('info', 'Resumed ' + quoted(sessionId), { icon: 'play' })
   return true
 }
 

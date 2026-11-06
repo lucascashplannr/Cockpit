@@ -320,7 +320,11 @@ async function copy() {
   }
   if (!text) return
   await navigator.clipboard.writeText(text)
-  toast('ok', all ? 'copied the terminal' : 'copied the selection', { icon: 'copy' })
+  const n = text.split('\n').length
+  toast('ok', all ? 'Copied the terminal' : 'Copied the selection', {
+    icon: 'copy',
+    lines: [n + ' line' + (n === 1 ? '' : 's')],
+  })
   t.focus()
 }
 

@@ -14,7 +14,7 @@ import {
 import { fuzzyFilter, highlight } from '../core/fuzzy.js'
 import type { Scored } from '../core/fuzzy.js'
 import {
-  SHELL_VIEWS, setView, viewKey, openCommits, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, layout, mergeTopic, markResolved, newProject, onProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state, toggleList,
+  SHELL_VIEWS, setView, viewKey, openCommits, refreshEverything, toggleWorkspaceRuntime, startTopic, activeProject, activeWorkspace, addRepoTo, adoptTopic, askDeleteTopic, chooseCommand, openDeclarations, client, closeTopic, goTo, guard, keyTargets, layout, mergeTopic, markResolved, newProject, onProject, openFileAt, stopTopic, rebaseTopic, reopenTopic, requestPlan, resolveConflict, revealLabel, restartCore, selectProject, selectWorkspace, selectedTopicId, state, toggleList,
 } from '../core/store.js'
 import type { ShellView, TabId } from '../core/store.js'
 import FileIcon from './FileIcon.vue'
@@ -534,7 +534,7 @@ function buildCommands(lvl: Level): Item[] {
         icon: Zap,
         keywords: 'runtime run dev',
         boost: repoBoost,
-        run: act(() => guard(() => client.call(rt.status === 'up' ? 'runtime.down' : 'runtime.up', { workspaceId: r.id }))),
+        run: act(() => toggleWorkspaceRuntime(r)),
       })
       if (rt.preview?.kind === 'url') {
         out.push({
@@ -749,7 +749,7 @@ function buildCommands(lvl: Level): Item[] {
     group: 'Cockpit',
     icon: RefreshCw,
     keywords: 'reconcile rescan probe',
-    run: act(() => guard(() => client.call('core.reconcile', {}), 'refreshed')),
+    run: act(() => refreshEverything()),
   })
   // Three rows rather than one: "which of the three" is the only question the
   // sheet asks that the palette can answer first, and typing "clone" should

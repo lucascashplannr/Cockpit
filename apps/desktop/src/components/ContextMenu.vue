@@ -134,7 +134,7 @@ onBeforeUnmount(() => {
 async function copyPath(path: string) {
   try {
     await navigator.clipboard.writeText(path)
-    toast('info', 'path copied', { icon: 'copy' })
+    toast('info', 'Path copied', { icon: 'copy', lines: [path] })
   } catch {
     toast('error', 'could not copy the path')
   }

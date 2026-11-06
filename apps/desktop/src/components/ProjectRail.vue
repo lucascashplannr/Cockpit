@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { Activity, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
 import {
-  activityFor, client, guard, layout, newProject, onProject, pressProject, projectMark, serviceStale, state,
+  activityFor, client, guard, layout, newProject, refreshEverything, onProject, pressProject, projectMark, serviceStale, state,
 } from '../core/store.js'
 
 /**
@@ -58,7 +58,7 @@ async function refresh(): Promise<void> {
   refreshing.value = true
   const started = Date.now()
   try {
-    await guard(() => client.call('core.reconcile', {}), 'refreshed')
+    await refreshEverything()
   } finally {
     // A reconcile that comes back in 40ms would otherwise flick the icon a
     // quarter-turn and stop, which reads as a glitch rather than as a pass.

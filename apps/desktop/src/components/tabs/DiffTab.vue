@@ -1099,7 +1099,7 @@ async function copyPath() {
   if (!selected.value) return
   await navigator.clipboard.writeText(selected.value)
   detailOpen.value = false
-  toast('info', 'Path copied')
+  toast('info', 'Path copied', { icon: 'copy', lines: [selected.value] })
 }
 
 async function revealFolder() {
