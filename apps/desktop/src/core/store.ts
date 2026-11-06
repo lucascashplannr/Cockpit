@@ -5,7 +5,7 @@ import type {
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, DocsInfo, DocsOffer, DocsPage, DocsProposalSet, DocsSignals, ErasedMemory, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
-  ProjectSettings, QuoteSource, RpcResult, ServerBoardRow, StashEntry, Workspace,
+  ProjectSettings, QuoteSource, RpcResult, RuntimeUpResult, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
 import { anchorsIn, handleFor, matchesBranch, newId, protectedPatterns, slugify, splitPrompt } from '@cockpit/shared'
 import { CoreClient, CoreError } from './client.js'
@@ -3432,6 +3432,12 @@ export type ToastItem = {
    * error is the one message worth making someone read.
    */
   detail?: string
+  /**
+   * §8 — short facts under the headline, always shown: one per server that
+   * came up or went down, with where it listens. Unlike `detail` these are
+   * the answer to "what just happened", not a reason to dig into.
+   */
+  lines?: string[]
   action?: ToastAction
   icon?: ToastIcon
   /**
@@ -3449,7 +3455,7 @@ export type ToastItem = {
  * outlast the moment you notice it and decide. An error is not on a clock at
  * all — see `lifeOf`.
  */
-const TOAST_LIFE = { plain: 2500, warn: 6000, withAction: 8000 }
+const TOAST_LIFE = { plain: 2500, withLines: 5000, warn: 6000, withAction: 8000 }
 
 /** Four is already past what anyone reads at a glance. */
 const MAX_TOASTS = 4
@@ -3485,7 +3491,7 @@ function asSentence(text: string): string {
   return first.toUpperCase() + text.slice(1)
 }
 
-function lifeOf(kind: ToastKind, action: ToastAction | undefined): number | null {
+function lifeOf(kind: ToastKind, action: ToastAction | undefined, lines = 0): number | null {
   // Everything else on screen is a note that something went as expected, and
   // is gone before you finish the sentence you were on. A failure is the one
   // thing that gets to interrupt, so it is also the one thing that stays put
@@ -3494,13 +3500,21 @@ function lifeOf(kind: ToastKind, action: ToastAction | undefined): number | null
   if (action) return TOAST_LIFE.withAction
   // It did happen, but not wholly, and the difference is worth a second look:
   // long enough to read twice, still short enough to leave by itself.
-  return kind === 'warn' ? TOAST_LIFE.warn : TOAST_LIFE.plain
+  if (kind === 'warn') return TOAST_LIFE.warn
+  // A list takes longer to read than a sentence.
+  return lines ? TOAST_LIFE.withLines : TOAST_LIFE.plain
 }
 
 export function toast(
   kind: ToastKind,
   text: string,
-  extra?: ToastAction | { detail?: string; action?: ToastAction; icon?: ToastIcon; stream?: boolean },
+  extra?: ToastAction | {
+    detail?: string
+    lines?: string[]
+    action?: ToastAction
+    icon?: ToastIcon
+    stream?: boolean
+  },
 ): number {
   // Never an empty toast: an icon and a close button say only that something
   // went wrong somewhere.
@@ -3523,14 +3537,18 @@ export function toast(
       detail = body
     }
   }
-  const life = lifeOf(kind, action)
+  const lines = 'lines' in opts && opts.lines?.length ? opts.lines : undefined
+  const life = lifeOf(kind, action, lines?.length)
 
   // The same failure twice over is one failure that happened twice. Stacking a
   // second copy underneath the first says nothing the first did not, so the
   // one already on screen is given its time back instead.
   const twin = opts.stream
     ? undefined
-    : state.toasts.find((t) => t.kind === kind && t.text === text && t.detail === detail)
+    : state.toasts.find(
+        (t) => t.kind === kind && t.text === text && t.detail === detail &&
+          (t.lines ?? []).join('\n') === (lines ?? []).join('\n'),
+      )
   if (twin) {
     twin.action = action
     twin.life = life
@@ -3543,6 +3561,7 @@ export function toast(
     kind,
     text,
     ...(detail ? { detail } : {}),
+    ...(lines ? { lines } : {}),
     ...(action ? { action } : {}),
     ...(opts.icon ? { icon: opts.icon } : {}),
     ...(opts.stream ? { stream: true } : {}),
@@ -6224,7 +6243,20 @@ export async function openTopic(input: {
  * ways, and each one is a different sentence: it is serving, it is still
  * coming up, or it died and here is what it said.
  */
-function reportStart(res: { servers: { name: string; ok: boolean; status: string; log: string }[] }): void {
+type Started = {
+  name: string
+  ok: boolean
+  status: string
+  log: string
+  url?: string | null
+  waitedMs?: number
+  /** The checkout it came up in, when the headline should say so. */
+  where?: string
+  /** Facts that say more than `url` alone — one per server of a checkout started whole. */
+  lines?: string[]
+}
+
+function reportStart(res: { servers: Started[] }, title?: string): void {
   const failed = res.servers.filter((r) => !r.ok)
   const starting = res.servers.filter((r) => r.ok && r.status === 'starting')
   const up = res.servers.filter((r) => r.status === 'up')
@@ -6251,10 +6283,92 @@ function reportStart(res: { servers: { name: string; ok: boolean; status: string
   if (starting.length) {
     toast('info', starting.map((r) => r.name).join(', ') + ' — still starting, no answer yet', {
       icon: 'clock',
+      lines: starting.flatMap((r) => r.lines ?? (r.url ? [shortUrl(r.url)] : [])),
     })
     return
   }
-  toast('ok', up.length > 1 ? up.length + ' servers up' : 'up', { icon: 'server' })
+  // Where it answers and how long it took: the two things you would go and
+  // look up next.
+  const at = (r: Started) =>
+    [r.url ? shortUrl(r.url) : null, r.waitedMs ? 'ready in ' + span(r.waitedMs) : null].filter(Boolean).join(' · ')
+  if (up.length === 1) {
+    const r = up[0]!
+    toast('ok', r.name + ' is up' + (r.where ? ' in ' + r.where : ''), {
+      icon: 'server',
+      lines: r.lines ?? [at(r)].filter(Boolean),
+    })
+    return
+  }
+  toast('ok', (title ? title + ': ' : '') + (up.length ? up.length + ' servers up' : 'up'), {
+    icon: 'server',
+    lines: up.flatMap((r) => r.lines?.map((l) => r.name + ' · ' + l) ?? [[r.name, at(r)].filter(Boolean).join(' · ')]),
+  })
+}
+
+/* ── what a stop says ──────────────────────────────────────────────── */
+
+/** `http://localhost:3000/` → `localhost:3000`: the part anyone reads. */
+function shortUrl(url: string): string {
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+}
+
+/** "1.4s", "38s", "12m", "2h 14m", "3d 2h" — how long something ran or took. */
+function span(ms: number): string {
+  if (ms < 10_000) return (ms / 1000).toFixed(1).replace(/\.0$/, '') + 's'
+  const sec = Math.round(ms / 1000)
+  if (sec < 60) return sec + 's'
+  const m = Math.floor(sec / 60)
+  if (m < 60) return m + 'm'
+  const h = Math.floor(m / 60)
+  if (h < 24) return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '')
+  return Math.floor(h / 24) + 'd' + (h % 24 ? ' ' + (h % 24) + 'h' : '')
+}
+
+function portIn(w: Workspace, server: string): number | null {
+  return w.runtime?.ports.find((p) => p.name === server)?.port ?? null
+}
+
+/** One server about to go down, read before it does — afterwards there is nothing left to read. */
+type Going = { server: string; where: string; repo: string; port: number | null; startedAt: number | null }
+
+function runningIn(w: Workspace, only?: string[]): Going[] {
+  const first = new Map<string, number>()
+  for (const p of w.runtime?.processes ?? []) {
+    if (only && !only.includes(p.label)) continue
+    first.set(p.label, Math.min(first.get(p.label) ?? Infinity, p.startedAt))
+  }
+  // A named stop of something the probe has not seen yet still names it.
+  for (const n of only ?? []) if (!first.has(n)) first.set(n, NaN)
+  return [...first].map(([server, at]) => ({
+    server,
+    where: w.name,
+    repo: w.repoName || w.name,
+    port: portIn(w, server),
+    startedAt: Number.isFinite(at) ? at : null,
+  }))
+}
+
+/**
+ * "Stopped web in api", then a line per server: its port, now free, and how
+ * long it had been running. `title` names the whole (a topic) when there is one.
+ */
+function reportStop(gone: Going[], title?: string, after: string[] = []): void {
+  const now = Date.now()
+  const repos = new Set(gone.map((g) => g.repo))
+  const facts = (g: Going) =>
+    [g.port ? 'port ' + g.port + ' freed' : null, g.startedAt ? 'ran ' + span(now - g.startedAt) : null].filter(Boolean)
+  let head: string
+  let lines: string[]
+  if (gone.length === 1 && !title) {
+    const g = gone[0]!
+    head = 'Stopped ' + g.server + ' in ' + g.where
+    lines = [facts(g).join(' · ')].filter(Boolean)
+  } else {
+    head = 'Stopped ' + (title ?? (gone.length ? gone.length + ' servers' : 'servers')) +
+      (!title && repos.size === 1 ? ' in ' + gone[0]!.where : '')
+    lines = gone.map((g) => [...(repos.size > 1 ? [g.repo] : []), g.server, ...facts(g)].join(' · '))
+  }
+  toast('info', head, { icon: 'stop', lines: [...lines, ...after] })
 }
 
 /**
@@ -6302,7 +6416,7 @@ async function startTopicNow(topicId: string): Promise<void> {
           await refreshBoard()
           if (forced.stoppedTopics.length)
             toast('info', 'stopped ' + forced.stoppedTopics.join(', '), { icon: 'stop' })
-          reportStart(forced)
+          reportStart(forced, topicName(topicId))
           // `reportStart` says what came up, in more detail than a toast saying
           // "started" would, so the dialog's own word is not wanted on top of it.
           state.pendingConfirm = null
@@ -6320,7 +6434,11 @@ async function startTopicNow(topicId: string): Promise<void> {
     toast(res.ok ? 'info' : 'error', res.detail)
     return
   }
-  reportStart(res)
+  reportStart(res, topicName(topicId))
+}
+
+function topicName(topicId: string): string | undefined {
+  return state.topics.find((t) => t.id === topicId)?.name
 }
 
 /** §11 — the board is machine-wide, so anything that starts or stops refreshes it. */
@@ -6371,11 +6489,12 @@ export function showSetupLog(): void {
 
 export function stopTopic(topicId: string): Promise<void> {
   return switching(topicId, 'stop', async () => {
+    const gone = state.workspaces.filter((w) => w.topicId === topicId).flatMap((w) => runningIn(w))
     const res = await guard(() => client.call('topic.stop', { topicId }))
     if (!res) return
     await refreshTopics()
     await refreshBoard()
-    toast('info', 'stopped — the branches stay exactly where they are', { icon: 'stop' })
+    reportStop(gone, topicName(topicId) ?? 'topic', ['Branches stay exactly where they are'])
   })
 }
 
@@ -6401,9 +6520,12 @@ export async function toggleWorkspaceRuntime(w: Workspace, name?: string | null)
 
   if (running) {
     await switching(w.id, 'stop', async () => {
+      const gone = runningIn(w, names)
       const res = await guard(() => client.call('runtime.down', { workspaceId: w.id, ...(names ? { names } : {}) }))
       await refreshBoard()
-      if (res) toast('info', name ? 'stopped ' + name : 'stopped', { icon: 'stop' })
+      if (!res) return
+      if (!res.ok) toast('warn', res.detail || 'Not everything in ' + w.name + ' stopped')
+      else reportStop(gone)
     })
     return
   }
@@ -6411,7 +6533,7 @@ export async function toggleWorkspaceRuntime(w: Workspace, name?: string | null)
     const res = await guard(() => client.call('runtime.up', { workspaceId: w.id, ...(names ? { names } : {}) }))
     await refreshBoard()
     if (!res) return
-    reportStart({ servers: [{ name: label, ok: res.ok, status: res.status, log: res.log }] })
+    reportStart({ servers: [{ ...upFacts(w, res, names), name: label, where: name ? w.name : undefined }] })
   })
 }
 
@@ -6429,17 +6551,18 @@ export async function switchWorkspaces(ws: Workspace[], way: 'start' | 'stop'): 
   for (const w of hosts) runtimeBusy[w.id] = way
   try {
     if (way === 'stop') {
-      await Promise.all(hosts.map((w) => guard(() => client.call('runtime.down', { workspaceId: w.id }))))
+      const before = hosts.map((w) => runningIn(w))
+      const res = await Promise.all(hosts.map((w) => guard(() => client.call('runtime.down', { workspaceId: w.id }))))
       await refreshBoard()
-      toast('info', 'stopped', { icon: 'stop' })
+      reportStop(before.filter((_, i) => res[i]?.ok).flat())
       return
     }
     // One after another, as a topic starts: ports are handed out as each
     // checkout comes up, and two at once could reach for the same one.
-    const servers: { name: string; ok: boolean; status: string; log: string }[] = []
+    const servers: Started[] = []
     for (const w of hosts) {
       const r = await guard(() => client.call('runtime.up', { workspaceId: w.id }))
-      if (r) servers.push({ name: w.name, ok: r.ok, status: r.status, log: r.log })
+      if (r) servers.push({ ...upFacts(w, r), name: w.name })
     }
     await refreshBoard()
     if (servers.length) reportStart({ servers })
@@ -6457,6 +6580,22 @@ export async function switchWorkspaces(ws: Workspace[], way: 'start' | 'stop'): 
  */
 export function runningServers(w: Workspace | null): Set<string> {
   return new Set((w?.runtime?.processes ?? []).map((p) => p.label))
+}
+
+/**
+ * What a checkout's `up` came back with, plus — when it started more than one
+ * server — a line per server with its port, so the toast can say which.
+ */
+function upFacts(w: Workspace, r: RuntimeUpResult, names?: string[]): Omit<Started, 'name'> {
+  const fresh = state.workspaces.find((x) => x.id === w.id) ?? w
+  const served = names ?? [...runningServers(fresh)]
+  const took = r.waitedMs ? 'ready in ' + span(r.waitedMs) : null
+  const lines =
+    served.length > 1
+      ? served.map((s) => [s, portIn(fresh, s) ? 'localhost:' + portIn(fresh, s) : null].filter(Boolean).join(' · '))
+          .concat(took ? [took] : [])
+      : undefined
+  return { ok: r.ok, status: r.status, log: r.log, url: r.url, waitedMs: r.waitedMs, ...(lines ? { lines } : {}) }
 }
 
 /* ── which server the Start button switches ──────────────────────────

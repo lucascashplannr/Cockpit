@@ -127,6 +127,10 @@ function act(t: ToastItem): void {
           <button class="x" title="Dismiss" @click="dismissToast(t.id)"><X class="sm" /></button>
         </div>
 
+        <ul v-if="t.lines?.length" class="lines selectable">
+          <li v-for="(l, i) in t.lines" :key="i">{{ l }}</li>
+        </ul>
+
         <pre
           v-if="t.detail && expanded(t)"
           ref="panes"
@@ -215,6 +219,22 @@ function act(t: ToastItem): void {
 .toast.warn .ic { color: var(--warn); }
 .toast.error .ic { color: var(--danger); }
 .msg { flex: 1; min-width: 0; line-height: var(--line); }
+
+/* Under the message, not under the glyph: they continue the sentence. */
+.lines {
+  margin: -4px 0 0;
+  padding: 0 0 0 calc(var(--ic-sm) + 11px);
+  list-style: none;
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.lines li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .detail {
   margin: 0;
