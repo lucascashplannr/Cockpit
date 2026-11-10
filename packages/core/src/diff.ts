@@ -21,47 +21,32 @@ export async function files(workspaceId: string, base?: string): Promise<DiffFil
   const ws = requireWorkspace(workspaceId)
   if (!ws.repo) return []
 
+  // `-z` throughout. Without it git quotes any path outside ASCII
+  // (`"\303\251.txt"`) and writes a rename's numstat as `old => new`, so the
+  // keys never met: a renamed file was counted as new from top to bottom.
   const [numstat, status] = await Promise.all([
-    git(ws.path, [...diffArgs(base), '--numstat']),
-    git(ws.path, [...diffArgs(base), '--name-status']),
+    git(ws.path, [...diffArgs(base), '--numstat', '-z']),
+    git(ws.path, [...diffArgs(base), '--name-status', '-z']),
   ])
 
   const statusByPath = new Map<string, { status: DiffFile['status']; oldPath: string | null }>()
-  for (const line of status.stdout.split('\n')) {
-    if (!line.trim()) continue
-    const parts = line.split('\t')
-    const code = (parts[0] ?? '').trim()
-    if (code.startsWith('R') && parts.length >= 3) {
-      statusByPath.set(parts[2]!, { status: 'R', oldPath: parts[1]! })
-    } else if (parts[1]) {
-      statusByPath.set(parts[1], { status: (code[0] ?? 'M') as DiffFile['status'], oldPath: null })
-    }
-  }
+  for (const s of parseNameStatus(status.stdout)) statusByPath.set(s.path, { status: s.status, oldPath: s.oldPath })
 
   // Untracked files never appear in `git diff`, but they are unmistakably
   // part of the work in progress and must be reviewable.
   if (!base) {
-    const untracked = await git(ws.path, ['ls-files', '--others', '--exclude-standard'])
-    for (const p of untracked.stdout.split('\n').filter(Boolean)) {
+    const untracked = await git(ws.path, ['ls-files', '--others', '--exclude-standard', '-z'])
+    for (const p of untracked.stdout.split('\0').filter(Boolean)) {
       if (!statusByPath.has(p)) statusByPath.set(p, { status: 'A', oldPath: null })
     }
   }
 
-  const counts = new Map<string, { add: number; del: number; binary: boolean }>()
-  for (const line of numstat.stdout.split('\n')) {
-    if (!line.trim()) continue
-    const [a, d, p] = line.split('\t')
-    if (!p) continue
-    const binary = a === '-' || d === '-'
-    counts.set(p, { add: binary ? 0 : Number(a), del: binary ? 0 : Number(d), binary })
-  }
+  const counts = parseNumstat(numstat.stdout)
 
   // Untracked files carry no numstat entry, but showing them as +0/-0 makes
   // brand-new work look empty in the review. Count their lines directly.
-  for (const [p, s] of statusByPath) {
-    if (counts.has(p)) continue
-    counts.set(p, countNewFile(join(ws.path, p)))
-    void s
+  for (const p of statusByPath.keys()) {
+    if (!counts.has(p)) counts.set(p, countNewFile(join(ws.path, p)))
   }
 
   const paths = [...statusByPath.keys()]
@@ -99,7 +84,10 @@ export async function file(workspaceId: string, path: string, base?: string): Pr
   let text = ''
   const tracked = await git(ws.path, ['ls-files', '--error-unmatch', '--', path])
   if (tracked.ok) {
-    const r = await git(ws.path, [...diffArgs(base), '--unified=3', '--', path])
+    // A renamed file is diffed against the name it had, or it reads as new.
+    const names = await git(ws.path, [...diffArgs(base), '--name-status', '-z'])
+    const from = parseNameStatus(names.stdout).find((s) => s.path === path)?.oldPath
+    const r = await git(ws.path, [...diffArgs(base), '--unified=3', '--', ...(from ? [from] : []), path])
     text = r.stdout
   } else {
     // Untracked: show it as an all-addition diff against nothing.
@@ -111,6 +99,48 @@ export async function file(workspaceId: string, path: string, base?: string): Pr
   if (/^Binary files /m.test(text)) return { path, binary: true, lines: [] }
 
   return { path, binary: false, lines: parseUnified(text) }
+}
+
+/** `git diff --name-status -z`: a code, then one path — two for a rename or copy. */
+export function parseNameStatus(out: string): { path: string; oldPath: string | null; status: DiffFile['status'] }[] {
+  const parts = out.split('\0')
+  const list: { path: string; oldPath: string | null; status: DiffFile['status'] }[] = []
+  for (let i = 0; i < parts.length; ) {
+    const code = parts[i++] ?? ''
+    if (!code) continue
+    if (code[0] === 'R' || code[0] === 'C') {
+      const oldPath = parts[i++] ?? ''
+      const path = parts[i++] ?? ''
+      if (path) list.push(code[0] === 'R' ? { path, oldPath, status: 'R' } : { path, oldPath: null, status: 'A' })
+    } else {
+      const path = parts[i++] ?? ''
+      if (path) list.push({ path, oldPath: null, status: code[0] as DiffFile['status'] })
+    }
+  }
+  return list
+}
+
+/**
+ * `git diff --numstat -z`: `add<TAB>del<TAB>path` — or, for a rename,
+ * `add<TAB>del<TAB>` followed by the old and the new path. Keyed by the new one.
+ */
+export function parseNumstat(out: string): Map<string, { add: number; del: number; binary: boolean }> {
+  const counts = new Map<string, { add: number; del: number; binary: boolean }>()
+  const parts = out.split('\0')
+  for (let i = 0; i < parts.length; ) {
+    const head = parts[i++] ?? ''
+    if (!head) continue
+    const [a, d, inline] = head.split('\t')
+    let path = inline ?? ''
+    if (!path) {
+      i++ // the old path
+      path = parts[i++] ?? ''
+    }
+    if (!path) continue
+    const binary = a === '-' || d === '-'
+    counts.set(path, { add: binary ? 0 : Number(a), del: binary ? 0 : Number(d), binary })
+  }
+  return counts
 }
 
 export function parseUnified(text: string): DiffHunkLine[] {

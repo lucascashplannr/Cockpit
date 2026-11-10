@@ -1,11 +1,11 @@
 import { computed, reactive, ref, shallowRef, toRaw, watch } from 'vue'
 import type {
-  AddRepoSource, AgentAnswers, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
+  AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, DocsInfo, DocsOffer, DocsPage, DocsProposalSet, DocsSignals, ErasedMemory, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
-  ProjectSettings, QuoteSource, RpcResult, RuntimeUpResult, ServerBoardRow, StashEntry, Workspace,
+  LoadoutChoice, ProjectSettings, QuoteSource, RpcResult, SkillInfo, SkillWhere, RuntimeUpResult, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
 import { anchorsIn, handleFor, matchesBranch, newId, protectedPatterns, slugify, splitPrompt } from '@cockpit/shared'
 import { CoreClient, CoreError } from './client.js'
@@ -259,6 +259,12 @@ export const state = reactive({
   /** §6 — the erased ones the service still keeps, per project. */
   erasedMemories: {} as Record<string, ErasedMemory[]>,
   memoryChoice: {} as Record<string, string>,
+  /** §6 — instruction files, skills and docs for the next conversation, per scope. */
+  loadoutChoice: {} as Record<string, Partial<LoadoutChoice>>,
+  /** §6 — the skills on disk for a set of checkouts, keyed by their ids joined. */
+  skillsOnDisk: {} as Record<string, SkillInfo[]>,
+  /** §6 — what Claude would load in a set of checkouts, asked without a conversation. */
+  engineCatalog: {} as Record<string, AgentLoadout | null>,
   /**
    * §7 — scopes where the person chose to work Alongside the conversation
    * already running there, by scope key. Said once, for the next start or
@@ -1449,12 +1455,14 @@ export async function startAgentIn(
       attachments: wire(files),
       memory: memoryChoiceFor(scope),
       alongside: !!state.alongside[scopeKey(scope)],
+      choice: loadoutChoiceFor(scope),
     }),
   )
   if (!res) return false
   // Said once, for the conversation it was said for: the next one on this
   // scope starts from the default again, unless a `/next` says otherwise.
   delete state.memoryChoice[scopeKey(scope)]
+  if (!('denied' in res)) delete state.loadoutChoice[scopeKey(scope)]
   if (!('denied' in res)) delete state.alongside[scopeKey(scope)]
   if ('denied' in res) {
     // §7 — a refusal explains itself; a silent no is worse than a blocked run.
@@ -4676,6 +4684,138 @@ export function memoryChoiceFor(scope: AgentScope): string {
 
 export function chooseMemory(scope: AgentScope, memoryId: string): void {
   state.memoryChoice[scopeKey(scope)] = memoryId
+}
+
+/* ── §6 — instruction files, skills and docs, before the conversation starts ── */
+
+function projectOfScope(scope: AgentScope): string | null {
+  if (scope.kind === 'project') return scope.projectId
+  if (scope.kind === 'topic') return state.topics.find((t) => t.id === scope.topicId)?.projectId ?? null
+  return state.workspaces.find((w) => w.id === scope.workspaceId)?.projectId ?? null
+}
+
+/** The skills a project's new conversations start with switched off. */
+export function projectSkillsOff(projectId: string | null): string[] {
+  return state.projects.find((p) => p.id === projectId)?.settings.skillsOff ?? []
+}
+
+/**
+ * What the next conversation on this scope is given: nothing left out, the
+ * project's own skills default, the project's docs — unless changed here.
+ */
+export function loadoutChoiceFor(scope: AgentScope): LoadoutChoice {
+  const c = state.loadoutChoice[scopeKey(scope)] ?? {}
+  const out: LoadoutChoice = {
+    instructionsOff: c.instructionsOff ?? [],
+    skillsOff: c.skillsOff ?? projectSkillsOff(projectOfScope(scope)),
+  }
+  if ('docs' in c) out.docs = c.docs
+  return out
+}
+
+function patchChoice(scope: AgentScope, patch: Partial<LoadoutChoice>): void {
+  const key = scopeKey(scope)
+  state.loadoutChoice[key] = { ...(state.loadoutChoice[key] ?? {}), ...patch }
+}
+
+/** An instruction file in or out of the next conversation, by its absolute path. */
+export function toggleInstruction(scope: AgentScope, path: string): void {
+  const off = loadoutChoiceFor(scope).instructionsOff
+  patchChoice(scope, { instructionsOff: off.includes(path) ? off.filter((x) => x !== path) : [...off, path] })
+}
+
+/** A skill on or off for the next conversation, by the name the engine lists it under. */
+export function toggleSkill(scope: AgentScope, name: string): void {
+  const off = loadoutChoiceFor(scope).skillsOff
+  patchChoice(scope, { skillsOff: off.includes(name) ? off.filter((x) => x !== name) : [...off, name] })
+}
+
+/** Every skill on or off at once, among those listed. */
+export function setSkills(scope: AgentScope, names: string[], on: boolean): void {
+  const off = new Set(loadoutChoiceFor(scope).skillsOff)
+  for (const n of names) {
+    if (on) off.delete(n)
+    else off.add(n)
+  }
+  patchChoice(scope, { skillsOff: [...off] })
+}
+
+/** The docs the next conversation reads: a folder, none (null), or the project's (undefined). */
+export function chooseDocs(scope: AgentScope, path: string | null | undefined): void {
+  const key = scopeKey(scope)
+  const next = { ...(state.loadoutChoice[key] ?? {}) }
+  if (path === undefined) delete next.docs
+  else next.docs = path
+  state.loadoutChoice[key] = next
+}
+
+/** This scope's skills, saved as the project's default for every new conversation. */
+export async function saveSkillsForProject(scope: AgentScope): Promise<boolean> {
+  const projectId = projectOfScope(scope)
+  if (!projectId) return false
+  const skillsOff = [...loadoutChoiceFor(scope).skillsOff].sort()
+  const res = await guard(() => client.call('project.settings', { projectId, patch: { skillsOff } }))
+  if (!res) return false
+  await refreshProjects()
+  const key = scopeKey(scope)
+  if (state.loadoutChoice[key]) delete state.loadoutChoice[key].skillsOff
+  const name = state.projects.find((p) => p.id === projectId)?.name
+  toast('ok', 'Saved the skills of “' + (name ?? 'this project') + '”', {
+    icon: 'save',
+    lines: [skillsOff.length ? skillsOff.length + ' off for new conversations' : 'Every skill on for new conversations'],
+  })
+  return true
+}
+
+/* ── §6 — skills on disk: listed, written, imported ─────────────────────── */
+
+export const skillsKey = (workspaceIds: string[]): string => workspaceIds.join(',')
+
+/** The person's own skills and each repository's, for these checkouts. */
+export async function refreshSkills(workspaceIds: string[]): Promise<void> {
+  const list = await guard(() => client.call('skills.list', { workspaceIds }))
+  if (list) state.skillsOnDisk[skillsKey(workspaceIds)] = list
+}
+
+/** Skills, plugins and sub-agents as Claude itself would load them here. */
+export async function refreshCatalog(workspaceIds: string[], fresh = false): Promise<void> {
+  const l = await guard(() => client.call('skills.catalog', { workspaceIds, fresh }))
+  if (l !== undefined) state.engineCatalog[skillsKey(workspaceIds)] = l
+}
+
+function refreshAllSkills(): void {
+  for (const key of Object.keys(state.skillsOnDisk)) void refreshSkills(key ? key.split(',') : [])
+  // A skill written a second ago is one the engine has not been asked about.
+  for (const key of Object.keys(state.engineCatalog)) void refreshCatalog(key ? key.split(',') : [], true)
+}
+
+/** A new skill, written where it was asked for. */
+export async function createSkill(input: { name: string; description: string; body: string; where: SkillWhere }): Promise<SkillInfo | null> {
+  const made = await guard(() => client.call('skills.create', input))
+  if (!made) return null
+  refreshAllSkills()
+  toast('ok', 'Added the skill “' + made.name + '”', {
+    icon: 'save',
+    lines: [made.path.replace(/^\/Users\/[^/]+/, '~'), 'Type #' + made.name + ' in a message to use it'],
+  })
+  return made
+}
+
+/** Skills copied in from a folder: one skill, or a folder of them. */
+export async function importSkills(from: string, where: SkillWhere): Promise<boolean> {
+  const res = await guard(() => client.call('skills.import', { from, where }))
+  if (!res) return false
+  refreshAllSkills()
+  const lines = [
+    ...(res.imported.length ? [res.imported.map((n) => '#' + n).join(', ')] : []),
+    ...res.skipped.map((x) => x.name + ' — ' + x.reason),
+  ]
+  if (res.imported.length) {
+    toast('ok', 'Imported ' + res.imported.length + (res.imported.length === 1 ? ' skill' : ' skills'), { icon: 'save', lines })
+  } else {
+    toast('error', 'Nothing imported', { lines })
+  }
+  return res.imported.length > 0
 }
 
 /** Back to the scope's default — what `/clear` leaves behind. */

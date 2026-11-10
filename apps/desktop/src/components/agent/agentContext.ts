@@ -1,7 +1,8 @@
 import { computed } from 'vue'
 import type { AgentLoadout, AgentScope, Conversation } from '@cockpit/shared'
 import {
-  activeProject, lastActivityAt, memoryChoiceFor, memoryLabel, projectNarrowing, projectOfConversation, shortName, state,
+  activeProject, lastActivityAt, memoryChoiceFor, memoryLabel, projectNarrowing, projectOfConversation, shortName, skillsKey,
+  state,
 } from '../../core/store.js'
 
 /**
@@ -32,13 +33,19 @@ export function useAgentContext(props: ContextInput) {
   const reposEditable = computed(() => !!narrowing.value && !narrowing.value.frozen && narrowing.value.every.length > 1)
   const narrowed = computed(() => !!narrowing.value?.narrowed)
   const repoName = (name: string) => shortName(name, activeProject.value?.name)
-  /** The short answer: "All 5", "4 of 5", or the one repository's name. */
+  /**
+   * A checkout by its repository's name: in a topic every checkout is named
+   * after the topic's branch, so two of them read the same and say nothing.
+   */
+  const labelOf = (src: { workspaceId: string; name: string }) =>
+    state.workspaces.find((w) => w.id === src.workspaceId)?.repoName || src.name
+  /** The short answer: "All 5", "4 of 5", "2", or the one repository's name. */
   const reposValue = computed(() => {
     const n = narrowing.value
     if (n && n.every.length > 1) return n.narrowed ? n.picked.length + ' of ' + n.every.length : 'All ' + n.every.length
     const srcs = props.sources ?? []
     if (!srcs.length) return 'None'
-    return srcs.length === 1 ? repoName(srcs[0]!.name) : srcs.length + ' repositories'
+    return srcs.length === 1 ? labelOf(srcs[0]!) : String(srcs.length)
   })
 
   /* ── which memory ── */
@@ -68,10 +75,23 @@ export function useAgentContext(props: ContextInput) {
     }
     return best
   })
-  const loadout = computed<AgentLoadout | null>(() => props.session?.loadout ?? borrowed.value?.loadout ?? null)
+  /** What the engine itself says it would load here (`skills.catalog`). */
+  const probed = computed(() => state.engineCatalog[skillsKey((props.sources ?? []).map((s) => s.workspaceId))] ?? null)
+  /**
+   * This conversation's own report; else the engine's answer for these
+   * folders, with MCP servers from the latest real report (the probe stops
+   * before they have connected).
+   */
+  const loadout = computed<AgentLoadout | null>(() => {
+    if (props.session?.loadout) return props.session.loadout
+    const p = probed.value
+    const b = borrowed.value?.loadout ?? null
+    if (!p) return b
+    return b ? { ...p, mcp: b.mcp, tools: b.tools } : p
+  })
 
   return {
-    projectId, narrowing, reposEditable, narrowed, repoName, reposValue,
+    projectId, narrowing, reposEditable, narrowed, repoName, labelOf, reposValue,
     memoryEditable, memoryId, memoryName, memoryNotes, borrowed, loadout,
   }
 }

@@ -5,7 +5,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { parse as parseYaml, isMap, parseDocument } from 'yaml'
 import { contractFrom, headingAnchor, linksIn, newId, resolveLink } from '@cockpit/shared'
-import type { Actor, DocsContract, DocsInfo, DocsIssue, DocsPage, DocsProposal, DocsProposalSet, Project } from '@cockpit/shared'
+import type { Actor, DocsContract, DocsInfo, DocsIssue, DocsPage, DocsProposal, DocsProposalSet, LoadoutChoice, Project } from '@cockpit/shared'
 import { readManifest } from './detect.js'
 import { allWorkspaces, getProject, setSettings } from './registry.js'
 import { attachmentsRoot } from './attachments.js'
@@ -76,6 +76,37 @@ export function docsOf(projectId: string): DocsInfo | null {
     exclude: found.exclude,
     guide: found.guide && existsSync(join(found.path, found.guide)) ? found.guide : guideIn(found.path),
     contract: contractFrom(found.contract),
+  }
+}
+
+/**
+ * The docs one conversation reads: the project's home, unless it was pointed
+ * at another folder (or at none) in the composer before it started.
+ */
+export function docsFor(projectId: string | null, choice?: LoadoutChoice | null): DocsInfo | null {
+  if (!projectId) return null
+  const want = choice?.docs
+  if (want === undefined) return docsOf(projectId)
+  if (want === null || !existsSync(want) || !statSync(want).isDirectory()) return null
+  const home = docsOf(projectId)
+  if (home && home.path === want) return home
+  const p = getProject(projectId)
+  const ws = p
+    ? allWorkspaces(p.id)
+        .filter((w) => w.kind !== 'group' && isInside(w.path, want))
+        .sort((a, b) => b.path.length - a.path.length)[0]
+    : undefined
+  return {
+    path: want,
+    source: 'conversation',
+    workspaceId: ws?.id ?? null,
+    repo: ws ? ws.repoName || null : null,
+    folder: ws ? relative(ws.path, want) : '',
+    exclude: [],
+    guide: guideIn(want),
+    // The project's own part of the contract still applies: it is about how
+    // this project writes pages, wherever they are kept.
+    contract: home?.contract ?? contractFrom(undefined),
   }
 }
 
@@ -288,8 +319,8 @@ function excluded(rel: string, patterns: readonly string[]): boolean {
 }
 
 /** Every page of the project's docs, checked against the contract. */
-export function indexOf(projectId: string): DocsPage[] {
-  const info = docsOf(projectId)
+export function indexOf(projectId: string, given?: DocsInfo | null): DocsPage[] {
+  const info = given === undefined ? docsOf(projectId) : given
   return info ? indexAt(info.path, info) : []
 }
 
@@ -374,8 +405,8 @@ function check(page: DocsPage, meta: Record<string, unknown> | null, c: DocsCont
 }
 
 /** One page's text, by its path from the docs' root. */
-export function pageText(projectId: string, rel: string): string | null {
-  const info = docsOf(projectId)
+export function pageText(projectId: string, rel: string, given?: DocsInfo | null): string | null {
+  const info = given === undefined ? docsOf(projectId) : given
   if (!info) return null
   const file = resolve(info.path, rel)
   if (!isInside(info.path, file) || !existsSync(file)) return null
@@ -431,8 +462,8 @@ export interface SearchHit {
  * title and summary: the docs are a few hundred pages, and an agent asking for
  * "credit notes" wants the page called that before the ten that mention one.
  */
-export function search(projectId: string, query: string, limit = 8): SearchHit[] {
-  const info = docsOf(projectId)
+export function search(projectId: string, query: string, limit = 8, given?: DocsInfo | null): SearchHit[] {
+  const info = given === undefined ? docsOf(projectId) : given
   if (!info) return []
   const terms = [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter((t) => t.length > 1))]
   if (!terms.length) return []

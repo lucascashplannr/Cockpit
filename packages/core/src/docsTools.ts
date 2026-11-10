@@ -87,8 +87,7 @@ function projectOf(c: Conversation): string | null {
 
 /** Whether a conversation's project has docs to read. */
 export function available(c: Conversation): boolean {
-  const pid = projectOf(c)
-  return !!pid && !!docs.docsOf(pid)
+  return !!docs.docsFor(projectOf(c), c.choice)
 }
 
 /** The longest flag kept: the reason it is offered, not the draft. */
@@ -97,7 +96,9 @@ const FLAG_MAX = 300
 export function call(c: Conversation, name: string, args: Record<string, unknown>): Result {
   const str = (k: string): string => (typeof args[k] === 'string' ? (args[k] as string).trim() : '')
   const projectId = projectOf(c)
-  if (!projectId || !docs.docsOf(projectId)) return text('This project has no documentation linked.', true)
+  // This conversation's docs: the project's home, or the folder it was pointed at.
+  const info = docs.docsFor(projectId, c.choice)
+  if (!projectId || !info) return text('This project has no documentation linked.', true)
 
   if (name === FLAG) {
     const page = str('page')
@@ -114,7 +115,7 @@ export function call(c: Conversation, name: string, args: Record<string, unknown
   if (name === SEARCH) {
     const q = str('query')
     if (!q) return text('Nothing to search for: `query` is empty.', true)
-    const hits = docs.search(projectId, q)
+    const hits = docs.search(projectId, q, 8, info)
     if (!hits.length) return text('No page mentions ' + JSON.stringify(q) + '.')
     return text(
       hits
@@ -139,11 +140,11 @@ export function call(c: Conversation, name: string, args: Record<string, unknown
     }
     ref = ref.split('|')[0]!.trim()
     if (!ref) return text('Name a page: `page` is empty.', true)
-    const index = docs.indexOf(projectId)
+    const index = docs.indexOf(projectId, info)
     const path = index.some((p) => p.path === ref) ? ref : resolveLink(ref, '', index)
-    const body = path ? docs.pageText(projectId, path) : null
+    const body = path ? docs.pageText(projectId, path, info) : null
     if (!path || body === null) {
-      const near = docs.search(projectId, ref, 5)
+      const near = docs.search(projectId, ref, 5, info)
       return text(
         'No page answers to ' + JSON.stringify(ref) + '.' +
           (near.length ? ' Closest: ' + near.map((h) => h.path).join(', ') + '.' : ''),

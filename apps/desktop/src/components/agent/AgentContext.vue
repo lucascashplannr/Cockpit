@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
-  BookMarked, BookOpen, Bot, Check, ChevronDown, ChevronRight, FileText, FolderGit2, Layers, Paperclip, Plug, Puzzle, Search,
-  Sparkles, Wrench,
+  BookMarked, BookOpen, Bot, Check, ChevronDown, ChevronRight, FileText, FolderGit2, Layers, Paperclip, Plug,
+  Plus, Search, Sparkles,
 } from '@lucide/vue'
-import type { AgentScope, Conversation } from '@cockpit/shared'
-import { chooseMemory, memoryLabel, state, toggleProjectRepo, widenProject } from '../../core/store.js'
+import type { AgentScope, Conversation, LoadoutChoice } from '@cockpit/shared'
+import {
+  chooseDocs, chooseMemory, loadoutChoiceFor, memoryLabel, projectSkillsOff, refreshCatalog, refreshSkills, saveSkillsForProject, setSkills,
+  skillsKey, state, toggleInstruction, toggleProjectRepo, toggleSkill, widenProject,
+} from '../../core/store.js'
+import AddSkillDialog from './AddSkillDialog.vue'
 import { fuzzyFilter, highlight } from '../../core/fuzzy.js'
 import { useAgentContext } from './agentContext.js'
 
@@ -16,13 +20,20 @@ import { useAgentContext } from './agentContext.js'
  * The context half says where it runs and which memory. It opens a menu of
  * everything the agent is given — one row each — and a row opens its own
  * flyout beside the menu: the repositories to tick, the memories to pick from,
- * or what Claude loaded (instructions, skills, MCP servers…), to read.
+ * the instruction files and skills to switch off, the docs to read, or what
+ * Claude loaded (MCP servers, sub-agents), to read.
+ *
+ * All of it is decided before the conversation starts — the engine reads it at
+ * launch — and shown, not offered, once it has.
  */
 const props = defineProps<{
   session?: Conversation | null
   scope?: AgentScope | null
   sources?: { workspaceId: string; name: string; path: string }[]
-  guides: { repo: string; rel: string }[]
+  /** Instruction files found in the repositories, with their full path. */
+  guides: { repo: string; rel: string; path: string }[]
+  /** The repositories' own `docs/` folders, offered beside the project's Docs home. */
+  docsFolders?: { path: string; label: string }[]
   started: boolean
 }>()
 const emit = defineEmits<{ attach: [] }>()
@@ -34,7 +45,7 @@ const memoryShown = computed(() => (memoryId.value === 'off' ? 'No memory' : mem
 
 /* ── the rows ─────────────────────────────────────────────────────────── */
 
-type Key = 'repos' | 'memory' | 'guides' | 'docs' | 'skills' | 'mcp' | 'plugins' | 'agents' | 'tools'
+type Key = 'repos' | 'memory' | 'guides' | 'docs' | 'skills' | 'mcp' | 'agents'
 interface RowDef {
   key: Key
   label: string
@@ -48,8 +59,77 @@ interface RowDef {
   bad?: boolean
 }
 
-const docs = computed(() => state.docsInfo[projectId.value ?? ''] ?? null)
-const builtIn = computed(() => loadout.value?.tools.filter((t) => !t.startsWith('mcp__')) ?? [])
+/* ── what is chosen before it starts ───────────────────────────────────── */
+
+/** Before the first turn the switches below change it; after, they show it. */
+const editable = computed(() => !props.started && !!props.scope)
+const choice = computed<LoadoutChoice>(() =>
+  editable.value && props.scope
+    ? loadoutChoiceFor(props.scope)
+    : (props.session?.choice ?? { instructionsOff: [], skillsOff: [] }),
+)
+
+/* Instruction files */
+const guidesOn = computed(() => props.guides.filter((g) => !choice.value.instructionsOff.includes(g.path)))
+
+/* Docs: the project's home, a repository's own docs/ folder, or none. */
+const home = computed(() => state.docsInfo[projectId.value ?? ''] ?? null)
+const homeLabel = computed(() => (home.value ? [home.value.repo, home.value.folder].filter(Boolean).join('/') || 'Docs' : ''))
+interface DocsOption { key: string; path: string | null | undefined; label: string; hint?: string; title?: string }
+const docsOptions = computed<DocsOption[]>(() => {
+  const out: DocsOption[] = []
+  if (home.value) out.push({ key: 'home', path: undefined, label: homeLabel.value, hint: 'the project’s', title: home.value.path })
+  for (const f of props.docsFolders ?? []) {
+    if (home.value?.path !== f.path) out.push({ key: f.path, path: f.path, label: f.label, title: f.path })
+  }
+  out.push({ key: 'none', path: null, label: 'No docs' })
+  return out
+})
+const docsShown = computed(() => {
+  const d = choice.value.docs
+  if (d === undefined) return home.value ? { label: homeLabel.value, title: home.value.path } : { label: 'None' }
+  if (d === null) return { label: 'None' }
+  return { label: props.docsFolders?.find((f) => f.path === d)?.label ?? d.split('/').slice(-2).join('/'), title: d }
+})
+const docsKey = computed(() => (choice.value.docs === undefined ? 'home' : choice.value.docs === null ? 'none' : choice.value.docs))
+
+/* Skills: what the engine listed, what is on disk (a skill added a minute ago
+   has been listed by nothing yet), and what was switched off (it lists those no more). */
+const sourceIds = computed(() => (props.sources ?? []).map((s) => s.workspaceId))
+watch(
+  sourceIds,
+  (ids) => {
+    void refreshSkills(ids)
+    // Asked of the engine itself, about a second: what it would load here.
+    void refreshCatalog(ids)
+  },
+  { immediate: true },
+)
+const onDisk = computed(() => state.skillsOnDisk[skillsKey(sourceIds.value)] ?? [])
+const describe = (name: string) => onDisk.value.find((x) => x.name === name)?.description
+const skillCatalog = computed(() =>
+  [
+    ...new Set([
+      ...(loadout.value?.skills ?? []),
+      ...onDisk.value.map((x) => x.name),
+      ...choice.value.skillsOff,
+      ...(borrowed.value?.choice?.skillsOff ?? []),
+      ...(editable.value ? projectSkillsOff(projectId.value) : []),
+    ]),
+  ].sort((a, b) => a.localeCompare(b)),
+)
+const skillsOn = computed(() => skillCatalog.value.filter((n) => !choice.value.skillsOff.includes(n)))
+/** A plugin's skills go with their plugin: the engine switches those off only as a whole. */
+const pluginNames = computed(() => new Set((loadout.value?.plugins ?? []).map((p) => p.name)))
+const fromPlugin = (name: string) => name.includes(':') && pluginNames.value.has(name.slice(0, name.indexOf(':')))
+const sameAsProject = computed(() => {
+  const a = [...choice.value.skillsOff].sort().join('\n')
+  return a === [...projectSkillsOff(projectId.value)].sort().join('\n')
+})
+
+/* Sub-agents need the Agent tool, which a project's tool list may leave out. */
+const agentsUsable = computed(() => !!loadout.value?.tools.includes('Agent'))
+
 const NOT_YET = 'Shows once a conversation in this project has started'
 
 /**
@@ -62,6 +142,34 @@ function listRow(key: Key, label: string, icon: unknown, names: string[] | undef
   if (names.length === 1) return { key, label, icon, value: names[0]!, opens: false, title: one?.(names[0]!) }
   return { key, label, icon, value: String(names.length), opens: true }
 }
+
+/** "3 of 4" once something is off; the count, or the one name, otherwise. */
+function partOf(on: number, all: number, one?: string): string {
+  if (on < all) return on + ' of ' + all
+  return all === 1 && one ? one : String(all)
+}
+
+const guidesRow = computed<RowDef>(() => {
+  const all = props.guides.length
+  if (!all) return { key: 'guides', label: 'Instructions', icon: FileText, value: 'None', opens: false }
+  return {
+    key: 'guides', label: 'Instructions', icon: FileText,
+    value: partOf(guidesOn.value.length, all, props.guides[0]!.rel),
+    opens: editable.value || all > 1,
+    title: all === 1 && !editable.value ? 'In ' + props.guides[0]!.repo + ' — read at the start of every conversation' : undefined,
+  }
+})
+
+const skillsRow = computed<RowDef>(() => {
+  const all = skillCatalog.value.length
+  if (!all) return { key: 'skills', label: 'Skills', icon: Sparkles, value: loadout.value ? 'None' : '–', opens: true, title: loadout.value ? undefined : NOT_YET }
+  return {
+    key: 'skills', label: 'Skills', icon: Sparkles,
+    value: partOf(skillsOn.value.length, all, skillCatalog.value[0]),
+    // Always: adding one is in there too.
+    opens: true,
+  }
+})
 
 const chosen = computed<RowDef[]>(() => {
   const srcs = props.sources ?? []
@@ -84,21 +192,24 @@ const chosen = computed<RowDef[]>(() => {
 })
 const brought = computed<RowDef[]>(() => {
   const l = loadout.value
-  const d = docs.value
   return [
-    listRow('guides', 'Instructions', FileText, props.guides.map((g) => g.rel), () => 'In ' + props.guides[0]!.repo + ' — read at the start of every conversation'),
+    guidesRow.value,
     {
-      key: 'docs', label: 'Docs', icon: BookOpen, opens: false,
-      value: d ? [d.repo, d.folder].filter(Boolean).join('/') : 'None', title: d?.path,
+      key: 'docs', label: 'Docs', icon: BookOpen,
+      opens: editable.value && docsOptions.value.length > 1,
+      value: docsShown.value.label, title: docsShown.value.title,
     },
-    listRow('skills', 'Skills', Sparkles, l?.skills),
+    skillsRow.value,
     {
       ...listRow('mcp', 'MCP servers', Plug, l?.mcp.map((m) => m.name), () => mcpRows.value[0]!.hint),
       bad: !!l?.mcp.some((m) => m.status === 'failed'),
     },
-    listRow('plugins', 'Plugins', Puzzle, l?.plugins.map((p) => p.name)),
-    listRow('agents', 'Sub-agents', Bot, l?.agents),
-    { ...listRow('tools', 'Tools', Wrench, l ? builtIn.value : undefined), title: l ? 'git push and git commit are refused' : NOT_YET },
+    {
+      ...listRow('agents', 'Sub-agents', Bot, l?.agents),
+      ...(l && l.agents.length && !agentsUsable.value
+        ? { title: 'Not usable here: the Agent tool is not among this project’s tools (agents.allow in cockpit.yaml)' }
+        : {}),
+    },
   ]
 })
 
@@ -140,14 +251,14 @@ function move(by: number): void {
 /* ── Claude's own lists ───────────────────────────────────────────────── */
 
 /** `anthropic-skills:pdf` → `pdf` under `anthropic-skills`; the ungrouped first. */
-function grouped(names: string[]): { from: string; names: string[] }[] {
-  const out: { from: string; names: string[] }[] = []
+function grouped(names: string[]): { from: string; items: { full: string; short: string }[] }[] {
+  const out: { from: string; items: { full: string; short: string }[] }[] = []
   for (const full of names) {
     const at = full.indexOf(':')
     const from = at < 0 ? '' : full.slice(0, at)
     let g = out.find((x) => x.from === from)
-    if (!g) out.push((g = { from, names: [] }))
-    g.names.push(at < 0 ? full : full.slice(at + 1))
+    if (!g) out.push((g = { from, items: [] }))
+    g.items.push({ full, short: at < 0 ? full : full.slice(at + 1) })
   }
   return out.sort((a, b) => (a.from ? 1 : 0) - (b.from ? 1 : 0))
 }
@@ -166,7 +277,7 @@ const extraDirs = computed(() => {
   const l = props.session?.loadout
   return l ? l.dirs.filter((d) => !srcs.some((s) => s.path === d) && !d.includes('/attachments')) : []
 })
-const home = (p: string) => p.replace(/^\/Users\/[^/]+/, '~')
+const tilde = (p: string) => p.replace(/^\/Users\/[^/]+/, '~')
 
 function ago(ts: number): string {
   const m = Math.floor((Date.now() - ts) / 60000)
@@ -191,6 +302,13 @@ let hoverTimer: ReturnType<typeof setTimeout> | null = null
 
 function close(): void {
   open.value = false
+}
+
+/* Adding a skill: a sheet over the window, so the menu closes under it. */
+const adding = ref<'write' | 'import' | null>(null)
+function addSkill(mode: 'write' | 'import'): void {
+  close()
+  adding.value = mode
 }
 function toggle(): void {
   open.value = !open.value
@@ -278,7 +396,7 @@ const title = computed(
       <button class="what" :class="{ open, narrowed }" :title="title" aria-label="What the agent gets" @click="toggle">
         <Layers class="lead" />
         <span class="v">{{ reposValue }}</span>
-        <span class="sep">·</span>
+        <span class="div" />
         <span class="v mem">{{ memoryShown }}</span>
         <ChevronDown class="chev-d" />
       </button>
@@ -328,12 +446,11 @@ const title = computed(
             </template>
           </template>
           <template v-else>
-            <div v-for="(s, i) in sources ?? []" :key="s.workspaceId" class="it still" :title="s.path">
-              <FolderGit2 class="ic" /><span class="nm">{{ s.name }}</span>
-              <span class="k">{{ i === 0 && (sources?.length ?? 0) > 1 ? 'works here' : home(s.path) }}</span>
+            <div v-for="s in sources ?? []" :key="s.workspaceId" class="it still" :title="tilde(s.path)">
+              <FolderGit2 class="ic" /><span class="nm">{{ ctx.labelOf(s) }}</span>
             </div>
             <div v-for="d in extraDirs" :key="d" class="it still" :title="d">
-              <FolderGit2 class="ic" /><span class="nm">{{ d.split('/').pop() }}</span><span class="k">{{ home(d) }}</span>
+              <FolderGit2 class="ic" /><span class="nm">{{ d.split('/').pop() }}</span><span class="k">{{ tilde(d) }}</span>
             </div>
             <p v-if="!(sources ?? []).length" class="none">None</p>
           </template>
@@ -387,23 +504,84 @@ const title = computed(
           </div>
         </template>
 
-        <!-- Instructions -->
+        <!-- Instructions: ticked in place before it starts; said after. -->
         <template v-else-if="sub === 'guides'">
-          <div v-for="g in guides" :key="g.repo + g.rel" class="it still" title="Read by Claude at the start of every conversation">
-            <FileText class="ic" /><span class="nm">{{ g.rel }}</span><span class="k">{{ g.repo }}</span>
-          </div>
-          <p v-if="!guides.length" class="none">None</p>
+          <template v-if="editable && scope">
+            <button
+              v-for="g in guides"
+              :key="g.path"
+              class="it"
+              :title="g.path"
+              @click="toggleInstruction(scope, g.path)"
+            >
+              <span class="box" :class="{ on: !choice.instructionsOff.includes(g.path) }"><Check v-if="!choice.instructionsOff.includes(g.path)" /></span>
+              <span class="nm">{{ g.rel }}</span><span class="k">{{ g.repo }}</span>
+            </button>
+          </template>
+          <template v-else>
+            <div v-for="g in guides" :key="g.path" class="it still" :class="{ off: choice.instructionsOff.includes(g.path) }" :title="g.path">
+              <FileText class="ic" /><span class="nm">{{ g.rel }}</span>
+              <span class="k">{{ choice.instructionsOff.includes(g.path) ? 'off' : g.repo }}</span>
+            </div>
+          </template>
         </template>
 
-        <!-- Skills -->
-        <template v-else-if="sub === 'skills' && loadout">
-          <div class="scroll pad">
-            <template v-for="g in grouped(loadout.skills)" :key="g.from">
+        <!-- Docs: one answer, so it closes on a choice. -->
+        <template v-else-if="sub === 'docs' && scope">
+          <button
+            v-for="o in docsOptions"
+            :key="o.key"
+            class="it"
+            :title="o.title"
+            @click="chooseDocs(scope, o.path); sub = null"
+          >
+            <Check class="tk" :class="{ hidden: docsKey !== o.key }" />
+            <span class="nm">{{ o.label }}</span><span v-if="o.hint" class="k">{{ o.hint }}</span>
+          </button>
+        </template>
+
+        <!-- Skills: switched per conversation, saved for the project. -->
+        <template v-else-if="sub === 'skills'">
+          <template v-if="editable && scope">
+            <div v-if="skillCatalog.length" class="bar">
+              <span class="cnt">{{ skillsOn.length }} of {{ skillCatalog.length }} on</span>
+              <button class="lk" @click="setSkills(scope, skillCatalog.filter((n) => !fromPlugin(n)), true)">All on</button>
+              <button class="lk" @click="setSkills(scope, skillCatalog.filter((n) => !fromPlugin(n)), false)">All off</button>
+            </div>
+            <div class="scroll skl">
+              <template v-for="g in grouped(skillCatalog)" :key="g.from">
+                <p v-if="g.from" class="grp">{{ g.from }}</p>
+                <button
+                  v-for="it in g.items"
+                  :key="it.full"
+                  class="it slim"
+                  :disabled="fromPlugin(it.full)"
+                  :title="fromPlugin(it.full) ? 'A plugin’s skills go on and off with the plugin' : describe(it.full)"
+                  @click="toggleSkill(scope, it.full)"
+                >
+                  <span class="box" :class="{ on: !choice.skillsOff.includes(it.full) }"><Check v-if="!choice.skillsOff.includes(it.full)" /></span>
+                  <span class="nm">{{ it.short }}</span>
+                </button>
+              </template>
+            </div>
+            <template v-if="!sameAsProject">
+              <span class="rule" />
+              <button class="it act" title="Every new conversation in this project starts with these skills" @click="saveSkillsForProject(scope)">
+                <span class="box ghost" /><span class="nm">Save for this project</span>
+              </button>
+            </template>
+          </template>
+          <div v-else-if="skillCatalog.length" class="scroll pad">
+            <template v-for="g in grouped(skillCatalog)" :key="g.from">
               <p v-if="g.from" class="from">{{ g.from }}</p>
-              <div class="chips"><span v-for="s in g.names" :key="s">{{ s }}</span></div>
+              <div class="chips">
+                <span v-for="it in g.items" :key="it.full" :class="{ off: choice.skillsOff.includes(it.full) }" :title="describe(it.full)">{{ it.short }}</span>
+              </div>
             </template>
           </div>
-          <p v-if="!loadout.skills.length" class="none">None</p>
+          <!-- Adding one: written in the sheet, or imported from a folder there. -->
+          <span v-if="skillCatalog.length" class="rule" />
+          <button class="it act" title="Write one, or import a folder of them" @click="addSkill('write')"><Plus class="ic" /><span class="nm">Add a skill…</span></button>
         </template>
 
         <!-- MCP servers -->
@@ -414,26 +592,17 @@ const title = computed(
           <p v-if="!mcpRows.length" class="none">None</p>
         </template>
 
-        <!-- Plugins -->
-        <template v-else-if="sub === 'plugins' && loadout">
-          <div v-for="p in loadout.plugins" :key="p.name" class="it still">
-            <Puzzle class="ic" /><span class="nm">{{ p.name }}</span><span class="k">{{ p.source.split('@')[1] }}</span>
-          </div>
-          <p v-if="!loadout.plugins.length" class="none">None</p>
-        </template>
-
         <!-- Sub-agents -->
         <template v-else-if="sub === 'agents' && loadout">
           <div v-if="loadout.agents.length" class="chips pad"><span v-for="a in loadout.agents" :key="a">{{ a }}</span></div>
-          <p v-else class="none">None</p>
+          <p v-if="!agentsUsable" class="none note">Not usable here: the Agent tool is not among this project’s tools (<code>agents.allow</code> in cockpit.yaml).</p>
         </template>
 
-        <!-- Tools -->
-        <template v-else-if="sub === 'tools'">
-          <div class="chips pad" title="git push and git commit are refused"><span v-for="t in builtIn" :key="t">{{ t }}</span></div>
-        </template>
       </div>
     </div>
+    <Teleport to="body">
+      <AddSkillDialog v-if="adding" :sources="sources" :mode="adding" @close="adding = null" />
+    </Teleport>
   </div>
 </template>
 
@@ -463,10 +632,12 @@ const title = computed(
 .chev-d { flex: none; width: 11px; height: 11px; color: var(--text-dim); }
 .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .v:not(.mem) { flex: none; }
-.sep { flex: none; color: var(--text-dim); font-weight: 400; }
+/* ServerSwitch's divider between the two answers, in the picker's own ink. */
+.div { flex: none; width: 1px; height: 12px; margin: 0 2px; background: currentColor; opacity: 0.22; }
 /* Narrowed changes what Start does, so the picker that says it is lit. */
 .what.narrowed, .what.narrowed:hover { background: var(--agent-soft); color: var(--agent); }
-.what.narrowed .lead, .what.narrowed .sep { color: var(--agent); }
+.what.narrowed .lead { color: var(--agent); }
+.what.narrowed .div { opacity: 0.35; }
 
 /* ── the menu: upward, from the group's left edge ── */
 .menu {
@@ -515,7 +686,10 @@ const title = computed(
 .val.lit { color: var(--agent); }
 .val.bad { color: var(--danger); }
 .chev { width: 13px; height: 13px; flex: none; color: var(--text-dim); }
-.rule { display: block; height: 1px; margin: 5px 8px; background: var(--line); }
+/* Edge to edge: the panels' own padding is 5px, and a rule is not content. */
+/* `.ctx` first: base.css's `.menu .rule` insets every menu's rule by 2px and
+   would win over a bare `.rule` here. */
+.ctx .rule { display: block; flex: none; height: 1px; margin: 5px -5px; background: var(--line); }
 .foot { margin: 4px 10px 3px; font-size: 10.5px; color: var(--text-dim); }
 
 /* ── the flyout: the menu's own panel, beside it ── */
@@ -609,6 +783,32 @@ button.it:hover, .it.cur { background: var(--hover); }
 .scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .fly.k-memory .scroll { flex: 1 1 auto; max-height: 260px; }
 .none { margin: 0; padding: 8px 10px; font-size: var(--fs-sm); color: var(--text-dim); }
+.none.note { font-size: var(--fs-xs); line-height: 1.5; }
+.none code { font-family: var(--mono); font-size: 10.5px; }
+.it.off .nm, .chips span.off { color: var(--text-dim); text-decoration: line-through; }
+button.it:disabled { opacity: 0.45; cursor: default; }
+button.it:disabled:hover { background: transparent; }
+.it.slim { min-height: 28px; }
+.it.act .nm { color: var(--text-muted); }
+.it.act:hover .nm { color: var(--text); }
+
+/* Skills: a count and the two shortcuts, then the list in its own scroll. */
+.bar { display: flex; align-items: center; gap: 2px; padding: 4px 6px 4px 10px; }
+.bar .cnt { flex: 1; font-size: var(--fs-xs); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.bar .lk {
+  height: 22px;
+  padding: 0 7px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.bar .lk:hover { background: var(--hover); color: var(--text); }
+.fly.k-skills { display: flex; flex-direction: column; overflow: hidden; }
+.fly.k-skills .scroll.skl { flex: 1 1 auto; max-height: 320px; }
+.grp { margin: 8px 10px 2px; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); }
 
 /* Many short names: chips, under the plugin they come from. */
 .pad { padding: 6px 7px; }

@@ -151,6 +151,8 @@ export type EventType =
   | 'docs.accepted'
   | 'docs.rejected'
   | 'docs.flagged'
+  /** §6 — skills written or copied into a skills folder from the window. */
+  | 'skills.added'
   | 'docs.offered'
   // terminal
   | 'terminal.opened'

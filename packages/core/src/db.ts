@@ -287,6 +287,9 @@ function migrate(d: Db): void {
   // when it is picked back up. Both default to the old behaviour, so an older
   // core reading them sees exactly what it always did.
   addColumn(d, 'agent_sessions', 'alongside', 'INTEGER NOT NULL DEFAULT 0')
+  // §6 — instruction files, skills and docs as chosen in the composer, as
+  // JSON. Nullable, so an older core reads nothing and launches as it did.
+  addColumn(d, 'agent_sessions', 'choice', 'TEXT')
   addColumn(d, 'leases', 'shared', 'INTEGER NOT NULL DEFAULT 0')
 
   // §7 — a message one conversation left for another. Undelivered until the

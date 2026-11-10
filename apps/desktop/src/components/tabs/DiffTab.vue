@@ -1171,16 +1171,25 @@ const splitNew = computed(() => splitRows.value.map((r) => ('meta' in r ? null :
 watch(() => props.workspace.id, load, { immediate: true })
 // The other groups follow their own repositories' counts, as this one does below.
 watch(
-  () => props.repos?.map((w) => w.id + ':' + changeCount(w)).join(),
+  () => props.repos?.map((w) => w.id + ':' + changeCount(w) + ':' + w.lastProbedAt).join(),
   (key) => {
     if (key) void loadOthers()
     else others.value = {}
   },
 )
-// The core re-pushes workspaces whenever the watcher fires; refresh with it.
+// The core re-probes a workspace whenever the watcher fires and stamps it, so
+// the stamp is the signal. The file count was not: more edits to a file that
+// is already changed move its +/− and leave the count where it was.
 watch(
-  () => props.workspace.git && props.workspace.git.staged + props.workspace.git.unstaged + props.workspace.git.untracked,
-  () => void load(),
+  () => props.workspace.lastProbedAt,
+  async () => {
+    const before = files.value.find((f) => f.path === selected.value)
+    await load()
+    // The open file follows, unless the reader is editing it in place.
+    const after = files.value.find((f) => f.path === selected.value)
+    if (before && after && !editing.value && (before.additions !== after.additions || before.deletions !== after.deletions))
+      void reloadCurrent()
+  },
 )
 
 /**

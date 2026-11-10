@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import {
-  CornerDownLeft, FileCode, FileText, Loader, MessageSquare, Square, SquareSlash, SquareTerminal,
+  CornerDownLeft, FileCode, FileText, Loader, MessageSquare, Sparkles, Square, SquareSlash, SquareTerminal,
   UnfoldVertical, X,
 } from '@lucide/vue'
 import {
   activeDraftKey, attachConversation, attachFiles, attachText, client, dataUrl, detachFile,
-  draftKey, engineName, guard, isLive, isLongPaste, lastActivityAt, modeFor, openDraftFiles,
+  draftKey, engineName, guard, isLive, isLongPaste, lastActivityAt, loadoutChoiceFor, modeFor, openDraftFiles, skillsKey,
   pickMode, placedHandles, projectOfConversation, saveComposer, state, switchMode,
 } from '../../core/store.js'
 import {
@@ -20,6 +20,7 @@ import ContextMeter from './ContextMeter.vue'
 import EffortSlider from './EffortSlider.vue'
 import ModelPicker from './ModelPicker.vue'
 import AgentContext from './AgentContext.vue'
+import { useAgentContext } from './agentContext.js'
 import type { Option } from './Picker.vue'
 
 /**
@@ -166,6 +167,8 @@ interface FileRef {
   insert: string
   /** What the fuzzy match runs over. */
   hay: string
+  /** Where it is on disk. */
+  abs: string
 }
 
 const files = ref<FileRef[]>([])
@@ -205,8 +208,11 @@ watch(
     files.value = interleave(
       lists.map((list, i) => {
         const s = srcs[i]!
+        // By the repository's name: in a topic every checkout carries the
+        // topic's branch as its name, so two of them would read the same.
+        const repo = state.workspaces.find((w) => w.id === s.workspaceId)?.repoName || s.name
         return (list ?? []).map((rel) => ({
-          repo: s.name,
+          repo,
           rel,
           // The engine runs in the first path and is handed the rest as whole
           // directories, so a relative path only means anything in the first
@@ -215,7 +221,8 @@ watch(
           insert: i === 0 ? rel : s.path + '/' + rel,
           // Typing the repository's name is a way of narrowing to it, so it
           // is part of what is matched — but only when there is a choice.
-          hay: many ? s.name + '/' + rel : rel,
+          hay: many ? repo + '/' + rel : rel,
+          abs: s.path + '/' + rel,
         }))
       }),
     )
@@ -258,6 +265,8 @@ interface Row {
   off?: string
   /** An `@` row that is a conversation rather than a file: accepting it tags it. */
   conversation?: Conversation
+  /** A `#` row that is a skill: accepting it makes the turn use that skill. */
+  skill?: string
 }
 
 /**
@@ -267,7 +276,60 @@ interface Row {
  * and so is not seen here.
  */
 const GUIDE_FILES = new Set(['CLAUDE.md', 'AGENTS.md', '.claude/CLAUDE.md'])
-const guides = computed(() => files.value.filter((f) => GUIDE_FILES.has(f.rel)).map((f) => ({ repo: f.repo, rel: f.rel })))
+const guides = computed(() => files.value.filter((f) => GUIDE_FILES.has(f.rel)).map((f) => ({ repo: f.repo, rel: f.rel, path: f.abs })))
+/** The repositories' own `docs/` folders: what a conversation may read instead of the project's Docs home. */
+const docsFolders = computed(() => {
+  const out: { path: string; label: string }[] = []
+  for (const s of props.sources ?? []) {
+    const repo = state.workspaces.find((w) => w.id === s.workspaceId)?.repoName || s.name
+    if (files.value.some((f) => f.abs.startsWith(s.path + '/docs/'))) out.push({ path: s.path + '/docs', label: repo + '/docs' })
+  }
+  return out
+})
+
+/* ── # skills ─────────────────────────────────────────────────────────────
+ *
+ * `#` already points at what is on this message; a skill is the other thing a
+ * message can be given, so it is offered in the same list. Written into the
+ * box as a chip like an attachment's, and read by the core, which tells the
+ * engine to use that skill on this turn.
+ */
+const ctx = useAgentContext({
+  get session() { return props.session },
+  get scope() { return props.scope },
+  get sources() { return props.sources },
+  get started() { return !!props.session && props.mode !== 'start' },
+})
+const skillsHere = computed(() => {
+  const disk = state.skillsOnDisk[skillsKey((props.sources ?? []).map((s) => s.workspaceId))] ?? []
+  const off = new Set(
+    props.session && props.mode !== 'start'
+      ? (props.session.choice?.skillsOff ?? [])
+      : props.scope ? loadoutChoiceFor(props.scope).skillsOff : [],
+  )
+  const names = [...new Set([...(ctx.loadout.value?.skills ?? []), ...disk.map((x) => x.name)])].filter((n) => !off.has(n))
+  /** `anthropic-skills:pdf` is written `#pdf` when no other skill ends that way. */
+  const tail = (n: string) => n.slice(n.indexOf(':') + 1)
+  return names
+    .map((full) => {
+      const short = tail(full)
+      const token = full.includes(':') && names.filter((x) => tail(x) === short).length === 1 ? short : full
+      return { full, token, description: disk.find((x) => x.name === full)?.description }
+    })
+    .sort((a, b) => a.token.localeCompare(b.token))
+})
+const skillRows = computed<Row[]>(() =>
+  skillsHere.value.map((k) => ({
+    key: 'skill:' + k.full,
+    label: k.token,
+    hint: k.full.includes(':') ? k.full.slice(0, k.full.indexOf(':')) : 'skill',
+    insert: k.token,
+    skill: k.full,
+    off: undefined,
+  })),
+)
+/** What the box draws as a chip: the attachments' handles, and the skills' tokens. */
+const chipHandles = computed(() => [...boxFiles.value.map((f) => f.handle), ...skillsHere.value.map((k) => k.token)])
 
 const fileRows = computed<Row[]>(() =>
   files.value.map((f) => ({ key: f.repo + '/' + f.rel, label: f.rel, hint: multi.value ? f.repo : undefined, insert: f.insert })),
@@ -359,9 +421,10 @@ const matches = computed<Row[]>(() => {
   const m = mention.value
   if (m === null) return []
   if (m.sigil === '#') {
-    const rows = attachRows.value
-    if (!m.query) return rows.slice(0, 8)
-    return fuzzyFilter(rows, m.query, (r) => (r.hint ?? '') + '/' + r.label, 8).map((s) => s.item)
+    // This message's attachments first, then the skills it could be given.
+    const rows = [...attachRows.value, ...skillRows.value]
+    if (!m.query) return rows.slice(0, Math.max(8, attachRows.value.length + 4))
+    return fuzzyFilter(rows, m.query, (r) => (r.skill ? r.label : (r.hint ?? '') + '/' + r.label), 8).map((s) => s.item)
   }
   // Files and conversations in one list, with room kept for each: a few of the
   // latest conversations lead, so they are findable before a letter is typed,
@@ -515,7 +578,7 @@ function eatAnchor(ev: KeyboardEvent): boolean {
   const at = el.selectionStart
   const draft = boxDraft.value
   let i = 0
-  for (const part of splitPrompt(draft, boxFiles.value.map((f) => f.handle))) {
+  for (const part of splitPrompt(draft, chipHandles.value)) {
     const start = i
     const end = start + (part.kind === 'text' ? part.text.length : anchorOf(part.handle).length)
     i = end
@@ -812,7 +875,7 @@ const written = computed<Written[]>(() => {
   const at = caret.value
   const out: Written[] = []
   let i = 0
-  for (const part of splitPrompt(draft, boxFiles.value.map((f) => f.handle))) {
+  for (const part of splitPrompt(draft, chipHandles.value)) {
     const start = i
     // Cut from the draft rather than written out from the handle: a token is
     // as long as its handle either way, but it may be spelled with either
@@ -892,6 +955,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
           <!-- An attached picture shows itself: `#` is answered by looking. -->
           <img v-if="m.pic" class="tiny" :src="m.pic" alt="" />
           <SquareSlash v-else-if="m.command" class="xs" />
+          <Sparkles v-else-if="m.skill" class="xs" />
           <MessageSquare v-else-if="m.conversation" class="xs" />
           <FileCode v-else class="xs" />
           <span class="path" :class="{ cmd: m.command }">{{ m.label }}</span>
@@ -1042,6 +1106,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
         :scope="scope"
         :sources="sources"
         :guides="guides"
+        :docs-folders="docsFolders"
         :started="!!session && mode !== 'start'"
         @attach="pick"
       />

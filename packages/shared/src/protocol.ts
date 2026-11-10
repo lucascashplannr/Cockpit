@@ -6,7 +6,7 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentAnswers, AgentScope, AttachmentInput, BranchRef, Conversation, ConversationSummary, PermissionMode,
+  AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AttachmentInput, BranchRef, Conversation, ConversationSummary, LoadoutChoice, PermissionMode, SkillInfo, SkillWhere,
   CockpitSettings,
   CommandRunResult, CommitDetail, CommitGraph, FileBlame, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DeclaredServer,
@@ -855,6 +855,23 @@ export interface Rpc {
    * paths the lease is taken on. `workspaceIds` is still accepted for a caller
    * that only knows where it is standing, and is read as a workspace scope.
    */
+  /** §6 — the skills on disk for these checkouts: the person's own, then each repository's. */
+  'skills.list': { params: { workspaceIds: string[] }; result: SkillInfo[] }
+  /** §6 — a new skill, written as the engine reads one. */
+  /**
+   * §6 — what Claude would load in these checkouts (skills, plugins,
+   * sub-agents), asked of the engine without starting a conversation.
+   */
+  'skills.catalog': { params: { workspaceIds: string[]; fresh?: boolean }; result: AgentLoadout | null }
+  'skills.create': {
+    params: { name: string; description: string; body: string; where: SkillWhere }
+    result: SkillInfo
+  }
+  /** §6 — skills copied in from a folder: one, or a folder of them. */
+  'skills.import': {
+    params: { from: string; where: SkillWhere }
+    result: { imported: string[]; skipped: { name: string; reason: string }[] }
+  }
   'agent.start': {
     params: {
       engine: string
@@ -875,6 +892,8 @@ export interface Rpc {
       memory?: string
       /** §7 — share the folder with the conversation already running there. */
       alongside?: boolean
+      /** §6 — instruction files and skills left out, and the docs it reads. */
+      choice?: LoadoutChoice | null
     }
     result: AgentStartResult
   }

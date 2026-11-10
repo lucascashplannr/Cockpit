@@ -746,6 +746,12 @@ export interface ProjectSettings {
    * repository menu shows when the tool strip is too narrow for the name.
    */
   repoMarks: Record<string, string>
+  /**
+   * Skills a new conversation in this project starts with switched off — the
+   * composer's starting point, changed there for one conversation or saved
+   * back here for all of them.
+   */
+  skillsOff: string[]
 }
 
 export interface Project {
@@ -1206,6 +1212,8 @@ export interface Conversation {
    * absent until the conversation's process has started once.
    */
   loadout?: AgentLoadout | null
+  /** What it was given beyond its scope, as chosen in the composer before it started. */
+  choice?: LoadoutChoice | null
 }
 
 /**
@@ -1214,6 +1222,37 @@ export interface Conversation {
  * the rest — skills, plugins, the user's MCP servers — comes from the engine's
  * settings, and this is the only place that says which ones actually loaded.
  */
+/**
+ * §6 — what a conversation is given beyond its scope, chosen in the composer
+ * before it starts and fixed once it has: the engine reads all of it at launch.
+ */
+export interface LoadoutChoice {
+  /** Instruction files left out (CLAUDE.md, AGENTS.md…), as absolute paths. */
+  instructionsOff: string[]
+  /** Skills switched off, by the name the engine lists them under. */
+  skillsOff: string[]
+  /**
+   * The docs it reads instead of the project's: an absolute folder, or null
+   * for none. Absent is the project's own Docs home.
+   */
+  docs?: string | null
+}
+
+/** §6 — where a skill is kept: the person's own, or a repository's (shared with it). */
+export type SkillWhere = { kind: 'user' } | { kind: 'repo'; workspaceId: string }
+
+/** §6 — a skill found on disk (`<dir>/<name>/SKILL.md`). */
+export interface SkillInfo {
+  name: string
+  /** What the model reads to decide whether to use it. */
+  description: string
+  where: SkillWhere['kind']
+  workspaceId?: string
+  repo?: string
+  /** Its folder. */
+  path: string
+}
+
 export interface AgentLoadout {
   at: number
   version: string | null
@@ -1417,7 +1456,8 @@ export interface MemorySource {
  */
 export interface DocsInfo {
   path: string
-  source: 'settings' | 'manifest' | 'detected'
+  /** `conversation`: one conversation reads another folder than the project's home. */
+  source: 'settings' | 'manifest' | 'detected' | 'conversation'
   /** The checkout the path is in, when it is in one — where its Diff lives. */
   workspaceId: string | null
   /** The repository the docs are in, by folder name, and the folder inside it ('' for all of it). */

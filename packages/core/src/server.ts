@@ -7,7 +7,7 @@ import {
 } from '@cockpit/shared'
 import type {
   AgentAnswers, AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
-  Conversation, PermissionMode, ProjectSettings, ServerBoardRow, ServerPush, Workspace,
+  Conversation, LoadoutChoice, PermissionMode, ProjectSettings, ServerBoardRow, ServerPush, SkillWhere, Workspace,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { append, bus, countEvents, forSession, tail, touchedBy } from './journal.js'
@@ -15,6 +15,7 @@ import * as commands from './commands.js'
 import * as declare from './declare.js'
 import * as registry from './registry.js'
 import * as scaffold from './scaffold.js'
+import * as skills from './skills.js'
 import * as files from './files.js'
 import * as search from './search.js'
 import * as diff from './diff.js'
@@ -776,6 +777,22 @@ const handlers: Record<string, Handler> = {
   'agent.engines': () => agents.engines(),
   'agent.preview': (p: { scope: AgentScope }) => scope.preview(p.scope),
 
+  'skills.list': (p: { workspaceIds: string[] }) => skills.list(p.workspaceIds ?? []),
+  'skills.catalog': (p: { workspaceIds: string[]; fresh?: boolean }) =>
+    agents.probeLoadout(
+      (p.workspaceIds ?? []).map((id) => registry.getWorkspace(id)?.path).filter((x): x is string => !!x),
+      !!p.fresh,
+    ),
+  'skills.create': (p: { name: string; description: string; body: string; where: SkillWhere }) => {
+    const made = skills.create(p)
+    append({ type: 'skills.added', actor: { kind: 'human' }, payload: { names: [made.name], path: made.path } })
+    return made
+  },
+  'skills.import': (p: { from: string; where: SkillWhere }) => {
+    const res = skills.importFrom(p)
+    if (res.imported.length) append({ type: 'skills.added', actor: { kind: 'human' }, payload: { names: res.imported, from: p.from } })
+    return res
+  },
   'agent.start': async (p: {
     engine: string
     scope?: AgentScope
@@ -786,6 +803,7 @@ const handlers: Record<string, Handler> = {
     attachments?: AttachmentInput[]
     memory?: string
     alongside?: boolean
+    choice?: LoadoutChoice | null
   }) => {
     // §7 — the scope says what this is for. A caller that only knows where it
     // is standing may still pass workspaces, and that reads as a workspace
@@ -836,6 +854,8 @@ const handlers: Record<string, Handler> = {
       // when nothing was said.
       memory: p.memory ?? (r.topicId ? topicMemoryId(r.topicId) : MEMORY_NEW),
       alongside: !!p.alongside,
+      // §6 — instruction files, skills and docs, as chosen in the composer.
+      choice: p.choice ?? null,
     })
     pushAgentActivity()
     return 'denied' in res ? res : { ...res, restorePoints }

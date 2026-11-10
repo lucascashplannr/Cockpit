@@ -2,11 +2,11 @@ import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, commandIn, conversationRef, newId } from '@cockpit/shared'
 import type {
-  AgentAnswers, AgentLoadout, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, AgentTurn, MemorySource, PeerMessage, PermissionMode,
+  AgentAnswers, AgentLoadout, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, AgentTurn, LoadoutChoice, MemorySource, PeerMessage, PermissionMode,
   PermissionRequest, TurnUsage,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
@@ -21,6 +21,7 @@ import * as docsTools from './docsTools.js'
 import * as memoryTools from './memoryTools.js'
 import * as peersTools from './peersTools.js'
 import * as docs from './docs.js'
+import * as skills from './skills.js'
 import { getTopic, getWorkspace } from './registry.js'
 import { isInside } from './config.js'
 
@@ -90,6 +91,17 @@ export interface LaunchContext {
   memory?: boolean
   /** §9 — whether the project has docs: the `docs_read` / `docs_search` tools. */
   docs?: boolean
+  /**
+   * §6 — the engine's own settings for this launch (`--settings`): which
+   * instruction files to leave out, which skills are off, and that AGENTS.md
+   * is read beside CLAUDE.md. See `launchSettings`.
+   */
+  settings?: Record<string, unknown>
+  /**
+   * Instruction files the engine would not read on its own — an AGENTS.md in a
+   * repository it was handed with `--add-dir` — said in the system prompt.
+   */
+  instructions?: string
 }
 
 /**
@@ -408,6 +420,68 @@ function cockpitTools(ctx: LaunchContext): string[] {
   ]
 }
 
+/** A choice as the window sent it, kept only for what it holds. */
+function cleanChoice(c: LoadoutChoice | null | undefined): LoadoutChoice | null {
+  if (!c) return null
+  const list = (x: unknown) => (Array.isArray(x) ? [...new Set(x.filter((v): v is string => typeof v === 'string' && !!v))] : [])
+  const out: LoadoutChoice = { instructionsOff: list(c.instructionsOff), skillsOff: list(c.skillsOff) }
+  if (c.docs === null || typeof c.docs === 'string') out.docs = c.docs
+  return out.instructionsOff.length || out.skillsOff.length || 'docs' in out ? out : null
+}
+
+function readChoice(raw: unknown): LoadoutChoice | null {
+  if (typeof raw !== 'string' || !raw) return null
+  try {
+    return cleanChoice(JSON.parse(raw) as LoadoutChoice)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * §6 — what the engine is told through `--settings`, which it reads like a
+ * settings file of its own for this one launch.
+ *
+ * AGENTS.md is read beside CLAUDE.md, not only where there is no CLAUDE.md
+ * (the engine's default): a repository that keeps both meant both. The files
+ * switched off in the composer are left out by path, and the skills by name.
+ */
+function launchSettings(choice: LoadoutChoice | null | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    pluginConfigs: { 'cc-plugin-agents-md@builtin': { options: { instructionFiles: 'claude-md-and-agents-md' } } },
+  }
+  if (choice?.instructionsOff.length) out.claudeMdExcludes = choice.instructionsOff
+  if (choice?.skillsOff.length) out.skillOverrides = Object.fromEntries(choice.skillsOff.map((n) => [n, 'off']))
+  return out
+}
+
+/** The most of one added AGENTS.md that is said; a file past it is cut and says so. */
+const ADDED_INSTRUCTIONS_MAX = 40_000
+
+/**
+ * The AGENTS.md of each repository handed over with `--add-dir`.
+ *
+ * The engine reads CLAUDE.md there (see `engineEnv`) but never AGENTS.md, so a
+ * repository that only keeps an AGENTS.md reached a multi-repo conversation
+ * with no instructions at all. Said here instead, under its path — unless it
+ * was switched off, or its CLAUDE.md already imports it.
+ */
+function addedInstructions(extraPaths: string[], choice: LoadoutChoice | null | undefined): string {
+  const off = new Set(choice?.instructionsOff ?? [])
+  const parts: string[] = []
+  for (const dir of extraPaths) {
+    const file = join(dir, 'AGENTS.md')
+    if (off.has(file) || !existsSync(file)) continue
+    const claude = join(dir, 'CLAUDE.md')
+    if (existsSync(claude) && /(^|\s)@(\.\/)?AGENTS\.md\b/.test(readFileSync(claude, 'utf8'))) continue
+    let body = readFileSync(file, 'utf8').trim()
+    if (!body) continue
+    if (body.length > ADDED_INSTRUCTIONS_MAX) body = body.slice(0, ADDED_INSTRUCTIONS_MAX) + '\n\n[… cut: the rest of ' + file + ' is in the file]'
+    parts.push('# Instructions from ' + file + '\n\nThis repository is in your scope; follow these when you work in it.\n\n' + body)
+  }
+  return parts.join('\n\n')
+}
+
 /** Shared by start and resume, so the two cannot drift apart on permissions. */
 function claudeCommon(ctx: LaunchContext): string[] {
   return [
@@ -422,7 +496,10 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // would swallow the flag that follows them.
     // The question tool goes in whatever the project's own list says: it
     // reaches nothing, and without it an agent that is unsure can only guess.
-    '--tools', [...new Set([...ctx.tools, QUESTION_TOOL]), ...cockpitTools(ctx)].join(','),
+    // The Skill tool too: which skills it gets is decided per conversation now
+    // (`launchSettings`), so a project's tool list leaving it out only meant
+    // no skill could ever run — `#name` in the box included.
+    '--tools', [...new Set([...ctx.tools, QUESTION_TOOL, 'Skill']), ...cockpitTools(ctx)].join(','),
     ...(ctx.deny.length ? ['--disallowedTools', ctx.deny.join(',')] : []),
     // Chosen in the composer. What the mode does not approve by itself comes
     // back over stdio as a `can_use_tool` request and waits for the window.
@@ -442,7 +519,9 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // What the two flags above actually forbid, in words the engine reads
     // before it writes its first command rather than after — and when to
     // write the memory, which nothing else would tell it.
-    '--append-system-prompt', SHELL_RULES + (ctx.memory ? '\n\n' + memoryTools.MEMORY_RULES : ''),
+    '--append-system-prompt',
+    SHELL_RULES + (ctx.memory ? '\n\n' + memoryTools.MEMORY_RULES : '') + (ctx.instructions ? '\n\n' + ctx.instructions : ''),
+    ...(ctx.settings ? ['--settings', JSON.stringify(ctx.settings)] : []),
     ...(ctx.model ? ['--model', ctx.model] : []),
     ...(ctx.effort ? ['--effort', ctx.effort] : []),
     ...ctx.extraDirs.flatMap((d) => ['--add-dir', d]),
@@ -511,6 +590,10 @@ function engineEnv(): NodeJS.ProcessEnv {
   // its decision there instead: outside the scope, invisible to the window,
   // unshared with any other conversation, and never documented or erased.
   env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1'
+  // §7 — a conversation over several repositories reads every one's CLAUDE.md,
+  // not only the one it runs in: the rest arrive with `--add-dir`, whose
+  // instruction files the engine skips unless told otherwise.
+  env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = '1'
   return env
 }
 
@@ -1158,13 +1241,13 @@ agentBus.setMaxListeners(50)
 function persist(s: Conversation): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, topic_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title, denials, memory, alongside)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO agent_sessions (id, engine, paths, workspace_ids, status, started_at, ended_at, turns, lease_id, last_message, topic_id, engine_session_id, prompt, scope_kind, scope_id, scope_subpath, title, denials, memory, alongside, choice)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET status=excluded.status, ended_at=excluded.ended_at,
          turns=excluded.turns, last_message=excluded.last_message,
          lease_id=excluded.lease_id, engine_session_id=excluded.engine_session_id,
          prompt=excluded.prompt, denials=excluded.denials, memory=excluded.memory,
-         alongside=excluded.alongside`,
+         alongside=excluded.alongside, choice=excluded.choice`,
     )
     .run(
       s.id,
@@ -1188,6 +1271,7 @@ function persist(s: Conversation): void {
       JSON.stringify(s.denials),
       s.memory,
       s.alongside ? 1 : 0,
+      s.choice ? JSON.stringify(s.choice) : null,
     )
 }
 
@@ -1539,6 +1623,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     naming: namingIds.has(String(r.id)),
     hiddenAt: r.hidden_at == null ? null : Number(r.hidden_at),
     alongside: !!r.alongside,
+    choice: readChoice(r.choice),
     inbox: inboxOf(String(r.id)),
     loadout: loadouts.get(String(r.id)) ?? null,
     forkedFrom: r.forked_from == null ? null : { sessionId: String(r.forked_from), title: titleOf(String(r.forked_from)) },
@@ -1677,6 +1762,8 @@ export interface StartAgentInput {
   attachments?: AttachmentInput[]
   /** §6 — `off`, `new`, or a memory's id. The caller decides the default. */
   memory: string
+  /** §6 — instruction files, skills and docs, as chosen in the composer. */
+  choice?: LoadoutChoice | null
   /**
    * §7 — work Alongside whatever conversation is already running here rather
    * than be refused by its lock. Chosen by the person, never by default.
@@ -1737,6 +1824,7 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     usage: null,
     hiddenAt: null,
     alongside: !!input.alongside,
+    choice: cleanChoice(input.choice),
   }
 
   // Marked before the row exists, so the window never gets a frame of the
@@ -1969,6 +2057,121 @@ function withUltracode(
   return [...segs, { kind: 'text', text: '\n\n' + ULTRACODE }]
 }
 
+/* ── §6 — `#skill` in the box: use that skill on this turn ──────────────── */
+
+/* ── §6 — what Claude would load here, asked without a conversation ─────────
+ *
+ * The composer lists skills, plugins and sub-agents before anything has
+ * started, and a conversation's own report lives only as long as this core
+ * does. So the engine is asked directly: launched in the scope's folders with
+ * nothing but `/context` to read — a command it answers itself, no model call
+ * — and stopped the moment its startup report arrives, about a second later.
+ * MCP servers are still connecting at that point, so their state is left to a
+ * real conversation's report.
+ */
+const probed = new Map<string, { at: number; loadout: AgentLoadout | null; pending?: Promise<AgentLoadout | null> }>()
+const PROBE_TTL = 5 * 60_000
+
+export function probeLoadout(paths: string[], fresh = false): Promise<AgentLoadout | null> {
+  const key = paths.join('\n')
+  const hit = probed.get(key)
+  if (hit?.pending) return hit.pending
+  if (hit && !fresh && Date.now() - hit.at < PROBE_TTL) return Promise.resolve(hit.loadout)
+  const pending = new Promise<AgentLoadout | null>((done) => {
+    if (!paths.length || !existsSync(paths[0]!)) return done(null)
+    let over = false
+    const args = [
+      '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+      '--tools', 'Skill',
+      '--settings', JSON.stringify(launchSettings(null)),
+      ...paths.slice(1).flatMap((d) => ['--add-dir', d]),
+    ]
+    const child = spawn(claudeEngine.bin, args, { cwd: paths[0], env: engineEnv(), stdio: ['pipe', 'pipe', 'ignore'] })
+    const finish = (l: AgentLoadout | null): void => {
+      if (over) return
+      over = true
+      clearTimeout(timer)
+      child.kill()
+      done(l)
+    }
+    const timer = setTimeout(() => finish(null), 20_000)
+    let buf = ''
+    child.stdout?.on('data', (chunk: Buffer) => {
+      buf += chunk.toString('utf8')
+      for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+        const o = safeJson(buf.slice(0, i))
+        buf = buf.slice(i + 1)
+        if (o?.type === 'system' && o.subtype === 'init') return finish(loadoutIn(o))
+      }
+    })
+    child.on('error', () => finish(null))
+    child.on('exit', () => finish(null))
+    child.stdin?.end(JSON.stringify({ type: 'user', message: { role: 'user', content: '/context' } }) + '\n')
+  }).then((l) => {
+    probed.set(key, { at: Date.now(), loadout: l })
+    return l
+  })
+  probed.set(key, { at: hit?.at ?? 0, loadout: hit?.loadout ?? null, pending })
+  return pending
+}
+
+/** Every skill this conversation could be told to use, by the names the engine knows. */
+function knownSkills(session: Conversation): string[] {
+  const names = new Set(skills.list(session.workspaceIds).map((x) => x.name))
+  for (const n of probed.get(session.paths.join('\n'))?.loadout?.skills ?? []) names.add(n)
+  for (const n of session.loadout?.skills ?? loadouts.get(session.id)?.skills ?? []) names.add(n)
+  // Before its own process has said what it loaded: the latest one that did.
+  if (!session.loadout && !loadouts.has(session.id)) {
+    let best: AgentLoadout | null = null
+    for (const l of loadouts.values()) if (!best || l.at > best.at) best = l
+    for (const n of best?.skills ?? []) names.add(n)
+  }
+  const off = new Set(session.choice?.skillsOff ?? [])
+  return [...names].filter((n) => !off.has(n))
+}
+
+/**
+ * The skills a turn names with `#`, resolved to the engine's names.
+ *
+ * `#pdf` finds `anthropic-skills:pdf` when that is the only skill of the name;
+ * a `#` that names an attachment of the turn, or nothing known, is left as the
+ * text it is.
+ */
+export function skillsNamed(prompt: string, known: string[], handles: Set<string>): string[] {
+  const text = prompt.replace(/\u2011/g, '-')
+  const out: string[] = []
+  for (const m of text.matchAll(/(?:^|[\s\u00a0(\[,;])#([A-Za-z0-9][\w:-]*)/g)) {
+    const token = m[1]!.replace(/[-:]+$/, '')
+    if (handles.has(token)) continue
+    const exact = known.find((n) => n === token)
+    const bySuffix = known.filter((n) => n.endsWith(':' + token))
+    const name = exact ?? (bySuffix.length === 1 ? bySuffix[0] : undefined)
+    if (name && !out.includes(name)) out.push(name)
+  }
+  return out
+}
+
+/** The line that makes the turn use them: the Skill tool, called first. */
+function withSkills(
+  spec: EngineSpec,
+  segs: attachments.TurnSegment[],
+  session: Conversation,
+  prompt: string,
+  files: Attachment[],
+  command: boolean,
+): attachments.TurnSegment[] {
+  if (spec.id !== 'claude' || command || !prompt.includes('#')) return segs
+  const named = skillsNamed(prompt, knownSkills(session), new Set(files.map((f) => f.handle).filter(Boolean) as string[]))
+  if (!named.length) return segs
+  const line =
+    '\n\n---\n' +
+    (named.length === 1
+      ? 'Use the `' + named[0] + '` skill for this: call the Skill tool with skill "' + named[0] + '" before anything else, then follow it.'
+      : 'Use these skills for this: call the Skill tool with each of ' + named.map((n) => '"' + n + '"').join(', ') +
+        ' before anything else, then follow them.')
+  return [...segs, { kind: 'text', text: line }]
+}
+
 async function launch(
   session: Conversation,
   spec: EngineSpec,
@@ -2038,7 +2241,7 @@ async function launch(
   // §9 — the project's docs, when it has them: named in the opening, and
   // readable even when they are a repository of their own outside the scope.
   const projectId = session.workspaceIds.map((id) => getWorkspace(id)?.projectId).find(Boolean)
-  const docsInfo = projectId ? docs.docsOf(projectId) : null
+  const docsInfo = docs.docsFor(projectId ?? null, session.choice)
   const docsOutside = !!docsInfo && !session.paths.some((p) => isInside(p, docsInfo.path))
   // §7 — the engine runs in the first path; the rest have to be handed over
   // explicitly, or a two-repo scope reaches exactly one repository.
@@ -2051,6 +2254,8 @@ async function launch(
     permissionMode: modeOf(opts),
     memory: session.memory !== MEMORY_OFF,
     docs: !!docsInfo,
+    settings: launchSettings(session.choice),
+    instructions: addedInstructions(session.paths.slice(1), session.choice),
   }
   // The turn in the order it was written: the words, each attachment at the
   // point its `#handle` put it, and whatever nobody pointed at at the end.
@@ -2080,7 +2285,14 @@ async function launch(
     .join('\n\n')
   const segs = withUltracode(
     spec,
-    attachments.turnSegments(command || !opening ? '' : opening + '\n\n---\n\n', session.prompt, files),
+    withSkills(
+      spec,
+      attachments.turnSegments(command || !opening ? '' : opening + '\n\n---\n\n', session.prompt, files),
+      session,
+      session.prompt,
+      files,
+      command,
+    ),
     ultracode && !command,
   )
   const withFiles = attachments.flatten(segs)
@@ -2541,7 +2753,11 @@ async function flushQueue(l: Live): Promise<void> {
   await checkpointTurn(l.session, turnId, prompt || attachments.summarise(files))
   const command = commandIn(prompt)?.command.run === 'engine'
   const news = command ? '' : memoryNews(l) + peersNews(l) + takeInbox(l.session.id)
-  const segs = withUltracode(l.spec, attachments.turnSegments(news, prompt, files), ultracode && !command)
+  const segs = withUltracode(
+    l.spec,
+    withSkills(l.spec, attachments.turnSegments(news, prompt, files), l.session, prompt, files, command),
+    ultracode && !command,
+  )
   l.child.stdin?.write(encode(attachments.flatten(segs), segs) + '\n')
   agentBus.emit('changed')
 }

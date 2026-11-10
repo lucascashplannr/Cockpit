@@ -22,6 +22,7 @@ export const PROJECT_DEFAULTS: ProjectSettings = {
   untrackedRepos: [],
   mark: null,
   repoMarks: {},
+  skillsOff: [],
 }
 
 /**
@@ -156,6 +157,7 @@ export function projectSettings(root: string): ProjectSettings {
     untrackedRepos: row?.settings?.untrackedRepos ?? PROJECT_DEFAULTS.untrackedRepos,
     mark: row?.settings?.mark ?? PROJECT_DEFAULTS.mark,
     repoMarks: row?.settings?.repoMarks ?? PROJECT_DEFAULTS.repoMarks,
+    skillsOff: row?.settings?.skillsOff ?? PROJECT_DEFAULTS.skillsOff,
   }
 }
 
@@ -187,6 +189,7 @@ export function setProjectSettings(root: string, patch: Partial<ProjectSettings>
       if (clean) marks[repo] = clean
     }
     next.repoMarks = marks
+    next.skillsOff = [...new Set(next.skillsOff.map((x) => x.trim()).filter(Boolean))].sort()
     row.settings = {
       ...(next.defaultBranch ? { defaultBranch: next.defaultBranch } : {}),
       ...(Object.keys(guarded).length ? { protectedBranches: guarded } : {}),
@@ -194,6 +197,7 @@ export function setProjectSettings(root: string, patch: Partial<ProjectSettings>
       ...(next.untrackedRepos.length ? { untrackedRepos: next.untrackedRepos } : {}),
       ...(next.mark ? { mark: next.mark } : {}),
       ...(Object.keys(marks).length ? { repoMarks: marks } : {}),
+      ...(next.skillsOff.length ? { skillsOff: next.skillsOff } : {}),
     }
     if (!Object.keys(row.settings!).length) delete row.settings
     out = next
