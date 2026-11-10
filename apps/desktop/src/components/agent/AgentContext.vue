@@ -647,31 +647,33 @@ const title = computed(
   z-index: 20;
   width: 264px;
   padding: 5px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line-overlay);
   border-radius: var(--radius-lg);
-  background: var(--panel-raised);
+  background: var(--overlay);
   box-shadow: var(--shadow-md);
 }
+/* Light, like the app's other menus: muted until you are on the row. */
 .row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   width: 100%;
-  height: 32px;
-  padding: 0 8px 0 10px;
+  height: 28px;
+  padding: 0 8px 0 9px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   font: inherit;
-  font-size: var(--fs-sm);
-  color: var(--text);
+  font-size: 12.5px;
+  color: var(--text-muted);
   text-align: left;
 }
-.row:hover, .row.on { background: var(--hover); }
+.row:hover, .row.on { background: var(--hover); color: var(--text); }
 /* A fact, not a door: no hover, no chevron. */
 .row.still { cursor: default; }
-.row.still:hover { background: transparent; }
-.row .ic { width: 15px; height: 15px; flex: none; color: var(--text-muted); }
+.row.still:hover { background: transparent; color: var(--text-muted); }
+.row .ic { width: 13px; height: 13px; flex: none; color: var(--text-dim); }
+.row:hover:not(.still) .ic, .row.on .ic { color: inherit; }
 .lbl { flex: none; }
 .val {
   margin-left: auto;
@@ -679,17 +681,17 @@ const title = computed(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fs-xs);
+  font-size: 11.5px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
 .val.lit { color: var(--agent); }
 .val.bad { color: var(--danger); }
-.chev { width: 13px; height: 13px; flex: none; color: var(--text-dim); }
+.chev { width: 12px; height: 12px; flex: none; color: var(--text-dim); }
 /* Edge to edge: the panels' own padding is 5px, and a rule is not content. */
 /* `.ctx` first: base.css's `.menu .rule` insets every menu's rule by 2px and
    would win over a bare `.rule` here. */
-.ctx .rule { display: block; flex: none; height: 1px; margin: 5px -5px; background: var(--line); }
+.ctx .rule { display: block; flex: none; height: 1px; margin: 5px -5px; background: var(--line-overlay); }
 .foot { margin: 4px 10px 3px; font-size: 10.5px; color: var(--text-dim); }
 
 /* ── the flyout: the menu's own panel, beside it ── */
@@ -701,30 +703,30 @@ const title = computed(
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 5px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line-overlay);
   border-radius: var(--radius-lg);
-  background: var(--panel-raised);
+  background: var(--overlay);
   box-shadow: var(--shadow-md);
 }
 .fly.k-memory { display: flex; flex-direction: column; overflow: hidden; width: 340px; }
 .it {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   width: 100%;
-  min-height: 32px;
-  padding: 0 10px;
+  min-height: 28px;
+  padding: 0 9px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   font: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12.5px;
   color: var(--text);
   text-align: left;
 }
 button.it:hover, .it.cur { background: var(--hover); }
 .it.still { cursor: default; }
-.it .ic { width: 14px; height: 14px; flex: none; color: var(--text-dim); }
+.it .ic { width: 13px; height: 13px; flex: none; color: var(--text-dim); }
 .it .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .it .nm .hit { font-weight: 650; }
 .it .k {
