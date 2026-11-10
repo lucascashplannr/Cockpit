@@ -6,7 +6,7 @@ import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, commandIn, conversationRef, newId } from '@cockpit/shared'
 import type {
-  AgentAnswers, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, AgentTurn, MemorySource, PeerMessage, PermissionMode,
+  AgentAnswers, AgentLoadout, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, AgentTurn, MemorySource, PeerMessage, PermissionMode,
   PermissionRequest, TurnUsage,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
@@ -201,6 +201,8 @@ export interface NormalizedEvent {
   interrupted?: boolean
   /** `mode` only: what the engine is actually running under. */
   mode?: PermissionMode
+  /** `ready` only: what it says it loaded. */
+  loadout?: AgentLoadout
   /** `hook` only: it fired inside a sub-agent. */
   subagent?: boolean
   /** `hook` only: which of the callbacks registered at `initialize`. */
@@ -330,6 +332,24 @@ function engineSessionIdIn(line: string): string | null {
     if (typeof v === 'string' && v) return v
   }
   return null
+}
+
+/** The `init` event, read into the shape the window shows. Missing fields are empty, never a throw. */
+function loadoutIn(o: Record<string, unknown>): AgentLoadout {
+  const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  const objs = (v: unknown): Record<string, unknown>[] =>
+    Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object') : []
+  return {
+    at: Date.now(),
+    version: typeof o.claude_code_version === 'string' ? o.claude_code_version : null,
+    cwd: String(o.cwd ?? ''),
+    tools: strs(o.tools),
+    mcp: objs(o.mcp_servers).map((m) => ({ name: String(m.name ?? ''), status: String(m.status ?? '') })),
+    skills: strs(o.skills),
+    agents: strs(o.agents),
+    plugins: objs(o.plugins).map((p) => ({ name: String(p.name ?? ''), source: String(p.source ?? '') })),
+    dirs: strs(o.additional_directories),
+  }
 }
 
 function safeJson(line: string): Record<string, unknown> | null {
@@ -571,7 +591,10 @@ const claudeEngine: EngineSpec = {
     // Its own word for the mode, which is not always the one it was given: an
     // Auto the model cannot run falls back to asking, and says so only here.
     const said = type === 'system' && (o.subtype === 'init' || o.subtype === 'status') ? engineMode(o.permissionMode) : null
-    if (type === 'system' && o.subtype === 'init') return said ? [{ kind: 'ready' }, { kind: 'mode', mode: said }] : [{ kind: 'ready' }]
+    if (type === 'system' && o.subtype === 'init') {
+      const ready: NormalizedEvent = { kind: 'ready', loadout: loadoutIn(o) }
+      return said ? [ready, { kind: 'mode', mode: said }] : [ready]
+    }
     if (said) return [{ kind: 'mode', mode: said }]
 
     // No assistant message follows a compaction, so without this the meter
@@ -1477,6 +1500,13 @@ function readDenials(v: unknown): string[] {
   }
 }
 
+/**
+ * What each conversation's engine said it loaded, by conversation id. Live
+ * only, like the queue: a core restarted since has nothing until the process
+ * starts again, which it says again on its first line.
+ */
+const loadouts = new Map<string, AgentLoadout>()
+
 function hydrate(r: Record<string, unknown>): Conversation {
   const engineSessionId = r.engine_session_id == null ? null : String(r.engine_session_id)
   const status = String(r.status) as Conversation['status']
@@ -1510,6 +1540,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     hiddenAt: r.hidden_at == null ? null : Number(r.hidden_at),
     alongside: !!r.alongside,
     inbox: inboxOf(String(r.id)),
+    loadout: loadouts.get(String(r.id)) ?? null,
     forkedFrom: r.forked_from == null ? null : { sessionId: String(r.forked_from), title: titleOf(String(r.forked_from)) },
   }
 }
@@ -2146,6 +2177,14 @@ async function launch(
     let changed = false
     for (const ev of spec.parse(line)) {
       switch (ev.kind) {
+        case 'ready':
+          if (ev.loadout) {
+            loadouts.set(session.id, ev.loadout)
+            session.loadout = ev.loadout
+            changed = true
+          }
+          break
+
         case 'message_start':
           l.streamingId = ev.messageId ?? null
           // The count that follows starts again from zero for this message, so

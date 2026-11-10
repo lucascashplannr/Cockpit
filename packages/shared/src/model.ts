@@ -1200,6 +1200,33 @@ export interface Conversation {
    * copied turns came from, not a link that has to stay live.
    */
   forkedFrom?: { sessionId: string; title: string } | null
+  /**
+   * What the engine said it loaded when its process started: the composer's
+   * Context popover reads it. Live only — kept by the core while it runs, and
+   * absent until the conversation's process has started once.
+   */
+  loadout?: AgentLoadout | null
+}
+
+/**
+ * The engine's own account of what it was given, from its `init` event.
+ * Cockpit decides some of it (the tool set, the folders, its own MCP server);
+ * the rest — skills, plugins, the user's MCP servers — comes from the engine's
+ * settings, and this is the only place that says which ones actually loaded.
+ */
+export interface AgentLoadout {
+  at: number
+  version: string | null
+  cwd: string
+  /** Every tool it can call, MCP tools included (`mcp__server__tool`). */
+  tools: string[]
+  mcp: { name: string; status: string }[]
+  skills: string[]
+  /** Sub-agents it can hand work to. */
+  agents: string[]
+  plugins: { name: string; source: string }[]
+  /** Folders beyond its working directory (`--add-dir`). */
+  dirs: string[]
 }
 
 /** §7 — one conversation's message to another (`mcp__cockpit__tell`). */

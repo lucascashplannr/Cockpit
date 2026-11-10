@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import {
-  BookMarked, CornerDownLeft, FileCode, FileText, Loader, MessageSquare, Paperclip, Square, SquareSlash, SquareTerminal,
+  CornerDownLeft, FileCode, FileText, Loader, MessageSquare, Square, SquareSlash, SquareTerminal,
   UnfoldVertical, X,
 } from '@lucide/vue'
 import {
-  activeDraftKey, attachConversation, attachFiles, attachText, chooseMemory, client, dataUrl, detachFile,
-  draftKey, engineName, guard, isLive, isLongPaste, lastActivityAt, memoryChoiceFor, memoryLabel, modeFor, openDraftFiles,
+  activeDraftKey, attachConversation, attachFiles, attachText, client, dataUrl, detachFile,
+  draftKey, engineName, guard, isLive, isLongPaste, lastActivityAt, modeFor, openDraftFiles,
   pickMode, placedHandles, projectOfConversation, saveComposer, state, switchMode,
 } from '../../core/store.js'
 import {
@@ -16,11 +16,10 @@ import type { AgentCommand, AgentScope, Conversation, PermissionMode, QuoteSourc
 import type { DraftFile } from '../../core/store.js'
 import { fuzzyFilter } from '../../core/fuzzy.js'
 import Picker from './Picker.vue'
-import MemoryPicker from './MemoryPicker.vue'
-import RepoPicker from './RepoPicker.vue'
 import ContextMeter from './ContextMeter.vue'
 import EffortSlider from './EffortSlider.vue'
 import ModelPicker from './ModelPicker.vue'
+import AgentContext from './AgentContext.vue'
 import type { Option } from './Picker.vue'
 
 /**
@@ -70,7 +69,7 @@ const props = defineProps<{
    * not be hunting for anything.
    */
   busy?: boolean
-  /** §6 — what the conversation is aimed at, for the Memory chip. */
+  /** §6 — what the conversation is aimed at: its memory, its repositories. */
   scope?: AgentScope | null
   /**
    * §7 — whose draft this box shows. Side by side, each pane has a box of its
@@ -96,12 +95,7 @@ const boxFiles = computed<DraftFile[]>({
 })
 const emit = defineEmits<{ send: []; stop: []; 'update:engine': [string] }>()
 
-/* ── §6 — which memory ─────────────────────────────────────────────────
- *
- * Decided before the first turn, in one click: a new memory (it starts with
- * the agent's first note), one that already exists, or none. Once the
- * conversation exists the answer is a fact about it, shown and not asked.
- */
+/** The project, for the `@` list of its other conversations. */
 const projectId = computed(() => {
   const sc = props.scope
   if (!sc) return null
@@ -109,32 +103,6 @@ const projectId = computed(() => {
   if (sc.kind === 'topic') return state.topics.find((t) => t.id === sc.topicId)?.projectId ?? null
   return state.workspaces.find((w) => w.id === sc.workspaceId)?.projectId ?? null
 })
-const memoryValue = computed(() => (props.scope ? memoryChoiceFor(props.scope) : 'new'))
-const memoryOptions = computed<Option[]>(() => {
-  const sc = props.scope
-  const out: Option[] = []
-  if (sc?.kind === 'topic') out.push({ id: 'topic:' + sc.topicId, label: memoryLabel(projectId.value, 'topic:' + sc.topicId), hint: 'this topic' })
-  out.push({ id: 'new', label: 'New memory', hint: 'starts with its first note' })
-  out.push({ id: 'off', label: 'No memory' })
-  for (const m of state.memories[projectId.value ?? ''] ?? []) {
-    if (out.some((o) => o.id === m.id)) continue
-    out.push({ id: m.id, label: m.name, hint: m.entries + (m.entries === 1 ? ' note' : ' notes') })
-  }
-  // The one chosen, even when the list has not caught up with it yet.
-  if (!out.some((o) => o.id === memoryValue.value)) {
-    out.push({ id: memoryValue.value, label: memoryLabel(projectId.value, memoryValue.value) })
-  }
-  return out
-})
-/** The leading choices that are not memories: this topic, new, none. */
-const memoryFixed = computed(() => (props.scope?.kind === 'topic' ? 3 : 2))
-function pickMemory(id: string): void {
-  if (props.scope) chooseMemory(props.scope, id)
-}
-/** The conversation's own, once it has one. */
-const sessionMemory = computed(() =>
-  props.session ? memoryLabel(projectId.value, props.session.memory) : null,
-)
 
 const box = ref<HTMLTextAreaElement | null>(null)
 
@@ -291,6 +259,15 @@ interface Row {
   /** An `@` row that is a conversation rather than a file: accepting it tags it. */
   conversation?: Conversation
 }
+
+/**
+ * The instruction files the engine reads on its own — at a repository's root,
+ * or in its `.claude` folder — for the Context popover. Tracked files only,
+ * which is what the list holds; a `CLAUDE.local.md` is ignored by git on purpose
+ * and so is not seen here.
+ */
+const GUIDE_FILES = new Set(['CLAUDE.md', 'AGENTS.md', '.claude/CLAUDE.md'])
+const guides = computed(() => files.value.filter((f) => GUIDE_FILES.has(f.rel)).map((f) => ({ repo: f.repo, rel: f.rel })))
 
 const fileRows = computed<Row[]>(() =>
   files.value.map((f) => ({ key: f.repo + '/' + f.rel, label: f.rel, hint: multi.value ? f.repo : undefined, insert: f.insert })),
@@ -1056,16 +1033,18 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
     </div>
 
     <div class="row">
-      <!-- The clip before the settings: it adds to the question, where they
-           only shape the answer. -->
-      <button class="opt clip" title="Attach images or files" @click="pick">
-        <Paperclip class="xs" />
-      </button>
+      <!-- What the agent gets, first: the clip (one click to the file picker)
+           and, in the same group, where it runs and which memory — which opens
+           the menu of everything it is given. -->
       <input ref="picker" class="hidden" type="file" multiple @change="picked" />
-      <!-- §7 — on a project, which of its repositories it runs in. Beside the
-           clip, with the other glyph: both say what the question is given,
-           and a lone icon between two labelled choices read as a stray. -->
-      <RepoPicker v-if="scope?.kind === 'project'" />
+      <AgentContext
+        :session="session"
+        :scope="scope"
+        :sources="sources"
+        :guides="guides"
+        :started="!!session && mode !== 'start'"
+        @attach="pick"
+      />
 
       <!-- Engine first: it decides what every control after it means. With
            one engine installed there is nothing to pick, so nothing is shown. -->
@@ -1074,19 +1053,6 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
         :options="engineOptions"
         :model-value="engine"
         @update:model-value="emit('update:engine', $event)"
-      />
-      <!-- §6 — which memory it reads and writes, beside the engine: both say
-           what the conversation *is*, where the rest say how it answers.
-           Chosen before it starts; after that, said. -->
-      <span v-if="session && mode !== 'start'" class="opt mem" :title="'This conversation\'s memory: ' + sessionMemory">
-        <BookMarked class="xs" /><span class="nm">{{ sessionMemory }}</span>
-      </span>
-      <MemoryPicker
-        v-else-if="scope"
-        :options="memoryOptions"
-        :fixed="memoryFixed"
-        :model-value="memoryValue"
-        @update:model-value="pickMemory"
       />
       <ModelPicker :models="models" :model-value="state.engineOptions.model" @update:model-value="pickModel" />
       <EffortSlider
@@ -1276,26 +1242,23 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
   container-type: inline-size;
 }
 .row > * { flex: none; }
-/* The one control that gives way when nothing else is left to shed: a memory's
-   name, which ellipsizes. */
-.row .opt.mem,
-.row :deep(.mp) { flex: 0 1 auto; min-width: 31px; }
-.row :deep(.mp .trigger) { max-width: 100%; }
+/* The one control that gives way when nothing else is left to shed: the
+   memory's name in the context group, which ellipsizes. */
+.row :deep(.ctx) { flex: 0 1 auto; min-width: 110px; }
 
 /* The steps are set by measure: the full row is ~520px, the first step brings
    it to ~430, the second to ~315, the third to ~290. */
 
 /* Narrow: what repeats the value goes first — the chevrons (the hover already
-   says it opens) and the "Effort" / "Memory" prefixes (the tooltip keeps them). */
+   says it opens) and the "Effort" prefix (the tooltip keeps it). */
 @container (max-width: 530px) {
   .row :deep(.trigger .chev),
   .row :deep(.trigger .lbl) { display: none; }
   .row :deep(.trigger) { padding: 0 7px; }
 }
-/* Narrower: the memory chip keeps its glyph, the meter keeps its ring and
-   percentage; the name and the cost stay in their tooltips. */
+/* Narrower: the meter keeps its ring and percentage; the cost stays in its
+   tooltip. */
 @container (max-width: 440px) {
-  .row .opt.mem .nm,
   .row :deep(.trigger .cost) { display: none; }
 }
 /* Narrowest: the meter is its ring alone. */
@@ -1323,19 +1286,7 @@ defineExpose({ focus: () => box.value?.focus(), take, quote })
   white-space: nowrap;
 }
 .opt:hover:not(:disabled) { color: var(--text); background: var(--hover); }
-/* Said, not asked: the conversation's memory, fixed once it has started. */
-.opt.mem {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  max-width: 180px;
-}
-/* A flex box's bare text can't take an ellipsis; its own span can. */
-.opt.mem .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.opt.mem:hover { background: var(--inset, var(--bg)); color: var(--text-muted); }
-.opt.mem .xs { flex: none; width: 11px; height: 11px; color: var(--text-dim); }
 .opt.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
-.opt.clip { display: inline-flex; align-items: center; justify-content: center; padding: 0 7px; }
 .xs { width: 11px; height: 11px; }
 .hidden { display: none; }
 
