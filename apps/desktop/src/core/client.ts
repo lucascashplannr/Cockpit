@@ -65,11 +65,29 @@ export class CoreClient {
 
   connect(): void {
     this.closed = false
+    if (this.timer) {
+      window.clearTimeout(this.timer)
+      this.timer = null
+    }
+    // One socket at a time. A second one left open is a second copy of every
+    // push: each journal event reached `onEvent` twice and every line of a
+    // transcript was drawn twice. That is what `restartCore` produced — the
+    // backoff had already reconnected by the time `reconnectNow` ran, and the
+    // `onclose` of the socket it closed then opened a third one.
+    const old = this.ws
+    this.ws = null
+    if (old && old.readyState !== WebSocket.CLOSED) {
+      old.close()
+      // Asked on the old socket, so never answered on the new one.
+      this.failPending()
+    }
     this.h.onState('connecting')
     const ws = new WebSocket(this.url)
     this.ws = ws
 
     ws.onmessage = (ev) => {
+      // A socket that has been replaced says nothing more.
+      if (this.ws !== ws) return
       let msg: ServerMessage
       try {
         msg = JSON.parse(ev.data as string) as ServerMessage
@@ -149,8 +167,10 @@ export class CoreClient {
     }
 
     ws.onclose = () => {
-      for (const p of this.pending.values()) p.reject(new Error('core disconnected'))
-      this.pending.clear()
+      // Replaced, not lost: the connection is the newer socket, and a retry
+      // scheduled from here would open yet another beside it.
+      if (this.ws !== ws) return
+      this.failPending()
       if (this.closed) return
       // A socket we closed ourselves keeps its verdict: the banner has to say
       // "restart it", not "it is unreachable". Still retried, but slowly — a
@@ -173,15 +193,15 @@ export class CoreClient {
 
   /** Manual retry from the disconnected banner. */
   reconnectNow(): void {
-    if (this.timer) window.clearTimeout(this.timer)
     this.retry = 0
     this.rejected = null
-    try {
-      this.ws?.close()
-    } catch {
-      /* already closed */
-    }
+    // `connect` closes the current socket itself, and detaches it first.
     this.connect()
+  }
+
+  private failPending(): void {
+    for (const p of this.pending.values()) p.reject(new Error('core disconnected'))
+    this.pending.clear()
   }
 
   call<M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> {
