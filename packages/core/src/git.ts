@@ -2,10 +2,49 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BranchRef, GitOperation, GitState } from '@cockpit/shared'
 import { run, serialize } from './exec.js'
+import type { RunResult } from './exec.js'
+import { lockIn, lockState, removeLock } from './gitlock.js'
+import { append } from './journal.js'
 
 /** §3.4 — we probe, we do not remember. Nothing here is cached to disk. */
 export function git(cwd: string, args: string[], timeoutMs = 30_000) {
-  return serialize('git:' + cwd, () => run('git', args, { cwd, timeoutMs }))
+  return gitWith(cwd, args, { timeoutMs })
+}
+
+/**
+ * `git()` for the calls that need more than a timeout — a private index, input
+ * on stdin. Same queue, same lock healing.
+ */
+export function gitWith(
+  cwd: string,
+  args: string[],
+  opts: { timeoutMs?: number; env?: Record<string, string>; input?: string } = {},
+): Promise<RunResult> {
+  const once = () => run('git', args, { cwd, timeoutMs: opts.timeoutMs ?? 30_000, env: opts.env, input: opts.input })
+  return serialize('git:' + cwd, async () => {
+    const r = await once()
+    if (r.ok) return r
+    // A lock left by a git that died stops every write in the repository
+    // until someone deletes it. When nobody is using it, that someone is us —
+    // then the call is made again, once. See gitlock.ts.
+    const lock = lockIn(r.stderr, cwd)
+    if (!lock) return r
+    const { state, ageMs } = await lockState(lock, cwd)
+    if (state === 'held') return r
+    if (state === 'stale') {
+      if (!removeLock(lock)) return r
+      try {
+        append({
+          type: 'git.lock_cleared',
+          level: 'warn',
+          payload: { lock, ageMs, command: 'git ' + args.join(' ') },
+        })
+      } catch {
+        /* no journal (a CLI call): the retry is what matters */
+      }
+    }
+    return once()
+  })
 }
 
 export function isRepo(path: string): boolean {

@@ -23,7 +23,7 @@ import * as peersTools from './peersTools.js'
 import * as docs from './docs.js'
 import * as skills from './skills.js'
 import { getTopic, getWorkspace } from './registry.js'
-import { isInside } from './config.js'
+import { isInside, loadConfig } from './config.js'
 
 /**
  * §7 — a session is a list of PATHS + an engine + a mode + a lease.
@@ -322,6 +322,8 @@ export interface EngineSpec {
     /** `refusal`: what the engine is told when the answer is no. */
     answer(requestId: string, allow: boolean, input: Record<string, unknown>, refusal?: string): string
     setMode(requestId: string, mode: PermissionMode): string
+    /** Launch settings changed on a running process; null puts a key back to the engine's own. */
+    applySettings?(requestId: string, settings: Record<string, unknown>): string
     unsupported(requestId: string): string
     /** The answer to an `mcp` request: the server's JSON-RPC reply. */
     mcp?(requestId: string, response: Record<string, unknown> | null): string
@@ -446,10 +448,15 @@ function readChoice(raw: unknown): LoadoutChoice | null {
  * (the engine's default): a repository that keeps both meant both. The files
  * switched off in the composer are left out by path, and the skills by name.
  */
-function launchSettings(choice: LoadoutChoice | null | undefined): Record<string, unknown> {
+function launchSettings(choice: LoadoutChoice | null | undefined, contextLimit?: number | null): Record<string, unknown> {
   const out: Record<string, unknown> = {
     pluginConfigs: { 'cc-plugin-agents-md@builtin': { options: { instructionFiles: 'claude-md-and-agents-md' } } },
   }
+  // The engine summarises once the context reaches this, instead of growing to
+  // the model's whole window. Every call of a turn reads the context back, so
+  // its level is what a turn costs — see `CONTEXT_LIMITS`. Not a prompt change:
+  // the cache is untouched by it.
+  if (contextLimit) out.autoCompactWindow = contextLimit
   if (choice?.instructionsOff.length) out.claudeMdExcludes = choice.instructionsOff
   if (choice?.skillsOff.length) out.skillOverrides = Object.fromEntries(choice.skillsOff.map((n) => [n, 'off']))
   return out
@@ -911,6 +918,12 @@ const claudeEngine: EngineSpec = {
         request_id: requestId,
         request: { subtype: 'set_permission_mode', mode },
       }),
+    applySettings: (requestId, settings) =>
+      JSON.stringify({
+        type: 'control_request',
+        request_id: requestId,
+        request: { subtype: 'apply_flag_settings', settings },
+      }),
     unsupported: (requestId) =>
       JSON.stringify({
         type: 'control_response',
@@ -1156,6 +1169,8 @@ interface Live {
   held: Map<string, number>
   /** §16 — what the turn in flight has reported, until its row is written. */
   usage: NormalizedEvent['usage'] | null
+  /** Where this process summarises its context; the meter's window. Null is the model's own. */
+  contextLimit: number | null
   /** The window as the most recent call left it. See `contextTokens`. */
   context: number
   contextCached: number
@@ -1533,6 +1548,11 @@ function writeTurnUsage(
    */
   contextTokens: number,
   contextCached: number,
+  /**
+   * The level the engine summarises at. The meter fills toward it rather than
+   * toward the model's whole window: it is the room the conversation has.
+   */
+  contextLimit: number | null,
 ): void {
   const row = getDb()
     .prepare("SELECT id FROM agent_turns WHERE session_id = ? AND status = 'running' ORDER BY seq DESC LIMIT 1")
@@ -1567,7 +1587,7 @@ function writeTurnUsage(
       // is money, not level. See `contextTokens`.
       contextTokens || u.input + u.cacheRead + u.cacheCreation,
       contextCached,
-      u.window || prev?.win || 0,
+      Math.min(u.window || prev?.win || 0, contextLimit ?? Infinity),
       u.model || prev?.model || '',
       cost,
       row.id,
@@ -2277,6 +2297,7 @@ async function launch(
   const docsOutside = !!docsInfo && !session.paths.some((p) => isInside(p, docsInfo.path))
   // §7 — the engine runs in the first path; the rest have to be handed over
   // explicitly, or a two-repo scope reaches exactly one repository.
+  const contextLimit = loadConfig().contextLimit
   const ctx: LaunchContext = {
     extraDirs: [...session.paths.slice(1), ...(docsOutside ? [docsInfo!.path] : [])],
     tools: allow?.length ? allow : DEFAULT_TOOLS,
@@ -2286,7 +2307,7 @@ async function launch(
     permissionMode: modeOf(opts),
     memory: session.memory !== MEMORY_OFF,
     docs: !!docsInfo,
-    settings: launchSettings(session.choice),
+    settings: launchSettings(session.choice, spec.id === 'claude' ? contextLimit : null),
     instructions: addedInstructions(session.paths.slice(1), session.choice),
   }
   // The turn in the order it was written: the words, each attachment at the
@@ -2365,6 +2386,7 @@ async function launch(
     streamingId: null,
     queue: [],
     usage: null,
+    contextLimit: spec.id === 'claude' ? contextLimit : null,
     context: 0,
     contextCached: 0,
     doneTokens: 0,
@@ -2672,7 +2694,7 @@ async function launch(
           // conversation's cost over a denominator that was never turns.
           session.turns++
           if (l.usage) {
-            writeTurnUsage(session.id, l.usage, l.costSoFar, l.context, l.contextCached)
+            writeTurnUsage(session.id, l.usage, l.costSoFar, l.context, l.contextCached, l.contextLimit)
             l.costSoFar = l.usage.cumulativeCostUsd
             l.usage = null
           }
@@ -3780,6 +3802,19 @@ function switchMode(l: Live, mode: PermissionMode): void {
   l.mode = mode
   // What was asked for stands until the engine says otherwise.
   l.engineMode = null
+}
+
+/**
+ * Settings → Context limit, changed while conversations are running: each
+ * running process takes it from its next call on, rather than at the next
+ * launch, which for a conversation in steady use may be hours away.
+ */
+export function applyContextLimit(limit: number | null): void {
+  for (const l of live.values()) {
+    if (l.spec.id !== 'claude' || !l.spec.control?.applySettings || l.contextLimit === limit) continue
+    l.child.stdin?.write(l.spec.control.applySettings(newId('limit_'), { autoCompactWindow: limit }) + '\n')
+    l.contextLimit = limit
+  }
 }
 
 /**

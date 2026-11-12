@@ -2,8 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as diff from './diff.js'
-import { run, serialize } from './exec.js'
-import { git } from './git.js'
+import { git, gitWith } from './git.js'
 import { append } from './journal.js'
 import * as registry from './registry.js'
 
@@ -187,7 +186,7 @@ async function store(
 ): Promise<{ ok: true; sha: string } | { ok: false; detail: string }> {
   const env = { GIT_INDEX_FILE: join(dir, 'index') }
   const withIndex = (args: string[]) =>
-    serialize('git:' + cwd, () => run('git', args, { cwd, env, timeoutMs: 60_000 }))
+    gitWith(cwd, args, { env, timeoutMs: 60_000 })
 
   const head = await revParse(cwd, 'HEAD')
   if (!head) return { ok: false, detail: 'there is no commit to discard back to' }
@@ -238,7 +237,7 @@ export async function undo(input: { workspaceId: string; entry: string }): Promi
   if (msg.includes(': ' + HUNK_PREFIX)) {
     const patch = await git(cwd, ['diff', '--binary', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', input.entry + '^1', input.entry])
     if (!patch.ok) return { ok: false, detail: lastLine(patch.stderr) }
-    r = await serialize('git:' + cwd, () => run('git', ['apply', '-'], { cwd, input: patch.stdout, timeoutMs: 60_000 }))
+    r = await gitWith(cwd, ['apply', '-'], { input: patch.stdout, timeoutMs: 60_000 })
     if (r.ok) await git(cwd, ['stash', 'drop', ref])
   } else {
     r = await git(cwd, ['stash', 'pop', ref], 120_000)

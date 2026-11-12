@@ -68,6 +68,11 @@ export type EventType =
   | 'git.plan'
   | 'git.applied'
   | 'git.failed'
+  /**
+   * A lock left by a git that died (`.git/index.lock` …) was removed because
+   * nothing was using it, and the call that hit it was made again.
+   */
+  | 'git.lock_cleared'
   | 'git.restore_point'
   | 'git.undone'
   /** A plan stopped on a conflict rather than an error — a state, not a failure. */

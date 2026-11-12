@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { COMMIT_TYPES, normalizeCommitRules } from '@cockpit/shared'
+import { COMMIT_TYPES, CONTEXT_LIMITS, normalizeCommitRules } from '@cockpit/shared'
 import type { CommitRules } from '@cockpit/shared'
 import {
   Bell, BellOff, FolderOpen, FolderTree, GitCommitHorizontal, Hand, MonitorCog, Moon, SlidersHorizontal, Sun,
@@ -42,6 +42,17 @@ const SCOPES = [
   { id: 'optional', label: 'Optional' },
   { id: 'none', label: 'None' },
 ] as const
+
+/** 200_000 → "200k"; null is the model's whole window. */
+const LIMITS = CONTEXT_LIMITS.map((n) => ({
+  value: n,
+  label: n === null ? 'Full' : n / 1000 + 'k',
+  title: n === null ? "The model's whole window" : 'Summarised past ' + n / 1000 + 'k tokens',
+}))
+
+async function setContextLimit(n: number | null) {
+  if (state.settings && n !== state.settings.contextLimit) await saveSettings({ contextLimit: n })
+}
 
 const section = computed(() => SECTIONS.find((s) => s.id === state.settingsSection) ?? SECTIONS[0])
 
@@ -197,6 +208,26 @@ function blurOnEnter(e: KeyboardEvent) {
             @click="setNotifyPref(n.id)"
           >
             <component :is="n.icon" class="sm" />{{ n.label }}
+          </button>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="txt">
+          <span
+            class="t"
+            title="Every call of a turn reads the whole context again, so a long conversation costs more with each one. Past the limit it is summarised; its memory keeps the rest."
+          >Context limit</span>
+        </div>
+        <div class="seg">
+          <button
+            v-for="o in LIMITS"
+            :key="String(o.value)"
+            :class="{ on: (state.settings?.contextLimit ?? null) === o.value }"
+            :title="o.title"
+            @click="setContextLimit(o.value)"
+          >
+            {{ o.label }}
           </button>
         </div>
       </div>

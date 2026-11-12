@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { COMMIT_RULES_DEFAULTS, normalizeCommitRules } from '@cockpit/shared'
+import { COMMIT_RULES_DEFAULTS, CONTEXT_LIMITS, normalizeCommitRules, normalizeContextLimit } from '@cockpit/shared'
 import type { CommitRules, ProjectSettings } from '@cockpit/shared'
 
 /**
@@ -60,6 +60,8 @@ export interface LocalConfig {
   ide: string
   /** §16 — the house style for commit messages, read by the drafter. */
   commitRules: CommitRules
+  /** How far a conversation's context grows before the engine summarises it. See `CONTEXT_LIMITS`. */
+  contextLimit: number | null
   shell: string | null
   journalRetentionDays: number
 }
@@ -72,6 +74,7 @@ const DEFAULTS: LocalConfig = {
   portBlocklist: [8081],
   ide: process.env.COCKPIT_IDE ?? 'code',
   commitRules: COMMIT_RULES_DEFAULTS,
+  contextLimit: CONTEXT_LIMITS[0],
   shell: null,
   journalRetentionDays: 30,
 }
@@ -99,6 +102,8 @@ export function loadConfig(): LocalConfig {
     cache = { ...DEFAULTS, ...parsed }
     // Read through the normalizer: a config from the free-text version holds a string.
     cache.commitRules = normalizeCommitRules(parsed.commitRules)
+    // A config written before the limit existed gets the default, not the whole window.
+    cache.contextLimit = 'contextLimit' in parsed ? normalizeContextLimit(parsed.contextLimit) : CONTEXT_LIMITS[0]
   } catch {
     cache = { ...DEFAULTS }
   }

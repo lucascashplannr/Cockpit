@@ -1638,6 +1638,30 @@ export interface CockpitSettings {
    * format. Off means the built-in one line, in the repository's own style.
    */
   commitRules: CommitRules
+  /**
+   * How far a conversation's context may grow before the engine summarises it
+   * (its auto-compact window), in tokens. Null is the model's whole window.
+   * See `CONTEXT_LIMITS`.
+   */
+  contextLimit: number | null
+}
+
+/**
+ * The context limits on offer, smallest first. The default is the first.
+ *
+ * Every call a turn makes reads the whole context back, so the level is what
+ * the bill scales with: on the 1M window a long conversation sat at ~300k and
+ * each of a turn's forty calls paid for all of it. Measured over two weeks of
+ * real turns, the ones above 200k were two thirds of the spend. Past that the
+ * engine summarises instead, and the memory keeps what a summary would lose.
+ */
+export const CONTEXT_LIMITS = [200_000, 400_000, null] as const
+
+/** A stored or sent limit as the engine accepts it: 100k to 1M, or the model's own. */
+export function normalizeContextLimit(v: unknown): number | null {
+  if (v === null) return null
+  if (typeof v !== 'number' || !Number.isFinite(v)) return CONTEXT_LIMITS[0]
+  return Math.min(1_000_000, Math.max(100_000, Math.round(v)))
 }
 
 /** §7 — how a project comes into existence. Three sources, one layout. */

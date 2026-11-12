@@ -652,16 +652,14 @@ export async function apply(planId: string): Promise<ApplyResult> {
  * nothing usable. The toast shows only the "stopped at" line, and "exit 128"
  * on its own names no cause.
  *
- * A lock file left by a git that was killed mid-way gets its own sentence:
- * it is the common one, git's wording ("another git process seems to be
- * running") sends people looking for a process that is not there, and the fix
- * is one file.
+ * A lock file gets its own sentence. One left by a git that died is removed
+ * by `git()` itself (gitlock.ts), so a lock that still stops a step is held:
+ * a git in a terminal or an agent's shell is working in this repository.
  */
 export function failureReason(stderr: string): string {
   const lock = /Unable to create '([^']+\.lock)': File exists/.exec(stderr)
   if (lock) {
-    return ': ' + lock[1] + ' is in the way, left by a git that did not finish. ' +
-      'If no git is running in this repository, delete it and try again.'
+    return ': another git is working in this repository (' + lock[1] + '). Try again when it finishes.'
   }
   // `git worktree remove` emptied part of the folder, something wrote into it
   // meanwhile, and git dropped its record of the checkout anyway. Retrying is
