@@ -4,10 +4,10 @@ import type {
   // Aliased: the component that draws one is `Attachment` too, and the file
   // needs both in the same scope.
   Attachment as AttachedFile,
-  AgentAnswers, AgentQuestion, AgentScope, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
+  AgentAnswers, AgentQuestion, AgentScope, BackgroundTask, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, BellRing, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, GitFork, Hand, Hourglass, MessageSquareText,
+  ArrowDown, Asterisk, BellRing, ChevronRight, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, GitFork, Hand, Hourglass, MessageSquareText,
   Paperclip, Redo2, Send, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
@@ -19,6 +19,7 @@ import SelectionActions from '../agent/SelectionActions.vue'
 import PermissionAsk from '../agent/PermissionAsk.vue'
 import QuestionAsk from '../agent/QuestionAsk.vue'
 import DocsOfferLine from '../docs/DocsOfferLine.vue'
+import TaskLogDialog from '../agent/TaskLogDialog.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import {
@@ -1262,9 +1263,34 @@ const waiting = computed(() => {
   return {
     what: tasks.length === 1 ? first.description || 'a background ' + first.kind : tasks.length + ' background tasks',
     since: Math.min(...tasks.map((t) => t.startedAt)),
-    list: tasks.map((t) => '• ' + (t.description || t.kind)).join('\n'),
+    tasks,
   }
 })
+
+/*
+ * Unfolded, the waiting line lists what is running; a task opens its output
+ * in a dialog of its own. With one task there is no list to go through: the
+ * line opens it straight away. The dialog keeps the task it was opened on, so
+ * it stays readable on the last output once the task has ended.
+ */
+const waitOpen = ref(false)
+const logTask = ref<BackgroundTask | null>(null)
+const logRunning = computed(() => !!logTask.value && !!selected.value?.background?.some((t) => t.id === logTask.value!.id))
+
+// Another conversation's tasks are not this one's.
+watch(
+  () => selected.value?.id,
+  () => {
+    logTask.value = null
+    waitOpen.value = false
+  },
+)
+
+function pressWaiting(): void {
+  const w = waiting.value
+  if (w && w.tasks.length === 1) logTask.value = w.tasks[0]!
+  else waitOpen.value = !waitOpen.value
+}
 
 /** Why a turn nobody asked began: the engine's own line about what ended. */
 function wakeLine(prompt: string): string {
@@ -1727,7 +1753,7 @@ function ago(ts: number): string {
         <span
           v-else-if="waiting"
           class="busytag idlewait"
-          :title="'Still running in the background — it picks the conversation up again when this ends. What you say now goes straight in.\n' + waiting.list"
+          :title="'Still running in the background — it picks the conversation up again when this ends. What you say now goes straight in.\n' + waiting.tasks.map((t) => '• ' + (t.description || t.kind)).join('\n')"
         >
           <Hourglass class="sm" />waiting
         </span>
@@ -2061,16 +2087,27 @@ function ago(ts: number): string {
             <!-- The turn is over and something it started is not. Still, not
                  turning: nothing is being written, it is waiting to be called
                  back — and the clock beside it is what says it is alive. -->
-            <p
-              v-else-if="waiting && i === exchanges.length - 1"
-              class="pulse idlewait"
-              :title="'Running in the background — it picks the conversation up again when this ends. What you say now goes straight in.\n' + waiting.list"
-            >
-              <Hourglass class="star" />
-              <span class="verb">Waiting on {{ waiting.what }}</span>
-              <span class="sep">•</span>
-              <span class="num">{{ since(waiting.since) }}</span>
-            </p>
+            <div v-else-if="waiting && i === exchanges.length - 1" class="bgwait">
+              <button
+                class="pulse idlewait"
+                :aria-expanded="waitOpen"
+                :title="waiting.tasks.length === 1 ? 'Show its output' : waitOpen ? 'Fold' : 'Show what is running'"
+                @click="pressWaiting"
+              >
+                <Hourglass class="star" />
+                <span class="verb">Waiting on {{ waiting.what }}</span>
+                <span class="sep">•</span>
+                <span class="num">{{ since(waiting.since) }}</span>
+                <ChevronRight class="xs wchev" :class="{ turned: waitOpen && waiting.tasks.length > 1 }" />
+              </button>
+              <div v-if="waitOpen && waiting.tasks.length > 1" class="bgtasks">
+                <button v-for="t in waiting.tasks" :key="t.id" class="bgrow" title="Show its output" @click="logTask = t">
+                  <ChevronRight class="xs wchev" />
+                  <span class="bgname">{{ t.description || 'A background ' + t.kind }}</span>
+                  <span class="num">{{ since(t.startedAt) }}</span>
+                </button>
+              </div>
+            </div>
 
             <!-- The answer's own footer, and only what can be done to it.
                  
@@ -2088,7 +2125,12 @@ function ago(ts: number): string {
                  Copy that would hand over half of it, silently. A footer is
                  what goes *under* a finished answer; the turn above still has
                  its own line, and every earlier answer keeps its button. -->
-            <div v-if="x.turn.status !== 'running' && (answered(x) || x.turn.endedAt)" class="rbar">
+            <!-- Nor while it is waiting on something it left running: the
+                 answer above is not its last word yet. -->
+            <div
+              v-if="x.turn.status !== 'running' && !(waiting && i === exchanges.length - 1) && (answered(x) || x.turn.endedAt)"
+              class="rbar"
+            >
               <!-- When the answer landed, which is not when the question was
                    asked: a turn that took four minutes has two times, and the
                    one that matters at this end of it is this one. Absent while
@@ -2199,6 +2241,13 @@ function ago(ts: number): string {
         />
       </footer>
     </template>
+    <TaskLogDialog
+      v-if="logTask && selected"
+      :session-id="selected.id"
+      :task="logTask"
+      :running="logRunning"
+      @close="logTask = null"
+    />
   </div>
 </template>
 
@@ -2572,6 +2621,40 @@ function ago(ts: number): string {
 .pulse.idlewait .verb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pulse.idlewait .sep,
 .pulse.idlewait .num { flex: none; }
+/* A button that reads as the line it was. */
+button.pulse.idlewait {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.wchev { flex: none; color: var(--text-dim); transition: transform var(--dur-1) var(--ease-soft); }
+.wchev.turned { transform: rotate(90deg); }
+button.pulse.idlewait .wchev { opacity: 0; }
+button.pulse.idlewait:hover .wchev,
+button.pulse.idlewait[aria-expanded='true'] .wchev { opacity: 1; }
+.bgtasks { margin: 6px 0 0 23px; }
+.bgrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+}
+.bgrow:hover { color: var(--text); }
+.bgname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bgrow .num { flex: none; margin-left: auto; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
 /* ── §16, the receipt ─────────────────────────────────────────────────────
  *

@@ -1076,6 +1076,14 @@ export interface Rpc {
     result: { ok: boolean; reason?: string }
   }
   /**
+   * The end of what a background task has written so far — a test run, read
+   * while it is still going. Only for a task the conversation is running now.
+   */
+  'agent.taskLog': {
+    params: { sessionId: string; taskId: string }
+    result: { ok: true; text: string; truncated: boolean } | { ok: false; reason: string }
+  }
+  /**
    * §3.3 — one conversation's transcript, filtered out of the journal.
    *
    * The window cannot derive this from the events it happens to be holding:

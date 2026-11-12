@@ -1098,6 +1098,7 @@ const handlers: Record<string, Handler> = {
     if (r.ok) pushAgentActivity()
     return r
   },
+  'agent.taskLog': (p: { sessionId: string; taskId: string }) => agents.taskLog(p.sessionId, p.taskId),
   'agent.unqueue': (p: { sessionId: string; prompt: string }) => {
     const r = agents.unqueue(p.sessionId, p.prompt)
     if (r.ok) pushAgentActivity()

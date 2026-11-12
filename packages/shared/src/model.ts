@@ -1051,6 +1051,10 @@ export interface BackgroundTask {
   /** `shell` for a command, `agent` for a sub-agent, or whatever else the engine calls it. */
   kind: string
   startedAt: number
+  /** Its output can be read while it runs (`agent.taskLog`): known once the call that started it has answered. */
+  log: boolean
+  /** The shell line it runs, for a command. */
+  command?: string
 }
 
 /**

@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { readFile, realpath, stat } from 'node:fs/promises'
+import { open, readFile, realpath, stat } from 'node:fs/promises'
 import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, WAKE_PROMPT, commandIn, conversationRef, newId } from '@cockpit/shared'
 import type {
   AgentAnswers, AgentLoadout, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, AgentTurn, LoadoutChoice, MemorySource, PeerMessage, PermissionMode,
@@ -234,10 +234,12 @@ export interface NormalizedEvent {
   /** `permission` only: the engine's account of the call, and why it asked. */
   description?: string
   reason?: string
+  /** `tool_result` only: where a call sent to the background writes its output. */
+  outputFile?: string
   /** `end` only: the invocations §16 refused during this turn. */
   denials?: string[]
   /** `task_started` / `task_ended` only. */
-  task?: { id: string; description: string; kind: string; summary?: string; status?: string }
+  task?: { id: string; description: string; kind: string; summary?: string; status?: string; toolUseId?: string }
   /** `progress` only: output tokens of the message being written right now. */
   outputTokens?: number
   /**
@@ -613,6 +615,11 @@ function engineEnv(): NodeJS.ProcessEnv {
   return env
 }
 
+/** The shell line a Bash call ran, when it was one. */
+function commandOf(input: Record<string, unknown> | undefined): string | undefined {
+  return typeof input?.command === 'string' ? input.command : undefined
+}
+
 /** The engine's task types, in the window's words. */
 function taskKind(t: unknown): string {
   const v = String(t ?? '')
@@ -726,6 +733,7 @@ const claudeEngine: EngineSpec = {
               id,
               description: String(o.description ?? ''),
               kind: taskKind(o.task_type),
+              toolUseId: o.tool_use_id == null ? undefined : String(o.tool_use_id),
             },
           },
         ]
@@ -859,7 +867,16 @@ const claudeEngine: EngineSpec = {
       const out: NormalizedEvent[] = []
       for (const b of content as { type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }[]) {
         if (b?.type !== 'tool_result') continue
+        // A call sent to the background answers at once, in its text and not
+        // in `stdout` (empty), with the file its output goes to.
+        const said = typeof b.content === 'string'
+          ? b.content
+          : Array.isArray(b.content)
+            ? (b.content as { type?: string; text?: string }[]).map((x) => (x?.type === 'text' ? x.text ?? '' : '')).join('\n')
+            : ''
+        const outputFile = /written to: (\/\S+?)\.?(?:\s|$)/.exec(said)?.[1]
         out.push({
+          ...(outputFile ? { outputFile } : {}),
           kind: 'tool_result',
           toolUseId: String(b.tool_use_id ?? ''),
           stdout: String(r?.stdout ?? (typeof b.content === 'string' ? b.content : '')),
@@ -1163,6 +1180,16 @@ interface Live {
    * the conversation up again on its own when each one ends.
    */
   tasks: Map<string, BackgroundTask>
+  /** Which call started each task, by task id: its answer names the file the output goes to. */
+  taskCalls: Map<string, string>
+  /** Where a call that went to the background writes its output, by tool use id. */
+  outputs: Map<string, string>
+  /**
+   * The same, for tasks that have ended, by task id: the last lines a command
+   * writes are written as it ends, and a window reading it then must still
+   * find them. The most recent few only.
+   */
+  endedOutputs: Map<string, string>
   /** The engine's lines about the tasks that ended since the last turn, for the turn it wakes up into. */
   woke: string[]
   /** What a tool was called with, kept until its result comes back. */
@@ -2443,6 +2470,9 @@ async function launch(
     anchor: null,
     busy: true,
     tasks: new Map(),
+    taskCalls: new Map(),
+    outputs: new Map(),
+    endedOutputs: new Map(),
     woke: [],
     calls: new Map(),
     asked: new Set(),
@@ -2522,11 +2552,14 @@ async function launch(
       switch (ev.kind) {
         case 'task_started':
           if (!ev.task) break
+          if (ev.task.toolUseId) l.taskCalls.set(ev.task.id, ev.task.toolUseId)
           l.tasks.set(ev.task.id, {
             id: ev.task.id,
             description: ev.task.description,
             kind: ev.task.kind,
             startedAt: Date.now(),
+            log: !!(ev.task.toolUseId && l.outputs.has(ev.task.toolUseId)),
+            command: commandOf(ev.task.toolUseId ? l.calls.get(ev.task.toolUseId)?.input : undefined),
           })
           changed = true
           break
@@ -2535,6 +2568,14 @@ async function launch(
           const t = ev.task && l.tasks.get(ev.task.id)
           if (!t) break
           l.tasks.delete(t.id)
+          const call = l.taskCalls.get(t.id)
+          l.taskCalls.delete(t.id)
+          const file = call ? l.outputs.get(call) : undefined
+          if (call) l.outputs.delete(call)
+          if (file) {
+            l.endedOutputs.set(t.id, file)
+            if (l.endedOutputs.size > 20) l.endedOutputs.delete(l.endedOutputs.keys().next().value!)
+          }
           // Only one that outlived its turn wakes the engine; one that ended
           // inside a turn was already read there. The engine's summary is
           // often empty on this channel, so the agent's own description of it
@@ -2616,6 +2657,18 @@ async function launch(
 
         case 'tool_result': {
           const id = ev.toolUseId ?? ''
+          // A call sent to the background answers at once with where its
+          // output is going: kept, so the window can read it while it runs.
+          const out = ev.outputFile
+          if (out) {
+            l.outputs.set(id, out)
+            for (const [taskId, callId] of l.taskCalls) {
+              const t = l.tasks.get(taskId)
+              if (callId !== id || !t) continue
+              t.log = true
+              t.command ??= commandOf(l.calls.get(id)?.input)
+            }
+          }
           const call = l.calls.get(id)
           l.calls.delete(id)
           const asked = l.asked.delete(id)
@@ -3980,6 +4033,43 @@ export function answerPermission(
 /** What it left running, oldest first. */
 export function backgroundIn(sessionId: string): BackgroundTask[] {
   return [...(live.get(sessionId)?.tasks.values() ?? [])]
+}
+
+/**
+ * The end of a background task's output — running, or one of the last few to
+ * end. Read from the file the engine named for it and nowhere else: the path
+ * never comes from the window.
+ */
+export async function taskLog(
+  sessionId: string,
+  taskId: string,
+): Promise<{ ok: true; text: string; truncated: boolean } | { ok: false; reason: string }> {
+  const l = live.get(sessionId)
+  if (!l) return { ok: false, reason: 'that conversation is not running' }
+  const call = l.taskCalls.get(taskId)
+  const file = (call ? l.outputs.get(call) : undefined) ?? l.endedOutputs.get(taskId)
+  if (!file) return { ok: false, reason: l.tasks.has(taskId) ? 'its output is not known yet' : 'that task is no longer running' }
+  const TAIL = 24_000
+  try {
+    const fh = await open(file, 'r')
+    try {
+      const { size } = await fh.stat()
+      const from = Math.max(0, size - TAIL)
+      const buf = Buffer.alloc(size - from)
+      await fh.read(buf, 0, buf.length, from)
+      let text = buf.toString('utf8')
+      // Start on a whole line: a cut mid-line reads as garbage.
+      if (from > 0) text = text.slice(text.indexOf('\n') + 1)
+      // Progress bars and colours are written for a terminal, not a page.
+      text = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/[^\n]*\r(?!\n)/g, '')
+      return { ok: true, text, truncated: from > 0 }
+    } finally {
+      await fh.close()
+    }
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    return code === 'ENOENT' ? { ok: true, text: '', truncated: false } : { ok: false, reason: (e as Error).message }
+  }
 }
 
 /** What is waiting to be asked, for a window that has to show it. */
