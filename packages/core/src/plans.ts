@@ -663,6 +663,12 @@ export function failureReason(stderr: string): string {
     return ': ' + lock[1] + ' is in the way, left by a git that did not finish. ' +
       'If no git is running in this repository, delete it and try again.'
   }
+  // `git worktree remove` emptied part of the folder, something wrote into it
+  // meanwhile, and git dropped its record of the checkout anyway. Retrying is
+  // what fixes it: the next plan sends what is left to the Trash.
+  if (/failed to delete '[^']+': Directory not empty/.test(stderr)) {
+    return ': something wrote into the folder while it was being removed. Try again — what is left goes to the Trash.'
+  }
   const said = stderr
     .split('\n')
     .map((l) => l.trim())

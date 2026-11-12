@@ -1180,6 +1180,49 @@ export function rename(topicId: string, name: string): void {
 }
 
 /**
+ * The steps that take one of a topic's checkouts off disk, run from the
+ * repository that owns it.
+ *
+ * Normally git's own `worktree remove`. But one that fails half-way — a file
+ * written into the folder while git was emptying it, "Directory not empty" —
+ * still drops git's record of the checkout, and every retry after it was
+ * refused with "is not a working tree" (exit 128): a topic that could never be
+ * deleted again. A folder git no longer knows goes to the Trash instead, so
+ * whatever is left in it can still be put back. One already gone needs only
+ * the prune.
+ */
+async function removeCheckoutSteps(name: string, path: string, cwd: string): Promise<PlanStep[]> {
+  const prune: PlanStep = { title: 'Prune ' + basename(cwd), command: 'git worktree prune', cwd, destructive: false }
+  if (!existsSync(path)) return [prune]
+
+  const known = await listWorktrees(cwd)
+  if (!known.length || known.some((k) => resolve(k.path) === resolve(path))) {
+    return [
+      {
+        title: 'Remove the folder holding ' + name,
+        command: 'git worktree remove --force ' + path,
+        cwd,
+        destructive: true,
+      },
+      prune,
+    ]
+  }
+
+  const quoted = '"' + path + '"'
+  return [
+    {
+      title: 'Move the folder holding ' + name + ' to the Trash (git had already let go of it)',
+      ...(process.platform === 'darwin'
+        ? { command: 'trash ' + quoted, run: 'trash' }
+        : { command: 'gio trash ' + quoted, run: 'gio' }),
+      cwd,
+      destructive: true,
+    },
+    prune,
+  ]
+}
+
+/**
  * §16 — closing refuses over anything that would lose work, and removing the
  * worktrees is a plan of its own. Nothing here ever runs `rm -rf`.
  */
@@ -1220,14 +1263,7 @@ export async function closePlan(
     const owner = registry
       .allWorkspaces(f.projectId)
       .find((m) => m.kind === 'main' && m.repo && basename(m.path) === basename(w.path))
-    const cwd = owner?.path ?? w.path
-    steps.push({
-      title: 'Remove the folder holding ' + w.name,
-      command: 'git worktree remove --force ' + w.path,
-      cwd,
-      destructive: true,
-    })
-    steps.push({ title: 'Prune ' + basename(cwd), command: 'git worktree prune', cwd, destructive: false })
+    steps.push(...(await removeCheckoutSteps(w.name, w.path, owner?.path ?? w.path)))
   }
   if (!steps.length) {
     store.patch(topicId, (x) => {
@@ -1427,14 +1463,7 @@ export async function deletePlan(
   if (input.removeWorktrees) {
     for (const w of wss.filter((x) => x.kind === 'worktree')) {
       const owner = repos.find((m) => basename(m.path) === basename(w.path)) ?? null
-      const cwd = owner?.path ?? w.path
-      steps.push({
-        title: 'Remove the folder holding ' + w.name,
-        command: 'git worktree remove --force ' + w.path,
-        cwd,
-        destructive: true,
-      })
-      steps.push({ title: 'Prune ' + basename(cwd), command: 'git worktree prune', cwd, destructive: false })
+      steps.push(...(await removeCheckoutSteps(w.name, w.path, owner?.path ?? w.path)))
     }
   }
 
