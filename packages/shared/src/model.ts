@@ -1679,7 +1679,7 @@ export interface CockpitSettings {
  * real turns, the ones above 200k were two thirds of the spend. Past that the
  * engine summarises instead, and the memory keeps what a summary would lose.
  */
-export const CONTEXT_LIMITS = [200_000, 400_000, null] as const
+export const CONTEXT_LIMITS = [200_000, 300_000, 400_000, null] as const
 
 /** A stored or sent limit as the engine accepts it: 100k to 1M, or the model's own. */
 export function normalizeContextLimit(v: unknown): number | null {
