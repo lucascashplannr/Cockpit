@@ -157,8 +157,8 @@ export function list(projectId: string): MemorySummary[] {
 
 /**
  * The memory as the engine reads it, at the opening of a conversation's first
- * turn — and again on a relaunch, because the memory has moved on since and
- * the conversation has not (see `agent.resume`).
+ * turn — and again on a relaunch whose context is not known to hold it already
+ * (see `handedOver` in agents.ts; a known one is told only what was added).
  */
 export function preamble(home: MemoryHome | null): string {
   if (!home) return ''

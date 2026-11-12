@@ -244,7 +244,13 @@ export function forHandoff(c: Conversation, touched: string[]): DocsOffer | null
   if (!projectId || !docs.docsOf(projectId)) return null
   const s = signals(projectId)
   const flags = s.flags.filter((f) => f.sessionId === c.id)
-  const g = gather(projectId, touched, flags, lastingEntries(memory.homeOf(c)))
+  // Only memory entries no docs step has been handed yet. A topic's memory
+  // keeps its decisions for as long as it lives, so counting all of them made
+  // every `/next` on it a docs step — the costliest turn Cockpit asks for,
+  // reading the whole conversation once per page it opens.
+  const handed = new Set(s.offers.flatMap((o) => o.memory))
+  const lasting = lastingEntries(memory.homeOf(c)).filter((e) => !handed.has(e))
+  const g = gather(projectId, touched, flags, lasting)
   if (!worthOffering(g)) return null
   return {
     id: newId('doffer_'),

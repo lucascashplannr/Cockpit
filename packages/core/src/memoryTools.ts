@@ -53,32 +53,23 @@ export const MCP_CONFIG = JSON.stringify({ mcpServers: { [SERVER]: { type: 'sdk'
  * When to write, said once at launch. What it leaves out matters as much: a
  * memory that logs every step is a second transcript, grows every preamble,
  * and buries the three lines the next agent needed.
+ *
+ * What each tool takes and where a fact goes is in the tools' own
+ * descriptions, which the engine reads on every call anyway. Said here as
+ * well, it was ~600 tokens of the same thing twice in every call.
  */
 export const MEMORY_RULES = [
   'This conversation shares a memory with every other conversation on the same topic or project —',
   'other agents, possibly in other repositories, read it when they start, and so does the conversation',
   'that picks up after this one is cleared. Its content, when it has any, opens your first message.',
-  'Keep it true with the cockpit memory tools, as you work, without being asked:',
-  'The memory is a short picture of what is true now, not a log: everything in it is read again by',
-  'every conversation that opens on it. What stops being true is not deleted — it moves to its Past',
-  'section, with why, which is kept for the person and left out of what conversations are handed.',
-  `${NOTE}: one short line (at most ${NOTE_MAX} characters), for a colleague who has not seen this conversation —`,
-  'a decision and its reason (Decisions); an approach tried or considered and dropped, and why (Ruled out);',
-  'something that must not break (Constraints); an interface other code relies on — endpoint, payload,',
-  'event, file — and where it lives (Contracts); a question only the person can answer, and what hangs',
-  'on it (Open questions). When a note supersedes one already there — a question answered, a contract',
-  'changed, a decision revisited — pass the old one as `replaces` so the memory says one thing about one fact;',
-  'the old one moves to Past.',
-  `${OUTDATE}: move an entry that is no longer true, is done with, or that the code or git now shows to Past,`,
-  'with one short line on why — what was tested, what changed, why the work switched.',
-  `${READ} shows Past too, when you need the history.`,
-  `${STATE}: replace where the work stands against its goal — done, in progress, next. Call it when you finish a piece of work.`,
-  'Not the repository\'s status — committed or not, pushed or not, which files changed: Cockpit shows that live,',
-  'and written down it is wrong at the next commit. A choice made along the way is a decision, noted with its reason.',
-  'Before you end a turn in which a decision was made — by you or by the person — or an interface',
-  'was created or changed, note it: that is the moment it is still in front of you.',
-  'Do not log steps or review rounds, restate the code, note what git already shows, or copy a fact',
-  'that belongs to the whole project into a topic memory. Note only what would change what the next agent does.',
+  'Keep it true with the cockpit memory tools, as you work, without being asked. It is a short picture',
+  'of what is true now, not a log: what stops being true moves to Past, out of what conversations are handed.',
+  `Note a decision made — by you or the person — or an interface created or changed before the turn ends;`,
+  `call ${STATE} when you finish a piece of work. Each call reads this whole conversation again: make`,
+  'memory calls in the same message as other tool calls where you can, and at the end of a turn all',
+  'of them in one message. Do not log steps or review rounds, restate the code, note what git already',
+  'shows, or copy a fact that belongs to the whole project into a topic memory. Note only what would',
+  'change what the next agent does.',
 ].join(' ')
 
 const NOTE_SECTIONS = memory.SECTIONS.filter((s) => s !== STATE_SECTION)
@@ -145,7 +136,7 @@ const TOOLS = [
   {
     name: READ,
     description:
-      'Read the shared memory as it stands now, including what other conversations wrote since this one started.',
+      'Read the shared memory as it stands now, including what other conversations wrote since this one started, and its Past.',
     inputSchema: { type: 'object', properties: {} },
   },
 ]

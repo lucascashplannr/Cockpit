@@ -906,6 +906,9 @@ const handlers: Record<string, Handler> = {
     // at all when there are none.
     const touched = touchedBy(c.id).map((t) => docsSignals.projectPath(t.workspaceId, t.path))
     const offer = docsSignals.forHandoff(c, touched)
+    // Just memorized and no pages to check: the turn would read the whole
+    // conversation again to say what the memory already says.
+    if (!offer && isMemorize(last.prompt)) return { ok: true as const, skipped: true }
     const info = offer ? docs.docsOf(offer.projectId) : null
     const set = offer && info ? stageDocsFor(c, docsSignals.pagesToCopy(offer)) : null
     const sent = await sendOnBehalf(

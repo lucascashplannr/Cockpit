@@ -82,6 +82,8 @@ const TIDY_WORDS = [
   'twice; move to Past (`memory_outdate`, with why) what is no longer true, what is done with, and what',
   'the code or git already shows. Then set the state against the goal (done, in progress, next, and the files',
   'that matter) — not whether anything is committed or pushed, which is shown live and goes stale.',
+  'Each step reads this whole conversation again, so after reading make every memory call together,',
+  'in one message.',
 ].join(' ')
 
 /**
@@ -186,6 +188,15 @@ export function documentPrompt(dir: string, o: DocumentOptions = {}): string {
       'and do not change any code.',
     )
   }
+  // A handoff's docs step ran ~9 calls, mostly finding its way around the copy
+  // (ls, cat set.json, a cat per page), each one reading the whole
+  // conversation again: 7× the cost of the memory part of the same turn.
+  lines.push(
+    'Each step reads this whole conversation again, so take as few as you can: ' +
+      (sc ? 'the pages above are all there is to check — do not list or search the copy; read' : 'read') +
+      ' every page you need (and the memory copy, if named below) in one message of parallel reads,',
+    'then write every change in one message. Look at code only for a claim this conversation did not settle.',
+  )
   lines.push(
     'Only lasting knowledge belongs: how things work, contracts, decisions and their reasons, constraints.',
     'Not progress, not state, not what git already shows. If nothing deserves documenting, change nothing.',

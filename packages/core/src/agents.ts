@@ -1142,6 +1142,12 @@ interface Live {
   /** §7 — which conversations it was last told were working beside it. See `peersNews`. */
   peersSeen: string
   /**
+   * §6 — the opening this process's context holds, kept for `handedOver` when
+   * it is let go. Null when that is not known: a launch that sent no opening,
+   * or a compaction that may have summarised it away.
+   */
+  handed: Handed | null
+  /**
    * §16 — the engine session this launch forks from, until the engine
    * announces the fork's own id. See `fork`.
    */
@@ -1190,6 +1196,32 @@ interface Live {
  * is disposable is the process; the conversation outlives it.
  */
 const IDLE_MS = 5 * 60_000
+
+/** The parts of an opening that are said whole: the docs block and the caller's own (cross-repo context). */
+interface Handed {
+  home: string | null
+  docs: string
+  extra: string
+}
+
+/** What a conversation's context holds once its process is gone. */
+interface Handover extends Handed {
+  /** The engine session that holds it: a different one (after /clear) holds none of it. */
+  engineSession: string | null
+  memory: string | null
+  own: Set<string>
+  peers: string
+}
+
+/**
+ * §6 — what each let-go conversation was handed, so its next `--resume` says
+ * only what changed since. The resumed context still holds the first opening;
+ * sending it whole on every return after a pause stacked one more copy of the
+ * memory, the docs index and the cross-repo map per pause, each read again on
+ * every later call. Kept in this process only: after a core restart the next
+ * resume hands everything over again, which is wasteful but never wrong.
+ */
+const handedOver = new Map<string, Handover>()
 
 function armIdleTimer(l: Live): void {
   clearIdleTimer(l)
@@ -2270,19 +2302,38 @@ async function launch(
   // next turn is told. Only an engine that holds the memory tools is told
   // about the memory's rules; the preamble itself is for any engine.
   const home = memory.homeOf(session)
-  const memorySeen = home ? memory.contentAt(home.file, home.kind) : null
+  const memoryNow = home ? memory.contentAt(home.file, home.kind) : null
+  const docsNow = docs.preambleBlock(docsInfo, !!spec.control?.mcp)
+  const extraNow = preamble.trim()
   // §7 — who is already working here, said once at the start; what changes
   // after is said at the top of the turn it changed before (`peersNews`).
   const peersNow = session.alongside ? peersFor(session) : []
+  // §6 — a plain resume of a process let go when idle: its context already
+  // holds an opening, so only what changed since is said (`handedOver`). Not
+  // after an undo (`at`) or for a fork, whose history is not the one recorded.
+  const record = handedOver.get(session.id)
+  handedOver.delete(session.id)
+  const told =
+    resuming && at === undefined && !forkFrom && record &&
+    record.engineSession === session.engineSessionId && record.home === (home?.file ?? null)
+      ? record
+      : undefined
+  const unwrap = (s: string) => s.replace(/\n---\n\n\n$/, '').trim()
   const opening = [
-    memory.preamble(home),
-    docs.preambleBlock(docsInfo, !!spec.control?.mcp),
-    preamble.trim(),
-    peersTools.news(peersNow).replace(/\n---\n\n\n$/, '').trim(),
-    command ? '' : takeInbox(session.id).replace(/\n---\n\n\n$/, '').trim(),
+    !told || told.memory === null
+      ? memory.preamble(home)
+      : home
+        ? unwrap(memoryNewsText(home, told.memory, memoryNow, told.own))
+        : '',
+    told?.docs === docsNow ? '' : docsNow,
+    told?.extra === extraNow ? '' : extraNow,
+    told?.peers === peersSignature(peersNow) ? '' : unwrap(peersTools.news(peersNow)),
+    command ? '' : unwrap(takeInbox(session.id)),
   ]
     .filter(Boolean)
     .join('\n\n')
+  // A command goes in bare, so its context holds only what it held before.
+  const handed: Handed | null = command ? (told ?? null) : { home: home?.file ?? null, docs: docsNow, extra: extraNow }
   const segs = withUltracode(
     spec,
     withSkills(
@@ -2329,10 +2380,11 @@ async function launch(
     mode: ctx.permissionMode ?? 'acceptEdits',
     modeAsked: new Map(),
     idle: null,
-    memorySeen,
-    memoryOwn: new Set(),
+    memorySeen: command && told ? told.memory : memoryNow,
+    memoryOwn: told?.own ?? new Set(),
     held: new Map(),
-    peersSeen: peersSignature(peersNow),
+    peersSeen: command && told ? told.peers : peersSignature(peersNow),
+    handed,
     forkedFrom: forkFrom,
   }
   live.set(session.id, l)
@@ -2601,6 +2653,8 @@ async function launch(
         case 'compacted':
           l.context = ev.contextTokens ?? 0
           l.contextCached = 0
+          // The summary may have dropped the opening: the next launch says it whole.
+          l.handed = null
           append({
             type: 'agent.compacted',
             actor,
@@ -2689,6 +2743,16 @@ async function launch(
     ended = true
     clearIdleTimer(l)
     live.delete(session.id)
+    // Only a process that finished cleanly is known to have kept its opening.
+    if (code === 0 && l.handed && session.engineSessionId) {
+      handedOver.set(session.id, {
+        ...l.handed,
+        engineSession: session.engineSessionId,
+        memory: l.memorySeen,
+        own: l.memoryOwn,
+        peers: l.peersSeen,
+      })
+    }
     session.status = code === 0 ? 'ended' : 'failed'
     session.endedAt = Date.now()
     persist(session)
@@ -2773,9 +2837,15 @@ function memoryNews(l: Live): string {
   const home = memory.homeOf(l.session)
   if (!home) return ''
   const now = memory.contentAt(home.file, home.kind)
-  if (now === l.memorySeen) return ''
-  const added = memory.newSince(l.memorySeen, now, l.memoryOwn)
+  const news = memoryNewsText(home, l.memorySeen, now, l.memoryOwn)
   l.memorySeen = now
+  return news
+}
+
+/** The lines added between two readings of a memory, minus the conversation's own. */
+function memoryNewsText(home: memory.MemoryHome, then: string | null, now: string | null, own: Set<string>): string {
+  if (now === then) return ''
+  const added = memory.newSince(then, now, own)
   if (!added.length) return ''
   return [
     '# Memory — new since your last turn',

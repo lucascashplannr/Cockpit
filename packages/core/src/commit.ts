@@ -386,15 +386,22 @@ export async function lastMessage(workspaceId: string): Promise<string | null> {
 
 /**
  * Enough diff to write about; past this, the summary carries the rest. In
- * characters, across every repository of the commit — about 100k tokens.
+ * characters, across every repository of the commit — about 45k tokens.
  *
  * It was 120k characters, and an ordinary docs commit (2.6k lines of prose,
  * 135k characters) tripped it every time: the draft came with a warning to
  * distrust it over a diff the engine could have read whole in a few seconds.
- * The cap is for the change that is mostly generated or moved code, not for
- * a day's writing.
+ * Then 400k, which let a large feature commit send ~180k tokens for one
+ * sentence. The cap is for the change that is mostly generated or moved code,
+ * not for a day's writing.
  */
-const DRAFT_DIFF_BUDGET = 400_000
+const DRAFT_DIFF_BUDGET = 160_000
+
+/**
+ * One commit message does not need the agents' model. Named here because the
+ * engine's own default follows the account, which is Opus.
+ */
+const DRAFT_MODEL = 'sonnet'
 
 /**
  * Files whose patch says nothing the filename does not. A regenerated lockfile
@@ -670,6 +677,7 @@ async function draftWith(input: DraftInput, signal: AbortSignal): Promise<DraftR
     '-p',
     '--restricted',
     '--strict-mcp-config',
+    '--model', DRAFT_MODEL,
     '--output-format', 'text',
   ], { input: prompt, timeoutMs: 90_000, maxBuffer: 256 * 1024, signal })
 
