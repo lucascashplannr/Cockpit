@@ -4,10 +4,10 @@ import type { ChildProcess } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, commandIn, conversationRef, newId } from '@cockpit/shared'
+import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, WAKE_PROMPT, commandIn, conversationRef, newId } from '@cockpit/shared'
 import type {
   AgentAnswers, AgentLoadout, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, AgentTurn, LoadoutChoice, MemorySource, PeerMessage, PermissionMode,
-  PermissionRequest, TurnUsage,
+  PermissionRequest, TurnUsage, BackgroundTask,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
 import { append, forSession, recordTouch, touchedBy } from './journal.js'
@@ -197,6 +197,13 @@ export interface NormalizedEvent {
     | 'compacted'
     | 'end'
     | 'error'
+    /**
+     * Something the engine started that outlives the call that started it — a
+     * background command, a sub-agent. `task` says which and what.
+     */
+    | 'task_started'
+    /** One of those has ended, however it ended. `task.summary` is the engine's own line about it. */
+    | 'task_ended'
   /** `delta` / `text`: what was written. `end`: the closing message. */
   text?: string
   /** Which message this belongs to, so two in flight cannot be merged (§3.3). */
@@ -229,6 +236,8 @@ export interface NormalizedEvent {
   reason?: string
   /** `end` only: the invocations §16 refused during this turn. */
   denials?: string[]
+  /** `task_started` / `task_ended` only. */
+  task?: { id: string; description: string; kind: string; summary?: string; status?: string }
   /** `progress` only: output tokens of the message being written right now. */
   outputTokens?: number
   /**
@@ -604,6 +613,14 @@ function engineEnv(): NodeJS.ProcessEnv {
   return env
 }
 
+/** The engine's task types, in the window's words. */
+function taskKind(t: unknown): string {
+  const v = String(t ?? '')
+  if (v === 'local_bash') return 'shell'
+  if (v === 'local_agent' || v === 'remote_agent') return 'agent'
+  return v.replace(/^local_/, '') || 'task'
+}
+
 const claudeEngine: EngineSpec = {
   id: 'claude',
   bin: 'claude',
@@ -694,6 +711,27 @@ const claudeEngine: EngineSpec = {
       const m = (o.compact_metadata ?? {}) as { pre_tokens?: unknown; post_tokens?: unknown }
       const n = (v: unknown): number => (typeof v === 'number' && isFinite(v) ? v : 0)
       return [{ kind: 'compacted', preTokens: n(m.pre_tokens), contextTokens: n(m.post_tokens) }]
+    }
+
+    // Background work. Reported as it starts and once as it ends; `task_updated`
+    // is read only for an end, because a kill is sometimes said only there.
+    if (type === 'system' && (o.subtype === 'task_started' || o.subtype === 'task_notification' || o.subtype === 'task_updated')) {
+      const id = String(o.task_id ?? '')
+      if (!id) return []
+      if (o.subtype === 'task_started')
+        return [
+          {
+            kind: 'task_started',
+            task: {
+              id,
+              description: String(o.description ?? ''),
+              kind: taskKind(o.task_type),
+            },
+          },
+        ]
+      const status = String(o.subtype === 'task_updated' ? ((o.patch ?? {}) as { status?: unknown }).status ?? '' : o.status ?? '')
+      if (!/^(completed|failed|killed|stopped)$/.test(status)) return []
+      return [{ kind: 'task_ended', task: { id, description: '', kind: '', summary: typeof o.summary === 'string' ? o.summary : '', status } }]
     }
 
     if (type === 'control_response') {
@@ -1119,6 +1157,14 @@ interface Live {
   queue: QueuedTurn[]
   /** A turn is in flight: the next one queues instead of being written. */
   busy: boolean
+  /**
+   * What it left running, by the engine's task id. While any is, the process
+   * is not let go when idle: closing it would kill them, and the engine picks
+   * the conversation up again on its own when each one ends.
+   */
+  tasks: Map<string, BackgroundTask>
+  /** The engine's lines about the tasks that ended since the last turn, for the turn it wakes up into. */
+  woke: string[]
   /** What a tool was called with, kept until its result comes back. */
   calls: Map<string, { tool: string; input: Record<string, unknown>; mode: PermissionMode; at: number }>
   /** Calls the engine asked a person about, by tool use id — see `ranUnasked`. */
@@ -1241,7 +1287,7 @@ const handedOver = new Map<string, Handover>()
 function armIdleTimer(l: Live): void {
   clearIdleTimer(l)
   l.idle = setTimeout(() => {
-    if (l.busy || l.queue.length) return
+    if (l.busy || l.queue.length || l.tasks.size) return
     l.child.stdin?.end()
   }, IDLE_MS)
   // Never a reason to hold the core open by itself.
@@ -1672,6 +1718,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     // Live only, and correctly empty for a conversation whose process is gone.
     queued: queuedIn(String(r.id)),
     pending: pendingIn(String(r.id)),
+    background: backgroundIn(String(r.id)),
     naming: namingIds.has(String(r.id)),
     hiddenAt: r.hidden_at == null ? null : Number(r.hidden_at),
     alongside: !!r.alongside,
@@ -1872,6 +1919,7 @@ export async function startAgent(input: StartAgentInput): Promise<StartAgentResu
     denials: [],
     queued: [],
     pending: [],
+    background: [],
     naming: false,
     usage: null,
     hiddenAt: null,
@@ -2394,6 +2442,8 @@ async function launch(
     costSoFar: 0,
     anchor: null,
     busy: true,
+    tasks: new Map(),
+    woke: [],
     calls: new Map(),
     asked: new Set(),
     answers: new Map(),
@@ -2457,12 +2507,45 @@ async function launch(
       }
     }
 
+    const events = spec.parse(line)
+    // The engine writing while no turn is open: a background task ended and it
+    // picked the conversation up on its own. Opened as a turn of its own, or
+    // the window reads a conversation at work as one that has finished.
+    if (spec.streaming && !l.busy && events.some((e) => e.kind === 'message_start' || e.kind === 'text' || e.kind === 'tool'))
+      wake(l)
+
     const anchor = spec.anchorIn?.(line)
     if (anchor) l.anchor = anchor
 
     let changed = false
-    for (const ev of spec.parse(line)) {
+    for (const ev of events) {
       switch (ev.kind) {
+        case 'task_started':
+          if (!ev.task) break
+          l.tasks.set(ev.task.id, {
+            id: ev.task.id,
+            description: ev.task.description,
+            kind: ev.task.kind,
+            startedAt: Date.now(),
+          })
+          changed = true
+          break
+
+        case 'task_ended': {
+          const t = ev.task && l.tasks.get(ev.task.id)
+          if (!t) break
+          l.tasks.delete(t.id)
+          // Only one that outlived its turn wakes the engine; one that ended
+          // inside a turn was already read there. The engine's summary is
+          // often empty on this channel, so the agent's own description of it
+          // is the fallback.
+          if (!l.busy) l.woke.push(ev.task!.summary || (t.description || 'A background ' + t.kind) + ' — ' + (ev.task!.status || 'ended'))
+          // The idle countdown skipped this process while it waited.
+          if (!l.busy && !l.tasks.size && spec.streaming) armIdleTimer(l)
+          changed = true
+          break
+        }
+
         case 'ready':
           if (ev.loadout) {
             loadouts.set(session.id, ev.loadout)
@@ -2808,6 +2891,24 @@ async function launch(
   })
 
   return { sessionId: session.id }
+}
+
+/**
+ * A turn the engine started by itself — see `WAKE_PROMPT`. No checkpoint: the
+ * engine is already running, and a snapshot taken now could race its first
+ * edit. An undo from the turn before still covers it.
+ */
+function wake(l: Live): void {
+  clearIdleTimer(l)
+  l.busy = true
+  l.session.status = 'thinking'
+  l.doneTokens = 0
+  l.msgTokens = 0
+  l.anchor = null
+  openTurn(l.session.id, WAKE_PROMPT + l.woke.join('\n'))
+  l.woke = []
+  persist(l.session)
+  agentBus.emit('changed')
 }
 
 /**
@@ -3532,6 +3633,7 @@ export async function fork(
     denials: [],
     queued: [],
     pending: [],
+    background: [],
     naming: false,
     hiddenAt: null,
   }
@@ -3873,6 +3975,11 @@ export function answerPermission(
   })
   agentBus.emit('changed')
   return { ok: true }
+}
+
+/** What it left running, oldest first. */
+export function backgroundIn(sessionId: string): BackgroundTask[] {
+  return [...(live.get(sessionId)?.tasks.values() ?? [])]
 }
 
 /** What is waiting to be asked, for a window that has to show it. */

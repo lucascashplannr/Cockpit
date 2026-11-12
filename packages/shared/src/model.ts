@@ -1042,6 +1042,17 @@ export interface AgentTurn {
  */
 export type PermissionMode = 'auto' | 'manual' | 'acceptEdits' | 'plan' | 'dontAsk' | 'bypassPermissions'
 
+/** Something a conversation left running in the background. See `Conversation.background`. */
+export interface BackgroundTask {
+  /** The engine's id for it. */
+  id: string
+  /** In the agent's words: "Run the backend tests". */
+  description: string
+  /** `shell` for a command, `agent` for a sub-agent, or whatever else the engine calls it. */
+  kind: string
+  startedAt: number
+}
+
 /**
  * A tool call the engine will not make until a person says yes.
  *
@@ -1154,6 +1165,15 @@ export interface Conversation {
    * the first of them until it is answered.
    */
   pending: PermissionRequest[]
+  /**
+   * What it started and left running: a shell command or an agent sent off in
+   * the background, oldest first. Live only, like the queue — the process owns
+   * them, and they go with it.
+   *
+   * Between turns this is what tells "finished" from "waiting on something":
+   * the engine picks the conversation up again on its own when each one ends.
+   */
+  background: BackgroundTask[]
   /**
    * A name for it is being written from turn 1. Live only: the window shows a
    * placeholder rather than the typed prompt, which is about to be replaced.

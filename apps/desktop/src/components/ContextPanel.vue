@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { attentionIcon } from './agent/attention.js'
-import { Asterisk, CircleStop, Hand, History, MousePointerClick, Plus, X } from '@lucide/vue'
+import { Asterisk, CircleStop, Hand, History, Hourglass, MousePointerClick, Plus, X } from '@lucide/vue'
 import type { Conversation } from '@cockpit/shared'
 import AgentTab from './tabs/AgentTab.vue'
 import Splitter from './Splitter.vue'
@@ -133,17 +133,19 @@ function dotOf(c: Conversation): string {
   if (a === 'approval') return 'ask'
   if (a !== 'none') return 'you'
   if (isBusy(c)) return 'work'
+  // Between turns, with something it left running: it will pick up on its own.
+  if (c.background?.length) return 'wait'
   if (hasMail(c)) return 'mail'
   return isLive(c) ? 'open' : 'done'
 }
 /** A dot only when there is news: working, needs you, or a message waiting. */
 function news(c: Conversation): boolean {
   const d = dotOf(c)
-  return d === 'work' || d === 'you' || d === 'ask' || d === 'mail'
+  return d === 'work' || d === 'wait' || d === 'you' || d === 'ask' || d === 'mail'
 }
 function stateWord(c: Conversation): string {
   const d = dotOf(c)
-  return d === 'ask' ? 'asking you' : d === 'you' ? 'needs you' : d === 'work' ? 'working' : d === 'mail' ? 'a message is waiting' : d === 'open' ? 'open' : 'finished'
+  return d === 'ask' ? 'asking you' : d === 'you' ? 'needs you' : d === 'work' ? 'working' : d === 'wait' ? 'waiting on what it left running' : d === 'mail' ? 'a message is waiting' : d === 'open' ? 'open' : 'finished'
 }
 function press(c: Conversation, e: MouseEvent): void {
   // The click a drag ends on is the end of the drag, not a choice of tab.
@@ -353,6 +355,7 @@ function fresh(): void {
               >
                 <Hand v-if="dotOf(e.conv) === 'ask'" class="ask" />
                 <Asterisk v-else-if="dotOf(e.conv) === 'work'" class="star agent-star" />
+                <Hourglass v-else-if="dotOf(e.conv) === 'wait'" class="wait" />
                 <component :is="attentionIcon(attentionOf(e.conv))" v-else-if="dotOf(e.conv) === 'you'" class="att" :class="attentionOf(e.conv)" />
                 <span v-else-if="news(e.conv)" class="dot" :class="dotOf(e.conv)" />
                 <input
@@ -401,6 +404,7 @@ function fresh(): void {
                   >
                     <Hand v-if="dotOf(c) === 'ask'" class="ask" />
                     <Asterisk v-else-if="dotOf(c) === 'work'" class="star agent-star" />
+                    <Hourglass v-else-if="dotOf(c) === 'wait'" class="wait" />
                     <component :is="attentionIcon(attentionOf(c))" v-else-if="dotOf(c) === 'you'" class="att" :class="attentionOf(c)" />
                     <span v-else-if="news(c)" class="dot" :class="dotOf(c)" />
                     <input
@@ -488,7 +492,9 @@ function fresh(): void {
             class="icon-btn"
             :title="isBusy(thread)
               ? 'Stop what it is doing'
-              : 'Let this conversation go — it is between turns and still holding its repositories'"
+              : thread.background?.length
+                ? 'Stop it — this also stops what it left running in the background'
+                : 'Let this conversation go — it is between turns and still holding its repositories'"
             @click="stop"
           >
             <CircleStop class="sm" />
@@ -642,6 +648,7 @@ function fresh(): void {
 .star { flex: none; width: 13px; height: 13px; stroke-width: 2.4; color: var(--agent); }
 /* It asked you something: the hand the thread's own "needs you" carries. */
 .ask { flex: none; width: 12px; height: 12px; stroke-width: 2.2; color: var(--warn); }
+.wait { flex: none; width: 12px; height: 12px; stroke-width: 2; color: var(--agent); }
 /* It needs you — most often an answer not read yet: the icon the list's rows carry, in their colours. */
 .att { flex: none; width: 13px; height: 13px; color: var(--agent); }
 .att.blocked { color: var(--warn); }

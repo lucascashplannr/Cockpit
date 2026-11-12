@@ -7,8 +7,8 @@ import type {
   AgentAnswers, AgentQuestion, AgentScope, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, GitFork, Hand, MessageSquareText, Paperclip,
-  Redo2, Send, Undo2, X,
+  ArrowDown, Asterisk, BellRing, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, GitFork, Hand, Hourglass, MessageSquareText,
+  Paperclip, Redo2, Send, Undo2, X,
 } from '@lucide/vue'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
 import ToolCall from '../agent/ToolCall.vue'
@@ -30,7 +30,7 @@ import {
 } from '../../core/store.js'
 import {
   COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, commandOff, conversationRef, isDocument, isHandoff, isMemorize,
-  questionsIn, readPrompt,
+  isWake, questionsIn, readPrompt, wakeLines,
 } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
 
@@ -1227,7 +1227,7 @@ const now = ref(Date.now())
 let clock: number | null = null
 
 watch(
-  () => !!selected.value && isBusy(selected.value),
+  () => !!selected.value && (isBusy(selected.value) || !!selected.value.background?.length),
   (busy) => {
     if (clock !== null) clearInterval(clock)
     now.value = Date.now()
@@ -1247,6 +1247,30 @@ function since(from: number): string {
   const s = Math.max(0, Math.floor((now.value - from) / 1000))
   if (s < 60) return s + 's'
   return Math.floor(s / 60) + 'm ' + (s % 60) + 's'
+}
+
+/**
+ * Between turns, what it left running — the difference between an answer that
+ * is final and one that says "I'll report back". Without it a conversation
+ * waiting on a twenty-minute test run reads exactly like one that has stopped.
+ */
+const waiting = computed(() => {
+  const s = selected.value
+  const tasks = s && !isBusy(s) ? (s.background ?? []) : []
+  if (!tasks.length) return null
+  const first = tasks[0]!
+  return {
+    what: tasks.length === 1 ? first.description || 'a background ' + first.kind : tasks.length + ' background tasks',
+    since: Math.min(...tasks.map((t) => t.startedAt)),
+    list: tasks.map((t) => '• ' + (t.description || t.kind)).join('\n'),
+  }
+})
+
+/** Why a turn nobody asked began: the engine's own line about what ended. */
+function wakeLine(prompt: string): string {
+  const lines = wakeLines(prompt)
+  if (!lines.length) return 'Picked up again on its own'
+  return lines.join(' · ')
 }
 
 /** What has been written of the answer so far, in the engine's own count. */
@@ -1298,6 +1322,7 @@ const doing = computed(() => {
   if (last && isHandoff(last.turn.prompt)) return 'Handing off to memory'
   if (last && isMemorize(last.turn.prompt)) return 'Bringing the memory up to date'
   if (last && isDocument(last.turn.prompt)) return 'Drafting documentation proposals'
+  if (last && isWake(last.turn.prompt) && !last.items.length) return 'Reading what came back'
   for (let i = (last?.items.length ?? 0) - 1; i >= 0; i--) {
     const it = last!.items[i]!
     if (it.kind === 'tool' && !it.result) return verbFor(it.tool, it.input)
@@ -1700,6 +1725,13 @@ function ago(ts: number): string {
           <Asterisk class="star" />working
         </span>
         <span
+          v-else-if="waiting"
+          class="busytag idlewait"
+          :title="'Still running in the background — it picks the conversation up again when this ends. What you say now goes straight in.\n' + waiting.list"
+        >
+          <Hourglass class="sm" />waiting
+        </span>
+        <span
           v-else-if="isLive(selected)"
           class="alive"
           title="The engine is still here between turns: the next thing you say goes straight in, and it holds this scope until it is let go"
@@ -1774,6 +1806,12 @@ function ago(ts: number): string {
             <p v-if="isDocument(x.turn.prompt)" class="undone compacted handoff">
               <BookOpen class="sm" />
               Documentation step — drafting proposals to the docs, for you to accept in the Docs tool
+            </p>
+            <!-- Nobody asked this one: something it left running ended, and
+                 it picked the conversation up on its own. -->
+            <p v-else-if="isWake(x.turn.prompt)" class="undone compacted handoff" :title="stamp(x.turn.startedAt)">
+              <BellRing class="sm" />
+              {{ wakeLine(x.turn.prompt) }}
             </p>
             <div v-else class="ask" data-said="user">
               <!-- What was attached, above the words: the screenshot is the
@@ -1999,7 +2037,7 @@ function ago(ts: number): string {
             <p v-if="x.turn.status === 'running' && pending.length" class="pulse asking">
               <Hand class="star" />
               <span class="verb">{{ asking ? 'Waiting for your answer' : 'Waiting for you to allow ' + pending[0]!.tool }}</span>
-              <span class="sep">·</span>
+              <span class="sep">•</span>
               <span class="num">{{ since(pending[0]!.askedAt) }}</span>
             </p>
             <!-- The verb is the phase it is in *now*; the two numbers are the
@@ -2013,12 +2051,25 @@ function ago(ts: number): string {
             <p v-else-if="x.turn.status === 'running'" class="pulse">
               <Asterisk class="star" />
               <span class="verb">{{ shownDoing }}…</span>
-              <span class="sep">·</span>
+              <span class="sep">•</span>
               <span class="num" :title="'Since the question went in, ' + stamp(x.turn.startedAt) + ' — the whole turn, not this step'">{{ since(x.turn.startedAt) }}</span>
               <template v-if="liveTokens">
-                <span class="sep">·</span>
+                <span class="sep">•</span>
                 <span class="num" title="Everything the engine has written this turn — its reasoning and the arguments of every tool call, not only the words on screen">{{ k(liveTokens) }} tokens</span>
               </template>
+            </p>
+            <!-- The turn is over and something it started is not. Still, not
+                 turning: nothing is being written, it is waiting to be called
+                 back — and the clock beside it is what says it is alive. -->
+            <p
+              v-else-if="waiting && i === exchanges.length - 1"
+              class="pulse idlewait"
+              :title="'Running in the background — it picks the conversation up again when this ends. What you say now goes straight in.\n' + waiting.list"
+            >
+              <Hourglass class="star" />
+              <span class="verb">Waiting on {{ waiting.what }}</span>
+              <span class="sep">•</span>
+              <span class="num">{{ since(waiting.since) }}</span>
             </p>
 
             <!-- The answer's own footer, and only what can be done to it.
@@ -2375,6 +2426,8 @@ function ago(ts: number): string {
   font-weight: 600;
   color: var(--agent);
 }
+.busytag.idlewait { cursor: default; }
+.busytag.idlewait .sm { width: 12px; height: 12px; }
 /* Alive between turns: a fact, in a word, at the weight of a fact. No
    pulse — nothing is happening, and an animation is a claim that something
    is.
@@ -2508,11 +2561,17 @@ function ago(ts: number): string {
 }
 .pulse .star { flex: none; width: 15px; height: 15px; color: var(--agent); }
 .pulse .verb { color: var(--text); font-weight: 550; }
-.pulse .sep { color: var(--text-dim); opacity: 0.6; }
+.pulse .sep { color: var(--text-dim); opacity: 0.6; font-size: 0.8em; line-height: 1; }
 .pulse .num { color: var(--text-dim); font-variant-numeric: tabular-nums; }
 /* Stopped on a question for you: the hand holds still — nothing is being done
    until you answer, and a spinning mark would say otherwise. */
 .pulse.asking .star { color: var(--warn); animation: none; stroke-width: 1.75; }
+/* Waiting on something it left running: a still mark, the verb allowed to
+   ellipsise — a command's description can run to a sentence. */
+.pulse.idlewait .star { width: 13px; height: 13px; animation: none; stroke-width: 1.75; }
+.pulse.idlewait .verb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pulse.idlewait .sep,
+.pulse.idlewait .num { flex: none; }
 
 /* ── §16, the receipt ─────────────────────────────────────────────────────
  *

@@ -235,3 +235,20 @@ export function handoffPrompt(docsDir: string | null, o: DocumentOptions = {}): 
 export function isDocument(prompt: string | null | undefined): boolean {
   return !!prompt && prompt.startsWith(DOCUMENT_WORDS)
 }
+
+/**
+ * A turn nobody asked: the engine picked the conversation up again on its own
+ * because something it left running in the background ended. Stored as the
+ * turn's prompt so the thread can say why it moved; what follows the marker is
+ * the engine's own line about each task, one per line.
+ */
+export const WAKE_PROMPT = '<task-notification>'
+
+export function isWake(prompt: string | null | undefined): boolean {
+  return !!prompt && prompt.startsWith(WAKE_PROMPT)
+}
+
+/** The engine's lines about what ended, without the marker. */
+export function wakeLines(prompt: string): string[] {
+  return prompt.slice(WAKE_PROMPT.length).split('\n').map((x) => x.trim()).filter(Boolean)
+}

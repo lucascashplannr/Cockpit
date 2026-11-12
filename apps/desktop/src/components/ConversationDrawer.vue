@@ -234,6 +234,7 @@ function dotClass(c: Conversation): string {
             <span>{{ ago(c.startedAt) }}</span>
             <span v-if="c.pending.length" class="state ask">needs you</span>
             <span v-else-if="isBusy(c)" class="state on">working</span>
+            <span v-else-if="c.background?.length" class="state on">waiting</span>
             <span v-else-if="isLive(c)" class="state">open</span>
             <span
               v-if="attentionOf(c) !== 'none'"
@@ -254,7 +255,9 @@ function dotClass(c: Conversation): string {
             class="icon-btn small"
             :title="isBusy(c)
               ? 'Stop what it is doing'
-              : 'Let this conversation go — it is idle and still holding its repositories'"
+              : c.background?.length
+                ? 'Stop it — this also stops what it left running in the background'
+                : 'Let this conversation go — it is idle and still holding its repositories'"
             @click="stop(c)"
           >
             <CircleStop class="sm" />
