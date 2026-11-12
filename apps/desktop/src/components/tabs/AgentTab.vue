@@ -792,24 +792,40 @@ const canSend = computed(() => {
 const queueing = computed(() => !!selected.value && isBusy(selected.value))
 
 /**
- * `/clear`, `/next` and `/new` — the same scope, an empty thread, and this one
+ * `/new` — an empty thread on the same scope and memory, in a tab beside this
+ * one, which stays as it is: the "New conversation" button, typed. Nothing is
+ * asked of the agent and nothing is removed.
+ */
+function newBeside(): void {
+  const s = selected.value
+  const on = scope.value
+  if (!on) return
+  agentDraft.value = ''
+  agentFiles.value = []
+  if (s) chooseMemory(on, s.memory)
+  startFresh(on)
+}
+
+/**
+ * `/clear`, `/next` and `/erase` — the same scope, an empty thread, and this one
  * removed.
  *
+ * `/clear` asks nothing of the agent and starts on the memory as it is.
  * `/next` has the agent bring the memory up to date first, and the new
- * conversation starts on that memory. `/new` asks nothing of the agent and
- * starts on the memory as it is. `/clear` asks nothing of the agent and erases
- * the memory too: the next conversation knows nothing of this one.
+ * conversation starts on that memory. `/erase` asks nothing of the agent and
+ * erases the memory too, always after asking: the next conversation knows
+ * nothing of this one.
  *
  * Removed the way the drawer's Remove removes it; its journal never goes. Its
  * engine is let go first, if it is sitting open: an open conversation holds
  * the lock on the scope, and the new one would be refused by the old.
  */
-async function clearThread(mode: 'erase' | 'keep' | 'handoff' = 'erase', confirmed = false): Promise<void> {
+async function clearThread(mode: 'erase' | 'keep' | 'handoff', confirmed = false): Promise<boolean> {
   const s = selected.value
   const handoff = mode === 'handoff'
   if (handoff && (!s || !continuing.value)) {
-    toast('info', 'there is no conversation to carry on from yet')
-    return
+    toast('info', 'Nothing to hand off — this conversation has not started yet')
+    return false
   }
   const on = scope.value
   // Either one during the handoff is "skip it": the person has decided
@@ -818,42 +834,56 @@ async function clearThread(mode: 'erase' | 'keep' | 'handoff' = 'erase', confirm
     handingOff.value = null
     agentDraft.value = ''
     await guard(() => client.call('agent.stop', { sessionId: s.id }))
-    await leave(s.id, on, true)
-    return
+    if (await leave(s.id, on, true)) {
+      toast('ok', 'Cleared ' + named(s) + ', handoff stopped', {
+        lines: ['Memory ' + memoryNamed(s) + ' keeps what the handoff had written so far'],
+      })
+    }
+    return false
   }
   if (s && isBusy(s)) {
-    toast('info', 'it is still on a turn — stop it first, or let it finish')
-    return
+    toast('info', named(s) + ' is still answering', { lines: ['Stop it, or let it finish, before ' + COMMAND_OF[mode]] })
+    return false
   }
-  // A memory other conversations are writing to is theirs as well: asked.
-  const others = s && mode === 'erase' && hasFile(s.memory) ? state.agents.filter((c) => c.id !== s.id && c.memory === s.memory) : []
-  if (others.length && !confirmed) {
+  // Erasing a memory is always asked: it is what every later conversation on
+  // this scope would have started from. Said louder when others use it too.
+  const erasing = !!s && mode === 'erase' && hasFile(s.memory)
+  const others = erasing ? state.agents.filter((c) => c.id !== s!.id && c.memory === s!.memory) : []
+  if (erasing && !confirmed) {
     state.pendingConfirm = {
       title: 'Erase "' + memoryLabel(props.workspace.projectId, s!.memory) + '"?',
       body: [
-        (others.length === 1 ? 'Another conversation uses' : others.length + ' other conversations use') +
-          ' this memory, and every note in it goes.',
+        others.length
+          ? (others.length === 1 ? 'Another conversation uses' : others.length + ' other conversations use') +
+            ' this memory, and every note in it goes.'
+          : 'Every note in it goes, and this conversation with it.',
         'It can be restored from the Memory tab for 30 days.',
       ],
       verb: 'Erase',
-      done: 'memory erased',
+      done: 'Erased memory ' + memoryNamed(s!) + ' and ' + named(s!),
+      doneLines: [
+        'Restorable from the Memory tab for 30 days',
+        others.length
+          ? (others.length === 1 ? 'The other conversation on it keeps running' : 'The other conversations on it keep running') +
+            ', without its notes'
+          : 'The next conversation here starts with no memory',
+      ],
       danger: true,
-      run: async () => {
-        await clearThread('erase', true)
-        return true
-      },
+      // Refused, the dialog stays open beside the reason rather than saying "Erased".
+      run: () => clearThread('erase', true),
     }
-    return
+    return false
   }
   agentDraft.value = ''
   agentFiles.value = []
+  // What the toast says once the conversation is gone, decided along the way.
+  let done: { kind: 'ok' | 'info'; text: string; lines: string[] } | null = null
   // §6 — "vider devient gratuit" only if what the conversation understood is
   // somewhere the next one reads. One turn, in this thread, before it goes —
   // and with docs linked, the same turn drafts proposals to them (§9).
   if (s && handoff) {
     handingOff.value = s.id
     const r = await guard(() => client.call('agent.handoff', { sessionId: s.id }))
-    if (r && !r.ok) toast('info', 'no handoff — ' + r.reason)
     // Answered once the turn is sent, not once it lands: a long conversation's
     // handoff outlasts any request. Its landing is the conversation going idle.
     if (r?.ok && !r.skipped) {
@@ -864,20 +894,59 @@ async function clearThread(mode: 'erase' | 'keep' | 'handoff' = 'erase', confirm
     }
     const skipped = handingOff.value !== s.id
     handingOff.value = null
-    if (skipped) return
-    if (r?.ok && r.docsSetId) toast('ok', 'docs proposals are waiting in the Docs tool')
+    if (skipped) return false
+    done = !r
+      ? null
+      : !r.ok
+        ? {
+            kind: 'info',
+            text: 'Cleared ' + named(s) + ' without a handoff',
+            lines: ['Memory ' + memoryNamed(s) + ' was not brought up to date', r.reason],
+          }
+        : {
+            kind: 'ok',
+            text: 'Handed off ' + named(s),
+            lines: [
+              'Memory ' + memoryNamed(s) + (r.skipped ? ' was already up to date' : ' brought up to date'),
+              ...(r.docsSetId ? ['Documentation proposals are waiting in the Docs tool'] : []),
+              'The new conversation starts from it',
+            ],
+          }
+  } else if (s && mode === 'keep') {
+    done = {
+      kind: 'ok',
+      text: 'Cleared ' + named(s),
+      lines: [hasFile(s.memory) ? 'Memory ' + memoryNamed(s) + ' kept as it is' : 'It had no memory to keep'],
+    }
   }
-  await leave(s?.id, on, mode !== 'erase')
+  // /erase says it through the confirm dialog's `done`, which ran this.
+  const gone = await leave(s?.id, on, mode !== 'erase')
+  if (gone && done) toast(done.kind, done.text, { lines: done.lines })
+  return gone
 }
 
 /** A memory with a file behind it, rather than "new" or "off". */
 const hasFile = (memory: string): boolean => memory !== 'new' && memory !== 'off'
 
+const COMMAND_OF = { keep: '/clear', handoff: '/next', erase: '/erase' } as const
+
+/** A conversation as a toast names it: its title, quoted and kept short. */
+function named(c: Conversation): string {
+  const t = (c.title || c.prompt || 'untitled').replace(/\s+/g, ' ').trim()
+  return '“' + (t.length > 48 ? t.slice(0, 47) + '…' : t) + '”'
+}
+
+/** Its memory as a toast names it. */
+function memoryNamed(c: Conversation): string {
+  return '“' + memoryLabel(props.workspace.projectId, c.memory) + '”'
+}
+
 /**
  * The conversation goes and an empty thread takes its place — on the same
  * memory (`keep`), or with that memory erased and the scope's default back.
+ * True when the conversation went.
  */
-async function leave(id: string | undefined, on: AgentScope | null, keep: boolean): Promise<void> {
+async function leave(id: string | undefined, on: AgentScope | null, keep: boolean): Promise<boolean> {
   // Asked of the store as it is now: a conversation let go meanwhile has
   // nothing to stop.
   const now = state.agents.find((c) => c.id === id)
@@ -893,7 +962,10 @@ async function leave(id: string | undefined, on: AgentScope | null, keep: boolea
     }
     if (on) forgetMemoryChoice(on)
   }
-  if (on) startFresh(on)
+  // What was on screen is gone: whichever thread the scope falls back to was
+  // never open, and gets no tab. Refused, it is still there and keeps its own.
+  if (on) startFresh(on, !!now && !removed)
+  return removed
 }
 
 /**
@@ -961,9 +1033,10 @@ async function send(): Promise<void> {
       toast('info', off)
       return
     }
-    if (cmd.command.name === 'clear') return clearThread()
-    if (cmd.command.name === 'next') return clearThread('handoff')
-    if (cmd.command.name === 'new') return clearThread('keep')
+    if (cmd.command.name === 'clear') return void (await clearThread('keep'))
+    if (cmd.command.name === 'next') return void (await clearThread('handoff'))
+    if (cmd.command.name === 'erase') return void (await clearThread('erase'))
+    if (cmd.command.name === 'new') return newBeside()
     if (cmd.command.name === 'document') return documentThread()
     if (cmd.command.name === 'memorize') return memorizeThread()
     const no = refuseCommand(cmd.command.name, cmd.command.run, !!cmd.command.thread)

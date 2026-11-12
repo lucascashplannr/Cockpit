@@ -30,9 +30,10 @@ export interface AgentCommand {
 }
 
 export const AGENT_COMMANDS: AgentCommand[] = [
-  { name: 'clear', hint: 'Erase the memory and start a new conversation', run: 'window', thread: true },
+  { name: 'clear', hint: 'Clear this conversation, keep the memory as it is', run: 'window', thread: true },
   { name: 'next', hint: 'Bring the memory up to date, then a new conversation on it', run: 'window', thread: true },
-  { name: 'new', hint: 'A new conversation on the memory as it is', run: 'window', thread: true },
+  { name: 'new', hint: 'A new conversation beside this one, on the same memory', run: 'window', thread: true },
+  { name: 'erase', hint: 'Erase the memory and this conversation, and start from nothing', run: 'window', thread: true },
   { name: 'compact', args: 'what to keep', hint: 'Summarise the conversation to free up context', run: 'engine', thread: true },
   { name: 'init', hint: 'Write a CLAUDE.md that describes this repository', run: 'engine' },
   { name: 'memorize', hint: 'Bring the memory up to date, and carry on here', run: 'window', thread: true },
@@ -44,11 +45,15 @@ export const AGENT_COMMANDS: AgentCommand[] = [
  * all the same, so it is where it is looked for, but not run.
  *
  * `/next` and `/memorize` on a conversation with no memory have nothing to
- * write to. `/clear` and `/new` with no conversation yet have nothing to
- * clear — not offered there at all (`thread`), and refused here if typed out.
+ * write to, and `/erase` nothing to erase. `/clear` and `/erase` with no
+ * conversation yet have nothing to clear, and `/new` is already where it would
+ * take you — not offered there at all (`thread`), and refused here if typed out.
  */
 export function commandOff(name: string, empty: boolean, memory: string | null): string | null {
-  if ((name === 'clear' || name === 'new') && empty) return 'Nothing to clear yet'
+  if (name === 'clear' && empty) return 'Nothing to clear yet'
+  if (name === 'erase' && empty) return 'Nothing to erase yet'
+  if (name === 'new' && empty) return 'This is already a new conversation'
+  if (name === 'erase' && (memory === 'off' || memory === 'new')) return 'This conversation has no memory to erase — /clear it'
   if ((name === 'next' || name === 'memorize') && memory === 'off') return 'This conversation has no memory'
   return null
 }

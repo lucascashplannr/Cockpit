@@ -331,7 +331,9 @@ documentation est éternelle : rien n'y entre sans qu'une personne l'accepte.
 | lancement | la mémoire (topic ou projet) + le guide de la doc ouvrent le premier message |
 | chaque tour | ce que les *autres* conversations ont ajouté à la mémoire depuis le dernier tour |
 | `/next` | un tour de **handoff** : la mémoire mise à jour, et — si une doc est liée — des propositions ; puis une conversation neuve sur la même mémoire |
-| `/clear` | la conversation retirée et sa mémoire effacée (à la Corbeille), sans rien demander à l'agent ; la suivante part d'une mémoire neuve |
+| `/clear` | la conversation retirée, sans rien demander à l'agent ; la mémoire reste telle quelle, et la suivante part dessus |
+| `/new` | une conversation neuve à côté, sur la même mémoire ; celle-ci reste, rien n'est retiré ni écrit |
+| `/erase` | la conversation retirée **et** sa mémoire effacée (à la Corbeille), toujours après confirmation ; la suivante part d'une mémoire neuve |
 | `/document` | des propositions à la doc, depuis cette conversation |
 
 Les propositions sont écrites dans une copie de travail de la doc ; l'écart devient une liste, page

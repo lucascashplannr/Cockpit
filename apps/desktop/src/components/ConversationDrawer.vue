@@ -135,7 +135,12 @@ function ask(c: Conversation): void {
           + ' the restore points, and which lines it wrote.',
     ],
     verb: 'Remove',
-    done: 'conversation removed',
+    done: 'Removed “' + (c.title || 'untitled') + '”',
+    doneLines: [
+      keptOnRemove(c)
+        ? 'Kept out of sight while its memory is, so its notes still lead back to it'
+        : 'What the agent did to the code stays in the journal',
+    ],
     danger: true,
     // The removal is the errand the drawer was opened for: once it is done,
     // the drawer goes with it. A refusal leaves it open, beside the toast.

@@ -1206,7 +1206,7 @@ interface Handed {
 
 /** What a conversation's context holds once its process is gone. */
 interface Handover extends Handed {
-  /** The engine session that holds it: a different one (after /clear) holds none of it. */
+  /** The engine session that holds it: a different one holds none of it. */
   engineSession: string | null
   memory: string | null
   own: Set<string>

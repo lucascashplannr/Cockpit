@@ -2246,12 +2246,16 @@ export function pinThread(scope: AgentScope, sessionId: string): void {
  * carries on answering — the window stops showing it, the rail and the count
  * still say it is there, and one click of the ✕ gets to the empty box however
  * many threads have been opened on the way.
+ *
+ * `keepShown: false` when what was on screen has just gone — removed, or its
+ * tab closed. Whatever `openThreadFor` falls back to then is a thread nobody
+ * had open, and giving it a tab put an old conversation beside the new one.
  */
-export function startFresh(scope: AgentScope): void {
+export function startFresh(scope: AgentScope, keepShown = true): void {
   // §7 — a new tab goes next to the ones already open, never instead of them.
   // What was on screen keeps its tab even when it only had one for being on
   // screen (shown because nothing was ever pinned here, and finished).
-  if (!threads.fresh[scopeKey(scope)]) {
+  if (keepShown && !threads.fresh[scopeKey(scope)]) {
     const open = openThreadFor(scope)
     if (open && !(open.id in threads.tabAt) && !tabClosed(open)) threads.tabAt[open.id] = open.startedAt
   }
@@ -2459,7 +2463,7 @@ export function closeTab(scope: AgentScope, id: string): void {
     const rest = list.filter((c) => c.id !== id)
     const next = p ? p.find((x) => x !== id) : (list[at + 1] ?? list[at - 1])?.id
     if (next) pinThread(scope, next)
-    else if (!rest.length) startFresh(scope)
+    else if (!rest.length) startFresh(scope, false)
   }
   saveThreads()
 }
@@ -2590,6 +2594,8 @@ export async function deleteConversation(sessionId: string, opts: { letGo?: bool
   for (const key of Object.keys(threads.pinned)) {
     if (threads.pinned[key] === sessionId) delete threads.pinned[key]
   }
+  delete threads.tabAt[sessionId]
+  delete threads.closedAt[sessionId]
   delete threads.read[sessionId]
   delete threads.unread[sessionId]
   saveThreads()
@@ -4818,7 +4824,7 @@ export async function importSkills(from: string, where: SkillWhere): Promise<boo
   return res.imported.length > 0
 }
 
-/** Back to the scope's default — what `/clear` leaves behind. */
+/** Back to the scope's default — what `/erase` leaves behind. */
 export function forgetMemoryChoice(scope: AgentScope): void {
   delete state.memoryChoice[scopeKey(scope)]
 }

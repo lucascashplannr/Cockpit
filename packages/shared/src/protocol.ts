@@ -996,7 +996,7 @@ export interface Rpc {
    * A conversation with a memory is *hidden* instead (`kept`): the memory's
    * notes name it, and it goes for good when that memory is erased.
    *
-   * `letGo` is `/clear`'s and `/next`'s: an open conversation between turns is let go first
+   * `letGo` is `/clear`'s, `/next`'s and `/erase`'s: an open conversation between turns is let go first
    * rather than refused — clearing is the decision to let it go.
    */
   'agent.delete': {
