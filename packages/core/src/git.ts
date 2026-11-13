@@ -166,6 +166,18 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     }
   }
 
+  // Never pushed: `ahead` answered for whatever the branch happened to track —
+  // nothing at all for a branch made without an upstream, so Push stood there
+  // with no count. What its first push sends is every commit no remote has.
+  if (state.branch && state.hasRemote && !state.published) {
+    if (state.hasUnpushedWork) {
+      const n = await git(cwd, ['rev-list', '--count', 'HEAD', '--not', '--remotes'], 15_000)
+      if (n.ok && /^\d+$/.test(n.stdout.trim())) state.ahead = Number(n.stdout.trim())
+    } else if (unpushed.ok) {
+      state.ahead = 0
+    }
+  }
+
   // Only against the branch's own remote: until the first push `behind` is the
   // base's distance, and Catch up already counts that.
   if (state.branch && state.behind > 0 && state.upstream === 'origin/' + state.branch) {
