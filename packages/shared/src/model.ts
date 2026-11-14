@@ -588,6 +588,14 @@ export interface Workspace {
   runtime: RuntimeState | null
   /** Null is the normal case, not the exception (§4). */
   topicId: string | null
+  /**
+   * §4 — the group this repository sits in: the id of the `group` workspace
+   * for the folder holding it, `<project>/<group>/<repo>`. The folder *is* the
+   * group — Cockpit reads it off the disk, so a folder of repositories made in
+   * Finder is one too. A branch of a grouped repository carries its main's.
+   * Null, or absent from an older core, for a repository at the project root.
+   */
+  groupId?: string | null
   capabilities: Capability[]
   /** Active agent sessions whose scope covers this path. */
   agentSessions: string[]
@@ -811,7 +819,11 @@ export type AgentScope =
    * a conversation's own scope always carries the set it was started on.
    */
   | { kind: 'project'; projectId: string; only?: string[] }
-  /** One checkout — a worktree, or a main, or a folder with no repo at all. */
+  /**
+   * One checkout — a worktree, or a main, or a folder with no repo at all.
+   * Or a group (§4): the repositories in its folder, each at its main
+   * checkout, the way a topic is its branches.
+   */
   | { kind: 'workspace'; workspaceId: string }
   /** One subtree of one checkout, for when the blast radius should be smaller. */
   | { kind: 'folder'; workspaceId: string; subpath: string }

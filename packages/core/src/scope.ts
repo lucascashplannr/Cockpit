@@ -7,7 +7,7 @@ import * as agents from './agents.js'
 import { defaultBranch } from './git.js'
 import { isInside } from './config.js'
 import * as memory from './memory.js'
-import { topicMemoryId } from '@cockpit/shared'
+import { groupMemoryId, topicMemoryId } from '@cockpit/shared'
 
 /**
  * §7 — the scope table, resolved.
@@ -79,6 +79,15 @@ export function resolveScope(scope: AgentScope): ResolvedScope {
 
     case 'workspace': {
       const w = registry.requireWorkspace(scope.workspaceId)
+      // §4 — a group is its repositories, as a topic is its branches: each at
+      // its main checkout, leased and restored one by one. The folder around
+      // them is not a place an engine is pointed at.
+      if (w.kind === 'group' && !w.topicId) {
+        const members = groupMembers(w)
+        if (members.length) {
+          return { scope, label: w.name, workspaces: members, paths: members.map((m) => m.path), topicId: null }
+        }
+      }
       return { scope, label: w.name, workspaces: [w], paths: [w.path], topicId: w.topicId }
     }
 
@@ -94,6 +103,21 @@ export function resolveScope(scope: AgentScope): ResolvedScope {
       }
     }
   }
+}
+
+/** The group a scope stands on, when it stands on one (§4). */
+export function groupScopeId(scope: AgentScope): string | null {
+  if (scope.kind !== 'workspace') return null
+  const w = registry.getWorkspace(scope.workspaceId)
+  return w && w.kind === 'group' && !w.topicId ? w.id : null
+}
+
+/** A group's repositories, at their main checkouts, by name. */
+export function groupMembers(group: Workspace): Workspace[] {
+  return registry
+    .allWorkspaces(group.projectId)
+    .filter((w) => w.kind === 'main' && w.groupId === group.id)
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /**
@@ -180,9 +204,10 @@ export async function preview(scope: AgentScope): Promise<AgentScopePreview> {
     preamble: {
       // A topic's memory is known before the prompt is written; any other
       // memory is chosen in the composer, which says so itself.
-      memory:
-        !!r.topicId &&
-        !!memory.preamble(memory.homeOf({ memory: topicMemoryId(r.topicId), workspaceIds: r.workspaces.map((w) => w.id) })),
+      memory: (() => {
+        const own = r.topicId ? topicMemoryId(r.topicId) : groupScopeId(scope) ? groupMemoryId(groupScopeId(scope)!) : null
+        return !!own && !!memory.preamble(memory.homeOf({ memory: own, workspaceIds: r.workspaces.map((w) => w.id) }))
+      })(),
       context: !!topics.contextBlock(r.topicId, r.paths),
     },
   }

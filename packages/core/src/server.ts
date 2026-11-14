@@ -3,11 +3,11 @@ import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
   MEMORIZE_PROMPT, MEMORY_NEW, MEMORY_OFF, PROJECT_MEMORY, PROTOCOL_VERSION, contractText, documentPrompt, handoffPrompt, isHandoff,
-  isMemorize, normalizeCommitRules, normalizeContextLimit, topicMemoryId,
+  groupMemoryId, isMemorize, normalizeCommitRules, normalizeContextLimit, topicMemoryId,
 } from '@cockpit/shared'
 import type {
   AgentAnswers, AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
-  Conversation, LoadoutChoice, PermissionMode, ProjectSettings, ServerBoardRow, ServerPush, SkillWhere, Workspace,
+  Conversation, LoadoutChoice, PermissionMode, Project, ProjectSettings, ServerBoardRow, ServerPush, SkillWhere, Workspace,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { append, bus, countEvents, forSession, tail, touchedBy } from './journal.js'
@@ -15,6 +15,8 @@ import * as commands from './commands.js'
 import * as declare from './declare.js'
 import * as registry from './registry.js'
 import * as scaffold from './scaffold.js'
+import * as groups from './groups.js'
+import * as watcher from './watcher.js'
 import * as skills from './skills.js'
 import * as files from './files.js'
 import * as search from './search.js'
@@ -129,6 +131,16 @@ export function pushTopics(): void {
 }
 
 /** Everything derived from the registry, after a change that could move any of it. */
+async function afterRegroup(projectId: string): Promise<Project> {
+  await registry.reconcile(projectId, { fetch: 'never' })
+  watcher.start(() => pushWorkspaces())
+  pushAll()
+  pushAgents()
+  const project = registry.allProjects().find((x) => x.id === projectId)
+  if (!project) throw new Error('the project went missing while its repositories moved')
+  return project
+}
+
 function pushAll(): void {
   pushProjects()
   pushWorkspaces()
@@ -455,6 +467,22 @@ const handlers: Record<string, Handler> = {
     await registry.reconcile(project.id)
     pushAll()
     return registry.allProjects().find((x) => x.id === project.id) ?? project
+  },
+
+  // §4 — groups. Folders move, so the reconcile after is what drops the rows
+  // at the old paths and finds them at the new; the watcher was watching the
+  // old ones.
+  'project.group': async (p: { projectId: string; workspaceIds: string[]; group: string | null }) => {
+    await groups.place(p.projectId, p.workspaceIds, p.group)
+    return afterRegroup(p.projectId)
+  },
+  'project.renameGroup': async (p: { projectId: string; groupId: string; name: string }) => {
+    await groups.rename(p.projectId, p.groupId, p.name)
+    return afterRegroup(p.projectId)
+  },
+  'project.ungroup': async (p: { projectId: string; groupId: string }) => {
+    await groups.ungroup(p.projectId, p.groupId)
+    return afterRegroup(p.projectId)
   },
 
   'project.inspect': (p: { path: string }) => scaffold.inspectFolder(p.path),
@@ -860,7 +888,7 @@ const handlers: Record<string, Handler> = {
       attachments: p.attachments,
       // §6 — as chosen in the composer; a topic's own memory, or a new one,
       // when nothing was said.
-      memory: p.memory ?? (r.topicId ? topicMemoryId(r.topicId) : MEMORY_NEW),
+      memory: p.memory ?? (r.topicId ? topicMemoryId(r.topicId) : scope.groupScopeId(requested) ? groupMemoryId(scope.groupScopeId(requested)!) : MEMORY_NEW),
       alongside: !!p.alongside,
       // §6 — instruction files, skills and docs, as chosen in the composer.
       choice: p.choice ?? null,

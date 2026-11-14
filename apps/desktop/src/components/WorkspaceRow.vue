@@ -8,7 +8,7 @@ import {
 import type { Workspace } from '@cockpit/shared'
 import StripDots from './StripDots.vue'
 import {
-  activeProject, activityFor, onProject, openContextMenu, pickRepo, projectNarrowing, selectedTopicId, selectWorkspace,
+  activeProject, activityFor, onProject, openContextMenu, pickRepo, projectNarrowing, selectedGroupId, selectedTopicId, selectWorkspace,
   repoMark, shortName, state,
 } from '../core/store.js'
 
@@ -23,7 +23,7 @@ const w = computed(() => props.workspace)
 // alone would light two things at once. The narrower selection wins: while the
 // topic is what is selected, none of its rows is — and the same on the project.
 const selected = computed(
-  () => w.value.id === state.activeWorkspaceId && !selectedTopicId.value && !onProject.value,
+  () => w.value.id === state.activeWorkspaceId && !selectedTopicId.value && !selectedGroupId.value && !onProject.value,
 )
 
 /* ── §7 — the project, narrowed ───────────────────────────────────────────

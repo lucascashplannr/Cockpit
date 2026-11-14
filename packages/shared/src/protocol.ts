@@ -390,6 +390,19 @@ export interface Rpc {
   'project.trackRepo': { params: { projectId: string; path: string }; result: Project }
 
   /**
+   * §4 — repositories into the group `group`, its folder made under the
+   * project root if it is not there yet; `null` moves them back out to the
+   * root. The folders really move: their conversations, journal, checkpoints
+   * and transcripts follow, and their branches are relinked. Refused while a
+   * server runs or a conversation is open in any of them.
+   */
+  'project.group': { params: { projectId: string; workspaceIds: string[]; group: string | null }; result: Project }
+  /** The group's folder renamed; `groupId` is the group's own workspace. */
+  'project.renameGroup': { params: { projectId: string; groupId: string; name: string }; result: Project }
+  /** Every repository of the group back to the project root, and its folder gone if nothing else is in it. */
+  'project.ungroup': { params: { projectId: string; groupId: string }; result: Project }
+
+  /**
    * §13 rule 1 — the window has no filesystem, so it cannot know whether the
    * folder someone just picked is a repository, is already the right shape, or
    * is a name already taken. It asks.

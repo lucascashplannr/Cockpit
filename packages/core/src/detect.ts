@@ -312,6 +312,43 @@ export function childRepos(root: string): string[] {
   return out
 }
 
+/**
+ * §4 — the repositories one level further down: `<root>/<group>/<repo>`. A
+ * folder that is not a repository itself and holds at least one is a group,
+ * and the folder is all a group is — nothing records it but the disk.
+ */
+export function groupedRepos(root: string): string[] {
+  const out: string[] = []
+  let entries: string[]
+  try {
+    entries = readdirSync(root)
+  } catch {
+    return out
+  }
+  for (const name of entries) {
+    if (name.startsWith('.') || SKIP_DIRS.has(name)) continue
+    const p = join(root, name)
+    try {
+      if (!statSync(p).isDirectory()) continue
+    } catch {
+      continue
+    }
+    if (isRepo(p)) continue
+    out.push(...childRepos(p))
+  }
+  return out
+}
+
+/** A name that can be a group's folder, or the reason it cannot. */
+export function groupNameProblem(name: string): string | null {
+  if (!name) return 'a group needs a name'
+  if (/[/\\:]/.test(name)) return 'a group name cannot hold / \\ or :'
+  if (name.startsWith('.')) return 'a group name cannot start with a dot'
+  if (SKIP_DIRS.has(name)) return '"' + name + '" is a folder Cockpit never looks in'
+  if (name.length > 120) return 'that name is too long for a folder'
+  return null
+}
+
 export function projectNameFor(root: string, manifest: ManifestV1 | null): string {
   return manifest?.name ?? basename(root)
 }

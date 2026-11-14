@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  Archive, CirclePlay, CircleStop, Copy, FileCode, FolderOpen, Info, MessageSquarePlus, Pause, Play,
-  Settings, ShieldCheck, ShieldOff, SlidersHorizontal, Stamp, Trash2, Unlink,
+  Archive, CirclePlay, CircleStop, Copy, FileCode, FolderInput, FolderOutput, FolderOpen, FolderPen, FolderPlus,
+  Info, MessageSquarePlus, Pause, Play, Settings, ShieldCheck, ShieldOff, SlidersHorizontal, Stamp, Trash2, Unlink,
 } from '@lucide/vue'
 import { attentionIcon } from './agent/attention.js'
 import {
-  adoptTopic, askDeleteTopic, askUntrackRepo, client, closeTopic, guard, isBranchProtected, markThreadUnread, newConversationOn, openDeclarations,
-  readThreadOn, revealLabel, setBranchProtected, startTopic, state, stopTopic, toast, toggleWorkspaceRuntime,
+  adoptTopic, askDeleteTopic, askUngroup, askUntrackRepo, client, closeTopic, groupRepos, guard, isBranchProtected, isRepoGroup,
+  markThreadUnread, newConversationOn, openDeclarations, readThreadOn, revealLabel, setBranchProtected, startTopic, state,
+  stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -61,6 +62,25 @@ const baseProtected = computed(() => isBranchProtected(repo.value, base.value))
 /** The project's own folder, when it is the repository: untracking that is untracking the project. */
 const isProjectRoot = computed(
   () => !!repo.value && state.projects.find((p) => p.id === repo.value!.projectId)?.root === repo.value.path,
+)
+
+/** §4 — a group's own header, which takes the group's verbs rather than a row's. */
+const group = computed(() => (ws.value && isRepoGroup(ws.value) ? ws.value : null))
+
+/**
+ * §4 — the groups this repository could move into: every other one of its
+ * project's. Only a repository at its main checkout moves; a topic's branch
+ * stays where the topic keeps it.
+ */
+const groupsElsewhere = computed(() =>
+  repo.value && !isProjectRoot.value
+    ? state.workspaces
+        .filter((w) => w.projectId === repo.value!.projectId && isRepoGroup(w) && w.id !== repo.value!.groupId)
+        .sort((a, b) => a.name.localeCompare(b.name))
+    : [],
+)
+const groupNow = computed(() =>
+  repo.value?.groupId ? (state.workspaces.find((w) => w.id === repo.value!.groupId) ?? null) : null,
 )
 
 /** An inferred topic has nowhere to keep a state, so it has no switch and nothing to close. */
@@ -150,7 +170,37 @@ async function copyPath(path: string) {
     :style="{ left: pos.left + 'px', top: pos.top + 'px' }"
     @contextmenu.prevent
   >
-    <template v-if="ws">
+    <template v-if="group">
+      <button @click="act(() => newConversationOn({ kind: 'workspace', workspaceId: group!.id }))">
+        <MessageSquarePlus /> New conversation on this group
+      </button>
+      <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
+        <component :is="attentionIcon('reply')" /> Mark as unread
+      </button>
+      <span class="rule" />
+      <button @click="act(() => (state.groupDialog = { projectId: group!.projectId, groupId: group!.id, pick: [] }))">
+        <FolderPen /> Edit the group…
+      </button>
+      <button
+        @click="act(() => guard(() => client.call('workspace.openIn', { workspaceId: group!.id, target: 'ide' })))"
+      >
+        <FileCode /> Open in the editor
+      </button>
+      <button
+        @click="act(() => guard(() => client.call('workspace.openIn', { workspaceId: group!.id, target: 'finder' })))"
+      >
+        <FolderOpen /> {{ revealLabel }}
+      </button>
+      <button @click="act(() => copyPath(group!.path))">
+        <Copy /> Copy the path
+      </button>
+      <span class="rule" />
+      <button class="warn" @click="act(() => askUngroup(group!.id))">
+        <FolderOutput /> Ungroup…
+      </button>
+    </template>
+
+    <template v-else-if="ws">
       <button @click="act(() => newConversationOn({ kind: 'workspace', workspaceId: ws!.id }))">
         <MessageSquarePlus /> New conversation here
       </button>
@@ -200,6 +250,21 @@ async function copyPath(path: string) {
           <Settings /> Project settings…
         </button>
         <template v-if="!isProjectRoot">
+          <!-- §4 — a group is a folder, so each of these moves this one. -->
+          <span class="rule" />
+          <button
+            v-for="g in groupsElsewhere"
+            :key="g.id"
+            @click="act(() => groupRepos(repo!.projectId, [repo!.id], g.name))"
+          >
+            <FolderInput /> Move to {{ g.name }}
+          </button>
+          <button @click="act(() => (state.groupDialog = { projectId: repo!.projectId, groupId: null, pick: [repo!.id] }))">
+            <FolderPlus /> New group…
+          </button>
+          <button v-if="groupNow" @click="act(() => groupRepos(repo!.projectId, [repo!.id], null))">
+            <FolderOutput /> Out of {{ groupNow.name }}
+          </button>
           <span class="rule" />
           <button class="warn" @click="act(() => askUntrackRepo(repo!.projectId, repo!.id))">
             <Unlink /> Untrack the repository…

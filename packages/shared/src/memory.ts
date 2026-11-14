@@ -46,6 +46,15 @@ export function topicMemoryId(topicId: string): string {
   return 'topic:' + topicId
 }
 
+/**
+ * §4 — a group's memory: `<group>/.cockpit/memory.md`, kept the way a topic
+ * keeps its own. `groupId` is the group's workspace id, which is its path, so
+ * a renamed group's conversations are rekeyed to the new one.
+ */
+export function groupMemoryId(groupId: string): string {
+  return 'group:' + groupId
+}
+
 /** Undecided, and waiting on a person — the part of a handoff most easily lost. */
 export const OPEN_QUESTIONS_SECTION: MemorySection = 'Open questions'
 

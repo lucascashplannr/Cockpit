@@ -8,8 +8,8 @@ import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
 import {
-  activeAgentScope, activeWorkspace, isBranchProtected, onProject, projectNarrowing, projectScopeWorkspaces, scopeLabel,
-  selectedTopicGroup,
+  activeAgentScope, activeWorkspace, groupMembers, isBranchProtected, onProject, projectNarrowing, projectScopeWorkspaces, scopeLabel,
+  selectedGroupId, selectedTopicGroup, state,
 } from '../core/store.js'
 
 /**
@@ -44,8 +44,15 @@ const w = computed(() => activeWorkspace.value)
 const covered = computed(() => {
   // §7 — the project: every repository, at its main checkout.
   if (onProject.value) return projectScopeWorkspaces.value
+  // §4 — a group: its repositories, as the project is all of them.
+  if (selectedGroupId.value) return groupMembers(selectedGroupId.value)
   return selectedTopicGroup.value?.workspaces ?? (w.value ? [w.value] : [])
 })
+
+/** §4 — the group stood on, whose verbs are the project's over its repositories. */
+const group = computed(() => (selectedGroupId.value ? (state.workspaces.find((x) => x.id === selectedGroupId.value) ?? null) : null))
+/** Several checkouts at once, each on its own branch: none of them is the one to switch. */
+const many = computed(() => onProject.value || !!group.value)
 
 /**
  * The branch is named only when there is exactly one of it. Across a topic
@@ -87,7 +94,7 @@ const guarded = computed(
     !!branchName.value &&
     // On the project the branch named is the one repository it was narrowed
     // to, which need not be the row the panel happens to be anchored on.
-    isBranchProtected(onProject.value ? (covered.value[0] ?? w.value) : w.value, branchName.value),
+    isBranchProtected(many.value ? (covered.value[0] ?? w.value) : w.value, branchName.value),
 )
 
 /* §7 — the project, narrowed to some of its repositories: picked by ⌘-click
@@ -121,7 +128,7 @@ const label = computed(() => {
  * bar has no Push and never will, said once, in the word that already says
  * what kind of thing this is.
  */
-const offline = computed(() => scope.value?.kind === 'workspace' && w.value?.git?.hasRemote === false)
+const offline = computed(() => scope.value?.kind === 'workspace' && !group.value && w.value?.git?.hasRemote === false)
 
 /* §8 — the servers are not on this line. They were a dot and a port here, a
  * fact beside a switch that already said the same thing in green, three inches
@@ -158,7 +165,7 @@ const offline = computed(() => scope.value?.kind === 'workspace' && w.value?.git
            because "which branch is this" is still a fair question; only the
            invitation goes. -->
       <BranchMenu
-        v-if="branchName && !w.topicId && !onProject"
+        v-if="branchName && !w.topicId && !many"
         class="br"
         :workspace-id="w.id"
         :branch="branchName"
@@ -167,7 +174,7 @@ const offline = computed(() => scope.value?.kind === 'workspace' && w.value?.git
         v-else-if="branchName"
         class="br brf"
         :class="{ guarded }"
-        :title="'On ' + branchName + (onProject ? '' : ' — this topic’s branch') + (guarded ? ', protected' : '')"
+        :title="'On ' + branchName + (many ? '' : ' — this topic’s branch') + (guarded ? ', protected' : '')"
       >
         <component :is="guarded ? ShieldCheck : GitBranch" class="sm" /><span class="bn">{{ branchName }}</span>
       </span>
@@ -230,6 +237,7 @@ const offline = computed(() => scope.value?.kind === 'workspace' && w.value?.git
       <!-- On the project: push and the servers of the repositories it is
            on — every one, or the ones it was narrowed to. -->
       <ProjectActions v-else-if="onProject" />
+      <ProjectActions v-else-if="group" :group="group" :group-repos="covered" />
       <WorkspaceActions v-else />
 
       <!-- §12 — how the right of the window is divided. It ends the bar

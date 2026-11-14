@@ -64,7 +64,7 @@ const kindLabel = computed(() => {
     case 'main': return 'Repository'
     case 'worktree': return 'Branch, in a folder of its own'
     case 'external': return 'Folder'
-    case 'group': return 'Topic folder'
+    case 'group': return ws.value.topicId ? 'Topic folder' : 'Group'
     default: return ''
   }
 })

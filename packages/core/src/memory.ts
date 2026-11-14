@@ -9,7 +9,7 @@ import {
 } from '@cockpit/shared'
 import type { MemoryKind } from '@cockpit/shared'
 import type { Actor, Conversation, ErasedMemory, MemoryDoc, MemorySummary } from '@cockpit/shared'
-import { allTopics, getProject, getTopic, getWorkspace, requireWorkspace, topicMemoryFile } from './registry.js'
+import { allTopics, allWorkspaces, getProject, getTopic, getWorkspace, requireWorkspace, topicMemoryFile } from './registry.js'
 import { append } from './journal.js'
 import { getDb } from './db.js'
 import { moveToTrash } from './files.js'
@@ -64,6 +64,13 @@ export function homeFor(projectId: string, memoryId: string, workspaceId: string
     const topic = getTopic(memoryId.slice(6))
     if (!topic) return null
     return { id: memoryId, file: topicMemoryFile(topic), label: topic.name, kind: 'topic', workspaceId }
+  }
+  if (memoryId.startsWith('group:')) {
+    // §4 — kept as a topic keeps its own: in the group's folder, always there,
+    // with a goal. The topic's kind, because it behaves as one in every way.
+    const group = getWorkspace(memoryId.slice(6))
+    if (!group || group.kind !== 'group' || group.topicId) return null
+    return { id: memoryId, file: join(group.path, '.cockpit', 'memory.md'), label: group.name, kind: 'topic', workspaceId }
   }
   if (!project) return null
   if (memoryId === PROJECT_MEMORY) {
@@ -152,6 +159,9 @@ export function list(projectId: string): MemorySummary[] {
   }
   add(homeFor(projectId, PROJECT_MEMORY))
   for (const t of allTopics(projectId)) add(homeFor(projectId, topicMemoryId(t.id)))
+  for (const g of allWorkspaces(projectId)) {
+    if (g.kind === 'group' && !g.topicId && g.path !== project.root) add(homeFor(projectId, 'group:' + g.id))
+  }
   return out.sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
@@ -397,12 +407,14 @@ export function erased(projectId: string): ErasedMemory[] {
     if (!m) continue
     const id = m[2]!.replace('~', ':')
     const file = join(erasedDir(projectId), f)
-    const kind: MemoryKind = id.startsWith('topic:') ? 'topic' : id === PROJECT_MEMORY ? 'project' : 'named'
+    const kind: MemoryKind = id.startsWith('topic:') || id.startsWith('group:') ? 'topic' : id === PROJECT_MEMORY ? 'project' : 'named'
     const entries = (contentAt(file, kind) ?? '').split('\n').filter((l) => /^\s*[-*+]\s+/.test(l)).length
     const name =
       kind === 'project'
         ? (getProject(projectId)?.name ?? id)
-        : ((kind === 'topic' ? getTopic(id.slice(6))?.name : null) ?? nameIn(file) ?? id)
+        : ((id.startsWith('topic:') ? getTopic(id.slice(6))?.name : id.startsWith('group:') ? getWorkspace(id.slice(6))?.name : null) ??
+          nameIn(file) ??
+          id)
     out.push({ key: f.slice(0, -3), id, name, kind, entries, erasedAt: Number(m[1]) })
   }
   return out.sort((a, b) => b.erasedAt - a.erasedAt)
@@ -432,7 +444,9 @@ export function restore(projectId: string, key: string): { ok: true; memoryId: s
   const item = erased(projectId).find((e) => e.key === key)
   if (!item) throw new Error('that memory is no longer kept')
   let home = homeFor(projectId, item.id)
-  if (!home) throw new Error(item.kind === 'topic' ? 'its topic is gone' : 'it has nowhere to go back to')
+  if (!home) {
+    throw new Error(item.id.startsWith('group:') ? 'its group is gone' : item.kind === 'topic' ? 'its topic is gone' : 'it has nowhere to go back to')
+  }
   if (existsSync(home.file)) {
     if (item.kind === 'named') {
       for (let n = 2; existsSync(home.file); n++) home = homeFor(projectId, item.id + '-' + n)!

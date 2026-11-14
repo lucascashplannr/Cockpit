@@ -135,6 +135,7 @@ vocabulaire à réapprendre à chaque écran.
 | une branche sortie dans son propre dossier | **Branch** | worktree, checkout, workspace |
 | un repo sur sa branche par défaut | le nom du repo | main checkout |
 | un nom + une branche par repo + env + mémoire | **Topic** | feature |
+| un dossier de dépôts dans le projet (`<projet>/<groupe>/<repo>`), dessiné et choisi comme une topic | **Group** | folder, workspace |
 | le panneau de l'agent | **Agent** | chat |
 | un fil avec l'agent | **Conversation** | session, chat |
 | ce que l'agent a le droit de toucher | **Scope** | — |
@@ -437,6 +438,8 @@ Hypothèse posée : le mobile signifiera **Expo / React Native**, pas du Swift o
 ```
 
 La liste centrale liste des **workspaces**, groupés par topic *quand* une topic existe. Un workspace nu et un groupe de trois cohabitent naturellement.
+
+*2026-11-14 — les **groups**.* Sous les topics, les dépôts eux-mêmes : dans leurs groups, puis ceux qui n'en ont aucun. Un group est un dossier du projet qui contient des dépôts (`De Online School/SchoolGen/SchoolGen-Backend`) — le disque est sa seule trace, donc un dossier fait dans le Finder en est un aussi. Son en-tête est celui d'une topic : on le replie, on s'y tient, et l'agent porte alors sur ses dépôts, chacun sur son checkout principal, avec la mémoire du group dans `<groupe>/.cockpit/memory.md`. Créer, renommer, quitter un group déplace des dossiers : conversations, journal, checkpoints et transcripts suivent, les branches sont reliées par `git worktree repair`, et c'est refusé tant qu'un serveur tourne ou qu'une conversation est ouverte dedans.
 
 La liste se replie en **bande** et se rouvre : `⌘B`, le bouton dans l'en-tête de la liste — au bout quand elle est large, seul et centré sur la bande —, ou un clic sur la tuile du projet déjà actif. Repliée elle ne disparaît pas : 68px, chaque ligne devenue une tuile (son glyphe, son nom sans le préfixe du projet dessous, un point ambre s'il reste du non-commité), les topics en tuile de tête, sous le glyphe du topic (pas un chevron : c'est ce que la tuile *est*, pas ce qu'elle fait), séparées par un filet. Les tuiles ont un peu d'air et pas plus (48px de haut) : 64/44 était tassé, 72/54 rendait trop peu de largeur. On navigue donc toujours ; les compteurs sont au survol. Sa largeur n'est pas touchée, et l'état est gardé d'un lancement à l'autre. Sans aucun projet elle reste large : la colonne est alors une phrase, et une phrase ne tient pas dans 68px. Au pied de la liste, large ou repliée : « + topic » puis l'agent sur tout le projet. L'en-tête ne porte que le nom et le bouton de repli : ce qui agit sur le projet est en bas, ce qui règle la colonne est en haut. Ajouter un dépôt n'est plus dans la liste : c'est dans les réglages du projet (champ *Repositories* → Add), et dans la palette.
 

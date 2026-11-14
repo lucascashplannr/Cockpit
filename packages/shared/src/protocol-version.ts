@@ -120,8 +120,12 @@
  *
  * 2.37 — Fork: `agent.fork`, `AgentTurn.branched` / `forkable` and
  * `Conversation.forkedFrom`. An older core answers `unknown_method`.
+ *
+ * 2.38 — groups: `project.group`, `project.renameGroup`, `project.ungroup`,
+ * and `Workspace.groupId`. An older core finds no repository two levels down,
+ * so a project already laid out in groups lists them as nothing at all.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 37 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 38 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

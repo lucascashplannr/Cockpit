@@ -20,6 +20,7 @@ import AddRepoDialog from './components/AddRepoDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import ServiceDialog from './components/ServiceDialog.vue'
 import TopicDialog from './components/TopicDialog.vue'
+import GroupDialog from './components/GroupDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import ReviewTools from './components/ReviewTools.vue'
@@ -389,6 +390,7 @@ onUnmounted(() => {
     <SettingsDialog />
     <ServiceDialog />
     <TopicDialog />
+    <GroupDialog />
     <ConnectionBanner />
     <Toast />
 

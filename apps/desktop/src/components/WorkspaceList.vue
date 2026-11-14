@@ -3,14 +3,15 @@ import { attentionIcon } from './agent/attention.js'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
-  ArrowUp, Asterisk, ChevronRight, FolderPlus, Layers, LoaderCircle, Plus,
+  ArrowUp, Asterisk, ChevronRight, Folder, FolderPlus, Layers, LoaderCircle, Plus,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import ListToggle from './ListToggle.vue'
 import {
   activeProject, activityFor, collapsedTopics, deletingTopics, listWide, onProject, openAgentOn, openContextMenu,
-  selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
+  selectedGroupId, selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
+import type { ListGroup } from '../core/store.js'
 
 /**
  * §12 — "La liste centrale liste des workspaces, groupés par topic quand un
@@ -152,6 +153,90 @@ const ATTENTION_TEXT: Record<string, string> = {
   blocked: 'an agent stopped on this topic: it was refused a tool it needed',
   failed: 'an agent failed on this topic',
 }
+
+/*
+ * §4 — a group's header is a topic's header: the same lid, the same place to
+ * stand, the same tile on the strip. What differs is only what it stands for —
+ * a folder of repositories rather than a branch across them — so everything
+ * below asks "topic or group" once and answers with the topic's own pieces.
+ */
+
+/** What a header folds and selects by: the topic's id, or the group's workspace. */
+function headId(g: ListGroup): string | null {
+  return g.topicId ?? g.groupId
+}
+
+function isHead(g: ListGroup): boolean {
+  return !!g.title && !!headId(g)
+}
+
+function headSelected(g: ListGroup): boolean {
+  if (g.topicId) return g.topicId === selectedTopicId.value
+  return !!g.groupId && g.groupId === selectedGroupId.value
+}
+
+function headDeleting(g: ListGroup): boolean {
+  return !!g.topicId && !!deletingTopics[g.topicId]
+}
+
+function headMark(g: ListGroup): ReturnType<typeof topicMark> {
+  if (g.topicId) return topicMark(g.topicId)
+  const a = activityFor('workspace', g.groupId!)
+  if (a.attention !== 'none') return { icon: attentionIcon(a.attention), cls: a.attention, tip: (ATTENTION_TEXT[a.attention] ?? '').replace('topic', 'group') }
+  if (a.running) return { icon: Asterisk, cls: 'working', tip: a.running + ' conversation(s) running in this group', turning: a.own > 0 }
+  return null
+}
+
+function headLead(g: ListGroup): { icon: Component; cls: string } {
+  if (g.topicId) return topicLead(g.topicId)
+  return headMark(g) ?? { icon: Folder, cls: '' }
+}
+
+function selectHead(g: ListGroup): void {
+  if (g.topicId) selectTopic(g.topicId)
+  else if (g.groupId) openAgentOn({ kind: 'workspace', workspaceId: g.groupId }, { reveal: false })
+}
+
+function pressHead(g: ListGroup): void {
+  if (g.topicId) pressTopic(g.topicId)
+  else if (headSelected(g)) toggleTopicCollapsed(g.groupId!)
+  else selectHead(g)
+}
+
+function headMenu(e: MouseEvent, g: ListGroup): void {
+  if (g.topicId) openContextMenu(e, { kind: 'topic', id: g.topicId })
+  else if (g.groupId) openContextMenu(e, { kind: 'workspace', id: g.groupId })
+}
+
+function headMenued(g: ListGroup): boolean {
+  const t = state.contextMenu?.target
+  if (!t) return false
+  return g.topicId ? t.kind === 'topic' && t.id === g.topicId : t.kind === 'workspace' && t.id === g.groupId
+}
+
+function headTip(g: ListGroup): string {
+  if (g.topicId) return topicTip(g)
+  const id = g.groupId!
+  const facts: string[] = []
+  const m = headMark(g)
+  if (m) facts.push(m.tip)
+  if (unpushed(g.workspaces)) facts.push(unpushed(g.workspaces) + ' commit(s) not pushed')
+  facts.push(headSelected(g)
+    ? (collapsedTopics[id] ? 'Click to show its repositories' : 'Click to fold it away')
+    : 'Click to aim the agent at the whole group')
+  return [g.title + ' — group', ...facts].filter(Boolean).join('\n')
+}
+
+/**
+ * The small capitals over the repositories that are no topic's: once, before
+ * the first of them, and only when a topic is above to be told apart from.
+ */
+function sectionBefore(i: number): boolean {
+  const g = groups.value[i]
+  if (!g || g.topicId) return false
+  const prev = groups.value[i - 1]
+  return !!prev && !!prev.topicId
+}
 </script>
 
 <template>
@@ -194,7 +279,7 @@ const ATTENTION_TEXT: Record<string, string> = {
       </div>
 
       <template v-else>
-        <template v-for="(g, i) in groups" :key="g.topicId ?? 'loose-' + i">
+        <template v-for="(g, i) in groups" :key="g.topicId ?? g.groupId ?? 'loose-' + i">
           <!-- The topic being created, in the place it will take. -->
           <div v-if="opening && i === openingAt" class="group topic opening" :title="'Creating ' + opening.name + '…'">
             <span v-if="narrow" class="group-tile">
@@ -209,70 +294,79 @@ const ATTENTION_TEXT: Record<string, string> = {
         <div
           class="group"
           :class="{
-            topic: !!(g.title && g.topicId),
-            open: !!(g.title && g.topicId) && !collapsedTopics[g.topicId!] && g.workspaces.length > 0,
-            deleting: !!g.topicId && deletingTopics[g.topicId],
+            topic: isHead(g),
+            open: isHead(g) && !collapsedTopics[headId(g)!] && g.workspaces.length > 0,
+            deleting: headDeleting(g),
           }"
         >
+          <!-- §4 — the repositories that are no topic's, groups first: said
+               once, over the first of them, as it always was. Inside the
+               group, so the strip's rule between groups still finds it. -->
+          <div v-if="sectionBefore(i)" class="divider">
+            <span v-if="!narrow" class="section-label">not in a topic</span>
+          </div>
           <!-- A topic is a decoration (§4): no topic, no header. And a
-               header you can stand on: selecting it is selecting its scope. -->
+               header you can stand on: selecting it is selecting its scope.
+               A group's header is the same header (§4). -->
           <!-- On the strip the header is one tile: what it leads with, and
                its name under it. Its counters are in the hover. -->
           <button
-            v-if="g.title && narrow && g.topicId"
+            v-if="isHead(g) && narrow"
             class="group-tile"
             :class="{
-              selected: g.topicId === selectedTopicId,
-              holding: collapsedTopics[g.topicId] && holdsSelection(g.workspaces),
-              menued: state.contextMenu?.target.kind === 'topic' && state.contextMenu.target.id === g.topicId,
+              selected: headSelected(g),
+              holding: collapsedTopics[headId(g)!] && holdsSelection(g.workspaces),
+              menued: headMenued(g),
             }"
-            :title="deletingTopics[g.topicId] ? undefined : topicTip(g)"
-            :disabled="deletingTopics[g.topicId]"
-            @click="pressTopic(g.topicId)"
-            @contextmenu.prevent="openContextMenu($event, { kind: 'topic', id: g.topicId })"
+            :title="headDeleting(g) ? undefined : headTip(g)"
+            :disabled="headDeleting(g)"
+            @click="pressHead(g)"
+            @contextmenu.prevent="headMenu($event, g)"
           >
-            <span v-if="deletingTopics[g.topicId]" class="lead"><LoaderCircle class="sm spin" /></span>
-            <span v-else class="lead" :class="topicLead(g.topicId).cls">
-              <component :is="topicLead(g.topicId).icon" class="sm" :class="{ 'agent-star': topicMark(g.topicId)?.turning }" />
+            <span v-if="headDeleting(g)" class="lead"><LoaderCircle class="sm spin" /></span>
+            <span v-else class="lead" :class="headLead(g).cls">
+              <component :is="headLead(g).icon" class="sm" :class="{ 'agent-star': headMark(g)?.turning }" />
             </span>
-            <span class="title">{{ g.title.slice(0, 3) }}</span>
+            <span class="title">{{ g.title!.slice(0, 3) }}</span>
           </button>
           <div
-            v-else-if="g.title"
+            v-else-if="isHead(g)"
             class="group-head"
             :class="{
               running: g.topic?.state === 'running',
-              selected: g.topicId === selectedTopicId,
+              selected: headSelected(g),
               // Folded over the row you are standing on: the header stands in
               // for it, so it takes the tint the row would have had.
-              holding: !!g.topicId && collapsedTopics[g.topicId] && holdsSelection(g.workspaces),
-              menued: !!g.topicId && state.contextMenu?.target.kind === 'topic' && state.contextMenu.target.id === g.topicId,
+              holding: collapsedTopics[headId(g)!] && holdsSelection(g.workspaces),
+              menued: headMenued(g),
             }"
-            @contextmenu.prevent="g.topicId && openContextMenu($event, { kind: 'topic', id: g.topicId })"
+            @contextmenu.prevent="headMenu($event, g)"
           >
             <!-- Its own control, because folding is not selecting: the header
                  is a place to stand as much as a lid to close. -->
-            <!-- With something to say about the topic — an agent at work, an
-                 answer waiting — the lid wears that mark: the first thing on
-                 the row is then what the row is doing. The chevron is still
-                 under it — hover the mark and it is the lid again. -->
-            <span v-if="g.topicId && deletingTopics[g.topicId]" class="twist"><LoaderCircle class="sm spin" /></span>
+            <!-- With something to say about it — an agent at work, an answer
+                 waiting — the lid wears that mark: the first thing on the row
+                 is then what the row is doing. The chevron is still under it —
+                 hover the mark and it is the lid again. -->
+            <span v-if="headDeleting(g)" class="twist"><LoaderCircle class="sm spin" /></span>
             <button
-              v-else-if="g.topicId"
+              v-else
               class="twist"
-              :class="[topicMark(g.topicId) && 'marked', topicMark(g.topicId)?.cls]"
-              :title="(topicMark(g.topicId) ? topicMark(g.topicId)!.tip + '\n' : '')
-                + (collapsedTopics[g.topicId] ? 'Show its branches' : 'Fold this topic away')"
-              @click="toggleTopicCollapsed(g.topicId)"
+              :class="[headMark(g) && 'marked', headMark(g)?.cls]"
+              :title="(headMark(g) ? headMark(g)!.tip + '\n' : '')
+                + (collapsedTopics[headId(g)!]
+                  ? (g.topicId ? 'Show its branches' : 'Show its repositories')
+                  : (g.topicId ? 'Fold this topic away' : 'Fold this group away'))"
+              @click="toggleTopicCollapsed(headId(g)!)"
             >
-              <component :is="topicMark(g.topicId)!.icon" v-if="topicMark(g.topicId)" class="sm mark" :class="{ 'agent-star': topicMark(g.topicId)!.turning }" />
-              <ChevronRight class="sm chev" :class="{ turned: !collapsedTopics[g.topicId] }" />
+              <component :is="headMark(g)!.icon" v-if="headMark(g)" class="sm mark" :class="{ 'agent-star': headMark(g)!.turning }" />
+              <ChevronRight class="sm chev" :class="{ turned: !collapsedTopics[headId(g)!] }" />
             </button>
-            <Layers v-else class="sm gi" />
             <button
               class="pick"
-              :disabled="!g.topicId || deletingTopics[g.topicId]"
-              @click="g.topicId && selectTopic(g.topicId)"
+              :title="g.groupId ? headTip(g) : undefined"
+              :disabled="headDeleting(g)"
+              @click="selectHead(g)"
             >
               <span class="title">{{ g.title }}</span>
             </button>
@@ -311,12 +405,9 @@ const ATTENTION_TEXT: Record<string, string> = {
                    rows say it; folded, it is a number nobody acts on. -->
             </span>
           </div>
-          <div v-else-if="groups.length > 1 && i > 0" class="divider">
-            <span v-if="!narrow" class="section-label">not in a topic</span>
-          </div>
 
           <WorkspaceRow
-            v-for="w in (g.topicId && collapsedTopics[g.topicId] ? [] : g.workspaces)"
+            v-for="w in (headId(g) && collapsedTopics[headId(g)!] ? [] : g.workspaces)"
             :key="w.id"
             :workspace="w"
             :compact="!!g.title"

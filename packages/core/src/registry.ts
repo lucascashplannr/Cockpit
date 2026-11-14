@@ -7,7 +7,7 @@ import type {
 import * as topicStore from './topics/store.js'
 import * as preparing from './topics/preparing.js'
 import { loadConfig, migrateLegacyLocks, updateConfig, projectSettings, setProjectSettings } from './config.js'
-import { childRepos, detectCapabilities, findManifest, projectNameFor, readManifest } from './detect.js'
+import { childRepos, detectCapabilities, findManifest, groupedRepos, projectNameFor, readManifest } from './detect.js'
 import { fetchRemote, git, isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
@@ -478,7 +478,8 @@ function buildProject(root: string): Project {
   } else if (isRepo(root)) {
     repoPaths = [root]
   } else {
-    repoPaths = childRepos(root)
+    // §4 — and one level further, in the folders that group them.
+    repoPaths = [...childRepos(root), ...groupedRepos(root)]
   }
   // §7 — what this machine was told to leave out, whoever listed it above.
   const untracked = new Set(projectSettings(root).untrackedRepos.map((r) => resolve(root, r)))
@@ -502,9 +503,9 @@ function buildProject(root: string): Project {
 
   const seen = new Set<string>()
 
-  const addWorkspace = (path: string, kind: Workspace['kind'], displayName?: string) => {
+  const addWorkspace = (path: string, kind: Workspace['kind'], displayName?: string, groupId: string | null = null) => {
     const id = stableId('ws', path)
-    if (seen.has(id)) return
+    if (seen.has(id)) return id
     seen.add(id)
     // §8 — only a checkout of a repository has a repository's identity. The
     // project folder is not one, and letting it answer to a repo name is how
@@ -524,6 +525,7 @@ function buildProject(root: string): Project {
       git: prev?.git ?? null,
       runtime: prev?.runtime ?? null,
       topicId: prev?.topicId ?? null,
+      groupId,
       capabilities: wsCaps,
       agentSessions: [],
       lease: null,
@@ -534,6 +536,7 @@ function buildProject(root: string): Project {
     workspaces.set(id, ws)
     project.workspaceIds.push(id)
     if (!prev) append({ type: 'workspace.discovered', projectId, workspaceId: id, payload: { path, kind } })
+    return id
   }
 
   // The root is a group when it holds several repos rather than being one.
@@ -543,12 +546,24 @@ function buildProject(root: string): Project {
 
   for (const rp of repoPaths) {
     if (!existsSync(rp)) continue
-    addWorkspace(rp, 'main')
+    // §4 — exactly two levels down, the folder between is the group: the one
+    // shape a group has. Deeper than that is a layout, not a group.
+    const parent = dirname(resolve(rp))
+    const grouped = dirname(parent) === resolve(root) && parent !== resolve(root)
+    const groupId = grouped ? addWorkspace(parent, 'group', basename(parent)) : null
+    addWorkspace(rp, 'main', undefined, groupId)
   }
 
   if (repoPaths.length === 0 && !isRepo(root)) {
     // A folder with no repo at all is still a workspace (§7, dernier cas).
     addWorkspace(root, 'external', name)
+  }
+
+  // §4 — a group is its folder holding repositories. Emptied, it is a folder
+  // again, and its row goes even though the folder is still on disk — which is
+  // the one case the reconcile's "is it still there" never catches.
+  for (const w of [...workspaces.values()]) {
+    if (w.projectId === projectId && w.kind === 'group' && !w.topicId && !seen.has(w.id)) workspaces.delete(w.id)
   }
 
   projects.set(projectId, project)
@@ -567,8 +582,11 @@ async function discoverWorktrees(project: Project): Promise<void> {
       if (resolve(entry.path) === resolve(main.path)) continue
       if (!existsSync(entry.path)) continue
       const id = stableId('ws', entry.path)
-      if (workspaces.has(id)) {
+      const known = workspaces.get(id)
+      if (known) {
         project.workspaceIds.includes(id) || project.workspaceIds.push(id)
+        // Its repository may have joined or left a group since.
+        known.groupId = main.groupId ?? null
         continue
       }
       const ws: Workspace = {
@@ -585,6 +603,7 @@ async function discoverWorktrees(project: Project): Promise<void> {
         git: null,
         runtime: null,
         topicId: null,
+        groupId: main.groupId ?? null,
         capabilities: detectCapabilities(entry.path, manifestOf(project), basename(main.path)),
         agentSessions: [],
         lease: null,

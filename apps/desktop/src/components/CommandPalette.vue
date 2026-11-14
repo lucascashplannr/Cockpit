@@ -328,6 +328,18 @@ function buildCommands(lvl: Level): Item[] {
         state.topicDialogOpen = true
       }),
     })
+    // §4 — a folder of repositories, drawn and stood on as a topic is.
+    out.push({
+      id: 'group:new',
+      label: 'New group',
+      hint: 'a folder for some of the project’s repositories',
+      group: 'Project',
+      icon: FolderPlus,
+      keywords: 'new group folder repositories organise organize',
+      run: act(() => {
+        state.groupDialog = { projectId: project.id, groupId: null, pick: [] }
+      }),
+    })
   }
 
   for (const f of topics) {

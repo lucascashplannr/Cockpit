@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { ArrowUp, LoaderCircle } from '@lucide/vue'
+import type { Workspace } from '@cockpit/shared'
 import ServerSwitch from './ServerSwitch.vue'
 import { busyAmong, busyVerb, projectScopeWorkspaces, pushProject, state } from '../core/store.js'
+
+/**
+ * §4 — a group stands where the project does, over fewer repositories: its
+ * own, with its folder in place of the project's.
+ */
+const props = defineProps<{ group?: Workspace | null; groupRepos?: Workspace[] }>()
 
 /**
  * §7 — the verbs of the project, for the repositories it is on: all of them,
@@ -10,7 +17,7 @@ import { busyAmong, busyVerb, projectScopeWorkspaces, pushProject, state } from 
  * and Catch up are a topic's, since a main checkout has no base to go onto.
  */
 
-const repos = computed(() => projectScopeWorkspaces.value)
+const repos = computed(() => (props.group ? (props.groupRepos ?? []) : projectScopeWorkspaces.value))
 const ids = computed(() => repos.value.map((w) => w.id))
 
 const busyOp = computed(() => busyAmong(ids.value))
@@ -36,12 +43,15 @@ const pushTitle = computed(
 /** Nothing in scope runs anything: no switch to offer. */
 const runs = computed(() => !!folder.value?.runtime || repos.value.some((w) => w.runtime))
 
-/** The project's own folder, where repository-less declarations run. */
-const folder = computed(
-  () =>
-    state.workspaces.find((w) => w.kind === 'group' && w.projectId === state.activeProjectId && !w.topicId) ??
-    null,
-)
+/**
+ * The project's own folder, where repository-less declarations run — found by
+ * its path, since a group of repositories is a folder with no topic too.
+ */
+const folder = computed(() => {
+  if (props.group) return props.group
+  const root = state.projects.find((p) => p.id === state.activeProjectId)?.root
+  return state.workspaces.find((w) => w.kind === 'group' && w.projectId === state.activeProjectId && w.path === root) ?? null
+})
 </script>
 
 <template>

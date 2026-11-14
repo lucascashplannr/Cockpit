@@ -411,6 +411,11 @@ export const state = reactive({
   detailsFor: null as ListTarget | null,
   /** §4 — the sheet that opens a topic across N repositories. */
   topicDialogOpen: false,
+  /**
+   * §4 — the sheet that makes a group (`groupId` null, with `pick` ticked) or
+   * renames one. A group is a folder of repositories, so both move folders.
+   */
+  groupDialog: null as { projectId: string; groupId: string | null; pick: string[] } | null,
   pendingPlan: null as PlanPreview | null,
   /**
    * §4 — what produced the plan on screen, and against which base.
@@ -1031,9 +1036,32 @@ function anchorFor(scope: AgentScope): Workspace | null {
         state.workspaces.find((w) => w.projectId === scope.projectId && real(w)) ??
         null
       )
-    default:
+    default: {
+      // §4 — a group anchors the panel on its first repository, as a topic
+      // does on its first branch: the folder around them has nothing to diff.
+      const members = groupMembers(scope.workspaceId)
+      if (members.length) return members[0]!
       return state.workspaces.find((w) => w.id === scope.workspaceId) ?? null
+    }
   }
+}
+
+/**
+ * §4 — a group's repositories, at their main checkouts, by name; empty when
+ * `id` is not a group. The core's `groupMembers`, mirrored.
+ */
+export function groupMembers(id: string): Workspace[] {
+  const g = state.workspaces.find((w) => w.id === id)
+  if (!g || !isRepoGroup(g)) return []
+  return state.workspaces
+    .filter((w) => w.kind === 'main' && w.groupId === id)
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** A group of repositories (§4) — not the project's own folder, not a topic's. */
+export function isRepoGroup(w: Workspace): boolean {
+  if (w.kind !== 'group' || w.topicId) return false
+  return state.projects.find((p) => p.id === w.projectId)?.root !== w.path
 }
 
 /** What to call the current scope in the agent's one line of chrome. */
@@ -1056,6 +1084,7 @@ export function scopeLabel(scope: AgentScope | null): { kind: string; name: stri
     }
     default: {
       const w = state.workspaces.find((x) => x.id === scope.workspaceId)
+      if (w && isRepoGroup(w)) return { kind: 'Group', name: w.name }
       // A repository is a repository wherever it is checked out. The kicker
       // labels the *name* beside it, and that name is the repository's in both
       // cases — so "BRANCH Init" put a category on a word that was never in it,
@@ -1153,6 +1182,14 @@ export const selectedTopicId = computed(() =>
   state.agentScope?.kind === 'topic' ? state.agentScope.topicId : null,
 )
 
+/** §4 — the group standing selected, the way a topic does: its header lit, no row. */
+export const selectedGroupId = computed(() => {
+  const sc = state.agentScope
+  if (sc?.kind !== 'workspace') return null
+  const w = state.workspaces.find((x) => x.id === sc.workspaceId)
+  return w && isRepoGroup(w) ? w.id : null
+})
+
 /**
  * §7 — the project itself is what is selected: the widest scope, opened from
  * the list's foot. Like a topic, it anchors the panel on one of its rows
@@ -1238,9 +1275,16 @@ export function changeCount(w: Workspace): number {
  * `key` is what the pick is remembered by; a topic with a single repository is
  * just that repository, and spans nothing.
  */
-export const reviewSpan = computed<{ key: string; repos: Workspace[]; topicId: string | null } | null>(() => {
+export const reviewSpan = computed<
+  { key: string; repos: Workspace[]; topicId: string | null; groupId?: string | null } | null
+>(() => {
   if (onProject.value && state.activeProjectId) {
     return { key: state.activeProjectId, repos: projectScopeWorkspaces.value, topicId: null }
+  }
+  const g = selectedGroupId.value
+  if (g) {
+    const repos = groupMembers(g)
+    return repos.length > 1 ? { key: 'group:' + g, repos, topicId: null, groupId: g } : null
   }
   const t = selectedTopicId.value
   if (!t) return null
@@ -1257,12 +1301,14 @@ export const reviewSpan = computed<{ key: string; repos: Workspace[]; topicId: s
 export const spanFolder = computed<Workspace | null>(() => {
   const span = reviewSpan.value
   if (!span) return null
+  if (span.groupId) return state.workspaces.find((w) => w.id === span.groupId) ?? null
+  const root = state.projects.find((p) => p.id === state.activeProjectId)?.root
   return (
     state.workspaces.find(
       (w) =>
         w.kind === 'group' &&
         w.projectId === state.activeProjectId &&
-        (span.topicId ? w.topicId === span.topicId : !w.topicId),
+        (span.topicId ? w.topicId === span.topicId : !w.topicId && w.path === root),
     ) ?? null
   )
 })
@@ -2183,7 +2229,9 @@ export const agentActivity = computed(() => {
       if (!w) continue
       keys.add('project:' + w.projectId)
       if (w.topicId) keys.add('topic:' + w.topicId)
+      else if (w.groupId) keys.add('workspace:' + w.groupId)
     }
+    if (c.scope.kind === 'workspace') keys.add('workspace:' + c.scope.workspaceId)
     const own = c.scope.kind + ':' + (
       c.scope.kind === 'topic' ? c.scope.topicId : c.scope.kind === 'project' ? c.scope.projectId : c.scope.workspaceId
     )
@@ -2533,6 +2581,69 @@ export function newConversationOn(scope: AgentScope): void {
 
 export function openContextMenu(e: MouseEvent, target: ListTarget): void {
   state.contextMenu = { x: e.clientX, y: e.clientY, target }
+}
+
+/**
+ * §4 — repositories into a group (made if new), or out to the project root
+ * when `name` is null. The folders move; the core carries their conversations
+ * with them. Ids are paths, so whatever was selected is found again by name.
+ */
+export async function groupRepos(projectId: string, workspaceIds: string[], name: string | null): Promise<boolean> {
+  const names = workspaceIds.map((id) => state.workspaces.find((w) => w.id === id)?.name).filter((n): n is string => !!n)
+  const res = await guard(() => client.call('project.group', { projectId, workspaceIds, group: name }))
+  if (!res) return false
+  await refreshProjects()
+  if (name) {
+    standOnGroup(projectId, name)
+    toast('ok', 'Moved into ' + name, { lines: names })
+  } else {
+    const first = state.workspaces.find((w) => w.projectId === projectId && w.kind === 'main' && w.name === names[0])
+    if (first) selectWorkspace(first.id)
+    toast('ok', 'Moved out to ' + (state.projects.find((p) => p.id === projectId)?.name ?? 'the project'), { lines: names })
+  }
+  return true
+}
+
+export async function renameGroup(groupId: string, name: string): Promise<boolean> {
+  const g = state.workspaces.find((w) => w.id === groupId)
+  if (!g) return false
+  const res = await guard(() => client.call('project.renameGroup', { projectId: g.projectId, groupId, name }))
+  if (!res) return false
+  await refreshProjects()
+  standOnGroup(g.projectId, name)
+  toast('ok', 'Group renamed to “' + name + '”', g.name !== name ? { lines: ['was “' + g.name + '”'] } : undefined)
+  return true
+}
+
+/** The group named `name` in this project, stood on as its header is clicked. */
+function standOnGroup(projectId: string, name: string): void {
+  const g = state.workspaces.find((w) => w.projectId === projectId && isRepoGroup(w) && w.name === name)
+  if (g) openAgentOn({ kind: 'workspace', workspaceId: g.id }, { reveal: false })
+}
+
+/** §4 — every repository back to the project root; the folder goes if nothing else is in it. */
+export function askUngroup(groupId: string): void {
+  const g = state.workspaces.find((w) => w.id === groupId)
+  const p = g && state.projects.find((x) => x.id === g.projectId)
+  if (!g || !p) return
+  const members = groupMembers(groupId)
+  state.pendingConfirm = {
+    title: 'Ungroup ' + g.name + '?',
+    body: [
+      (members.length === 1 ? members[0]!.name + ' moves' : members.map((w) => w.name).join(', ') + ' move') +
+        ' back to ' + p.name + '/. Their conversations and branches come along.',
+    ],
+    verb: 'Ungroup',
+    done: g.name + ' ungrouped',
+    doneLines: members.map((w) => w.name),
+    danger: false,
+    run: async () => {
+      const res = await guard(() => client.call('project.ungroup', { projectId: g.projectId, groupId }))
+      if (!res) return false
+      await refreshProjects()
+      return true
+    },
+  }
 }
 
 export async function renameTopic(topicId: string, name: string): Promise<boolean> {
@@ -3324,6 +3435,8 @@ export function markThreadUnread(c: Conversation): void {
  */
 export interface ListGroup {
   topicId: string | null
+  /** §4 — a group of repositories: its own workspace's id. Never set beside `topicId`. */
+  groupId: string | null
   title: string | null
   topic: Topic | null
   workspaces: Workspace[]
@@ -3347,11 +3460,30 @@ export const workspaceGroups = computed<ListGroup[]>(() => {
 
   for (const [fid, ws] of byTopic) {
     const topic = state.topics.find((f) => f.id === fid) ?? null
-    groups.push({ topicId: fid, title: topic?.name ?? ws[0]?.name ?? '', topic, workspaces: ws })
+    groups.push({ topicId: fid, groupId: null, title: topic?.name ?? ws[0]?.name ?? '', topic, workspaces: ws })
   }
   groups.sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''))
 
-  if (loose.length) groups.push({ topicId: null, title: null, topic: null, workspaces: loose })
+  // §4 — under the topics, the repositories themselves: in their groups, by
+  // name, then the ones in no group. Topics come and go; these stay.
+  const byGroup = new Map<string, Workspace[]>()
+  const ungrouped: Workspace[] = []
+  for (const w of loose) {
+    const g = w.groupId ? state.workspaces.find((x) => x.id === w.groupId) : null
+    if (g && isRepoGroup(g)) byGroup.set(g.id, [...(byGroup.get(g.id) ?? []), w])
+    else ungrouped.push(w)
+  }
+  const named = [...byGroup].map(([gid, ws]) => ({
+    topicId: null,
+    groupId: gid,
+    title: state.workspaces.find((x) => x.id === gid)?.name ?? '',
+    topic: null,
+    workspaces: ws,
+  }))
+  named.sort((a, b) => a.title.localeCompare(b.title))
+  groups.push(...named)
+
+  if (ungrouped.length) groups.push({ topicId: null, groupId: null, title: null, topic: null, workspaces: ungrouped })
   return groups
 })
 
@@ -3744,7 +3876,7 @@ export function pressProject(id: string): void {
 function scopeCovers(scope: AgentScope, w: Workspace): boolean {
   if (scope.kind === 'topic') return w.topicId === scope.topicId
   if (scope.kind === 'project') return w.projectId === scope.projectId
-  return scope.workspaceId === w.id
+  return scope.workspaceId === w.id || (!!w.groupId && !w.topicId && scope.workspaceId === w.groupId)
 }
 
 export async function createProject(input: {
@@ -3957,6 +4089,8 @@ function scopeCheckouts(scope: AgentScope): Workspace[] {
     const every = projectCheckouts(scope.projectId)
     return scope.only ? every.filter((w) => scope.only!.includes(w.id)) : every
   }
+  const members = groupMembers(scope.workspaceId)
+  if (members.length) return members
   const w = state.workspaces.find((x) => x.id === scope.workspaceId)
   return w ? [w] : []
 }

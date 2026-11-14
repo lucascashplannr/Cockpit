@@ -51,6 +51,11 @@ export type EventType =
   | 'project.settings'
   | 'project.moved'
   | 'project.trashed'
+  /** §4 — repositories moved into a group's folder, or back out to the root. */
+  | 'project.grouped'
+  | 'project.group_renamed'
+  /** A branch whose repository moved, and that `git worktree repair` could not relink. */
+  | 'project.group_repair_failed'
   // topics — the durable unit of work (§4)
   | 'topic.opened'
   /**
