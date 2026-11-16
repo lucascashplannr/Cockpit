@@ -19,6 +19,7 @@ import { ranUnasked } from './unasked.js'
 import * as memory from './memory.js'
 import * as docsTools from './docsTools.js'
 import * as memoryTools from './memoryTools.js'
+import * as wrapTools from './wrapTools.js'
 import * as peersTools from './peersTools.js'
 import * as docs from './docs.js'
 import * as skills from './skills.js'
@@ -430,6 +431,7 @@ function cockpitTools(ctx: LaunchContext): string[] {
     ...(ctx.memory ? memoryTools.TOOL_NAMES : []),
     ...(ctx.docs ? docsTools.TOOL_NAMES : []),
     ...peersTools.TOOL_NAMES,
+    ...wrapTools.TOOL_NAMES,
   ]
 }
 
@@ -553,7 +555,7 @@ function claudeCommon(ctx: LaunchContext): string[] {
     // before it writes its first command rather than after — and when to
     // write the memory, which nothing else would tell it.
     '--append-system-prompt',
-    SHELL_RULES + (ctx.memory ? '\n\n' + memoryTools.MEMORY_RULES : '') + (ctx.instructions ? '\n\n' + ctx.instructions : ''),
+    SHELL_RULES + '\n\n' + wrapTools.WRAP_RULES + (ctx.memory ? '\n\n' + memoryTools.MEMORY_RULES : '') + (ctx.instructions ? '\n\n' + ctx.instructions : ''),
     ...(ctx.settings ? ['--settings', JSON.stringify(ctx.settings)] : []),
     ...(ctx.model ? ['--model', ctx.model] : []),
     ...(ctx.effort ? ['--effort', ctx.effort] : []),

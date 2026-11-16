@@ -1132,6 +1132,33 @@ export function questionsIn(input: Record<string, unknown>): AgentQuestion[] {
   return out
 }
 
+/**
+ * The end of a working turn, in two or three sentences: what is now true, where
+ * it stands, and — when the next move is the person's — the one question and
+ * the replies that answer it. Written by the agent with a tool the core hosts
+ * (`wrapTools.ts`), drawn by the window as a box under the answer.
+ */
+export const WRAP_TOOL = 'mcp__cockpit__wrap_up'
+
+export interface AgentWrap {
+  recap: string
+  /** Absent when nothing waits on the person. */
+  ask: string
+  /** What a button sends, as the person would say it. The first is the agent's pick. */
+  replies: string[]
+}
+
+/** A `wrap_up` call's input, read defensively: the model wrote it. */
+export function wrapIn(input: Record<string, unknown>): AgentWrap | null {
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+  const recap = str(input.recap)
+  if (!recap) return null
+  const ask = str(input.ask)
+  const raw = Array.isArray(input.replies) ? input.replies : []
+  const replies = ask ? [...new Set(raw.map(str).filter(Boolean))].slice(0, 2) : []
+  return { recap, ask, replies }
+}
+
 export interface Conversation {
   id: string
   engine: string

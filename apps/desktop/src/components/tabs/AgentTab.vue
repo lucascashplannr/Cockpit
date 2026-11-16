@@ -4,7 +4,7 @@ import type {
   // Aliased: the component that draws one is `Attachment` too, and the file
   // needs both in the same scope.
   Attachment as AttachedFile,
-  AgentAnswers, AgentQuestion, AgentScope, BackgroundTask, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
+  AgentAnswers, AgentQuestion, AgentScope, AgentWrap, BackgroundTask, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
   ArrowDown, Asterisk, BellRing, ChevronRight, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, GitFork, Hand, Hourglass, MessageSquareText,
@@ -21,6 +21,7 @@ import QuestionAsk from '../agent/QuestionAsk.vue'
 import DocsOfferLine from '../docs/DocsOfferLine.vue'
 import TaskLogDialog from '../agent/TaskLogDialog.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
+import WrapCard from '../agent/WrapCard.vue'
 import Wordmark from '../brand/Wordmark.vue'
 import { markIcon } from '../agent/mark.js'
 import {
@@ -33,7 +34,7 @@ import {
 } from '../../core/store.js'
 import {
   COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, commandOff, conversationRef, isDocument, isHandoff, isMemorize,
-  isWake, questionsIn, readPrompt, wakeLines,
+  isWake, questionsIn, readPrompt, wakeLines, WRAP_TOOL, wrapIn,
 } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
 
@@ -285,6 +286,8 @@ type Item =
   /** Something the agent asked a person, and what it was told. */
   | Asked
   | Peer
+  /** The turn's own recap (`wrap_up`): drawn under the answer, never among the rows. */
+  | { kind: 'wrap'; id: string; wrap: AgentWrap }
 
 interface Asked {
   kind: 'question'
@@ -368,6 +371,7 @@ function rowsOf(items: Item[]): Row[] {
     // A sentence between two calls ends the run: it is the agent saying why
     // what follows is different from what came before. So does an undo, which
     // is the loudest possible break in what a turn did.
+    if (it.kind === 'wrap') continue
     flush()
     if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'memory' || it.kind === 'docsOffer' || it.kind === 'question' || it.kind === 'peer') rows.push({ ...it })
     else rows.push({ kind: 'text', id: it.id, text: it.text })
@@ -380,6 +384,8 @@ interface Exchange {
   turn: AgentTurn
   items: Item[]
   rows: Row[]
+  /** The last `wrap_up` it called, if any. */
+  wrap: AgentWrap | null
 }
 
 /**
@@ -454,6 +460,13 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
     }
     if (e.type === 'agent.tool_use') {
       const p = e.payload as { toolUseId?: string; tool?: string; input?: Record<string, unknown> }
+      // The turn's recap is said under the answer, not done among the calls.
+      // Its result is dropped with the other unmatched ones below.
+      if (p?.tool === WRAP_TOOL) {
+        const wrap = wrapIn(p.input ?? {})
+        if (wrap) into.push({ kind: 'wrap', id: e.id, wrap })
+        continue
+      }
       // §6 — the memory tools are not work on the code, and a card for each
       // would bury the note in chrome. The note *is* the event: one quiet
       // line saying what the next agent will now know. Reading it is nothing.
@@ -627,8 +640,10 @@ const exchanges = computed<Exchange[]>(() => {
   if (!s) return []
   const buckets = bucketize(s.id, s.history)
   return s.history.map((turn, i) => {
-    const items = buckets[i] ?? []
-    return { turn, items, rows: rowsOf(items) }
+    const all = buckets[i] ?? []
+    const items = all.filter((it) => it.kind !== 'wrap')
+    const wrap = all.findLast((it): it is Extract<Item, { kind: 'wrap' }> => it.kind === 'wrap')?.wrap ?? null
+    return { turn, items, rows: rowsOf(items), wrap }
   })
 })
 
@@ -1269,6 +1284,32 @@ const waiting = computed(() => {
   }
 })
 
+/**
+ * The latest turn's recap (`wrap_up`), while it is still where things stand:
+ * not during a turn, not on an undone one, not while it waits on what it left
+ * running, and not once put away. Put away is per turn and per window.
+ */
+const hiddenWraps = ref(new Set<string>())
+const shownWrap = computed<AgentWrap | null>(() => {
+  const x = exchanges.value.at(-1)
+  if (!x?.wrap || x.turn.status === 'running' || x.turn.undoneBy || waiting.value) return null
+  return hiddenWraps.value.has(x.turn.id) ? null : x.wrap
+})
+function hideWrap(): void {
+  const id = exchanges.value.at(-1)?.turn.id
+  if (id) hiddenWraps.value = new Set(hiddenWraps.value).add(id)
+}
+const canReply = computed(() => !!selected.value && !isBusy(selected.value) && !busy.value && !blocked.value.length)
+
+/** A reply button: the words on it go in as the person's turn. The draft in the box is left alone. */
+async function replyWith(text: string): Promise<void> {
+  if (!canReply.value || !selected.value) return
+  busy.value = true
+  await sendTurn(selected.value.id, text)
+  busy.value = false
+}
+
+
 /*
  * Unfolded, the waiting line lists what is running; a task opens its output
  * in a dialog of its own. With one task there is no list to go through: the
@@ -1324,6 +1365,7 @@ const VERBS: Record<string, string> = {
   Skill: 'Using',
   WebFetch: 'Fetching',
   WebSearch: 'Searching',
+  [WRAP_TOOL]: 'Summing up',
 }
 
 function verbFor(tool: string, input: Record<string, unknown>): string {
@@ -2111,6 +2153,14 @@ function ago(ts: number): string {
               </div>
             </div>
 
+            <WrapCard
+              v-if="i === exchanges.length - 1 && shownWrap"
+              :wrap="shownWrap"
+              :can-reply="canReply"
+              @reply="replyWith"
+              @dismiss="hideWrap"
+            />
+
             <!-- The answer's own footer, and only what can be done to it.
                  
                  It used to be a receipt — context, output, elapsed, cost, four
@@ -2249,9 +2299,9 @@ function ago(ts: number): string {
           @stop="stopConversation(selected.id)"
           :placeholder="
             queueing
-              ? 'Say the next thing now — it goes in when this turn lands'
+              ? 'Queue your next message'
               : continuing
-                ? 'Next turn — @ for a file, the memory is re-read on the way in'
+                ? 'Reply, or @ for a file'
                 : 'This conversation cannot be resumed; ⏎ opens a new one'
           "
           @send="send"

@@ -2,6 +2,7 @@ import { MEMORY_NEW, MEMORY_OFF, STATE_SECTION, conversationRef } from '@cockpit
 import type { Actor, Conversation } from '@cockpit/shared'
 import * as docsTools from './docsTools.js'
 import * as peersTools from './peersTools.js'
+import * as wrapTools from './wrapTools.js'
 import * as memory from './memory.js'
 import { getWorkspace } from './registry.js'
 
@@ -199,12 +200,14 @@ export function handle(c: Conversation, own: Set<string>, msg: JsonRpc): Record<
           // §7 — always: a conversation alone in its folder today may be
           // joined by another one tomorrow, and its tool list is fixed at launch.
           ...peersTools.TOOLS,
+          ...wrapTools.TOOLS,
         ],
       })
     case 'tools/call': {
       const name = msg.params?.name ?? ''
       if (docsTools.NAMES.includes(name)) return reply(docsTools.call(c, name, msg.params?.arguments ?? {}))
       if (peersTools.NAMES.includes(name)) return reply(peersTools.call(c, name, msg.params?.arguments ?? {}))
+      if (wrapTools.NAMES.includes(name)) return reply(wrapTools.call(name, msg.params?.arguments ?? {}))
       return reply(call(c, own, name, msg.params?.arguments ?? {}))
     }
     default:
