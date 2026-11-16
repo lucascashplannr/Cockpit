@@ -1250,6 +1250,22 @@ export interface Conversation {
   loadout?: AgentLoadout | null
   /** What it was given beyond its scope, as chosen in the composer before it started. */
   choice?: LoadoutChoice | null
+  /**
+   * Where a person says it stands, set by hand from its tab: To review, On
+   * hold, Done — or only a note. Nothing the engine reports ever sets it, and
+   * the next turn a person sends clears it: the work has been picked back up.
+   */
+  mark?: ConversationMark | null
+}
+
+/** What a person can say about a conversation from its tab. */
+export type ConversationMarkKind = 'review' | 'hold' | 'done'
+
+export interface ConversationMark {
+  /** Null for a note on its own. */
+  kind: ConversationMarkKind | null
+  note: string
+  at: number
 }
 
 /**

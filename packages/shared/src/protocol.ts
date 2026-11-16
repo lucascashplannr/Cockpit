@@ -6,7 +6,7 @@
 import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
-  AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AttachmentInput, BranchRef, Conversation, ConversationSummary, LoadoutChoice, PermissionMode, SkillInfo, SkillWhere,
+  AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AttachmentInput, BranchRef, Conversation, ConversationMark, ConversationMarkKind, ConversationSummary, LoadoutChoice, PermissionMode, SkillInfo, SkillWhere,
   CockpitSettings,
   CommandRunResult, CommitDetail, CommitGraph, FileBlame, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DeclaredServer,
@@ -1023,6 +1023,14 @@ export interface Rpc {
   'agent.rename': {
     params: { sessionId: string; title: string }
     result: { ok: true } | { ok: false; reason: string }
+  }
+  /**
+   * Where a person says a conversation stands, and why. Null clears it, and
+   * so does a mark with neither a kind nor a note.
+   */
+  'agent.mark': {
+    params: { sessionId: string; mark: { kind: ConversationMarkKind | null; note: string } | null }
+    result: { ok: true; mark: ConversationMark | null } | { ok: false; reason: string }
   }
   /**
    * §6 — the conversation a memory note is signed with (`conversationRef`),

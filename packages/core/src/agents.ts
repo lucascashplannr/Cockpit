@@ -6,7 +6,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { open, readFile, realpath, stat } from 'node:fs/promises'
 import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, WAKE_PROMPT, commandIn, conversationRef, newId } from '@cockpit/shared'
 import type {
-  AgentAnswers, AgentLoadout, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, AgentTurn, LoadoutChoice, MemorySource, PeerMessage, PermissionMode,
+  AgentAnswers, AgentLoadout, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, ConversationMark, ConversationMarkKind, AgentTurn, LoadoutChoice, MemorySource, PeerMessage, PermissionMode,
   PermissionRequest, TurnUsage, BackgroundTask,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
@@ -440,6 +440,21 @@ function cleanChoice(c: LoadoutChoice | null | undefined): LoadoutChoice | null 
   const out: LoadoutChoice = { instructionsOff: list(c.instructionsOff), skillsOff: list(c.skillsOff) }
   if (c.docs === null || typeof c.docs === 'string') out.docs = c.docs
   return out.instructionsOff.length || out.skillsOff.length || 'docs' in out ? out : null
+}
+
+const MARK_KINDS: readonly ConversationMarkKind[] = ['review', 'hold', 'done']
+
+function readMark(raw: unknown): ConversationMark | null {
+  if (typeof raw !== 'string' || !raw) return null
+  try {
+    const m = JSON.parse(raw) as Partial<ConversationMark>
+    const kind = MARK_KINDS.includes(m.kind as ConversationMarkKind) ? (m.kind as ConversationMarkKind) : null
+    const note = typeof m.note === 'string' ? m.note : ''
+    if (!kind && !note) return null
+    return { kind, note, at: Number(m.at) || 0 }
+  } catch {
+    return null
+  }
 }
 
 function readChoice(raw: unknown): LoadoutChoice | null {
@@ -1750,6 +1765,7 @@ function hydrate(r: Record<string, unknown>): Conversation {
     hiddenAt: r.hidden_at == null ? null : Number(r.hidden_at),
     alongside: !!r.alongside,
     choice: readChoice(r.choice),
+    mark: readMark(r.mark),
     inbox: inboxOf(String(r.id)),
     loadout: loadouts.get(String(r.id)) ?? null,
     forkedFrom: r.forked_from == null ? null : { sessionId: String(r.forked_from), title: titleOf(String(r.forked_from)) },
@@ -2066,6 +2082,7 @@ export async function resumeAgent(
 ): Promise<StartAgentResult> {
   const prev = get(sessionId)
   if (!prev) return { denied: true, reason: 'unknown session: ' + sessionId }
+  clearMark(sessionId)
   // §16 — a fork that has not run yet: its first launch forks the engine
   // session it came from, at the turn it was forked at (or earlier, after an
   // undo inside it).
@@ -3436,6 +3453,37 @@ export function rename(sessionId: string, title: string): { ok: true } | { ok: f
 }
 
 /**
+ * Where a person says a conversation stands, and why — set from its tab. A
+ * mark with neither a kind nor a note is no mark at all.
+ */
+export function setMark(
+  sessionId: string,
+  input: { kind: ConversationMarkKind | null; note: string } | null,
+): { ok: true; mark: ConversationMark | null } | { ok: false; reason: string } {
+  const c = live.get(sessionId)?.session ?? get(sessionId)
+  if (!c) return { ok: false, reason: 'That conversation is gone.' }
+  const kind = input && MARK_KINDS.includes(input.kind as ConversationMarkKind) ? input.kind : null
+  const note = (input?.note ?? '').replace(/[ \t]+\n/g, '\n').trim().slice(0, 500)
+  const mark: ConversationMark | null = kind || note ? { kind, note, at: Date.now() } : null
+  getDb().prepare('UPDATE agent_sessions SET mark = ? WHERE id = ?').run(mark ? JSON.stringify(mark) : null, sessionId)
+  const l = live.get(sessionId)
+  if (l) l.session.mark = mark
+  agentBus.emit('changed')
+  return { ok: true, mark }
+}
+
+/**
+ * A turn a person sends picks the work back up: whatever the tab said about
+ * it — on hold, to review, done — is no longer true.
+ */
+function clearMark(sessionId: string): void {
+  const r = getDb().prepare('UPDATE agent_sessions SET mark = NULL WHERE id = ? AND mark IS NOT NULL').run(sessionId)
+  const l = live.get(sessionId)
+  if (l) l.session.mark = null
+  if (r.changes) agentBus.emit('changed')
+}
+
+/**
  * The conversation a memory note is signed with — `conversationRef`, the tail
  * of its id — in this project, hidden or not. Null once it is gone for good.
  */
@@ -3933,6 +3981,7 @@ export async function send(
 
   const ultracode = opts ? opts.effort === ULTRACODE : l.ultracode
   if (opts) switchMode(l, modeOf(opts))
+  clearMark(sessionId)
   if (l.busy) {
     l.queue.push({ prompt: text, files, ultracode })
     agentBus.emit('changed')

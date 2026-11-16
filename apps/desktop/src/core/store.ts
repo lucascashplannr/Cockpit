@@ -1,7 +1,7 @@
 import { computed, nextTick, reactive, ref, shallowRef, toRaw, watch } from 'vue'
 import type {
   AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
-  Conversation, CockpitEvent, CockpitSettings,
+  Conversation, ConversationMarkKind, CockpitEvent, CockpitSettings,
   CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, DocsInfo, DocsOffer, DocsPage, DocsProposalSet, DocsSignals, ErasedMemory, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
@@ -2791,6 +2791,39 @@ export async function removedOn(scope: AgentScope | null): Promise<Conversation[
 }
 
 /** A removed conversation back in the list. */
+/**
+ * Where a person says a conversation stands, and why — from its tab. The list
+ * is pushed; this sets it at once. Null, or neither a kind nor a note, clears it.
+ */
+export async function markConversation(
+  sessionId: string,
+  mark: { kind: ConversationMarkKind | null; note: string } | null,
+): Promise<boolean> {
+  const r = await guard(() => client.call('agent.mark', { sessionId, mark }))
+  if (!r) return false
+  if (!r.ok) {
+    toast('error', r.reason)
+    return false
+  }
+  for (const c of [...state.agents, ...state.keptAgents]) if (c.id === sessionId) c.mark = r.mark
+  return true
+}
+
+/** The words for each, the same on the tab, its menu and the line in the thread. */
+export const MARK_WORDS: Record<ConversationMarkKind, string> = {
+  review: 'To review',
+  hold: 'On hold',
+  done: 'Done',
+}
+
+/** The popover that sets it, opened at the pointer from a tab or from the line in the thread. */
+export const markMenu = reactive({ id: null as string | null, x: 0, y: 0 })
+export function openMarkMenu(e: MouseEvent, sessionId: string): void {
+  markMenu.id = sessionId
+  markMenu.x = e.clientX
+  markMenu.y = e.clientY
+}
+
 /** A name typed over a conversation's own. The list is pushed; this sets it at once. */
 export async function renameConversation(sessionId: string, title: string): Promise<boolean> {
   const name = title.replace(/\s+/g, ' ').trim()

@@ -22,12 +22,14 @@ import DocsOfferLine from '../docs/DocsOfferLine.vue'
 import TaskLogDialog from '../agent/TaskLogDialog.vue'
 import QuestionRecord from '../agent/QuestionRecord.vue'
 import Wordmark from '../brand/Wordmark.vue'
+import { markIcon } from '../agent/mark.js'
 import {
   activeAgentScope, activeDraftKey, alongsideChosen, draftKey, type DraftFile, chooseAlongside, filesPending, attachmentSrc, attachmentText, client, guard, isBusy, isLive, openSentFiles,
   askUndo, forkConversation, goTo, loadTranscript, markThreadRead, openThreadFor, previewScope, scopeLabel,
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, forgetMemoryChoice, memoryLabel, renameConversation, restoreConversation,
   threadScrollOf, toast, transcriptOf, pickThread, type ThreadScroll, answerPeers, openConversation, peerTitle,
+  MARK_WORDS, openMarkMenu,
 } from '../../core/store.js'
 import {
   COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, commandOff, conversationRef, isDocument, isHandoff, isMemorize,
@@ -2197,6 +2199,21 @@ function ago(ts: number): string {
       </div>
 
       <footer v-if="selected.hiddenAt === null" class="foot">
+        <!-- Your note from its tab, kept where you pick it back up. A status
+             with no note is already on the tab: nothing more to say here. -->
+        <button
+          v-if="selected.mark?.note"
+          class="markline"
+          :class="'k-' + (selected.mark.kind ?? 'note')"
+          :title="(selected.mark.note ? selected.mark.note + '\n\n' : '') + 'Click to change it — the next turn you send clears it'"
+          @click="openMarkMenu($event, selected.id)"
+        >
+          <span class="mpill">
+            <component :is="markIcon(selected.mark.kind)" />
+            {{ selected.mark.kind ? MARK_WORDS[selected.mark.kind] : 'Note' }}
+          </span>
+          <span class="mnote">{{ selected.mark.note }}</span>
+        </button>
         <!-- §6 — "vider devient gratuit : la conversation part, la mémoire
              reste". The one moment that sentence is actionable is this one, so
              it is said here rather than in a document. -->
@@ -2741,6 +2758,41 @@ button.pulse.idlewait[aria-expanded='true'] .wchev { opacity: 1; }
 }
 .crowd .link:hover { color: var(--text); }
 .crowd .link.go { font-weight: 650; }
+
+/* Your own status, as a pill in its colour, and your note beside it. */
+.markline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  text-align: left;
+  --k: var(--text-muted);
+}
+.markline.k-review { --k: var(--accent); }
+.markline.k-done { --k: var(--ok); }
+.mpill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px 0 7px;
+  border-radius: 999px;
+  font-weight: 600;
+  color: var(--k);
+  background: color-mix(in srgb, var(--k) 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--k) 30%, transparent);
+  transition: box-shadow var(--dur-1) var(--ease-soft);
+}
+.mpill .lucide { width: 12px; height: 12px; }
+.markline:hover .mpill { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--k) 60%, transparent); }
+.markline:hover .mnote { color: var(--text); }
+.markline .mnote { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── when it was asked, and the way back before it ───────────────────────
  *

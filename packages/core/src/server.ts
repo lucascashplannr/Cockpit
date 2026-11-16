@@ -7,7 +7,7 @@ import {
 } from '@cockpit/shared'
 import type {
   AgentAnswers, AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
-  Conversation, LoadoutChoice, PermissionMode, Project, ProjectSettings, ServerBoardRow, ServerPush, SkillWhere, Workspace,
+  Conversation, ConversationMarkKind, LoadoutChoice, PermissionMode, Project, ProjectSettings, ServerBoardRow, ServerPush, SkillWhere, Workspace,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { append, bus, countEvents, forSession, tail, touchedBy } from './journal.js'
@@ -1092,6 +1092,11 @@ const handlers: Record<string, Handler> = {
   },
   'agent.rename': (p: { sessionId: string; title: string }) => {
     const r = agents.rename(p.sessionId, p.title)
+    if (r.ok) pushAgentActivity()
+    return r
+  },
+  'agent.mark': (p: { sessionId: string; mark: { kind: ConversationMarkKind | null; note: string } | null }) => {
+    const r = agents.setMark(p.sessionId, p.mark)
     if (r.ok) pushAgentActivity()
     return r
   },

@@ -419,7 +419,6 @@ const title = computed(
           <span class="lbl">{{ r.label }}</span>
           <span class="val" :class="{ lit: r.lit, bad: r.bad }">{{ r.value }}</span>
           <ChevronRight v-if="r.opens" class="chev" />
-          <span v-else class="chev" />
         </button>
       </template>
       <p v-if="foot" class="foot" :title="borrowed ? 'What Claude loaded in the latest conversation of this project — this one has not started yet' : 'What Claude loaded when this conversation started'">{{ foot }}</p>

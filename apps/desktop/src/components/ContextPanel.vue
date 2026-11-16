@@ -6,10 +6,12 @@ import type { Conversation } from '@cockpit/shared'
 import AgentTab from './tabs/AgentTab.vue'
 import Splitter from './Splitter.vue'
 import ConversationDrawer from './ConversationDrawer.vue'
+import MarkMenu from './agent/MarkMenu.vue'
+import { markIcon } from './agent/mark.js'
 import Wordmark from './brand/Wordmark.vue'
 import {
   activeAgentScope, activeWorkspace, attentionOf, closeFresh, hasMail, hasNewTab, closeTab, isBusy, isLive,
-  openThreadFor, pairShareOf, pairTabs, pickThread, savePairShare, setPairShare, splitOff, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
+  MARK_WORDS, openMarkMenu, openThreadFor, pairShareOf, pairTabs, pickThread, savePairShare, setPairShare, splitOff, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
   stripFor,
 } from '../core/store.js'
 
@@ -136,16 +138,27 @@ function dotOf(c: Conversation): string {
   // Between turns, with something it left running: it will pick up on its own.
   if (c.background?.length) return 'wait'
   if (hasMail(c)) return 'mail'
+  // Nothing live to say: what you said about it yourself.
+  if (c.mark) return 'mark'
   return isLive(c) ? 'open' : 'done'
 }
-/** A dot only when there is news: working, needs you, or a message waiting. */
+/** A dot only when there is news: working, needs you, a message waiting, or your own status. */
 function news(c: Conversation): boolean {
   const d = dotOf(c)
-  return d === 'work' || d === 'wait' || d === 'you' || d === 'ask' || d === 'mail'
+  return d === 'work' || d === 'wait' || d === 'you' || d === 'ask' || d === 'mail' || d === 'mark'
 }
 function stateWord(c: Conversation): string {
   const d = dotOf(c)
-  return d === 'ask' ? 'asking you' : d === 'you' ? 'needs you' : d === 'work' ? 'working' : d === 'wait' ? 'waiting on what it left running' : d === 'mail' ? 'a message is waiting' : d === 'open' ? 'open' : 'finished'
+  return d === 'ask' ? 'asking you' : d === 'you' ? 'needs you' : d === 'work' ? 'working' : d === 'wait' ? 'waiting on what it left running' : d === 'mail' ? 'a message is waiting' : d === 'mark' ? (c.mark?.kind ? MARK_WORDS[c.mark.kind] : 'note') : d === 'open' ? 'open' : 'finished'
+}
+/** The tab's tooltip: its name, what is going on, and your note under it. */
+function tipOf(c: Conversation): string {
+  const head = c.title + (news(c) ? ' — ' + stateWord(c) : '')
+  const m = c.mark
+  if (!m) return head
+  const own = dotOf(c) === 'mark' ? '' : (m.kind ? MARK_WORDS[m.kind] : '')
+  const line = [own, m.note].filter(Boolean).join(' · ')
+  return line ? head + '\n' + line : head
 }
 function press(c: Conversation, e: MouseEvent): void {
   // The click a drag ends on is the end of the drag, not a choice of tab.
@@ -347,16 +360,18 @@ function fresh(): void {
                   droppair: drag.mode === 'pair' && drag.target === e.key,
                 }"
                 :style="drag.moved && drag.key === e.key ? { transform: 'translateX(' + drag.dx + 'px)' } : undefined"
-                :title="e.conv.title + (news(e.conv) ? ' — ' + stateWord(e.conv) : '')"
+                :title="tipOf(e.conv)"
                 @pointerdown="down($event, e)"
                 @click="renaming === e.conv.id || press(e.conv, $event)"
                 @dblclick="startRename(e.conv)"
                 @mousedown.middle.prevent="closeOne(e.conv)"
+                @contextmenu.prevent="openMarkMenu($event, e.conv.id)"
               >
                 <Hand v-if="dotOf(e.conv) === 'ask'" class="ask" />
                 <Asterisk v-else-if="dotOf(e.conv) === 'work'" class="star agent-star" />
                 <Hourglass v-else-if="dotOf(e.conv) === 'wait'" class="wait" />
                 <component :is="attentionIcon(attentionOf(e.conv))" v-else-if="dotOf(e.conv) === 'you'" class="att" :class="attentionOf(e.conv)" />
+                <component :is="markIcon(e.conv.mark!.kind)" v-else-if="dotOf(e.conv) === 'mark'" class="mk" :class="'k-' + (e.conv.mark!.kind ?? 'note')" />
                 <span v-else-if="news(e.conv)" class="dot" :class="dotOf(e.conv)" />
                 <input
                   v-if="renaming === e.conv.id"
@@ -397,15 +412,17 @@ function fresh(): void {
                       ? { left: drag.halfLeft + 'px', width: drag.halfW + 'px', transform: 'translateX(' + drag.dx + 'px)' }
                       : undefined"
                     @pointerdown.stop="down($event, e, c.id)"
-                    :title="c.title + (news(c) ? ' — ' + stateWord(c) : '')"
+                    :title="tipOf(c)"
                     @click="renaming === c.id || press(c, $event)"
                     @dblclick="startRename(c)"
                     @mousedown.middle.prevent="closeOne(c)"
+                    @contextmenu.prevent.stop="openMarkMenu($event, c.id)"
                   >
                     <Hand v-if="dotOf(c) === 'ask'" class="ask" />
                     <Asterisk v-else-if="dotOf(c) === 'work'" class="star agent-star" />
                     <Hourglass v-else-if="dotOf(c) === 'wait'" class="wait" />
                     <component :is="attentionIcon(attentionOf(c))" v-else-if="dotOf(c) === 'you'" class="att" :class="attentionOf(c)" />
+                    <component :is="markIcon(c.mark!.kind)" v-else-if="dotOf(c) === 'mark'" class="mk" :class="'k-' + (c.mark!.kind ?? 'note')" />
                     <span v-else-if="news(c)" class="dot" :class="dotOf(c)" />
                     <input
                       v-if="renaming === c.id"
@@ -507,6 +524,7 @@ function fresh(): void {
              panel with an animation. -->
         <ConversationDrawer v-if="state.historyOpen" />
       </div>
+      <MarkMenu />
     </template>
   </section>
 </template>
@@ -653,6 +671,10 @@ function fresh(): void {
 .att { flex: none; width: 13px; height: 13px; color: var(--agent); }
 .att.blocked { color: var(--warn); }
 .att.failed { color: var(--danger); }
+/* Your own word on it, in the quiet colours: only To review asks for you. */
+.mk { flex: none; width: 12px; height: 12px; stroke-width: 2.1; color: var(--text-dim); }
+.mk.k-review { color: var(--accent); }
+.mk.k-done { color: var(--ok); }
 /* §7 — another conversation left it a message, and nothing will read it yet. */
 .dot.mail { box-shadow: inset 0 0 0 1.75px var(--accent); }
 /* A tab arriving or leaving, and the others closing up — short, and only

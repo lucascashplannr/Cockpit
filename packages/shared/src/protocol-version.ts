@@ -124,8 +124,11 @@
  * 2.38 — groups: `project.group`, `project.renameGroup`, `project.ungroup`,
  * and `Workspace.groupId`. An older core finds no repository two levels down,
  * so a project already laid out in groups lists them as nothing at all.
+ *
+ * 2.39 — `agent.mark` and `Conversation.mark`: a status and a note set by hand
+ * on a conversation's tab. An older core answers `unknown_method`.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 38 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 39 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major
