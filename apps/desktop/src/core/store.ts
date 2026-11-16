@@ -1,4 +1,4 @@
-import { computed, reactive, ref, shallowRef, toRaw, watch } from 'vue'
+import { computed, nextTick, reactive, ref, shallowRef, toRaw, watch } from 'vue'
 import type {
   AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
   Conversation, CockpitEvent, CockpitSettings,
@@ -1023,6 +1023,28 @@ export function openAgentOn(scope: AgentScope, opts: { reveal?: boolean } = {}):
   if (opts.reveal !== false && state.view === 'review') state.view = 'split'
   state.historyOpen = false
   state.paletteOpen = false
+}
+
+/**
+ * The palette, opened on what is typed into it — re-opened rather than
+ * toggled, so a seed sent while it is already up replaces what was there.
+ */
+export function openPalette(seed = ''): void {
+  state.paletteSeed = seed
+  state.paletteOpen = false
+  void nextTick(() => {
+    state.paletteOpen = true
+  })
+}
+
+/**
+ * Selected words looked for in the code: the palette on its text mode, scoped
+ * like ⇧⇧ to where you are standing. The input is one line, so a passage over
+ * several gives its first — a search for a whole paragraph finds nothing.
+ */
+export function searchFor(text: string): void {
+  const line = text.split('\n').map((l) => l.trim()).find(Boolean) ?? ''
+  openPalette('#' + line.replace(/\s+/g, ' ').slice(0, 200))
 }
 
 function anchorFor(scope: AgentScope): Workspace | null {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { EditorView } from '@codemirror/view'
 import ProjectRail from './components/ProjectRail.vue'
 import WorkspaceList from './components/WorkspaceList.vue'
 import ContextPanel from './components/ContextPanel.vue'
@@ -29,7 +30,7 @@ import Splitter from './components/Splitter.vue'
 import {
   LAYOUT_LIMITS, LIST_NARROW, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout, listWide,
   onProject, requestPlan, resetColumnWidth, resetPlaceWidth, saveLayout, savePlaceWidth, setColumnWidth, showsAgent, showsReview, shownReviewTool, stepAttachment,
-  stepThread, stepView, toggleList,
+  openPalette, searchFor, stepThread, stepView, toggleList,
 } from './core/store.js'
 
 /**
@@ -44,6 +45,9 @@ import {
  * A tap is a Shift that went down and came up with nothing pressed in
  * between, and quickly: typing a capital, a ⇧-click or a ⌘⇧F is Shift *held*
  * for something else, and must never count.
+ *
+ * With words selected, they are what it looks for: the palette opens on its
+ * text search with them typed in, as the selection's Search button does.
  */
 const TAP_MAX_MS = 300
 const DOUBLE_TAP_MS = 350
@@ -73,10 +77,38 @@ function onShiftUp(e: KeyboardEvent) {
   }
   if (lastTapAt && e.timeStamp - lastTapAt < DOUBLE_TAP_MS) {
     lastTapAt = 0
-    state.paletteOpen = !state.paletteOpen
+    if (state.paletteOpen) {
+      state.paletteOpen = false
+      return
+    }
+    const words = selectedWords()
+    if (words) searchFor(words)
+    else state.paletteOpen = true
     return
   }
   lastTapAt = e.timeStamp
+}
+
+/**
+ * What is selected where focus is. A field keeps its own selection, which the
+ * page's does not report; an editor knows its own better than the page does —
+ * the page only holds the part of it that is drawn. Anything else is the page's.
+ */
+function selectedWords(): string {
+  const el = document.activeElement
+  const cm = el instanceof HTMLElement ? el.closest('.cm-editor') : null
+  const view = cm instanceof HTMLElement ? EditorView.findFromDOM(cm) : null
+  if (view) {
+    const { from, to } = view.state.selection.main
+    return view.state.sliceDoc(from, to).trim()
+  }
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const { selectionStart: a, selectionEnd: b } = el
+    // A password, a number: no selection to read, and none worth searching.
+    if (a == null || b == null || a === b) return ''
+    return el.value.slice(a, b).trim()
+  }
+  return window.getSelection()?.toString().trim() ?? ''
 }
 
 function breakTap() {
@@ -97,12 +129,8 @@ function onKey(e: KeyboardEvent) {
   const find = meta && !e.altKey && ((!e.shiftKey && e.key.toLowerCase() === 'p') || (e.shiftKey && e.key.toLowerCase() === 'f'))
   if (find) {
     e.preventDefault()
-    state.paletteSeed = e.key.toLowerCase() === 'p' ? '/' : '#'
     // Re-opened rather than toggled, so ⌘P from inside ⇧⇧ switches to files.
-    state.paletteOpen = false
-    void nextTick(() => {
-      state.paletteOpen = true
-    })
+    openPalette(e.key.toLowerCase() === 'p' ? '/' : '#')
     return
   }
   if (e.key === 'Escape') {

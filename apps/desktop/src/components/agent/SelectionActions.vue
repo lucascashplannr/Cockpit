@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Check, Copy, Highlighter } from '@lucide/vue'
+import { Check, Copy, Highlighter, TextSearch } from '@lucide/vue'
 import type { QuoteSource } from '@cockpit/shared'
-import { toast } from '../../core/store.js'
+import { searchFor, toast } from '../../core/store.js'
 
 /**
  * A passage selected in the thread, and the two things to do with it.
@@ -16,7 +16,8 @@ import { toast } from '../../core/store.js'
  *
  * Copy sits beside it for the passage that is going somewhere else: the same
  * words, read the same way, so what lands on the clipboard is what a reference
- * would have quoted.
+ * would have quoted. Search takes them to the palette's text search — "where
+ * is this in the code" without retyping it.
  *
  * It is drawn inside the scroller it is given rather than fixed to the window:
  * the selection scrolls with the thread, and so does this.
@@ -203,6 +204,19 @@ async function copy(): Promise<void> {
   }
 }
 
+/** Looked for in the code. The selection stays lit, as after Copy: it was
+ *  read, not used — and the palette over it is what is answering now. */
+function search(): void {
+  const sel = window.getSelection()
+  const root = props.root
+  if (!root || !sel?.rangeCount) return
+  const text = selectedText(sel.getRangeAt(0), root)
+  if (!text) return
+  hide()
+  dismissed = true
+  searchFor(text)
+}
+
 onMounted(() => {
   document.addEventListener('mousedown', onDown, true)
   document.addEventListener('mouseup', onUp, true)
@@ -250,6 +264,10 @@ onBeforeUnmount(() => props.root?.removeEventListener('scroll', read))
       <Check v-if="copied" class="ic" />
       <Copy v-else class="ic" />
       Copy
+    </button>
+    <button :tabindex="at ? 0 : -1" title="Look for this in the code  ⇧⇧" @click="search">
+      <TextSearch class="ic" />
+      Search
     </button>
   </div>
 </template>
