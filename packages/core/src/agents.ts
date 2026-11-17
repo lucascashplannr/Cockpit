@@ -3344,7 +3344,7 @@ function relativeTo(root: string, p: string): string {
  */
 export async function remove(
   sessionId: string,
-  opts: { letGo?: boolean } = {},
+  opts: { letGo?: boolean; hide?: boolean } = {},
 ): Promise<{ ok: true; kept: boolean } | { ok: false; reason: string }> {
   const l = live.get(sessionId)
   // `/clear` is the decision to let it go: an open conversation between turns
@@ -3362,9 +3362,13 @@ export async function remove(
 
   // §6 — a conversation with a memory is out of the list, not gone: the
   // memory's notes name the conversation they came from, and a note whose
-  // source can no longer be opened is one nobody can check. It goes for good
-  // with that memory (`purgeHidden`).
-  if (hasMemory(s)) {
+  // source can no longer be opened is one nobody can check. It stays hidden
+  // when that memory goes: only a person deletes a removed conversation.
+  //
+  // `hide` is `/clear`'s: the conversation goes to the removed list whatever
+  // its memory, and can be opened or put back from there. Removed again from
+  // that list, one no memory keeps goes for good.
+  if (hasMemory(s) || (opts.hide && s.hiddenAt === null)) {
     if (s.hiddenAt === null) {
       getDb().prepare('UPDATE agent_sessions SET hidden_at = ? WHERE id = ?').run(Date.now(), sessionId)
     }
@@ -3495,24 +3499,6 @@ export function findByRef(projectId: string, ref: string): Conversation | null {
     .prepare("SELECT * FROM agent_sessions WHERE id LIKE '%' || ? ORDER BY started_at DESC")
     .all(ref) as Record<string, unknown>[]
   return rows.map(hydrate).find((c) => projectOf(c) === projectId) ?? null
-}
-
-/**
- * §6 — a memory erased takes the hidden conversations it was keeping with it:
- * nothing names them any more. The ones still in the list stay; a person can
- * see those and decide for themselves.
- */
-export function purgeHidden(projectId: string, memoryId: string): number {
-  const rows = getDb()
-    .prepare('SELECT * FROM agent_sessions WHERE hidden_at IS NOT NULL AND memory = ?')
-    .all(memoryId) as Record<string, unknown>[]
-  let n = 0
-  for (const c of rows.map(hydrate)) {
-    if (projectOf(c) !== projectId || live.has(c.id)) continue
-    erase(c.id)
-    n++
-  }
-  return n
 }
 
 export function stop(sessionId: string): void {

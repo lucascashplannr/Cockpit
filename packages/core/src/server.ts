@@ -158,18 +158,6 @@ export function pushAgents(): void {
  * while one was plainly running (§3.3 — the window shows the last push, so the
  * last push has to be complete).
  */
-/**
- * §6 — memories gone for good take the hidden conversations they were keeping
- * with them: nothing names those any more. Not while the same memory is still
- * there, or erased and kept — started again, or erased twice.
- */
-function letGo(projectId: string, memoryIds: string[]): void {
-  let n = 0
-  for (const id of new Set(memoryIds)) {
-    if (!memory.known(projectId, id)) n += agents.purgeHidden(projectId, id)
-  }
-  if (n) pushAgentActivity()
-}
 
 function pushAgentActivity(): void {
   registry.refreshAgentActivity()
@@ -1085,8 +1073,8 @@ const handlers: Record<string, Handler> = {
     pushAgentActivity()
     return { ok: true }
   },
-  'agent.delete': async (p: { sessionId: string; letGo?: boolean }) => {
-    const r = await agents.remove(p.sessionId, { letGo: p.letGo })
+  'agent.delete': async (p: { sessionId: string; letGo?: boolean; hide?: boolean }) => {
+    const r = await agents.remove(p.sessionId, { letGo: p.letGo, hide: p.hide })
     if (r.ok) pushAgentActivity()
     return r
   },
@@ -1189,12 +1177,12 @@ const handlers: Record<string, Handler> = {
     return { ...doc, sources: agents.sourcesFor(registry.requireWorkspace(p.workspaceId).projectId, doc.content) }
   },
   'memory.erase': async (p: { workspaceId: string; memoryId?: string }) => {
-    // The conversations it was keeping out of sight stay while it can still
-    // be restored: its notes lead back to them. They go when it does (`letGo`).
+    // The conversations it was keeping out of sight stay in the removed list,
+    // and stay there when it goes for good: only a person deletes those.
     return memory.erase(p.workspaceId, p.memoryId)
   },
   'memory.erased': async (p: { projectId: string }) => {
-    letGo(p.projectId, await memory.expire(p.projectId))
+    await memory.expire(p.projectId)
     return memory.erased(p.projectId)
   },
   'memory.readErased': (p: { projectId: string; key: string }) => {
@@ -1209,8 +1197,7 @@ const handlers: Record<string, Handler> = {
     return r
   },
   'memory.purge': async (p: { projectId: string; key: string }) => {
-    const id = await memory.purge(p.projectId, p.key)
-    if (id) letGo(p.projectId, [id])
+    await memory.purge(p.projectId, p.key)
     return { ok: true as const }
   },
   'memory.write': (p: { workspaceId: string; content: string; memoryId?: string }) => {

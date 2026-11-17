@@ -7,7 +7,7 @@ import { ChevronDown, CircleStop, EyeOff, Pencil, Plus, RotateCcw, Sparkles, Tra
 import {
   activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive, keptOnRemove, MARK_WORDS, openMarkMenu,
   openConversation, openThreadFor, pinThread, removedOn, renameConversation, restoreConversation, sessionsForScope, startFresh, state,
-  stopConversation,
+  stopConversation, toast,
 } from '../core/store.js'
 import type { Attention } from '../core/store.js'
 
@@ -51,9 +51,10 @@ function open(c: Conversation): void {
 /* ── removed, but kept ────────────────────────────────────────────────────
  *
  * A conversation with a memory is hidden rather than deleted when it is
- * removed: the memory's notes name it. They are out of the list on purpose,
- * so they stay folded under it — asked for, not shown — and each can be
- * opened to read, or put back.
+ * removed: the memory's notes name it. So is every one `/clear` takes out,
+ * memory or not. They are out of the list on purpose, so they stay folded
+ * under it — asked for, not shown — and each can be opened to read, or put
+ * back. One no memory keeps can also be deleted from here for good.
  */
 const removed = ref<Conversation[]>([])
 const showRemoved = ref(false)
@@ -71,6 +72,24 @@ function openRemoved(c: Conversation): void {
 async function restore(c: Conversation): Promise<void> {
   await restoreConversation(c.id)
   await loadRemoved()
+}
+
+/** A removed one no memory keeps, gone for good: the same line `ask` draws. */
+function askForGood(c: Conversation): void {
+  state.pendingConfirm = {
+    title: 'Delete this conversation for good?',
+    quote: c.title || 'untitled',
+    body: ['Its turns go with it. What the agent did to the code stays: the journal, the restore points, and which lines it wrote.'],
+    verb: 'Delete',
+    done: 'Deleted “' + (c.title || 'untitled') + '”',
+    doneLines: ['What the agent did to the code stays in the journal'],
+    danger: true,
+    run: async () => {
+      const ok = await deleteConversation(c.id)
+      if (ok) await loadRemoved()
+      return ok
+    },
+  }
 }
 
 /* ── renamed in the row ───────────────────────────────────────────────────
@@ -110,47 +129,17 @@ async function stop(c: Conversation): Promise<void> {
 }
 
 /**
- * The question, in the dialog every other irreversible act in the app is asked
- * through.
- *
- * It was two lines of red inside the row, with Cancel and Remove as links at
- * the end of a sentence. Which conversation was going was never in doubt — the
- * row said so — but the one act in the drawer that cannot be taken back was
- * also the only one asked in a voice no other act uses, and it re-laid the list
- * under the cursor as it opened. The title of the conversation is quoted in the
- * dialog instead: it is their words, and it is the thing being named.
+ * Into the removed list, in one click: it can be opened or put back from
+ * there, so there is nothing to ask. It used to be the one act in the drawer
+ * that could not be taken back, and was asked through the confirm dialog.
+ * Deleting for good is still asked, from the removed list (`askForGood`).
  */
-function ask(c: Conversation): void {
-  state.pendingConfirm = {
-    title: 'Remove this conversation?',
-    quote: c.title || 'untitled',
-    // What it costs, said before it is spent rather than after — and in one
-    // sentence, not two. The clause after the full stop is the whole point:
-    // people expect Delete to take the work with it, and here it does not.
-    body: [
-      // A memory's notes name the conversation they came from: while that
-      // memory is there, the conversation is kept out of sight rather than gone.
-      keptOnRemove(c)
-        ? 'It leaves the list but is kept while its memory is, so the notes it wrote still lead back to it.'
-        : 'Its turns go with it. What the agent did to the code stays — the journal,'
-          + ' the restore points, and which lines it wrote.',
-    ],
-    verb: 'Remove',
-    done: 'Removed “' + (c.title || 'untitled') + '”',
-    doneLines: [
-      keptOnRemove(c)
-        ? 'Kept out of sight while its memory is, so its notes still lead back to it'
-        : 'What the agent did to the code stays in the journal',
-    ],
-    danger: true,
-    // The removal is the errand the drawer was opened for: once it is done,
-    // the drawer goes with it. A refusal leaves it open, beside the toast.
-    run: async () => {
-      const ok = await deleteConversation(c.id)
-      if (ok) state.historyOpen = false
-      return ok
-    },
-  }
+async function remove(c: Conversation): Promise<void> {
+  if (!(await deleteConversation(c.id, { hide: true }))) return
+  toast('ok', 'Removed “' + (c.title || 'untitled') + '”', {
+    lines: ['In the removed conversations'],
+    action: { label: 'Put back', run: () => void restore(c) },
+  })
 }
 
 function ago(ts: number): string {
@@ -281,7 +270,7 @@ function dotClass(c: Conversation): string {
             :title="isLive(c)
               ? 'Stop it first — a conversation is not removed out from under its engine'
               : 'Remove this conversation'"
-            @click="ask(c)"
+            @click="remove(c)"
           >
             <Trash2 class="sm" />
           </button>
@@ -291,9 +280,7 @@ function dotClass(c: Conversation): string {
       <template v-if="showRemoved">
         <!-- The thread's own divider for what was taken out of it (an undo's
              fold): a rule, and the fact, set into it. -->
-        <div class="rhead" title="Their memory's notes name them. They go for good when that memory is erased.">
-          Removed · kept for their memory
-        </div>
+        <div class="rhead">Removed</div>
         <div v-for="c in removed" :key="c.id" class="conv gone" :class="{ on: selected?.id === c.id }">
           <button class="pick" @click="openRemoved(c)">
             <span class="crow">
@@ -311,6 +298,10 @@ function dotClass(c: Conversation): string {
           <span class="acts">
             <button class="icon-btn small" title="Put it back in the list" @click="restore(c)">
               <RotateCcw class="sm" />
+            </button>
+            <!-- Not while its memory is there: the notes in it lead back here. -->
+            <button v-if="!keptOnRemove(c)" class="icon-btn small del" title="Delete it for good" @click="askForGood(c)">
+              <Trash2 class="sm" />
             </button>
           </span>
         </div>

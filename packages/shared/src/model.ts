@@ -1246,8 +1246,9 @@ export interface Conversation {
   denials: string[]
   /**
    * §6 — removed from the list, but kept: its memory's notes point at it, and
-   * a reference that leads nowhere is a memory that cannot be checked. It goes
-   * for good with that memory. Null for every conversation still in the list.
+   * a reference that leads nowhere is a memory that cannot be checked. Also
+   * every one `/clear` or `/erase` took out. It goes for good only when a
+   * person deletes it from the removed list. Null for every one still in the list.
    */
   hiddenAt: number | null
   /**

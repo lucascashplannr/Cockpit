@@ -127,8 +127,11 @@
  *
  * 2.39 — `agent.mark` and `Conversation.mark`: a status and a note set by hand
  * on a conversation's tab. An older core answers `unknown_method`.
+ *
+ * 2.40 — `agent.delete {hide}`: `/clear` puts a conversation in the removed
+ * list even when no memory keeps it. An older core ignores it and deletes.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 39 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 40 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

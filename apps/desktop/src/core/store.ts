@@ -2717,8 +2717,8 @@ export async function stopConversation(sessionId: string): Promise<void> {
   if (r) toast('info', 'Stopped ' + what, { icon: 'stop' })
 }
 
-export async function deleteConversation(sessionId: string, opts: { letGo?: boolean } = {}): Promise<boolean> {
-  const r = await guard(() => client.call('agent.delete', { sessionId, letGo: opts.letGo }))
+export async function deleteConversation(sessionId: string, opts: { letGo?: boolean; hide?: boolean } = {}): Promise<boolean> {
+  const r = await guard(() => client.call('agent.delete', { sessionId, letGo: opts.letGo, hide: opts.hide }))
   if (!r) return false
   if (!r.ok) {
     toast('error', r.reason)
@@ -4850,7 +4850,7 @@ export function askPurgeMemory(projectId: string, m: ErasedMemory): void {
     title: 'Delete "' + m.name + '" for good?',
     body: [
       'It can no longer be restored from here.',
-      'Conversations you removed that were kept for its notes are deleted with it.',
+      'Conversations removed with it stay in the removed list.',
     ],
     verb: 'Delete',
     done: 'Deleted “' + m.name + '” for good',

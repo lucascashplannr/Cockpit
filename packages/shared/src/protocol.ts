@@ -1007,13 +1007,16 @@ export interface Rpc {
    * running: stopping is its own decision.
    *
    * A conversation with a memory is *hidden* instead (`kept`): the memory's
-   * notes name it, and it goes for good when that memory is erased.
+   * notes name it. It stays hidden when that memory goes.
    *
    * `letGo` is `/clear`'s, `/next`'s and `/erase`'s: an open conversation between turns is let go first
    * rather than refused — clearing is the decision to let it go.
+   *
+   * `hide` is `/clear`'s: hidden whatever its memory, so it is in the removed
+   * list. A hidden one no memory keeps, removed again, goes for good.
    */
   'agent.delete': {
-    params: { sessionId: string; letGo?: boolean }
+    params: { sessionId: string; letGo?: boolean; hide?: boolean }
     result: { ok: true; kept: boolean } | { ok: false; reason: string }
   }
   /**

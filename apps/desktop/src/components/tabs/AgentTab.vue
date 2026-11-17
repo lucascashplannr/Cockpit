@@ -874,13 +874,14 @@ async function clearThread(mode: 'erase' | 'keep' | 'handoff', confirmed = false
         others.length
           ? (others.length === 1 ? 'Another conversation uses' : others.length + ' other conversations use') +
             ' this memory, and every note in it goes.'
-          : 'Every note in it goes, and this conversation with it.',
+          : 'Every note in it goes. This conversation moves to the removed list.',
         'It can be restored from the Memory tab for 30 days.',
       ],
       verb: 'Erase',
-      done: 'Erased memory ' + memoryNamed(s!) + ' and ' + named(s!),
+      done: 'Erased memory ' + memoryNamed(s!),
       doneLines: [
         'Restorable from the Memory tab for 30 days',
+        named(s!) + ' is in the removed conversations',
         others.length
           ? (others.length === 1 ? 'The other conversation on it keeps running' : 'The other conversations on it keep running') +
             ', without its notes'
@@ -934,7 +935,10 @@ async function clearThread(mode: 'erase' | 'keep' | 'handoff', confirmed = false
     done = {
       kind: 'ok',
       text: 'Cleared ' + named(s),
-      lines: [hasFile(s.memory) ? 'Memory ' + memoryNamed(s) + ' kept as it is' : 'It had no memory to keep'],
+      lines: [
+        'In the removed conversations, from the conversation list',
+        hasFile(s.memory) ? 'Memory ' + memoryNamed(s) + ' kept as it is' : 'It had no memory to keep',
+      ],
     }
   }
   // /erase says it through the confirm dialog's `done`, which ran this.
@@ -971,10 +975,10 @@ async function leave(id: string | undefined, on: AgentScope | null, keep: boolea
   if (on && now && keep) chooseMemory(on, now.memory)
   // Let go and removed in one call: the service waits for the process to go
   // before it takes the row, so the new conversation is not refused by the old.
-  const removed = !!now && (await deleteConversation(now.id, { letGo: true }))
+  // Every one of them puts it in the removed list, whatever its memory.
+  const removed = !!now && (await deleteConversation(now.id, { letGo: true, hide: true }))
   if (now && removed && !keep) {
-    // After the conversation: one kept out of sight for this memory's notes
-    // goes with the memory.
+    // After the conversation, which stays in the removed list.
     if (hasFile(now.memory)) {
       await guard(() => client.call('memory.erase', { workspaceId: props.workspace.id, memoryId: now.memory }))
     }
