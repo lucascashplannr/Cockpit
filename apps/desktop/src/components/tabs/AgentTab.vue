@@ -2104,7 +2104,7 @@ function ago(ts: number): string {
               <DocsOfferLine v-else-if="r.kind === 'docsOffer'" :data-anchor="r.id" :offer-id="r.offerId" />
               <p
                 v-else-if="r.kind === 'compact'"
-                class="undone compacted memo"
+                class="undone compacted memo squeeze"
                 :data-anchor="r.id"
                 :title="'The context went from ' + k(r.before) + ' to ' + k(r.after) + ' tokens'"
               >
@@ -3004,6 +3004,10 @@ button.pulse.idlewait[aria-expanded='true'] .wchev { opacity: 1; }
 /* A second note under the same heading: the book and the label stay in
    place, unseen, so its words start where the first one's did. */
 .undone.memo.cont { margin-top: -6px; }
+/* The one line that changes what the agent remembers of the whole
+   conversation: the book's quiet row, with its mark and word in the accent. */
+.undone.memo.squeeze .lucide,
+.undone.memo.squeeze .memo-sec { color: var(--accent); }
 .undone.memo.cont .lucide,
 .undone.memo.cont .memo-sec { visibility: hidden; }
 .memo-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
