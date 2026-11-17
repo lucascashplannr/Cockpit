@@ -280,7 +280,7 @@ type Item =
   /** `/compact` — the window before and after the engine summarised it. */
   | { kind: 'compact'; id: string; before: number; after: number }
   /** §6 — a line the agent put in the shared memory, or the state it set. §9 — or a docs flag. */
-  | { kind: 'memory'; id: string; section: string; text: string; flag?: boolean }
+  | { kind: 'memory'; id: string; section: string; text: string; flag?: boolean; replaces?: string }
   /** §9 — pages offered for an update, once the work was final. */
   | { kind: 'docsOffer'; id: string; offerId: string }
   /** Something the agent asked a person, and what it was told. */
@@ -311,7 +311,8 @@ type Row =
   | { kind: 'group'; id: string; calls: Extract<Item, { kind: 'tool' }>[] }
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
   | { kind: 'compact'; id: string; before: number; after: number }
-  | { kind: 'memory'; id: string; section: string; text: string; flag?: boolean }
+  /** `cont`: under a note of the same section just above, so the label is not said twice. */
+  | { kind: 'memory'; id: string; section: string; text: string; flag?: boolean; replaces?: string; cont?: boolean }
   | { kind: 'docsOffer'; id: string; offerId: string }
   | Asked
   | Peer
@@ -373,7 +374,16 @@ function rowsOf(items: Item[]): Row[] {
     // is the loudest possible break in what a turn did.
     if (it.kind === 'wrap') continue
     flush()
-    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'memory' || it.kind === 'docsOffer' || it.kind === 'question' || it.kind === 'peer') rows.push({ ...it })
+    if (it.kind === 'memory') {
+      // A note that replaces one written earlier in the same turn: only the
+      // one that stands is drawn, not both of them a line apart.
+      const old = it.replaces && rows.findLastIndex((r) => r.kind === 'memory' && sameNote(r.text, it.replaces!))
+      if (typeof old === 'number' && old >= 0) rows.splice(old, 1)
+      const prev = rows[rows.length - 1]
+      rows.push({ ...it, cont: prev?.kind === 'memory' && prev.section === it.section })
+      continue
+    }
+    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'docsOffer' || it.kind === 'question' || it.kind === 'peer') rows.push({ ...it })
     else rows.push({ kind: 'text', id: it.id, text: it.text })
   }
   flush()
@@ -602,25 +612,38 @@ async function letAnswer(): Promise<void> {
   if (selected.value) await answerPeers(selected.value)
 }
 
+/** `replaces` names "enough of the words to pick out one entry". */
+function sameNote(text: string, words: string): boolean {
+  const n = (x: string): string => x.toLowerCase().replace(/\s+/g, ' ').trim()
+  const a = n(text)
+  const b = n(words)
+  return !!b && (a.includes(b) || b.includes(a))
+}
+
 function memoryLine(
   tool: string | undefined,
   input: Record<string, unknown> | undefined,
-): { section: string; text: string; flag?: boolean } | 'read' | null {
+): { section: string; text: string; flag?: boolean; replaces?: string } | 'read' | null {
   // §9 — a docs flag is the same kind of thing: a note for later, not work.
   if (tool === 'mcp__cockpit__docs_flag') {
     const page = typeof input?.page === 'string' ? input.page.trim() : ''
     const what = typeof input?.what === 'string' ? input.what.trim() : ''
-    return { section: 'Docs', text: page + (what ? ' — ' + what : ''), flag: true }
+    return { section: 'Docs', text: page + (what ? ': ' + what : ''), flag: true }
   }
   const m = MEMORY_TOOL.exec(tool ?? '')
   if (!m) return null
   if (m[1] === 'read') return 'read'
   const text = typeof input?.text === 'string' ? input.text.trim() : ''
   if (m[1] === 'outdate') return { section: 'Past', text: typeof input?.entry === 'string' ? input.entry.trim() : '' }
-  if (m[1] === 'state') return { section: 'State', text: text.split('\n').filter(Boolean).length + ' lines — where the work stands' }
+  if (m[1] === 'state') return { section: 'State', text: text.split('\n').filter(Boolean).length + ' lines on where the work stands' }
   // Through the shared spelling: a conversation from before the headings were
   // English still says "Décisions" in its journal.
-  return { section: canonicalSection(typeof input?.section === 'string' ? input.section : 'Decisions'), text }
+  const replaces = typeof input?.replaces === 'string' ? input.replaces.trim() : ''
+  return {
+    section: canonicalSection(typeof input?.section === 'string' ? input.section : 'Decisions'),
+    text,
+    ...(replaces ? { replaces } : {}),
+  }
 }
 
 /**
@@ -2044,8 +2067,9 @@ function ago(ts: number): string {
               <p
                 v-else-if="r.kind === 'memory'"
                 class="undone compacted memo"
+                :class="{ cont: r.cont }"
                 :data-anchor="r.id"
-                :title="r.flag ? 'Flagged — offered for an update when this work is sent or handed off' : 'Written into the shared memory, under ' + r.section"
+                :title="r.flag ? 'Flagged, offered for an update when this work is sent or handed off' : 'Written into the shared memory, under ' + r.section"
               >
                 <BookMarked class="sm" />
                 <span class="memo-sec">{{ r.section }}</span>
@@ -2078,9 +2102,15 @@ function ago(ts: number): string {
                 <p class="peer-tx">{{ r.text }}</p>
               </div>
               <DocsOfferLine v-else-if="r.kind === 'docsOffer'" :data-anchor="r.id" :offer-id="r.offerId" />
-              <p v-else-if="r.kind === 'compact'" class="undone compacted" :data-anchor="r.id">
+              <p
+                v-else-if="r.kind === 'compact'"
+                class="undone compacted memo"
+                :data-anchor="r.id"
+                :title="'The context went from ' + k(r.before) + ' to ' + k(r.after) + ' tokens'"
+              >
                 <FoldVertical class="sm" />
-                Compacted — {{ k(r.before) }} → {{ k(r.after) }} tokens in context
+                <span class="memo-sec">Compacted</span>
+                <span class="memo-tx">{{ k(r.before) }} → {{ k(r.after) }} tokens</span>
               </p>
               <!-- It happened to the code, so it is a line in the thread rather
                    than a toast that has since gone. -->
@@ -2971,6 +3001,11 @@ button.pulse.idlewait[aria-expanded='true'] .wchev { opacity: 1; }
 .undone.memo .lucide,
 .undone.handoff .lucide { width: 11px; height: 11px; color: var(--text-dim); }
 .memo-sec { flex: none; color: var(--text-dim); font-weight: 600; }
+/* A second note under the same heading: the book and the label stay in
+   place, unseen, so its words start where the first one's did. */
+.undone.memo.cont { margin-top: -6px; }
+.undone.memo.cont .lucide,
+.undone.memo.cont .memo-sec { visibility: hidden; }
 .memo-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* §7 — a message between two conversations: something said, so it is a
