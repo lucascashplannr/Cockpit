@@ -326,6 +326,19 @@ function collectWhenSettled(sessionId: string, setId: string): void {
   })
 }
 
+/**
+ * §6 — a conversation that keeps no memory is given the one it would have
+ * started on: its topic's, its group's, or a new one named after it.
+ */
+async function giveMemory(c: Conversation): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (c.memory !== MEMORY_OFF) return { ok: true }
+  const group = c.scope ? scope.groupScopeId(c.scope) : null
+  const id = c.topicId ? topicMemoryId(c.topicId) : group ? groupMemoryId(group) : MEMORY_NEW
+  const r = await agents.giveMemory(c.id, id)
+  if (r.ok) c.memory = id
+  return r
+}
+
 const handlers: Record<string, Handler> = {
   'core.status': () => status(),
   /**
@@ -919,10 +932,13 @@ const handlers: Record<string, Handler> = {
     // that has said nothing — or whose last turn already was this — has
     // nothing to hand over.
     const last = agents.turnsOf(p.sessionId).at(-1)
-    // Nor one that was asked to keep no memory: there is nowhere to hand off to.
-    if (c.engine !== 'claude' || c.memory === MEMORY_OFF || !last || isHandoff(last.prompt)) {
+    if (c.engine !== 'claude' || !last || isHandoff(last.prompt)) {
       return { ok: true as const, skipped: true }
     }
+    // One started with no memory gets the scope's own now: handing off is
+    // asking for one, and the next conversation starts on it.
+    const given = await giveMemory(c)
+    if (!given.ok) return given
     // §9 — with pages that may be out of date, the same turn drafts them: one
     // turn, not two, on the one moment the whole conversation is still in
     // front of it. Only those pages — what this agent changed under a page's
@@ -964,10 +980,12 @@ const handlers: Record<string, Handler> = {
     // Said rather than skipped: unlike `/next`, nothing else happens here, so
     // a silent no-op would read as a command that did not take.
     if (c.engine !== 'claude') return { ok: false as const, reason: '/memorize needs a Claude conversation' }
-    if (c.memory === MEMORY_OFF) return { ok: false as const, reason: 'this conversation keeps no memory' }
     const last = agents.turnsOf(p.sessionId).at(-1)
     if (!last) return { ok: false as const, reason: 'there is nothing to memorize yet' }
     if (isMemorize(last.prompt)) return { ok: false as const, reason: 'the memory is already up to date' }
+    // Asked of one started with no memory, it is given one first.
+    const given = await giveMemory(c)
+    if (!given.ok) return given
     return sendOnBehalf(p.sessionId, MEMORIZE_PROMPT)
   },
   /**

@@ -3459,6 +3459,35 @@ export function rename(sessionId: string, title: string): { ok: true } | { ok: f
 }
 
 /**
+ * §6 — a conversation started with no memory is given one after all: asked
+ * to `/memorize` or `/next`, the person has changed their mind. The memory
+ * tools are fixed when the engine is launched, so a live process is let go
+ * and the next turn relaunches it holding them.
+ */
+export async function giveMemory(
+  sessionId: string,
+  memoryId: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const l = live.get(sessionId)
+  const c = l?.session ?? get(sessionId)
+  if (!c) return { ok: false, reason: 'That conversation is gone.' }
+  if (c.memory !== MEMORY_OFF) return { ok: true }
+  if (l && (l.busy || l.queue.length)) return { ok: false, reason: 'it is still on a turn, let it finish first' }
+  c.memory = memoryId
+  if (l) {
+    // No memory was ever in its context: the relaunch hands this one over
+    // whole, and only it, since the docs and the map are already there.
+    l.memorySeen = null
+    await release(l)
+    const record = handedOver.get(sessionId)
+    if (record) record.home = memory.homeOf(c)?.file ?? null
+  }
+  getDb().prepare('UPDATE agent_sessions SET memory = ? WHERE id = ?').run(memoryId, sessionId)
+  agentBus.emit('changed')
+  return { ok: true }
+}
+
+/**
  * Where a person says a conversation stands, and why — set from its tab. A
  * mark with neither a kind nor a note is no mark at all.
  */

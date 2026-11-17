@@ -937,19 +937,23 @@ async function clearThread(mode: 'erase' | 'keep' | 'handoff', confirmed = false
     const skipped = handingOff.value !== s.id
     handingOff.value = null
     if (skipped) return false
+    // As it is now: one that kept no memory was given one by the handoff.
+    const after = state.agents.find((c) => c.id === s.id) ?? s
     done = !r
       ? null
       : !r.ok
         ? {
             kind: 'info',
             text: 'Cleared ' + named(s) + ' without a handoff',
-            lines: ['Memory ' + memoryNamed(s) + ' was not brought up to date', r.reason],
+            lines: [hasFile(after.memory) ? 'Memory ' + memoryNamed(after) + ' was not brought up to date' : 'No memory was written', r.reason],
           }
         : {
             kind: 'ok',
             text: 'Handed off ' + named(s),
             lines: [
-              'Memory ' + memoryNamed(s) + (r.skipped ? ' was already up to date' : ' brought up to date'),
+              hasFile(after.memory)
+                ? 'Memory ' + memoryNamed(after) + (r.skipped ? ' was already up to date' : ' brought up to date')
+                : 'Nothing was worth keeping, so no memory was made',
               ...(r.docsSetId ? ['Documentation proposals are waiting in the Docs tool'] : []),
               'The new conversation starts from it',
             ],

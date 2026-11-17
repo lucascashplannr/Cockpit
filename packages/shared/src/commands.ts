@@ -44,8 +44,8 @@ export const AGENT_COMMANDS: AgentCommand[] = [
  * Why a command that is offered here would do nothing, if it would: listed
  * all the same, so it is where it is looked for, but not run.
  *
- * `/next` and `/memorize` on a conversation with no memory have nothing to
- * write to, and `/erase` nothing to erase. `/clear` and `/erase` with no
+ * `/erase` on a conversation with no memory has nothing to erase; `/next` and
+ * `/memorize` there give it one first. `/clear` and `/erase` with no
  * conversation yet have nothing to clear, and `/new` is already where it would
  * take you — not offered there at all (`thread`), and refused here if typed out.
  */
@@ -54,7 +54,6 @@ export function commandOff(name: string, empty: boolean, memory: string | null):
   if (name === 'erase' && empty) return 'Nothing to erase yet'
   if (name === 'new' && empty) return 'This is already a new conversation'
   if (name === 'erase' && (memory === 'off' || memory === 'new')) return 'This conversation has no memory to erase — /clear it'
-  if ((name === 'next' || name === 'memorize') && memory === 'off') return 'This conversation has no memory'
   return null
 }
 
