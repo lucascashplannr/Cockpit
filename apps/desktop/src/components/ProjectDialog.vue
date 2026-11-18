@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue'
-import { FolderOpen, ImagePlus, Plus, ShieldCheck, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { FolderOpen, ImagePlus, Plus, ShieldCheck, ShieldPlus, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
 import DialogShell from './DialogShell.vue'
+import ProtectMenu from './ProtectMenu.vue'
 import {
   addRepoTo, askTrashProject, askUntrackProject, askUntrackRepo, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
   derivedRepoMark, monogram, refreshDocs, renameProject, setDocsHome, setProjectSettings, state, toast, trackRepo,
@@ -31,7 +32,6 @@ const nameInput = ref<HTMLInputElement | null>(null)
 const baseBranch = ref('')
 /** §16 — per repository, keyed by its name. */
 const guarded = ref<Record<string, string[]>>({})
-const drafts = reactive<Record<string, string>>({})
 /** How the project and its repositories are drawn where their names have no room — see `ProjectSettings.mark`. */
 const mark = ref('')
 /** The rail's logo, which wins over the initials — see `ProjectSettings.logo`. */
@@ -62,7 +62,6 @@ watch(
     guarded.value = Object.fromEntries(
       Object.entries(proj?.settings.protectedBranches ?? {}).map(([k, v]) => [k, [...v]]),
     )
-    for (const k of Object.keys(drafts)) delete drafts[k]
     moveFiles.value = true
     if (proj) void nextTick(() => nameInput.value?.focus())
   },
@@ -88,13 +87,13 @@ const probedBase = computed(
 /** The repositories themselves — a topic's branch of one answers to its list. */
 const repos = computed(() => workspaces.value.filter((w) => w.kind === 'main' && w.repo))
 
-function protect(repo: string, branch?: string) {
-  const v = (branch ?? drafts[repo] ?? '').trim()
-  drafts[repo] = ''
+function protect(repo: string, branch: string) {
+  const v = branch.trim()
   const list = guarded.value[repo] ?? []
   if (!v || list.includes(v)) return
   guarded.value = { ...guarded.value, [repo]: [...list, v] }
 }
+
 
 function unprotect(repo: string, branch: string) {
   guarded.value = { ...guarded.value, [repo]: (guarded.value[repo] ?? []).filter((b) => b !== branch) }
@@ -129,11 +128,23 @@ const derivedMark = (r: (typeof repos.value)[number]) => derivedRepoMark(r, repo
  * window's content policy lets an `<img>` show; a `blob:` URL is refused.
  */
 const logoInput = ref<HTMLInputElement | null>(null)
-async function pickLogo(e: Event) {
+/** An image held over the tile. */
+const dropping = ref(false)
+/** What the tile says without a logo: the initials as typed, or the ones they default to. */
+const tileMark = computed(() => mark.value.trim() || monogram(name.value.trim() || p.value?.name || ''))
+
+function pickLogo(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file) return
+  if (file) void readLogo(file)
+}
+function dropLogo(e: DragEvent) {
+  dropping.value = false
+  const file = [...(e.dataTransfer?.files ?? [])].find((f) => f.type.startsWith('image/'))
+  if (file) void readLogo(file)
+}
+async function readLogo(file: File) {
   try {
     const src = await new Promise<string>((ok, fail) => {
       const r = new FileReader()
@@ -191,8 +202,6 @@ const dirty = computed(() => nameChanged.value || rootChanged.value || settingsC
 const workspaces = computed(() =>
   p.value ? state.workspaces.filter((w) => w.projectId === p.value!.id && w.kind !== 'group') : [],
 )
-const repoCount = computed(() => workspaces.value.filter((w) => w.kind !== 'worktree').length)
-const branchCount = computed(() => workspaces.value.filter((w) => w.kind === 'worktree').length)
 const running = computed(() => workspaces.value.filter((w) => w.runtime?.status === 'up'))
 
 function close() {
@@ -341,49 +350,54 @@ async function browse() {
     :dismissible="!busy"
     @close="close"
   >
-    <template #head>
-      <span class="count num">
-        {{ repoCount }} {{ repoCount === 1 ? 'repository' : 'repositories' }}
-        <template v-if="branchCount">
-          · {{ branchCount }} {{ branchCount === 1 ? 'branch' : 'branches' }}
-        </template>
-      </span>
-    </template>
-
     <div class="form">
-      <div class="field">
-        <span class="lbl">Name</span>
-        <div class="row">
+      <!-- Who the project is: the tile as the rail will draw it, then its name
+           and its initials. The tile is the logo's control, the way an avatar
+           is: click it or drop an image on it. -->
+      <div class="ident">
+        <span class="tilewrap">
+          <button
+            class="tile"
+            :class="{ drop: dropping }"
+            :title="logo ? 'Change the logo' : 'Add a logo'"
+            @click="logoInput?.click()"
+            @dragover.prevent="dropping = true"
+            @dragleave="dropping = false"
+            @drop.prevent="dropLogo"
+          >
+            <img v-if="logo" :src="logo" alt="" />
+            <span v-else class="gram">{{ tileMark }}</span>
+            <span class="over"><ImagePlus /></span>
+          </button>
+          <button v-if="logo" class="unlogo" title="Remove the logo" @click="logo = null"><X /></button>
+          <input ref="logoInput" type="file" accept="image/*" hidden @change="pickLogo" />
+        </span>
+        <label class="field grow">
+          <span class="lbl">Name</span>
           <input
             ref="nameInput"
             v-model="name"
-            class="input"
+            class="input hero"
             type="text"
             spellcheck="false"
+            :title="'Only on this machine. Empty uses the ' + (p.manifestPath ? 'manifest' : 'folder') + ' name.'"
             :placeholder="p.manifestPath ? 'from the manifest' : 'the folder name'"
             @keydown.enter="save"
           />
+        </label>
+        <label class="field">
+          <span class="lbl">Initials</span>
           <input
             v-model="mark"
-            class="input markin"
+            class="input hero markin"
             type="text"
             maxlength="3"
             spellcheck="false"
-            title="Initials on the rail"
+            :title="logo ? 'Shown where the logo is not' : 'Shown on the rail'"
             :placeholder="monogram(name.trim() || p.name)"
             @keydown.enter="save"
           />
-          <!-- The rail's logo: a picture in place of the initials. -->
-          <span class="logowrap">
-            <button class="btn logo" :title="logo ? 'Change the logo on the rail' : 'Add a logo on the rail'" @click="logoInput?.click()">
-              <img v-if="logo" :src="logo" alt="" />
-              <ImagePlus v-else />
-            </button>
-            <button v-if="logo" class="unlogo" title="Remove the logo" @click="logo = null"><X /></button>
-          </span>
-          <input ref="logoInput" type="file" accept="image/*" hidden @change="pickLogo" />
-        </div>
-        <span class="help">Only on this machine. Empty uses the {{ p.manifestPath ? 'manifest' : 'folder' }} name.</span>
+        </label>
       </div>
 
       <div class="field">
@@ -407,58 +421,47 @@ async function browse() {
 
       <!-- §7 — what the project holds, and the one place a repository is
            added to it. -->
+      <!-- One row per repository: its name, its initials (what the repository
+           menu shows when the tool strip has no room for the name, so only
+           when there is more than one), and the way out. Then the ones left
+           out on this machine, and the way in. -->
       <div class="field">
-        <span class="lbl">Repositories</span>
-        <div class="row top">
-          <div class="chips grow">
-            <template v-for="r in repos" :key="r.id">
-              <span v-if="isRoot(r.path)" class="chip guardchip mono">{{ r.repoName }}</span>
-              <button
-                v-else
-                class="chip guardchip mono"
-                title="Untrack — Cockpit forgets it, files stay put"
-                :disabled="busy"
-                @click="askUntrackRepo(p.id, r.id)"
-              >
-                {{ r.repoName }}<X class="sm x" />
-              </button>
-            </template>
-            <button
-              v-for="u in untracked"
-              :key="u"
-              class="chip guardchip off mono"
-              title="Untracked — track it again"
-              :disabled="busy"
-              @click="trackRepo(p.id, u)"
-            >
-              <Plus class="sm x" />{{ u }}
-            </button>
-            <span v-if="!repos.length && !untracked.length" class="summary">None yet.</span>
-          </div>
-          <button class="btn" title="Add a repository — a new one, a clone, or a folder moved in" @click="addRepository">
-            <Plus />Add
-          </button>
+        <div class="lblrow">
+          <span class="lbl">Repositories</span>
+          <span v-if="repos.length > 1" class="lbl colhead" title="Shown in the repository menu when there is no room for the name">Initials</span>
         </div>
-      </div>
-
-      <!-- What the repository menu shows of each when the tool strip has no
-           room for its name. -->
-      <div v-if="repos.length > 1" class="field">
-        <span class="lbl">Initials</span>
-        <div class="marks">
-          <label v-for="r in repos" :key="r.id" class="markrow">
-            <span class="mono">{{ r.repoName }}</span>
+        <div class="list">
+          <div v-for="r in repos" :key="r.id" class="lrow">
+            <span class="rn mono" :title="r.path">{{ r.repoName }}</span>
             <input
+              v-if="repos.length > 1"
               :value="repoMarks[r.repoName] ?? ''"
               class="input markin"
-              @input="repoMarks[r.repoName] = ($event.target as HTMLInputElement).value.toLowerCase()"
               type="text"
               maxlength="3"
               spellcheck="false"
+              :aria-label="'Initials for ' + r.repoName"
               :placeholder="derivedMark(r)"
+              @input="repoMarks[r.repoName] = ($event.target as HTMLInputElement).value.toLowerCase()"
               @keydown.enter="save"
             />
-          </label>
+            <button
+              class="icon-btn rowact del"
+              :class="{ ghost: isRoot(r.path) }"
+              :disabled="busy || isRoot(r.path)"
+              :title="isRoot(r.path) ? '' : 'Untrack. Cockpit forgets it, the files stay.'"
+              @click="askUntrackRepo(p.id, r.id)"
+            >
+              <Trash2 />
+            </button>
+          </div>
+          <div v-for="u in untracked" :key="u" class="lrow off">
+            <span class="rn mono">{{ u }}</span>
+            <button class="btn sm" :disabled="busy" title="Track it again" @click="trackRepo(p.id, u)">Track</button>
+          </div>
+          <button class="lrow addrow" @click="addRepository">
+            <Plus />Add a repository
+          </button>
         </div>
       </div>
 
@@ -475,7 +478,7 @@ async function browse() {
       </div>
 
       <label class="field">
-        <span class="lbl">Base branch</span>
+        <span class="lbl" title="What topics fork from and Send lands on. Empty asks git.">Base branch</span>
         <input
           v-model="baseBranch"
           class="input mono"
@@ -483,7 +486,6 @@ async function browse() {
           spellcheck="false"
           :placeholder="probedBase ? probedBase + ' (from git)' : 'from git'"
         />
-        <span class="help">What topics fork from and Send lands on. Empty asks git.</span>
       </label>
 
       <!-- §9 — the lasting layer. Agents read it; they only ever propose to it. -->
@@ -505,46 +507,38 @@ async function browse() {
       </div>
 
       <!-- §16 — the rule that used to be hardcoded, handed back, one
-           repository at a time. -->
+           repository at a time: the same list as above, a row each, with
+           what is protected on it and + for another, picked from the
+           repository's branches as the branch chip picks one. The base, when it is
+           not protected yet, is offered as a dashed chip, one click. -->
       <div v-if="repos.length" class="field">
-        <span class="lbl">Protected branches</span>
-        <div v-for="r in repos" :key="r.id" class="repo">
-          <span v-if="repos.length > 1" class="rname">{{ r.repoName }}</span>
-          <div v-if="guarded[r.repoName]?.length" class="chips">
-            <button
-              v-for="b in guarded[r.repoName]"
-              :key="b"
-              class="chip guardchip mono"
-              title="Unprotect this branch"
-              @click="unprotect(r.repoName, b)"
-            >
-              <ShieldCheck class="sm" />{{ b }}<X class="sm x" />
-            </button>
-          </div>
-          <div class="row">
-            <input
-              v-model="drafts[r.repoName]"
-              class="input mono"
-              type="text"
-              spellcheck="false"
-              :placeholder="(r.git?.base ?? 'main') + ', or release/*'"
-              @keydown.enter.prevent="protect(r.repoName)"
+        <span class="lbl" title="Cockpit won't commit on these, and only pushes to them what arrives through Send to.">Protected branches</span>
+        <div class="list">
+          <div v-for="r in repos" :key="r.id" class="lrow prow">
+            <span class="rn mono">{{ r.repoName }}</span>
+            <div class="pchips">
+              <span v-for="b in guarded[r.repoName] ?? []" :key="b" class="pchip mono">
+                <ShieldCheck />{{ b }}
+                <button class="px" :title="'Unprotect ' + b" @click="unprotect(r.repoName, b)"><X /></button>
+              </span>
+              <button
+                v-if="r.git?.base && !(guarded[r.repoName] ?? []).includes(r.git.base)"
+                class="pchip offer mono"
+                :title="'Protect ' + r.git.base"
+                @click="protect(r.repoName, r.git.base)"
+              >
+                <ShieldPlus />{{ r.git.base }}
+              </button>
+            </div>
+            <!-- The branch chip's search, over this repository's branches. -->
+            <ProtectMenu
+              :workspace-id="r.id"
+              :repo="r.repoName"
+              :protected="guarded[r.repoName] ?? []"
+              @add="protect(r.repoName, $event)"
             />
-            <button class="btn" :disabled="!drafts[r.repoName]?.trim()" @click="protect(r.repoName)">
-              <Plus />Protect
-            </button>
           </div>
-          <button
-            v-if="r.git?.base && !(guarded[r.repoName] ?? []).includes(r.git.base)"
-            class="linkish"
-            @click="protect(r.repoName, r.git.base)"
-          >
-            Protect {{ r.git.base }}
-          </button>
         </div>
-        <span class="help">
-          Cockpit won't commit on these, and only pushes to them what arrives through Send to.
-        </span>
       </div>
 
       <!-- tokens.css: colour is for meaning. The ground stays neutral; the red
@@ -583,70 +577,67 @@ async function browse() {
 </template>
 
 <style scoped>
-.count { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
 .grow { flex: 1; }
 
-.form { display: flex; flex-direction: column; gap: 20px; padding-bottom: 14px; }
-.field { display: flex; flex-direction: column; gap: 7px; }
-.lbl {
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-.help { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.5; }
+/* TopicDialog's form, to the pixel, as GroupDialog's is: sentence-case
+   labels in the muted ink, the name as the hero field, lists in a well. */
+.form { display: flex; flex-direction: column; gap: 20px; padding: 2px 0 16px; }
+.field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.lbl { font-size: var(--fs-xs); color: var(--text-muted); }
+.input.hero { padding: 10px 12px; font-size: var(--fs-md); font-weight: 520; letter-spacing: -0.005em; }
+.input.hero::placeholder { font-weight: 400; }
 .summary { font-size: var(--fs-sm); color: var(--text-muted); }
 
-/* One repository's list: its name, when there is more than one to tell
-   apart, then the branches, then the way to add one. */
-.repo { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
-.repo + .repo { margin-top: 6px; }
-.repo > .row { align-self: stretch; }
-.rname { font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); }
-
-/* A protected branch is one short token and a way to take it back off.
-   Neutral rather than amber: it is a rule you chose, not a warning. */
-.chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.guardchip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: var(--hover);
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-}
-.guardchip .lucide { width: 11px; height: 11px; }
-.guardchip .x { opacity: 0.55; }
-.guardchip:hover .x { opacity: 1; }
-/* Left out on this machine: still on disk, so still named — as an outline. */
-.guardchip.off { background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--text-dim); }
-
-/* A sentence that ends in an action, rather than a button sitting under one. */
-.linkish {
-  color: var(--accent);
-  font-size: var(--fs-xs);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
 .row { display: flex; align-items: center; gap: 8px; }
 .row .input { flex: 1; min-width: 0; }
 .row .btn { flex: none; }
-.row.top { align-items: flex-start; }
 
-.row .markin { flex: none; width: 56px; text-align: center; }
-.logowrap { position: relative; flex: none; }
-.btn.logo { width: 32px; padding: 0; justify-content: center; }
-.btn.logo img { width: 22px; height: 22px; border-radius: 5px; object-fit: cover; display: block; }
+/* ── Who the project is ──────────────────────────────────────────────────
+   The tile on the left is the rail's, at the rail's size, so it lines up
+   with the fields beside it: what you type there shows on it as you type. */
+.ident { display: flex; align-items: flex-end; gap: 12px; }
+.ident .markin { width: 64px; text-align: center; }
+.tilewrap { position: relative; flex: none; }
+.tile {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.tile .gram { font-size: var(--fs-sm); font-weight: 650; letter-spacing: 0.02em; line-height: 1; }
+.tile img { width: 24px; height: 24px; border-radius: 6px; object-fit: cover; display: block; }
+/* The way to change it, on hover only: at rest the tile is the preview. */
+.tile .over {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg-sunken) 72%, transparent);
+  color: var(--text);
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-soft);
+}
+.tile .over .lucide { width: 16px; height: 16px; }
+.tile:hover .over,
+.tile:focus-visible .over,
+.tile.drop .over { opacity: 1; }
+.tile.drop { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .unlogo {
   position: absolute;
-  top: -5px;
-  right: -5px;
-  width: 15px;
-  height: 15px;
-  display: none;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -654,14 +645,97 @@ async function browse() {
   background: var(--panel-raised);
   border: 1px solid var(--line-strong);
   color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-soft);
 }
-.unlogo :deep(svg) { width: 9px; height: 9px; }
-.logowrap:hover .unlogo { display: flex; }
-.marks { display: flex; flex-direction: column; gap: 6px; }
-.markrow { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-muted); }
-.markrow > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.markrow .markin { flex: none; width: 56px; text-align: center; text-transform: lowercase; }
-.row.top .chips { min-width: 0; padding-top: 4px; }
+.unlogo:hover { color: var(--text); }
+.unlogo :deep(svg) { width: 10px; height: 10px; }
+.tilewrap:hover .unlogo,
+.unlogo:focus-visible { opacity: 1; }
+
+/* ── Lists ───────────────────────────────────────────────────────────────
+   GroupDialog's list: a well, a row each. Repositories and protected
+   branches are the same shape, one under the other. */
+.lblrow { display: flex; align-items: baseline; }
+.lblrow .lbl:first-child { flex: 1; }
+/* Over the 56px initials column: 28px button + 10px gap + 6px row padding + the list's 1px border. */
+.colhead { width: 56px; margin-right: 45px; text-align: center; }
+.list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.lrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 6px 0 12px;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+.lrow + .lrow { border-top: 1px solid var(--line-soft); }
+.lrow .rn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .markin {
+  flex: none;
+  width: 56px;
+  padding: 3px 6px;
+  text-align: center;
+  text-transform: lowercase;
+  background: none;
+}
+.lrow .markin:focus { background: var(--panel-raised); }
+.rowact .lucide { width: 14px; height: 14px; }
+.rowact.ghost { visibility: hidden; }
+.rowact.del:not(:disabled):hover { color: var(--danger); }
+/* Left out on this machine: still on disk, so still named, but quiet. */
+.lrow.off .rn { color: var(--text-dim); }
+.lrow .btn.sm { height: 26px; padding: 0 10px; font-size: var(--fs-xs); }
+.addrow { width: 100%; gap: 8px; color: var(--text-muted); text-align: left; }
+.addrow .lucide { width: 14px; height: 14px; }
+.addrow:hover { background: var(--hover); color: var(--text); }
+
+/* A protected branch: a shield, its name, and the way to take it off. */
+.prow { padding-top: 6px; padding-bottom: 6px; }
+/* The name keeps its width; the chips take what is left and wrap in it. */
+.prow .rn { flex: none; max-width: 50%; }
+.pchips { flex: 1; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; min-width: 0; }
+.pchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--text);
+  font-size: var(--fs-xs);
+}
+.pchip > .lucide { width: 12px; height: 12px; color: var(--accent); }
+.px {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--text-dim);
+}
+.px .lucide { width: 11px; height: 11px; }
+.px:hover { background: var(--active); color: var(--text); }
+/* The base, offered: dashed until it is taken. */
+.pchip.offer {
+  padding: 0 9px 0 8px;
+  background: none;
+  border: 1px dashed var(--line-strong);
+  color: var(--text-dim);
+}
+.pchip.offer > .lucide { color: inherit; }
+.pchip.offer:hover { border-color: var(--accent); color: var(--text); }
+
 
 .check {
   display: flex;
