@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Activity, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
+import { Activity, Asterisk, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
 import {
   activityFor, client, guard, layout, newProject, refreshEverything, onProject, pressProject, projectMark, serviceStale, state,
 } from '../core/store.js'
@@ -22,10 +22,12 @@ function pick(projectId: string): void {
 }
 
 /**
- * The tile is the whole of what this column can say about a project, so the
- * three things worth interrupting for are the three it says: servers up, an
- * agent at work, uncommitted changes — plus the one that is a request rather
- * than a state, which gets its own mark rather than a fourth dot.
+ * The tile is the whole of what this column can say about a project, and it
+ * says two things: an agent at work there, and an agent waiting on you. Servers
+ * up and uncommitted changes were dots here too, and they were nearly always
+ * lit — every project has something uncommitted — so they said nothing about
+ * where to go next. They live on the list's strip, one column over, and in the
+ * tile's hover.
  *
  * The agent half comes from the conversations, not from `w.agentSessions`:
  * that array holds only what is running, and a project you should go back to
@@ -103,22 +105,22 @@ function tileTitle(name: string, root: string, projectId: string): string {
         @click="pick(p.id)"
         @contextmenu.prevent="state.editingProjectId = p.id"
       >
-        <!-- Its initials, as set in its settings; two letters of its name otherwise. -->
-        <span class="gram">{{ projectMark(p) }}</span>
-        <!-- A request, not a state: a count on the corner, in the one colour
-             nothing else in the rail uses, because it is the only thing here
-             addressed to you — whatever the agent wants (a reply read, a tool
-             allowed), the answer is the same: go there. -->
-        <span v-if="counts(p.id).waiting" class="count num">{{ counts(p.id).waiting }}</span>
-        <!-- Three slots that never move: servers left, agent middle, changes
-             right. Centred dots slid around with whatever else was lit, so a
-             lone dot's place said nothing and only its hue was left to read.
-             An empty slot stays drawn as a faint grey dot, so the three places
-             are always there to read a lit one against. -->
-        <span class="slots">
-          <i class="b run" :class="{ on: counts(p.id).running }" />
-          <i class="b agent live" :class="{ on: counts(p.id).agents }" />
-          <i class="b dirty" :class="{ on: counts(p.id).dirty }" />
+        <!-- Its logo or its initials, as set in its settings; two letters of its name otherwise. -->
+        <img v-if="p.settings.logo" class="logo" :src="p.settings.logo" alt="" />
+        <span v-else class="gram">{{ projectMark(p) }}</span>
+        <!-- The corner says what the agents there are doing, in the one colour
+             nothing else in the rail uses: the star turning while one works
+             (the list rows' own mark), and how many wait on you — a reply to
+             read, a tool to allow. Both at once sit side by side in one pill.
+             A border said "working" too, and nobody saw it, least of all on
+             the selected tile. -->
+        <span
+          v-if="counts(p.id).agents || counts(p.id).waiting"
+          class="count num"
+          :class="{ solo: !counts(p.id).waiting }"
+        >
+          <Asterisk v-if="counts(p.id).agents" class="agent-star" />
+          <template v-if="counts(p.id).waiting">{{ counts(p.id).waiting }}</template>
         </span>
       </button>
 
@@ -318,46 +320,12 @@ function tileTitle(name: string, root: string, projectId: string): string {
   color: var(--text);
 }
 
-/* Inside the tile, not hanging off it: on a card the dots have a ground
-   already, the card's. Three fixed places, so a dot is read by where it sits
-   before its hue is needed — left servers, middle agent, right changes.
-   The monogram and the row are one block, centred in the tile as a whole, so
-   the space above the letters and below the dots is the same. Pinned to the
-   bottom edge instead, the dots sat on the border and pushed the letters up,
-   and the tile read as lopsided. */
-.tile {
-  --dot: 6px;
-  --stack: 6px;
-  --ghost: 0.22;
-  flex-direction: column;
-  gap: var(--stack);
-}
+/* The middle of the tile is the project: its logo, or its letters. */
 .tile .gram { line-height: 1; }
-.slots {
-  display: flex;
-  gap: 4px;
-}
-.b {
-  width: var(--dot);
-  height: var(--dot);
-  border-radius: 50%;
-  display: block;
-  /* Off: one grey for all three, so an empty slot never reads as a state —
-     faint enough that three of them read as a place, not as three things. */
-  background: var(--text-dim);
-  opacity: var(--ghost);
-}
-.b.on { opacity: 1; }
-.b.run.on { background: var(--ok); }
-.b.agent.on { background: var(--agent); }
-.b.dirty.on { background: var(--warn); }
-/* The rail's only motion. It means one thing and it is the thing worth
-   catching out of the corner of the eye: an agent is working in there. */
-.b.live.on { animation: pulse 1.6s var(--ease-soft) infinite; }
+.tile .logo { width: 24px; height: 24px; border-radius: 6px; object-fit: cover; display: block; }
 
 /* Cockpit's own colour, the one thing in the rail that is addressed to you.
-   Not amber or violet — those are dots here, and a corner in either read as
-   one more of them. */
+   One badge for every agent state, so one colour. */
 .count {
   position: absolute;
   top: -5px;
@@ -366,6 +334,10 @@ function tileTitle(name: string, root: string, projectId: string): string {
   height: 15px;
   padding: 0 4px;
   box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
   border-radius: 8px;
   background: var(--accent);
   color: var(--accent-text);
@@ -378,6 +350,9 @@ function tileTitle(name: string, root: string, projectId: string): string {
      than inside the monogram. */
   box-shadow: 0 0 0 2px var(--surface-rail);
 }
+.count .agent-star { width: 10px; height: 10px; flex: none; stroke-width: 3; }
+/* The star alone: a round badge, not a pill with nothing after the star. */
+.count.solo { padding: 0; }
 
 .icon-btn.service { position: relative; }
 .icon-btn.service .flag {

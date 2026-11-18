@@ -297,6 +297,8 @@ function sectionBefore(i: number): boolean {
             topic: isHead(g),
             open: isHead(g) && !collapsedTopics[headId(g)!] && g.workspaces.length > 0,
             deleting: headDeleting(g),
+            base: !g.topicId,
+            section: sectionBefore(i),
           }"
         >
           <!-- §4 — the repositories that are no topic's, groups first: said
@@ -608,6 +610,17 @@ function sectionBefore(i: number): boolean {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
+
+/* One rule on the strip that is not a frame's: where the topics end and the
+   project's own repositories begin, the place the list says "not in a topic".
+   A group of repositories is drawn as a topic is, but it is below that line,
+   not above it, and the repositories after it are on its side of it too. */
+.list.narrow .group.base:not(.section) { margin-top: 6px; padding-top: 0; }
+.list.narrow .group.base:not(.section)::before { display: none; }
+.list.narrow .group.topic + .group.base.section { margin-top: 10px; padding-top: 10px; }
+.list.narrow .group.topic + .group.base.section::before { display: block; }
+.list.narrow .group.topic + .group.base.section.open { margin-top: 19px; padding-top: 2px; }
+.list.narrow .group.topic + .group.base.section.open::before { top: -10px; left: 15px; right: 15px; }
 
 /* The topic's header as a tile: the row's own box on end, in the header's
    weight, so a topic and the branches under it are told apart by the same

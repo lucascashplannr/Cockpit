@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import { FolderOpen, Plus, ShieldCheck, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
+import { FolderOpen, ImagePlus, Plus, ShieldCheck, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
 import DialogShell from './DialogShell.vue'
 import {
   addRepoTo, askTrashProject, askUntrackProject, askUntrackRepo, editingProject, loadDeclarations, moveProject, openProjectDeclarations, pickFolder,
-  derivedRepoMark, monogram, refreshDocs, renameProject, setDocsHome, setProjectSettings, state, trackRepo,
+  derivedRepoMark, monogram, refreshDocs, renameProject, setDocsHome, setProjectSettings, state, toast, trackRepo,
 } from '../core/store.js'
 
 /**
@@ -34,6 +34,8 @@ const guarded = ref<Record<string, string[]>>({})
 const drafts = reactive<Record<string, string>>({})
 /** How the project and its repositories are drawn where their names have no room — see `ProjectSettings.mark`. */
 const mark = ref('')
+/** The rail's logo, which wins over the initials — see `ProjectSettings.logo`. */
+const logo = ref<string | null>(null)
 const repoMarks = ref<Record<string, string>>({})
 /** §9 — the Docs home, as a folder: the core writes it as `{ repo, folder }`. */
 const docsPath = ref('')
@@ -52,6 +54,7 @@ watch(
     root.value = proj?.root ?? ''
     baseBranch.value = proj?.settings.defaultBranch ?? ''
     mark.value = proj?.settings.mark ?? ''
+    logo.value = proj?.settings.logo ?? null
     repoMarks.value = Object.fromEntries(
       Object.entries(proj?.settings.repoMarks ?? {}).map(([k, v]) => [k, v.toLowerCase()]),
     )
@@ -108,6 +111,7 @@ const settingsChanged = computed(() => {
     (baseBranch.value.trim() || null) !== s.defaultBranch ||
     normal(guarded.value) !== normal(s.protectedBranches ?? {}) ||
     (mark.value.trim() || null) !== (s.mark ?? null) ||
+    logo.value !== (s.logo ?? null) ||
     marksKey(repoMarks.value) !== marksKey(s.repoMarks ?? {})
   )
 })
@@ -117,6 +121,47 @@ const marksKey = (m: Record<string, string>) =>
 
 /** The letters a repository gets when none are set — the field's placeholder. */
 const derivedMark = (r: (typeof repos.value)[number]) => derivedRepoMark(r, repos.value)
+
+/**
+ * A logo, scaled to a tile's size here rather than stored as picked: the
+ * settings travel to the window with every project update, and a 2 MB photo
+ * would ride along each time. Read as a `data:` URL because that is what the
+ * window's content policy lets an `<img>` show; a `blob:` URL is refused.
+ */
+const logoInput = ref<HTMLInputElement | null>(null)
+async function pickLogo(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  try {
+    const src = await new Promise<string>((ok, fail) => {
+      const r = new FileReader()
+      r.onload = () => ok(String(r.result))
+      r.onerror = () => fail(r.error)
+      r.readAsDataURL(file)
+    })
+    const img = new Image()
+    img.src = src
+    await img.decode()
+    const size = 96
+    const c = document.createElement('canvas')
+    c.width = c.height = size
+    const ctx = c.getContext('2d')!
+    const w = img.naturalWidth
+    const h = img.naturalHeight
+    // Cropped to its middle square; an SVG with no size of its own is drawn whole.
+    if (w && h) {
+      const side = Math.min(w, h)
+      ctx.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size)
+    } else {
+      ctx.drawImage(img, 0, 0, size, size)
+    }
+    logo.value = c.toDataURL('image/png')
+  } catch {
+    toast('error', 'Could not read that image', { lines: [file.name] })
+  }
+}
 
 /** The folder the docs are linked to on purpose — found ones are a placeholder. */
 function linkedDocs(projectId: string | undefined): string {
@@ -232,6 +277,7 @@ async function save() {
           defaultBranch: baseBranch.value.trim() || null,
           protectedBranches: guarded.value,
           mark: mark.value.trim() || null,
+          logo: logo.value,
           repoMarks: Object.fromEntries(
             Object.entries(repoMarks.value).map(([k, v]) => [k, v.trim().toLowerCase()]).filter(([, v]) => v),
           ),
@@ -327,6 +373,15 @@ async function browse() {
             :placeholder="monogram(name.trim() || p.name)"
             @keydown.enter="save"
           />
+          <!-- The rail's logo: a picture in place of the initials. -->
+          <span class="logowrap">
+            <button class="btn logo" :title="logo ? 'Change the logo on the rail' : 'Add a logo on the rail'" @click="logoInput?.click()">
+              <img v-if="logo" :src="logo" alt="" />
+              <ImagePlus v-else />
+            </button>
+            <button v-if="logo" class="unlogo" title="Remove the logo" @click="logo = null"><X /></button>
+          </span>
+          <input ref="logoInput" type="file" accept="image/*" hidden @change="pickLogo" />
         </div>
         <span class="help">Only on this machine. Empty uses the {{ p.manifestPath ? 'manifest' : 'folder' }} name.</span>
       </div>
@@ -582,6 +637,26 @@ async function browse() {
 .row.top { align-items: flex-start; }
 
 .row .markin { flex: none; width: 56px; text-align: center; }
+.logowrap { position: relative; flex: none; }
+.btn.logo { width: 32px; padding: 0; justify-content: center; }
+.btn.logo img { width: 22px; height: 22px; border-radius: 5px; object-fit: cover; display: block; }
+.unlogo {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 15px;
+  height: 15px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--panel-raised);
+  border: 1px solid var(--line-strong);
+  color: var(--text-muted);
+}
+.unlogo :deep(svg) { width: 9px; height: 9px; }
+.logowrap:hover .unlogo { display: flex; }
 .marks { display: flex; flex-direction: column; gap: 6px; }
 .markrow { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-muted); }
 .markrow > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

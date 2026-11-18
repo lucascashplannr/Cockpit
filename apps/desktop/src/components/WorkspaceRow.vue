@@ -6,9 +6,9 @@ import {
   SquareDot, TriangleAlert,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
-import StripDots from './StripDots.vue'
+import StripDots, { type StripSlot } from './StripDots.vue'
 import {
-  activeProject, activityFor, onProject, openContextMenu, pickRepo, projectNarrowing, selectedGroupId, selectedTopicId, selectWorkspace,
+  activeProject, activityFor, busyVerb, busyWord, gitBusy, onProject, openContextMenu, pickRepo, projectNarrowing, selectedGroupId, selectedTopicId, selectWorkspace,
   repoMark, shortName, state,
 } from '../core/store.js'
 
@@ -72,6 +72,19 @@ const dirty = computed(() => {
  */
 const up = computed(() => w.value.runtime?.status === 'up')
 
+/**
+ * The slot an act is running on, for the strip to turn: a server coming up on
+ * the left, a commit on the changes it takes, anything that talks to the
+ * remote (push, pull, catch up…) on the middle one.
+ */
+const COMMITTING = new Set(['commit', 'amend', 'undo commit', 'stash', 'stash pop', 'stash apply', 'stash drop'])
+const busySlot = computed<StripSlot | null>(() => {
+  const op = busyVerb(gitBusy[w.value.id])
+  if (op) return COMMITTING.has(op) ? 'dirty' : 'push'
+  if (w.value.runtime?.status === 'starting') return 'run'
+  return null
+})
+
 const behindBase = computed(() => w.value.git?.behindBase ?? 0)
 
 /**
@@ -130,6 +143,8 @@ const tip = computed(() => {
     if (g.headState !== 'attached') facts.push(g.headState)
   }
   if (up.value) facts.unshift('server up')
+  if (gitBusy[w.value.id]) facts.unshift(busyWord(gitBusy[w.value.id]) + '…')
+  else if (busySlot.value === 'run') facts.unshift('Starting the server…')
   return [w.value.name + ' — ' + lead.value.title, facts.join(' · ')].filter(Boolean).join('\n')
 })
 
@@ -194,6 +209,7 @@ const lead = computed(() => {
       :push="!!w.git?.ahead"
       :dirty="!!dirty"
       :conflict="!!w.git?.conflicted"
+      :busy="busySlot"
     />
 
     <span v-if="!narrow" class="meta num">
