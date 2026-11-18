@@ -64,8 +64,12 @@ export interface CommitInput extends CommitScope {
  */
 export async function preview(input: CommitScope): Promise<CommitPreview[]> {
   const out: CommitPreview[] = []
-  for (const target of resolveTargets(input)) {
-    const w = (await registry.refreshGit(target.id)) ?? target
+  const targets = resolveTargets(input)
+  // Probed side by side: each repository's git queues on its own folder, so in
+  // a row they only added up, and the dialog waited for the sum.
+  const fresh = await Promise.all(targets.map((t) => registry.refreshGit(t.id)))
+  for (const [i, target] of targets.entries()) {
+    const w = fresh[i] ?? target
     const g = w.git
     if (!g) continue
     const staged = g.staged

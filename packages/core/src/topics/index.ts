@@ -810,8 +810,11 @@ async function pushPlanOf(
   /** Repositories whose branch origin has never seen. */
   const firsts: string[] = []
 
-  for (const tree of trees) {
-    const fresh = (await registry.refreshGit(tree.id)) ?? tree
+  // Probed side by side, then read in order: one after another, a push over
+  // five repositories kept its dialog waiting for five probes end to end.
+  const probed = await Promise.all(trees.map((t) => registry.refreshGit(t.id)))
+  for (const [i, tree] of trees.entries()) {
+    const fresh = probed[i] ?? tree
     const g = fresh.git
     if (!g) continue
 

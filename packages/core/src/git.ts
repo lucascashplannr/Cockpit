@@ -484,7 +484,22 @@ export async function trackedFiles(cwd: string): Promise<string[]> {
   return r.stdout.split('\n').filter(Boolean)
 }
 
-export async function statusMap(cwd: string): Promise<Map<string, string>> {
+/**
+ * One `git status` per folder at a time, shared. Opening a tree asks for every
+ * folder that was left open at once, and each asked for the whole repository's
+ * status: the same command, queued behind itself once per folder.
+ */
+const statusInFlight = new Map<string, Promise<Map<string, string>>>()
+
+export function statusMap(cwd: string): Promise<Map<string, string>> {
+  const running = statusInFlight.get(cwd)
+  if (running) return running
+  const p = readStatusMap(cwd).finally(() => statusInFlight.delete(cwd))
+  statusInFlight.set(cwd, p)
+  return p
+}
+
+async function readStatusMap(cwd: string): Promise<Map<string, string>> {
   const m = new Map<string, string>()
   const r = await git(cwd, ['status', '--porcelain', '--untracked-files=all'])
   if (!r.ok) return m

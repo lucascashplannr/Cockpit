@@ -115,6 +115,12 @@ interface Node {
 }
 
 const roots = ref<Node[]>([])
+/**
+ * The tree each workspace last showed, drawn again the moment it is switched
+ * back to and read afresh behind it. Waiting for the read left the previous
+ * repository's files on screen, which looked like the switch had not happened.
+ */
+const shown = new Map<string, Node[]>()
 const treeScroll = ref<HTMLElement | null>(null)
 /** The workspace `roots` was read for — none until the first read lands. */
 let treeFor: string | null = null
@@ -145,18 +151,27 @@ async function loadDir(rel: string): Promise<FileEntry[]> {
 }
 
 /** Where this workspace's tree and tabs were left, kept for the way back. */
-function leave(workspaceId: string) {
+/** The folders open in a tree, by path. */
+function openIn(nodes: Node[]): Set<string> {
   const open = new Set<string>()
-  const walk = (nodes: Node[]) => {
-    for (const n of nodes) {
+  const walk = (list: Node[]) => {
+    for (const n of list) {
       if (!n.expanded) continue
       open.add(n.entry.path)
       if (n.children) walk(n.children)
     }
   }
-  walk(roots.value)
+  walk(nodes)
+  return open
+}
+
+function leave(workspaceId: string) {
+  const open = openIn(roots.value)
   // Left before the tree came in: what was kept still stands.
-  if (treeFor === workspaceId) trees.set(workspaceId, { open, scroll: treeScroll.value?.scrollTop ?? 0 })
+  if (treeFor === workspaceId) {
+    trees.set(workspaceId, { open, scroll: treeScroll.value?.scrollTop ?? 0 })
+    shown.set(workspaceId, roots.value)
+  }
   if (filesFor !== workspaceId) return
   stash()
   opened.set(workspaceId, { files: toRaw(files.value).map((f) => toRaw(f)), active: openPath.value })
@@ -184,14 +199,23 @@ async function loadRoot() {
     drilled.value = true
     void nextTick(() => show(active))
   }
-  const entries = await loadDir('.')
   const tree = trees.get(id)
+  const before = shown.get(id)
+  roots.value = before ?? []
+  if (before) {
+    treeFor = id
+    if (tree) void nextTick(() => treeScroll.value && (treeScroll.value.scrollTop = tree.scroll))
+  }
+  const entries = await loadDir('.')
   const nodes = entries.map((e): Node => ({ entry: e, depth: 0, expanded: false, children: null }))
-  if (tree) await reopen(nodes, tree.open)
+  // Over a tree already drawn, what is open is what is open on screen now: a
+  // folder clicked while this was being read stays the way it was clicked.
+  const open = before && props.workspace.id === id ? openIn(roots.value) : tree?.open
+  if (open?.size) await reopen(nodes, open)
   if (props.workspace.id !== id) return
   roots.value = nodes
   treeFor = props.workspace.id
-  if (tree) void nextTick(() => treeScroll.value && (treeScroll.value.scrollTop = tree.scroll))
+  if (tree && !before) void nextTick(() => treeScroll.value && (treeScroll.value.scrollTop = tree.scroll))
   takeRequest()
 }
 

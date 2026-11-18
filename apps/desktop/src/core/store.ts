@@ -541,10 +541,14 @@ export const client = new CoreClient(CORE_URL, {
     state.topics = f
   },
   onWorkspaces(w) {
-    state.workspaces = w
+    const next = sameWhereSame(state.workspaces, w)
+    if (next === null) return
+    state.workspaces = next
     ensureSelection()
   },
-  onAgents(s) {
+  onAgents(incoming) {
+    const s = sameWhereSame(state.agents, incoming)
+    if (s === null) return
     state.agents = s
     // One picked back up is in the list again, and the list is the live copy.
     if (state.keptAgents.length) state.keptAgents = state.keptAgents.filter((k) => !s.some((c) => c.id === k.id))
@@ -626,6 +630,34 @@ export const client = new CoreClient(CORE_URL, {
     for (const fn of logListeners.get(workspaceId) ?? []) fn(chunk)
   },
 })
+
+/**
+ * A pushed list, keeping every item that did not change as the very object the
+ * window already holds. The core pushes whole lists, so each push used to hand
+ * every row, tab and watcher a new object for each workspace or conversation,
+ * and everything keyed on one (a commit preview on `workspace.git`, a thread on
+ * its history) ran again for a change somewhere else entirely. `null` when
+ * nothing changed at all, and nothing need be assigned.
+ *
+ * Compared with what the held object says now, not with what was pushed: a
+ * rename sets its title in place, and the list must not keep that over a
+ * push that says otherwise.
+ */
+function sameWhereSame<T extends { id: string }>(current: T[], incoming: T[]): T[] | null {
+  const raw = toRaw(current)
+  const before = new Map(raw.map((x) => [x.id, toRaw(x)]))
+  let changed = incoming.length !== raw.length
+  const out = incoming.map((x, i) => {
+    const had = before.get(x.id)
+    if (had && JSON.stringify(had) === JSON.stringify(x)) {
+      if (toRaw(raw[i]) !== had) changed = true
+      return had
+    }
+    changed = true
+    return x
+  })
+  return changed ? out : null
+}
 
 /** Roughly a screenful of scrollback per process, which is what it is for. */
 const LOG_MAX = 120_000
@@ -5462,8 +5494,15 @@ export async function requestPlan(
   // as the gap between the click and the switch.
   if (stillBusy([workspaceId])) return
   gitBusy[workspaceId] = operation
+  // Push is asked at once and filled in, like Commit (`askWhilePlanning`).
+  const branch = state.workspaces.find((x) => x.id === workspaceId)?.git?.branch ?? 'this branch'
+  const asking = operation === 'push' ? askPushWhilePlanning([workspaceId], () => branch + ' to origin') : null
   try {
     const plan = await guard(() => client.call('git.plan', { workspaceId, operation, args }))
+    if (asking && (!plan || !stillAsking(asking))) {
+      dropWhilePlanning(asking)
+      return
+    }
     if (!plan) return
     if (confirm === 'whenItMatters' && isTrivial(plan)) {
       // Never through `state.pendingPlan`: the dialog is rendered off it, and
@@ -5708,6 +5747,41 @@ export async function applyPendingPlan(): Promise<void> {
  */
 
 /**
+ * A question whose plan the core is still building, put up at once.
+ *
+ * Commit and Push used to say nothing until the plan came back, which meant
+ * every repository re-read first: the click seemed not to have landed. The
+ * dialog is on screen from the click instead, its button held (`waiting`)
+ * until the real question replaces it. Nothing can be answered early: the
+ * placeholder's own `run` does nothing.
+ */
+function askWhilePlanning(q: { title: string; verb: string; quote?: string }): PendingConfirm {
+  const placeholder: PendingConfirm = {
+    title: q.title,
+    body: [],
+    ...(q.quote ? { quote: q.quote } : {}),
+    verb: q.verb,
+    done: '',
+    danger: false,
+    waiting: true,
+    run: async () => false,
+  }
+  state.pendingConfirm = placeholder
+  return placeholder
+}
+
+/** Whether that placeholder is still the question on screen (not cancelled, not replaced). */
+function stillAsking(placeholder: PendingConfirm): boolean {
+  const open = state.pendingConfirm
+  return !!open && toRaw(open) === placeholder
+}
+
+/** The plan did not come: the placeholder goes, if it is still up. */
+function dropWhilePlanning(placeholder: PendingConfirm): void {
+  if (stillAsking(placeholder)) state.pendingConfirm = null
+}
+
+/**
  * What a commit over these repositories would take. One id is the Diff on one
  * repository; several is the Diff on "All", which commits them together.
  */
@@ -5728,6 +5802,24 @@ export async function commit(
   opts: { paths?: string[]; amend?: boolean; push?: boolean } = {},
 ): Promise<boolean> {
   if (stillBusy(workspaceIds)) return false
+  // §16 — the review already happened, in the tab this was pressed from. What
+  // is left to confirm is the sentence and where it lands, not two lines of
+  // `git add` under a numbered heading.
+  const title = (n: number) =>
+    opts.amend
+      ? 'Amend the last commit' + (opts.push ? ' and push?' : '?')
+      : 'Commit ' + n + ' file' + (n === 1 ? '' : 's') + (opts.push ? ' and push?' : '?')
+  const verb = opts.amend ? 'Amend' : opts.push ? 'Commit & push' : 'Commit'
+  // Counted from what the window already knows, for the question to be up
+  // before the core has re-read every repository; the plan's count replaces it.
+  const guess =
+    opts.paths?.length ??
+    state.workspaces
+      .filter((w) => workspaceIds.includes(w.id))
+      .reduce((sum, w) => sum + (w.git ? (all ? w.git.staged + w.git.unstaged + w.git.untracked : w.git.staged) : 0), 0)
+  // Nothing to commit by the window's count: the core's answer is a refusal,
+  // and a question that flashes up only to be withdrawn is worse than a wait.
+  const asking = guess > 0 || opts.amend ? askWhilePlanning({ title: title(guess), verb, quote: message }) : null
   const res = await guard(() =>
     client.call('git.commit', {
       workspaceIds,
@@ -5736,25 +5828,22 @@ export async function commit(
       ...opts,
     }),
   )
-  if (!res) return false
-  if (!res.ok || !res.plan) {
-    toast('error', res.detail)
+  if (!res || !res.ok || !res.plan) {
+    if (asking) dropWhilePlanning(asking)
+    if (res) toast('error', res.detail)
     return false
   }
-  // §16 — the review already happened, in the tab this was pressed from. What
-  // is left to confirm is the sentence and where it lands, not two lines of
-  // `git add` under a numbered heading.
+  // Closed while it was being worked out: that was a no.
+  if (asking && !stillAsking(asking)) return false
   const n = opts.paths?.length ?? res.preview
     .filter((r) => r.willCommit)
     .reduce((sum, r) => sum + (all ? r.staged + r.unstaged : r.staged), 0)
   const files = n + ' file' + (n === 1 ? '' : 's')
   state.pendingConfirm = {
-    title: opts.amend
-      ? 'Amend the last commit' + (opts.push ? ' and push?' : '?')
-      : 'Commit ' + files + (opts.push ? ' and push?' : '?'),
+    title: title(n),
     body: res.plan.warnings,
     quote: message,
-    verb: opts.amend ? 'Amend' : opts.push ? 'Commit & push' : 'Commit',
+    verb,
     done: opts.amend
       ? 'Amended the last commit' + (opts.push ? ' and pushed' : '')
       : 'Committed ' + files + (opts.push ? ' and pushed' : ''),
@@ -6057,13 +6146,8 @@ export async function stash(
  * dialog: this is the step that leaves the machine.
  */
 export async function pushTopic(topicId: string): Promise<void> {
-  if (stillBusy(topicWorkspaceIds(topicId))) return
-  const res = await guard(() => client.call('topic.push', { topicId }))
-  if (!res) return
-  if (!res.ok || !res.plan) {
-    toast('info', res.detail)
-    return
-  }
+  const ids = topicWorkspaceIds(topicId)
+  if (stillBusy(ids)) return
   // A topic forks one branch name across its repositories, so nearly always
   // there is one name to say. Saying "2 branches" when both are `vat-rework`
   // is technically true and reads as though they were different things.
@@ -6072,29 +6156,59 @@ export async function pushTopic(topicId: string): Promise<void> {
       .filter((w) => w.topicId === topicId && w.git?.branch)
       .map((w) => w.git!.branch!),
   )
-  const n = res.plan.repos?.length ?? res.plan.steps.length
   const one = branches.size === 1 ? [...branches][0]! : null
-  askPush(
-    res.plan,
+  const subject = (n: number) =>
     n > 1
       ? one
         ? one + ' from ' + n + ' repositories'
         : n + ' branches to origin'
-      : (one ?? 'this branch') + ' to origin',
-  )
+      : (one ?? 'this branch') + ' to origin'
+  const asking = askPushWhilePlanning(ids, (guess) => subject(guess.length))
+  const res = await guard(() => client.call('topic.push', { topicId }))
+  if (!res || !res.ok || !res.plan) {
+    if (asking) dropWhilePlanning(asking)
+    if (res) toast('info', res.detail)
+    return
+  }
+  if (asking && !stillAsking(asking)) return
+  askPush(res.plan, subject(res.plan.repos?.length ?? res.plan.steps.length))
 }
 
 /** §7 — the project's push: the repositories a project conversation is on, each on its own branch. */
 export async function pushProject(workspaceIds: string[]): Promise<void> {
   if (stillBusy(workspaceIds)) return
+  const subject = (n: number, first: string | undefined) =>
+    n > 1 ? n + ' branches to origin' : (first ?? 'this branch') + ' to origin'
+  const asking = askPushWhilePlanning(workspaceIds, (guess) => subject(guess.length, guess[0]?.name))
   const res = await guard(() => client.call('project.push', { workspaceIds }))
-  if (!res) return
-  if (!res.ok || !res.plan) {
-    toast('info', res.detail)
+  if (!res || !res.ok || !res.plan) {
+    if (asking) dropWhilePlanning(asking)
+    if (res) toast('info', res.detail)
     return
   }
-  const n = res.plan.repos?.length ?? res.plan.steps.length
-  askPush(res.plan, n > 1 ? n + ' branches to origin' : (res.plan.repos?.[0] ?? 'this branch') + ' to origin')
+  if (asking && !stillAsking(asking)) return
+  askPush(res.plan, subject(res.plan.repos?.length ?? res.plan.steps.length, res.plan.repos?.[0]))
+}
+
+/**
+ * Push's question, up before its plan: the repositories that look like they
+ * have something to send, read off the window's own copy of their state (the
+ * same test the core's plan makes, on a probe that may be a moment older).
+ * The plan's own sentence replaces it. None when nothing looks ready to go.
+ */
+function askPushWhilePlanning(ids: string[], subject: (guess: Workspace[]) => string): PendingConfirm | null {
+  const guess = state.workspaces.filter((w) => {
+    const g = w.git
+    return ids.includes(w.id) && !!g?.branch && g.hasRemote && (g.published === false || g.ahead > 0)
+  })
+  // Nothing to send by the window's reading: the plan will say so in a toast,
+  // and a question that flashes up only to be withdrawn is worse than a wait.
+  if (!guess.length) return null
+  const force = guess.some((w) => {
+    const g = w.git!
+    return g.upstream === 'origin/' + g.branch && g.behind > 0 && g.ahead > 0
+  })
+  return askWhilePlanning({ title: (force ? 'Force-push ' : 'Push ') + subject(guess) + '?', verb: force ? 'Force-push' : 'Push' })
 }
 
 /**

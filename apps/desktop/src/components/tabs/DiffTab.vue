@@ -86,6 +86,14 @@ onBeforeUnmount(() => {
 })
 
 const files = ref<DiffFile[]>([])
+/**
+ * Each repository's list as last read, drawn the moment the Diff turns back to
+ * it while it is read again: until then the list on screen was the previous
+ * repository's, as though the switch had not happened.
+ */
+const lastFiles = new Map<string, DiffFile[]>()
+/** The repository `files` was read for. */
+let filesOf: string | null = null
 const current = ref<FileDiff | null>(null)
 const selected = ref<string | null>(null)
 
@@ -531,11 +539,16 @@ const totals = computed(() => ({
 async function load() {
   loading.value = true
   const forId = props.workspace.id
+  if (filesOf !== forId) {
+    filesOf = forId
+    files.value = lastFiles.get(forId) ?? []
+  }
   if (props.repos) void loadOthers()
   const r = await guard(() => client.call('diff.files', { workspaceId: forId }))
   // Turned to another repository while this one was being read.
   if (forId !== props.workspace.id) return
   files.value = r ?? []
+  lastFiles.set(forId, files.value)
   loading.value = false
   picked.value = picked.value.filter((p) => files.value.some((f) => f.path === p))
   if (wanted && files.value.some((f) => f.path === wanted!.path)) {
@@ -1030,8 +1043,13 @@ watch([() => scope.value.join(), stageAll], () => void refreshCommit(), { immedi
 watch(() => props.workspace.id, () => void refreshStashes(), { immediate: true })
 // The counts come from the core's own probe, so they follow every push — of
 // every repository the commit takes.
-watch(() => props.workspace.git, () => void refreshCommit())
-watch(() => (multi.value ? props.repos!.map((w) => w.git) : null), () => void refreshCommit())
+// By what they say, not by object: a push re-sends every workspace, and a
+// preview is a full probe of each repository it covers.
+watch(() => JSON.stringify(props.workspace.git ?? null), () => void refreshCommit())
+watch(
+  () => (multi.value ? props.repos!.map((w) => JSON.stringify(w.git ?? null)).join('\n') : null),
+  () => void refreshCommit(),
+)
 
 // Asked for from the bar. The field is disabled until the preview has counted
 // the files, and a disabled field refuses the caret — so the ask waits for it.

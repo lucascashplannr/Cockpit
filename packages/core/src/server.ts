@@ -106,8 +106,22 @@ function configView(): ConfigView {
   return { settings, suggestedDevRoot: scaffold.suggestedDevRoot() }
 }
 
+/**
+ * The last text of each whole-list push, so the same list is never sent twice
+ * in a row. An agent at work pushes the session list on every tool call and
+ * the workspace list along with it, and most of those workspace lists are the
+ * one the window already has: each still cost a parse and a re-render there.
+ * Forgotten when a window connects, so the first push after is always sent.
+ */
+const lastSnapshot = new Map<string, string>()
+const SNAPSHOTS = new Set(['workspaces', 'agents', 'projects', 'topics'])
+
 export function broadcast(msg: ServerPush): void {
   const text = JSON.stringify(msg)
+  if (SNAPSHOTS.has(msg.t)) {
+    if (lastSnapshot.get(msg.t) === text) return
+    lastSnapshot.set(msg.t, text)
+  }
   for (const c of clients) {
     if (c.readyState === WebSocket.OPEN) c.send(text)
   }
@@ -160,9 +174,33 @@ export function pushAgents(): void {
  */
 
 function pushAgentActivity(): void {
+  if (activityTimer) {
+    clearTimeout(activityTimer)
+    activityTimer = null
+  }
   registry.refreshAgentActivity()
   pushAgents()
   pushWorkspaces()
+}
+
+/**
+ * The same push, for the engine's own events: at most one per beat however
+ * many arrive in it. Building the list reads every conversation's turns, and
+ * an agent at work emits a change on every tool call, every result and every
+ * message, so pushing each one kept the core busy enough that a reply to
+ * anything else (a send, a commit, a file listing) waited its turn behind
+ * them. A handler that answers a request still pushes at once, before the
+ * answer, and takes any beat that was waiting with it.
+ */
+let activityTimer: ReturnType<typeof setTimeout> | null = null
+const ACTIVITY_BEAT_MS = 50
+
+function pushAgentActivitySoon(): void {
+  if (activityTimer) return
+  activityTimer = setTimeout(() => {
+    activityTimer = null
+    pushAgentActivity()
+  }, ACTIVITY_BEAT_MS)
 }
 
 /** Opens a path in the configured editor / Finder / browser (§2: the cockpit
@@ -1266,6 +1304,7 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
 
   wss.on('connection', (ws) => {
     clients.add(ws)
+    lastSnapshot.clear()
     // §13 — version handshake, first message, before anything else.
     const hello: ServerPush = { t: 'hello', protocol: PROTOCOL_VERSION, core: status() }
     ws.send(JSON.stringify(hello))
@@ -1326,7 +1365,7 @@ export function startServer(port = DEFAULT_PORT): WebSocketServer {
   bus.on('event', (event: CockpitEvent) => broadcast({ t: 'event', event }))
   // §3.3 — a session that ends on its own has to reach the window; nothing
   // else was going to call this until the user happened to click something.
-  agents.agentBus.on('changed', () => pushAgentActivity())
+  agents.agentBus.on('changed', () => pushAgentActivitySoon())
   /**
    * §3.3 — deltas are pushed, not journalled, and they are pushed *raw*: a
    * refresh of the whole session list per token would cost more than the text

@@ -4006,7 +4006,13 @@ export async function send(
   }
   clearIdleTimer(l)
   l.queue.push({ prompt: text, files, ultracode })
-  await flushQueue(l)
+  // Not awaited: the turn is open (and busy) before flushQueue's first await,
+  // and what follows is the checkpoint, which the engine waits for and the
+  // window does not. Awaited, the box held the words for as long as a
+  // snapshot of every repository took, as though they had not been sent.
+  flushQueue(l).catch((e) => {
+    process.stderr.write('[cockpit-core] a turn did not go in: ' + String(e) + '\n')
+  })
   return { ok: true, queued: false }
 }
 

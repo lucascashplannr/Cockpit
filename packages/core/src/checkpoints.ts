@@ -137,11 +137,11 @@ export async function capture(
   targets: CaptureTarget[],
   reason: string,
 ): Promise<Checkpoint[]> {
-  const out: Checkpoint[] = []
-  for (const t of targets) {
-    const cp = await captureOne(sessionId, turnId, t, reason)
-    if (cp) out.push(cp)
-  }
+  // Side by side: each repository has a store of its own and git calls queue
+  // per folder anyway, so one after another only added their times together.
+  const out = (await Promise.all(targets.map((t) => captureOne(sessionId, turnId, t, reason)))).filter(
+    (cp): cp is Checkpoint => !!cp,
+  )
   if (out.length)
     append({
       type: 'agent.checkpoint',

@@ -1096,12 +1096,18 @@ async function send(): Promise<void> {
   }
   busy.value = true
   if (continuing.value && selected.value) {
+    // Emptied at once, as a sent message is, rather than on the core's answer:
+    // waiting for it left the words sitting there as though Return had missed.
+    // A refused turn puts them back (screenshot and all, or the way to retry
+    // is to go and find it again), unless something new was typed meanwhile.
+    const key = myKey.value
+    agentDraft.value = ''
+    agentFiles.value = []
     const ok = await sendTurn(selected.value.id, text, files)
-    // Emptied together, and only on an answer: a refused turn has to leave the
-    // screenshot in the box, or the way to retry is to go and find it again.
-    if (ok) {
-      agentDraft.value = ''
-      agentFiles.value = []
+    // Into the box it came from, which may no longer be the one on screen.
+    if (!ok && !(state.drafts[key] ?? '').trim() && !state.attachments[key]?.length) {
+      state.drafts[key] = text
+      if (files.length) state.attachments[key] = files
     }
   } else if (scope.value) {
     // `startAgentIn` opens the new thread on this scope; nothing to do here.
