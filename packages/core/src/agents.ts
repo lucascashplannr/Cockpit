@@ -10,6 +10,7 @@ import type {
   PermissionRequest, TurnUsage, BackgroundTask,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
+import { cleanMark, readMark } from './mark.js'
 import { append, forSession, recordTouch, touchedBy } from './journal.js'
 import { run, which } from './exec.js'
 import * as leases from './leases.js'
@@ -442,21 +443,6 @@ function cleanChoice(c: LoadoutChoice | null | undefined): LoadoutChoice | null 
   const out: LoadoutChoice = { instructionsOff: list(c.instructionsOff), skillsOff: list(c.skillsOff) }
   if (c.docs === null || typeof c.docs === 'string') out.docs = c.docs
   return out.instructionsOff.length || out.skillsOff.length || 'docs' in out ? out : null
-}
-
-const MARK_KINDS: readonly ConversationMarkKind[] = ['review', 'hold', 'done']
-
-function readMark(raw: unknown): ConversationMark | null {
-  if (typeof raw !== 'string' || !raw) return null
-  try {
-    const m = JSON.parse(raw) as Partial<ConversationMark>
-    const kind = MARK_KINDS.includes(m.kind as ConversationMarkKind) ? (m.kind as ConversationMarkKind) : null
-    const note = typeof m.note === 'string' ? m.note : ''
-    if (!kind && !note) return null
-    return { kind, note, at: Number(m.at) || 0 }
-  } catch {
-    return null
-  }
 }
 
 function readChoice(raw: unknown): LoadoutChoice | null {
@@ -3497,9 +3483,7 @@ export function setMark(
 ): { ok: true; mark: ConversationMark | null } | { ok: false; reason: string } {
   const c = live.get(sessionId)?.session ?? get(sessionId)
   if (!c) return { ok: false, reason: 'That conversation is gone.' }
-  const kind = input && MARK_KINDS.includes(input.kind as ConversationMarkKind) ? input.kind : null
-  const note = (input?.note ?? '').replace(/[ \t]+\n/g, '\n').trim().slice(0, 500)
-  const mark: ConversationMark | null = kind || note ? { kind, note, at: Date.now() } : null
+  const mark = cleanMark(input)
   getDb().prepare('UPDATE agent_sessions SET mark = ? WHERE id = ?').run(mark ? JSON.stringify(mark) : null, sessionId)
   const l = live.get(sessionId)
   if (l) l.session.mark = mark

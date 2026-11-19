@@ -130,8 +130,14 @@
  *
  * 2.40 — `agent.delete {hide}`: `/clear` puts a conversation in the removed
  * list even when no memory keeps it. An older core ignores it and deletes.
+ *
+ * 2.41 — `topic.mark` and `Topic.mark`: the conversation's status and note,
+ * set by hand on a topic's header. An older core answers `unknown_method`.
+ *
+ * 2.42 — a fourth mark kind, `brainstorm`. An older core drops it on save and
+ * keeps only the note.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 40 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 42 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

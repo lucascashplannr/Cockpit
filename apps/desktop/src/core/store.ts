@@ -19,6 +19,8 @@ import type { ConnectionState } from './client.js'
 
 /** A row of the list someone can right-click or open the details of. */
 export type ListTarget = { kind: 'workspace'; id: string } | { kind: 'topic'; id: string }
+/** What a right-click menu can be about: a row of the list, or a conversation (its tab, its History row). */
+export type MenuTarget = ListTarget | { kind: 'conversation'; id: string }
 
 /** What the folder picker is being opened for — it is not always a project. */
 export interface PickFolderOptions {
@@ -406,7 +408,7 @@ export const state = reactive({
   /** The project whose settings sheet is open, by id. */
   editingProjectId: null as string | null,
   /** The right-click menu on a list row, where it was opened and on what. */
-  contextMenu: null as { x: number; y: number; target: ListTarget } | null,
+  contextMenu: null as { x: number; y: number; target: MenuTarget } | null,
   /** The details sheet of one row of the list. */
   detailsFor: null as ListTarget | null,
   /** §4 — the sheet that opens a topic across N repositories. */
@@ -416,6 +418,8 @@ export const state = reactive({
    * renames one. A group is a folder of repositories, so both move folders.
    */
   groupDialog: null as { projectId: string; groupId: string | null; pick: string[] } | null,
+  /** The sheet that sets a conversation's or a topic's status and note. */
+  markDialog: null as { on: 'conversation' | 'topic'; id: string } | null,
   pendingPlan: null as PlanPreview | null,
   /**
    * §4 — what produced the plan on screen, and against which base.
@@ -2081,6 +2085,59 @@ export function toggleTopicCollapsed(topicId: string): void {
   localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsedTopics))
 }
 
+const TOPIC_FILTER_KEY = 'cockpit.topicFilter'
+
+/** What a topic's status is, for the list's filter: one of the three, or none at all (a note alone is none). */
+export type TopicFilterKind = ConversationMarkKind | 'none'
+export const TOPIC_FILTER_KINDS: readonly TopicFilterKind[] = ['none', 'brainstorm', 'review', 'hold', 'done']
+
+/**
+ * The statuses the list leaves out. Holding the hidden ones rather than the
+ * shown ones means a status added later shows until someone hides it.
+ * One setting for every project, persisted: "hide what is done" is a habit,
+ * not a thing to say again per project and per launch.
+ */
+export const hiddenTopicKinds = reactive<Partial<Record<TopicFilterKind, true>>>(readTopicFilter())
+
+function readTopicFilter(): Partial<Record<TopicFilterKind, true>> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TOPIC_FILTER_KEY) ?? '{}') as Record<string, unknown>
+    const out: Partial<Record<TopicFilterKind, true>> = {}
+    for (const k of TOPIC_FILTER_KINDS) if (raw?.[k] === true) out[k] = true
+    return out
+  } catch {
+    return {}
+  }
+}
+function saveTopicFilter(): void {
+  localStorage.setItem(TOPIC_FILTER_KEY, JSON.stringify(hiddenTopicKinds))
+}
+
+export function topicFilterKind(t: Topic | null): TopicFilterKind {
+  return t?.mark?.kind ?? 'none'
+}
+
+export function toggleTopicKind(k: TopicFilterKind): void {
+  if (hiddenTopicKinds[k]) delete hiddenTopicKinds[k]
+  else hiddenTopicKinds[k] = true
+  saveTopicFilter()
+}
+
+/** Only this one shown; asked again of the one already alone, everything comes back. */
+export function soloTopicKind(k: TopicFilterKind): void {
+  const alone = TOPIC_FILTER_KINDS.every((x) => (x === k ? !hiddenTopicKinds[x] : hiddenTopicKinds[x]))
+  for (const x of TOPIC_FILTER_KINDS) {
+    if (alone || x === k) delete hiddenTopicKinds[x]
+    else hiddenTopicKinds[x] = true
+  }
+  saveTopicFilter()
+}
+
+export function showAllTopicKinds(): void {
+  for (const x of TOPIC_FILTER_KINDS) delete hiddenTopicKinds[x]
+  saveTopicFilter()
+}
+
 /* ── the composer's own memory ────────────────────────────────────────── */
 
 const COMPOSER_KEY = 'cockpit.composer'
@@ -2633,7 +2690,7 @@ export function newConversationOn(scope: AgentScope): void {
   startFresh(scope)
 }
 
-export function openContextMenu(e: MouseEvent, target: ListTarget): void {
+export function openContextMenu(e: MouseEvent, target: MenuTarget): void {
   state.contextMenu = { x: e.clientX, y: e.clientY, target }
 }
 
@@ -2843,17 +2900,90 @@ export async function markConversation(
 
 /** The words for each, the same on the tab, its menu and the line in the thread. */
 export const MARK_WORDS: Record<ConversationMarkKind, string> = {
+  brainstorm: 'Brainstorm',
   review: 'To review',
   hold: 'On hold',
   done: 'Done',
 }
 
-/** The popover that sets it, opened at the pointer from a tab or from the line in the thread. */
-export const markMenu = reactive({ id: null as string | null, x: 0, y: 0 })
+/**
+ * Where a person says a topic stands, and why — from its header. Kept until
+ * changed: no turn on the topic clears it. The list is pushed; this sets it at once.
+ */
+export async function markTopic(
+  topicId: string,
+  mark: { kind: ConversationMarkKind | null; note: string } | null,
+): Promise<boolean> {
+  const r = await guard(() => client.call('topic.mark', { topicId, mark }))
+  if (!r) return false
+  if (!r.ok) {
+    toast('error', r.reason)
+    return false
+  }
+  for (const t of state.topics) if (t.id === topicId) t.mark = r.mark
+  return true
+}
+
+/**
+ * The popover that sets it, opened at the pointer: on a conversation from a
+ * tab or the line in the thread, on a topic from its header's menu.
+ */
+export const markMenu = reactive({
+  id: null as string | null,
+  on: 'conversation' as 'conversation' | 'topic',
+  x: 0,
+  y: 0,
+  /** Opened by hovering: it goes again when the pointer leaves it and what opened it. */
+  hover: false,
+})
 export function openMarkMenu(e: MouseEvent, sessionId: string): void {
+  markMenu.hover = false
+  markMenu.on = 'conversation'
   markMenu.id = sessionId
   markMenu.x = e.clientX
   markMenu.y = e.clientY
+}
+/**
+ * The status and note to read, at the pointer, with a pencil to change them
+ * in the sheet below. Shown from where they are displayed: the badge on the
+ * bar, the topic's header, the line over the composer.
+ */
+export function openTopicMarkMenu(at: { x: number; y: number }, topicId: string): void {
+  clearTimeout(markHoverTimer)
+  markMenu.hover = false
+  markMenu.on = 'topic'
+  markMenu.id = topicId
+  markMenu.x = at.x
+  markMenu.y = at.y
+}
+/**
+ * The same popup on a hover, after a beat so a pointer passing over does not
+ * flash it, and gone again a beat after it leaves both the thing and the
+ * popup. A click on the thing keeps it (above).
+ */
+let markHoverTimer: ReturnType<typeof setTimeout> | undefined
+export function hoverTopicMarkMenu(at: { x: number; y: number }, topicId: string): void {
+  if (markMenu.id && !markMenu.hover) return
+  clearTimeout(markHoverTimer)
+  markHoverTimer = setTimeout(() => {
+    openTopicMarkMenu(at, topicId)
+    markMenu.hover = true
+  }, markMenu.id ? 0 : 350)
+}
+export function keepMarkMenu(): void {
+  if (markMenu.hover) clearTimeout(markHoverTimer)
+}
+export function leaveMarkMenu(): void {
+  clearTimeout(markHoverTimer)
+  if (!markMenu.hover) return
+  markHoverTimer = setTimeout(() => {
+    if (markMenu.hover) markMenu.id = null
+  }, 200)
+}
+/** The sheet that sets a status and note: from a right-click, or the popup's pencil. */
+export function openMarkDialog(on: 'conversation' | 'topic', id: string): void {
+  markMenu.id = null
+  state.markDialog = { on, id }
 }
 
 /** A name typed over a conversation's own. The list is pushed; this sets it at once. */

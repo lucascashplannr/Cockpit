@@ -5,9 +5,10 @@ import {
   Info, MessageSquarePlus, Pause, Play, Settings, ShieldCheck, ShieldOff, SlidersHorizontal, Stamp, Trash2, Unlink,
 } from '@lucide/vue'
 import { attentionIcon } from './agent/attention.js'
+import { markIcon } from './agent/mark.js'
 import {
-  adoptTopic, askDeleteTopic, askUngroup, askUntrackRepo, client, closeTopic, groupRepos, guard, isBranchProtected, isRepoGroup,
-  markThreadUnread, newConversationOn, openDeclarations, readThreadOn, revealLabel, setBranchProtected, startTopic, state,
+  adoptTopic, attentionOf, askDeleteTopic, askUngroup, askUntrackRepo, client, closeTopic, groupRepos, guard, isBranchProtected, isBusy, isRepoGroup,
+  markThreadRead, markThreadUnread, newConversationOn, openDeclarations, openMarkDialog, readThreadOn, revealLabel, setBranchProtected, startTopic, state,
   stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
@@ -34,6 +35,20 @@ const topic = computed(() =>
     ? (state.topics.find((f) => f.id === m.value!.target.id) ?? null)
     : null,
 )
+
+/** A conversation's tab or History row: its status, and read or unread. */
+const conv = computed(() =>
+  m.value?.target.kind === 'conversation'
+    ? ([...state.agents, ...state.keptAgents].find((c) => c.id === m.value!.target.id) ?? null)
+    : null,
+)
+/** Read or unread is a choice only while the thread is neither working, asking, nor removed. */
+const convRead = computed(() => {
+  const c = conv.value
+  if (!c || c.hiddenAt !== null || isBusy(c)) return null
+  const a = attentionOf(c)
+  return a === 'none' ? 'read' : a === 'reply' ? 'unread' : null
+})
 
 const serverRunning = computed(
   () => ws.value?.runtime?.status === 'up' || ws.value?.runtime?.status === 'starting',
@@ -163,7 +178,7 @@ async function copyPath(path: string) {
 
 <template>
   <div
-    v-if="m && (ws || topic)"
+    v-if="m && (ws || topic || conv)"
     ref="root"
     class="menu ctx"
     role="menu"
@@ -280,6 +295,10 @@ async function copyPath(path: string) {
       <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
         <component :is="attentionIcon('reply')" /> Mark as unread
       </button>
+      <!-- Where you say it stands: the conversation's menu, at the same spot. -->
+      <button v-if="!topic.derived" @click="act(() => openMarkDialog('topic', topic!.id))">
+        <component :is="markIcon(topic.mark?.kind ?? 'review')" /> {{ topic.mark ? 'Change the status…' : 'Set a status…' }}
+      </button>
       <button
         v-if="topicOwned"
         @click="act(() => (topic!.state === 'running' ? stopTopic(topic!.id) : startTopic(topic!.id)))"
@@ -314,6 +333,19 @@ async function copyPath(path: string) {
           <Trash2 /> Delete the topic…
         </button>
       </template>
+    </template>
+
+    <!-- A conversation: what a topic's menu says about it, for one thread. -->
+    <template v-else-if="conv">
+      <button v-if="convRead === 'read'" @click="act(() => markThreadUnread(conv!))">
+        <component :is="attentionIcon('reply')" /> Mark as unread
+      </button>
+      <button v-else-if="convRead === 'unread'" @click="act(() => markThreadRead(conv!))">
+        <component :is="attentionIcon('reply')" /> Mark as read
+      </button>
+      <button @click="act(() => openMarkDialog('conversation', conv!.id))">
+        <component :is="markIcon(conv.mark?.kind ?? 'review')" /> {{ conv.mark ? 'Change the status…' : 'Set a status…' }}
+      </button>
     </template>
   </div>
 </template>

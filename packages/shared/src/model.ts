@@ -650,6 +650,13 @@ export interface Topic {
   preparing?: TopicPreparation | null
   /** Inferred from matching branch names rather than opened deliberately. */
   derived: boolean
+  /**
+   * Where a person says the topic stands, set by hand from its header: To
+   * review, On hold, Done, or only a note. The same shape as a conversation's,
+   * but it stays until changed: no turn sent on the topic clears it. Always
+   * null for an inferred topic, which has no record to keep it in.
+   */
+  mark?: ConversationMark | null
   createdAt: number
   updatedAt: number
 }
@@ -1281,15 +1288,15 @@ export interface Conversation {
   /** What it was given beyond its scope, as chosen in the composer before it started. */
   choice?: LoadoutChoice | null
   /**
-   * Where a person says it stands, set by hand from its tab: To review, On
-   * hold, Done — or only a note. Nothing the engine reports ever sets it, and
+   * Where a person says it stands, set by hand from its tab: Brainstorm, To
+   * review, On hold, Done — or only a note. Nothing the engine reports ever sets it, and
    * the next turn a person sends clears it: the work has been picked back up.
    */
   mark?: ConversationMark | null
 }
 
 /** What a person can say about a conversation from its tab. */
-export type ConversationMarkKind = 'review' | 'hold' | 'done'
+export type ConversationMarkKind = 'brainstorm' | 'review' | 'hold' | 'done'
 
 export interface ConversationMark {
   /** Null for a note on its own. */

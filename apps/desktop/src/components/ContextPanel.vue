@@ -6,12 +6,11 @@ import type { Conversation } from '@cockpit/shared'
 import AgentTab from './tabs/AgentTab.vue'
 import Splitter from './Splitter.vue'
 import ConversationDrawer from './ConversationDrawer.vue'
-import MarkMenu from './agent/MarkMenu.vue'
 import { markIcon } from './agent/mark.js'
 import Wordmark from './brand/Wordmark.vue'
 import {
   activeAgentScope, activeWorkspace, attentionOf, closeFresh, hasMail, hasNewTab, closeTab, isBusy, isLive,
-  MARK_WORDS, openMarkMenu, openThreadFor, pairShareOf, pairTabs, pickThread, savePairShare, setPairShare, splitOff, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
+  MARK_WORDS, openContextMenu, openThreadFor, pairShareOf, pairTabs, pickThread, savePairShare, setPairShare, splitOff, renameConversation, reorderTabs, tabEntriesFor, type TabEntry, sessionsForScope, splitFor, startFresh, state, stopConversation,
   stripFor,
 } from '../core/store.js'
 
@@ -365,7 +364,7 @@ function fresh(): void {
                 @click="renaming === e.conv.id || press(e.conv, $event)"
                 @dblclick="startRename(e.conv)"
                 @mousedown.middle.prevent="closeOne(e.conv)"
-                @contextmenu.prevent="openMarkMenu($event, e.conv.id)"
+                @contextmenu.prevent="openContextMenu($event, { kind: 'conversation', id: e.conv.id })"
               >
                 <Hand v-if="dotOf(e.conv) === 'ask'" class="ask" />
                 <Asterisk v-else-if="dotOf(e.conv) === 'work'" class="star agent-star" />
@@ -416,7 +415,7 @@ function fresh(): void {
                     @click="renaming === c.id || press(c, $event)"
                     @dblclick="startRename(c)"
                     @mousedown.middle.prevent="closeOne(c)"
-                    @contextmenu.prevent.stop="openMarkMenu($event, c.id)"
+                    @contextmenu.prevent.stop="openContextMenu($event, { kind: 'conversation', id: c.id })"
                   >
                     <Hand v-if="dotOf(c) === 'ask'" class="ask" />
                     <Asterisk v-else-if="dotOf(c) === 'work'" class="star agent-star" />
@@ -524,7 +523,6 @@ function fresh(): void {
              panel with an animation. -->
         <ConversationDrawer v-if="state.historyOpen" />
       </div>
-      <MarkMenu />
     </template>
   </section>
 </template>
@@ -675,6 +673,7 @@ function fresh(): void {
 .mk { flex: none; width: 12px; height: 12px; stroke-width: 2.1; color: var(--text-dim); }
 .mk.k-review { color: var(--accent); }
 .mk.k-done { color: var(--ok); }
+.mk.k-brainstorm { color: var(--info); }
 /* §7 — another conversation left it a message, and nothing will read it yet. */
 .dot.mail { box-shadow: inset 0 0 0 1.75px var(--accent); }
 /* A tab arriving or leaving, and the others closing up — short, and only

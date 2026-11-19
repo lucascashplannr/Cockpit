@@ -2299,7 +2299,7 @@ function ago(ts: number): string {
           v-if="selected.mark?.note"
           class="markline"
           :class="'k-' + (selected.mark.kind ?? 'note')"
-          :title="(selected.mark.note ? selected.mark.note + '\n\n' : '') + 'Click to change it — the next turn you send clears it'"
+          :title="'The next turn you send clears it'"
           @click="openMarkMenu($event, selected.id)"
         >
           <span class="mpill">
@@ -2869,6 +2869,7 @@ button.pulse.idlewait[aria-expanded='true'] .wchev { opacity: 1; }
 }
 .markline.k-review { --k: var(--accent); }
 .markline.k-done { --k: var(--ok); }
+.markline.k-brainstorm { --k: var(--info); }
 .mpill {
   flex: none;
   display: inline-flex;

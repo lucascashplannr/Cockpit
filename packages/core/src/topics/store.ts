@@ -1,5 +1,6 @@
-import type { Setup, TopicState, ReviewRef, TicketRef } from '@cockpit/shared'
+import type { ConversationMark, Setup, TopicState, ReviewRef, TicketRef } from '@cockpit/shared'
 import { getDb } from '../db.js'
+import { readMark } from '../mark.js'
 
 /**
  * §3.4 — "Sonder, ne jamais se souvenir." Worktrees, branches, ports and
@@ -20,6 +21,8 @@ export interface TopicRecord {
   setup: Setup
   ticket: TicketRef | null
   review: ReviewRef | null
+  /** Where a person says it stands. Written only by `setMark`, never by `save`. */
+  mark: ConversationMark | null
   createdAt: number
   updatedAt: number
 }
@@ -34,6 +37,7 @@ interface Row {
   setup: string
   ticket: string | null
   review: string | null
+  mark?: string | null
   created_at: number
   updated_at: number
 }
@@ -58,6 +62,7 @@ function hydrate(r: Row): TopicRecord {
     setup: r.setup as Setup,
     ticket: parse<TicketRef>(r.ticket),
     review: parse<ReviewRef>(r.review),
+    mark: readMark(r.mark),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -115,6 +120,16 @@ export function patch(id: string, fn: (f: TopicRecord) => void): TopicRecord | n
   fn(f)
   f.updatedAt = Date.now()
   return save(f)
+}
+
+/**
+ * The status a person set on it, or null to take it off. Its own write, so it
+ * leaves `updated_at` alone: saying a topic is on hold is not work on it, and
+ * the list orders by that.
+ */
+export function setMark(id: string, mark: ConversationMark | null): boolean {
+  const r = getDb().prepare('UPDATE topics SET mark = ? WHERE id = ?').run(mark ? JSON.stringify(mark) : null, id)
+  return r.changes > 0
 }
 
 export function remove(id: string): void {

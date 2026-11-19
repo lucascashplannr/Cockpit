@@ -523,6 +523,14 @@ export interface Rpc {
   'topic.setup': { params: { topicId: string }; result: { ok: boolean; detail: string } }
   'topic.rename': { params: { topicId: string; name: string }; result: Topic }
   /**
+   * Where a person says a topic stands, and why. Null clears it, and so does a
+   * mark with neither a kind nor a note. An inferred topic answers not ok.
+   */
+  'topic.mark': {
+    params: { topicId: string; mark: { kind: ConversationMarkKind | null; note: string } | null }
+    result: { ok: true; mark: ConversationMark | null } | { ok: false; reason: string }
+  }
+  /**
    * §16 — closing refuses over unpushed commits and live work; removing the
    * worktrees is a plan of its own, never a silent `rm -rf`.
    */

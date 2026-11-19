@@ -237,7 +237,7 @@ function tileTitle(name: string, root: string, projectId: string): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--fs-sm);
+  font-size: 15px;
   font-weight: 650;
   letter-spacing: 0.02em;
   color: var(--text-muted);

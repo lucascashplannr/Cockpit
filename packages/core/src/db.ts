@@ -388,9 +388,11 @@ function migrate(d: Db): void {
   addColumn(d, 'agent_sessions', 'fork_engine', 'TEXT')
   addColumn(d, 'agent_sessions', 'fork_at', 'TEXT')
   addColumn(d, 'agent_turns', 'branched', 'INTEGER NOT NULL DEFAULT 0')
-  // Where a person says a conversation stands — To review, On hold, Done, or
+  // Where a person says a conversation stands — Brainstorm, To review, On hold, Done, or
   // a note alone — as JSON. Nullable: an older core reads nothing.
   addColumn(d, 'agent_sessions', 'mark', 'TEXT')
+  // The same, on a topic's header. It stays until changed: nothing clears it.
+  addColumn(d, 'topics', 'mark', 'TEXT')
 
   remapVocabulary(d)
   backfillScopes(d)

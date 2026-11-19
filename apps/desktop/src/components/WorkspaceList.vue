@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import { attentionIcon } from './agent/attention.js'
+import { markIcon } from './agent/mark.js'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { Component } from 'vue'
+import type { Topic } from '@cockpit/shared'
 import {
-  ArrowUp, Asterisk, ChevronRight, Folder, FolderPlus, Layers, LoaderCircle, Plus,
+  ArrowUp, Asterisk, ChevronRight, Folder, FolderPlus, Layers, LoaderCircle, Plus, StickyNote,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import ListToggle from './ListToggle.vue'
+import TopicFilter from './TopicFilter.vue'
 import {
-  activeProject, activityFor, collapsedTopics, deletingTopics, listWide, onProject, openAgentOn, openContextMenu,
+  activeProject, activityFor, collapsedTopics, deletingTopics, hiddenTopicKinds, listWide, topicFilterKind, MARK_WORDS, onProject, openAgentOn, openContextMenu,
+  hoverTopicMarkMenu,
+  leaveMarkMenu,
+  openTopicMarkMenu,
   selectedGroupId, selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 import type { ListGroup } from '../core/store.js'
@@ -22,7 +28,19 @@ import type { ListGroup } from '../core/store.js'
  * branch, and a branch checked out in its own folder.
  */
 
-const groups = computed(() => workspaceGroups.value)
+/**
+ * The topics the header's filter leaves out are not drawn. Three never go:
+ * the topic you are standing on or inside, and one asking for you. Hiding
+ * the first would leave the window pointing at nothing in the list, and the
+ * second would be a question nobody sees.
+ */
+function filteredOut(g: ListGroup): boolean {
+  if (!g.topicId || !hiddenTopicKinds[topicFilterKind(g.topic)]) return false
+  if (g.topicId === selectedTopicId.value || holdsSelection(g.workspaces)) return false
+  return activityFor('topic', g.topicId).attention === 'none'
+}
+const groups = computed(() => workspaceGroups.value.filter((g) => !filteredOut(g)))
+const hiddenCount = computed(() => workspaceGroups.value.length - groups.value.length)
 
 /**
  * §4 — the topic being created, until its row exists: drawn where it will
@@ -95,7 +113,30 @@ function topicLead(topicId: string): { icon: Component; cls: string } {
   // but there it is a control beside a name, and here it was the only picture
   // the tile had: a column of dropdown arrows, saying "this opens" about a
   // thing whose first job is to say what it is.
-  return topicMark(topicId) ?? { icon: Layers, cls: '' }
+  // With nothing live to say, what you said about it yourself, as a tab does.
+  const own = state.topics.find((t) => t.id === topicId)?.mark
+  return topicMark(topicId) ?? (own ? { icon: markIcon(own.kind), cls: 'own k-' + (own.kind ?? 'note') } : { icon: Layers, cls: '' })
+}
+
+/** Where you said a topic stands, as words: its status, then your note under it. */
+function ownTip(t: Topic | null): string {
+  const m = t?.mark
+  if (!m) return ''
+  return [m.kind ? MARK_WORDS[m.kind] : 'Note', m.note].filter(Boolean).join('\n')
+}
+
+/** Under the icon, its right edge on the icon's: the list ends a few pixels to the right. */
+function underOwn(e: MouseEvent): { x: number; y: number } {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  return { x: r.right + 4 - 300, y: r.bottom + 6 }
+}
+/** The header's status or note, clicked: the popup that reads them, kept. */
+function pressOwn(e: MouseEvent, topicId: string): void {
+  openTopicMarkMenu(underOwn(e), topicId)
+}
+/** The note, hovered: the same popup, gone again when the pointer leaves. */
+function hoverOwn(e: MouseEvent, topicId: string): void {
+  hoverTopicMarkMenu(underOwn(e), topicId)
 }
 
 function topicTip(g: { title: string | null; topicId: string | null; workspaces: { git: { ahead: number } | null }[] }): string {
@@ -105,6 +146,8 @@ function topicTip(g: { title: string | null; topicId: string | null; workspaces:
   if (a.attention !== 'none') facts.push(ATTENTION_TEXT[a.attention] ?? '')
   else if (a.running) facts.push(a.running + ' conversation(s) running on this topic')
   if (unpushed(g.workspaces)) facts.push(unpushed(g.workspaces) + ' commit(s) not pushed')
+  const own = ownTip(state.topics.find((t) => t.id === id) ?? null)
+  if (own) facts.push(own)
   facts.push(id === selectedTopicId.value
     ? (collapsedTopics[id] ? 'Click to show its branches' : 'Click to fold it away')
     : 'Click to aim the agent at the whole topic')
@@ -187,6 +230,18 @@ function headMark(g: ListGroup): ReturnType<typeof topicMark> {
   return null
 }
 
+/**
+ * What the wide header's lid wears: something live first, as on the strip;
+ * then the status you set on the topic, as an unread mark would sit there.
+ */
+function lidMark(g: ListGroup): ReturnType<typeof topicMark> {
+  const live = headMark(g)
+  if (live) return live
+  const own = g.topic?.mark
+  if (!own?.kind) return null
+  return { icon: markIcon(own.kind), cls: 'own k-' + own.kind, tip: MARK_WORDS[own.kind] }
+}
+
 function headLead(g: ListGroup): { icon: Component; cls: string } {
   if (g.topicId) return topicLead(g.topicId)
   return headMark(g) ?? { icon: Folder, cls: '' }
@@ -265,6 +320,7 @@ function sectionBefore(i: number): boolean {
         {{ activeProject.name }}
       </button>
       <span v-if="!narrow" class="grow" />
+      <TopicFilter v-if="!narrow" :hidden="hiddenCount" />
       <ListToggle />
     </header>
 
@@ -354,14 +410,14 @@ function sectionBefore(i: number): boolean {
             <button
               v-else
               class="twist"
-              :class="[headMark(g) && 'marked', headMark(g)?.cls]"
-              :title="(headMark(g) ? headMark(g)!.tip + '\n' : '')
+              :class="[lidMark(g) && 'marked', lidMark(g)?.cls]"
+              :title="(lidMark(g) ? lidMark(g)!.tip + '\n' : '')
                 + (collapsedTopics[headId(g)!]
                   ? (g.topicId ? 'Show its branches' : 'Show its repositories')
                   : (g.topicId ? 'Fold this topic away' : 'Fold this group away'))"
               @click="toggleTopicCollapsed(headId(g)!)"
             >
-              <component :is="headMark(g)!.icon" v-if="headMark(g)" class="sm mark" :class="{ 'agent-star': headMark(g)!.turning }" />
+              <component :is="lidMark(g)!.icon" v-if="lidMark(g)" class="sm mark" :class="{ 'agent-star': lidMark(g)!.turning }" />
               <ChevronRight class="sm chev" :class="{ turned: !collapsedTopics[headId(g)!] }" />
             </button>
             <button
@@ -380,6 +436,19 @@ function sectionBefore(i: number): boolean {
               <span v-if="unpushed(g.workspaces)" class="up">
                 <ArrowUp class="sm" />{{ unpushed(g.workspaces) }}
               </span>
+              <!-- Your note on it, at the end; its status leads the row, in
+                   the lid, the way an unread mark does. Hover or click for the
+                   popup that reads both. -->
+              <button
+                v-if="g.topic?.mark?.note"
+                class="own"
+                aria-label="Note"
+                @mouseenter="hoverOwn($event, g.topicId!)"
+                @mouseleave="leaveMarkMenu"
+                @click.stop="pressOwn($event, g.topicId!)"
+              >
+                <StickyNote />
+              </button>
               <!-- §4 — an inferred topic looks exactly like an opened one here, and
                    then behaves like neither: half its verbs are missing from the
                    menu with nothing on the row to have warned you.
@@ -779,6 +848,28 @@ function sectionBefore(i: number): boolean {
 .summary .up { color: var(--ok); display: inline-flex; align-items: center; gap: 2px; }
 .summary .up .lucide { width: 11px; height: 11px; stroke-width: 2.4; }
 .summary .dim { color: var(--text-dim); }
+/* Your own word on it, in the quiet colours: only To review asks for you. */
+.summary .own {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  margin: -3px;
+  border-radius: 4px;
+  color: var(--text-dim);
+}
+.summary .own .lucide { width: 12px; height: 12px; stroke-width: 2.1; }
+.summary .own:hover { color: var(--text); background: var(--line-soft); }
+/* Your status in the lid: hold and a note stay quiet, the others in their ink. */
+.twist.own .mark { color: var(--text-muted); }
+.twist.own.k-review .mark { color: var(--accent); }
+.twist.own.k-done .mark { color: var(--ok); }
+.twist.own.k-brainstorm .mark { color: var(--info); }
+.own.k-review { --k: var(--accent); }
+.own.k-done { --k: var(--ok); }
+.own.k-brainstorm { --k: var(--info); }
+/* On the ⌘B strip the same mark is the topic's lead icon, in the same ink. */
+.lead.own.k-review, .lead.own.k-done, .lead.own.k-brainstorm { color: var(--k); }
 /* Only ever on the thing that is actually running — the header inherits it
    from its rows, and two pulses side by side would say nothing extra. */
 .summary .live { animation: pulse 1.6s var(--ease-soft) infinite; }

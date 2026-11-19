@@ -573,6 +573,11 @@ const handlers: Record<string, Handler> = {
     pushTopics()
     return res
   },
+  'topic.mark': (p: { topicId: string; mark: { kind: ConversationMarkKind | null; note: string } | null }) => {
+    const r = topics.setMark(p.topicId, p.mark)
+    if (r.ok) pushTopics()
+    return r
+  },
   'topic.rename': async (p: { topicId: string; name: string }) => {
     topics.rename(p.topicId, p.name)
     const f = registry.getTopic(p.topicId)

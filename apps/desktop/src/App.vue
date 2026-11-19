@@ -11,6 +11,7 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import RunCommandDialog from './components/RunCommandDialog.vue'
 import DeclarationsDialog from './components/DeclarationsDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
+import MarkMenu from './components/agent/MarkMenu.vue'
 import DetailsDialog from './components/DetailsDialog.vue'
 import AttachmentViewer from './components/AttachmentViewer.vue'
 import DiagramViewer from './components/DiagramViewer.vue'
@@ -22,6 +23,7 @@ import SettingsDialog from './components/SettingsDialog.vue'
 import ServiceDialog from './components/ServiceDialog.vue'
 import TopicDialog from './components/TopicDialog.vue'
 import GroupDialog from './components/GroupDialog.vue'
+import MarkDialog from './components/MarkDialog.vue'
 import Toast from './components/Toast.vue'
 import ConnectionBanner from './components/ConnectionBanner.vue'
 import ReviewTools from './components/ReviewTools.vue'
@@ -413,12 +415,14 @@ onUnmounted(() => {
     <ProjectDialog />
     <DetailsDialog />
     <ContextMenu />
+    <MarkMenu />
     <NewProjectDialog />
     <AddRepoDialog />
     <SettingsDialog />
     <ServiceDialog />
     <TopicDialog />
     <GroupDialog />
+    <MarkDialog />
     <ConnectionBanner />
     <Toast />
 

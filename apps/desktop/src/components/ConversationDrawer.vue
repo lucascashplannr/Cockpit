@@ -5,7 +5,7 @@ import { computed, ref, watch } from 'vue'
 import type { Conversation } from '@cockpit/shared'
 import { ChevronDown, CircleStop, EyeOff, Pencil, Plus, RotateCcw, Sparkles, Trash2, X } from '@lucide/vue'
 import {
-  activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive, keptOnRemove, MARK_WORDS, openMarkMenu,
+  activeAgentScope, attentionOf, deleteConversation, engineName, isBusy, isLive, keptOnRemove, MARK_WORDS, openContextMenu,
   openConversation, openThreadFor, pinThread, removedOn, renameConversation, restoreConversation, sessionsForScope, startFresh, state,
   stopConversation, toast,
 } from '../core/store.js'
@@ -193,7 +193,7 @@ function dotClass(c: Conversation): string {
         :key="c.id"
         class="conv"
         :class="{ on: selected?.id === c.id }"
-        @contextmenu.prevent="openMarkMenu($event, c.id)"
+        @contextmenu.prevent="openContextMenu($event, { kind: 'conversation', id: c.id })"
       >
         <!-- A field cannot live in a button, so the row is not one while its
              name is being typed. -->
@@ -457,6 +457,7 @@ function dotClass(c: Conversation): string {
 .cmark .lucide { width: 11px; height: 11px; color: var(--text-dim); }
 .cmark.k-review .lucide { color: var(--accent); }
 .cmark.k-done .lucide { color: var(--ok); }
+.cmark.k-brainstorm .lucide { color: var(--info); }
 .state.on { color: var(--agent); font-weight: 600; }
 /* Alive and between turns: present, and not pretending to be busy. */
 .dot.idle { background: var(--agent); opacity: 0.5; }

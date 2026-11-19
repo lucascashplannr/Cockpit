@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { memoryTemplate, newId, stableId } from '@cockpit/shared'
 import type {
-  Setup, DatabasePlan, Topic, PlanPreview, PlanStep, SeedProposal, Workspace,
+  ConversationMark, ConversationMarkKind, Setup, DatabasePlan, Topic, PlanPreview, PlanStep, SeedProposal, Workspace,
 } from '@cockpit/shared'
 import { append } from '../journal.js'
+import { cleanMark } from '../mark.js'
 import { countBehind, defaultBranch, git, listWorktrees } from '../git.js'
 import * as plans from '../plans.js'
 import { pushRefusal } from '../protect.js'
@@ -323,6 +324,7 @@ export async function openPlan(
           ? { provider: 'url', key: slug, title: name, status: 'open', url: input.ticketUrl }
           : null,
         review: null,
+        mark: null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       })
@@ -1146,6 +1148,7 @@ export async function adopt(topicId: string): Promise<{ ok: boolean; detail: str
     setup: 'isolated',
     ticket: f.ticket,
     review: f.review,
+    mark: null,
     createdAt: now,
     updatedAt: now,
   })
@@ -1180,6 +1183,25 @@ export function rename(topicId: string, name: string): void {
   })
   if (!f) throw new Error('unknown topic: ' + topicId)
   append({ type: 'topic.renamed', projectId: f.projectId, payload: { topicId, name: trimmed } })
+}
+
+/**
+ * Where a person says a topic stands, and why: set from its header, kept until
+ * changed. An inferred topic has no record to keep it in, so it is refused
+ * rather than lost at the next reconcile.
+ */
+export function setMark(
+  topicId: string,
+  input: { kind: ConversationMarkKind | null; note: string } | null,
+): { ok: true; mark: ConversationMark | null } | { ok: false; reason: string } {
+  if (!store.get(topicId)) {
+    return registry.getTopic(topicId)
+      ? { ok: false, reason: 'An inferred topic has nowhere to keep a status. Take it over first.' }
+      : { ok: false, reason: 'That topic is gone.' }
+  }
+  const mark = cleanMark(input)
+  store.setMark(topicId, mark)
+  return { ok: true, mark }
 }
 
 /**

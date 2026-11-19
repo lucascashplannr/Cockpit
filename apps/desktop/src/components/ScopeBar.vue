@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { GitBranch, Layers, ShieldCheck } from '@lucide/vue'
+import { GitBranch, Layers, ShieldCheck, StickyNote } from '@lucide/vue'
 import BranchMenu from './BranchMenu.vue'
 import LockChip from './LockChip.vue'
 import ProjectActions from './ProjectActions.vue'
 import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
+import { markIcon } from './agent/mark.js'
 import {
-  activeAgentScope, activeWorkspace, groupMembers, isBranchProtected, onProject, projectNarrowing, projectScopeWorkspaces, scopeLabel,
-  selectedGroupId, selectedTopicGroup, state,
+  activeAgentScope, activeWorkspace, groupMembers, isBranchProtected, MARK_WORDS, onProject, openMarkDialog, openTopicMarkMenu, projectNarrowing,
+  projectScopeWorkspaces, scopeLabel, selectedGroupId, selectedTopicGroup, state,
 } from '../core/store.js'
 
 /**
@@ -130,6 +131,24 @@ const label = computed(() => {
  */
 const offline = computed(() => scope.value?.kind === 'workspace' && !group.value && w.value?.git?.hasRemote === false)
 
+/**
+ * Where you said the topic stands, and why: about the whole topic, so on the
+ * bar that names it rather than over one conversation's composer. Only on the
+ * topic itself; a branch of it is a checkout of its own here.
+ */
+const topicMark = computed(() => {
+  const t = selectedTopicGroup.value?.topic
+  return t?.mark ? { id: t.id, mark: t.mark } : null
+})
+/** Opens under the badge, left edges lined up, rather than at the pointer. */
+function pressTopicMark(e: MouseEvent): void {
+  if (!topicMark.value) return
+  // With no note there is nothing to read: straight to the sheet.
+  if (!topicMark.value.mark.note) return openMarkDialog('topic', topicMark.value.id)
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  openTopicMarkMenu({ x: r.left, y: r.bottom + 6 }, topicMark.value.id)
+}
+
 /* §8 — the servers are not on this line. They were a dot and a port here, a
  * fact beside a switch that already said the same thing in green, three inches
  * to the right. The switch now carries the one dot, and the port became the
@@ -180,6 +199,23 @@ const offline = computed(() => scope.value?.kind === 'workspace' && !group.value
       </span>
     </span>
 
+    <!-- Your word on the topic, right beside its name: the status, and a
+         note glyph when there is a note. The note itself is in the popup
+         the badge opens, where it can also be changed. -->
+    <button
+      v-if="topicMark"
+      class="tmark"
+      :class="'k-' + (topicMark.mark.kind ?? 'note')"
+      :title="topicMark.mark.note || 'Add a note'"
+      @click="pressTopicMark"
+    >
+      <span class="tpill">
+        <component :is="markIcon(topicMark.mark.kind)" />
+        <span class="tw">{{ topicMark.mark.kind ? MARK_WORDS[topicMark.mark.kind] : 'Note' }}</span>
+        <span v-if="topicMark.mark.kind && topicMark.mark.note" class="tn"><StickyNote /></span>
+      </span>
+    </button>
+
     <!-- §7 — an agent's claim on what is named to the left. Outside the dim
          run below, though it was the last word of it: that run clips, and a
          popover cannot hang from inside a box that clips. -->
@@ -189,8 +225,10 @@ const offline = computed(() => scope.value?.kind === 'workspace' && !group.value
          than wraps: the bar keeps its line whatever the window does, and
          what falls off the end is by construction the least of it. Each
          one that can be acted on opens the tool that says more. -->
-    <span class="stats">
-      <!-- How many repositories the word to the left stands for. -->
+    <span v-if="narrowing?.narrowed || (w.runtime && !w.runtime.portable)" class="stats">
+      <!-- Only when the project was narrowed: which of its repositories
+           the word to the left stands for. The plain count went; it was one
+           more fact on a bar that had too many. -->
       <span
         v-if="narrowing?.narrowed"
         class="stat num"
@@ -198,14 +236,6 @@ const offline = computed(() => scope.value?.kind === 'workspace' && !group.value
       >
         <Layers class="sm si" />
         <span class="v">{{ covered.length }} of {{ narrowing.every.length }}</span>
-      </span>
-      <span
-        v-else-if="covered.length > 1"
-        class="stat num"
-        :title="covered.length + ' repositories in this scope'"
-      >
-        <Layers class="sm si" />
-        <span class="v">{{ covered.length }}</span>
       </span>
 
       <!-- No uncommitted-changes count here: the row in the list carries
@@ -315,6 +345,52 @@ const offline = computed(() => scope.value?.kind === 'workspace' && !group.value
   overflow: hidden;
 }
 .stats > * { flex: none; }
+
+/* The topic's status: the first thing on the bar to give its width, clipped
+   rather than drawn over the verbs. Tinted in the kind's colour, as on the
+   conversation's line; only To review and Done have one. */
+.tmark {
+  -webkit-app-region: no-drag;
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  --k: var(--text-muted);
+}
+.tmark.k-review { --k: var(--accent); }
+.tmark.k-done { --k: var(--ok); }
+.tmark.k-brainstorm { --k: var(--info); }
+.tpill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px 0 7px;
+  border-radius: 999px;
+  font-weight: 600;
+  color: var(--k);
+  background: color-mix(in srgb, var(--k) 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--k) 30%, transparent);
+  transition: box-shadow var(--dur-1) var(--ease-soft);
+}
+.tpill .lucide { width: 12px; height: 12px; }
+/* There is a note: its glyph after the word, set off by a hairline. */
+.tn {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, var(--k) 35%, transparent);
+  height: 12px;
+}
+.tmark:hover .tpill { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--k) 60%, transparent); }
+/* In a narrow bar the word goes, leaving the kind's icon in its ring. */
+@container (max-width: 820px) {
+  .tw { display: none; }
+  .tpill { padding: 0 5px; }
+}
 
 /* The only thing on the row that wants to be wide. */
 .grow { flex: 1 1 0; min-width: 0; }
