@@ -649,29 +649,28 @@ function sectionBefore(i: number): boolean {
    it without either tile having to: what is inside is the topic's, what is
    outside is the project's own. It takes the rule's place between groups.
 
-   Only while it is open. Folded, a frame holds one tile and nothing else, and
-   a run of folded topics became a stack of cards that read as buttons and
-   looked nothing like the repositories under them. Folded, a topic is a
-   plain tile, and the topics sit together with no rule between them. */
-.list.narrow .group.topic:not(.open) + .group.topic:not(.open) { margin-top: 2px; padding-top: 0; }
+   Folded too: a folded topic keeps its frame around its one tile, so open or
+   not, a topic or a group reads as the same kind of thing on the strip. The
+   tiles meet the frame's sides and keep a hair of air above and below. */
 .list.narrow .group.topic + .group.topic::before { display: none; }
-.list.narrow .group.topic.open {
-  margin: 0 -3px;
-  padding: 2px;
+.list.narrow .group.topic {
+  margin: 0;
+  padding: 1px 0;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
 }
-.list.narrow .group + .group.topic.open,
-.list.narrow .group.topic.open + .group.topic { margin-top: 8px; padding-top: 2px; }
-.list.narrow .group + .group.topic.open::before { display: none; }
+.list.narrow .group + .group.topic,
+.list.narrow .group.topic + .group.topic { margin-top: 8px; padding-top: 1px; }
+.list.narrow .group + .group.topic::before { display: none; }
+.list.narrow .group.topic .group-tile { border-radius: calc(var(--radius) - 2px); }
 .list.narrow .group.topic.open .group-tile {
-  border-radius: calc(var(--radius) - 3px) calc(var(--radius) - 3px) var(--radius-sm) var(--radius-sm);
+  border-radius: calc(var(--radius) - 2px) calc(var(--radius) - 2px) var(--radius-sm) var(--radius-sm);
 }
 /* Inside the frame a row's tint runs wall to wall, so it is square where it
    meets a neighbour and takes the frame's own curve only at the foot. */
 .list.narrow .group.topic.open .row { border-radius: 0; }
 .list.narrow .group.topic.open .row:last-child {
-  border-radius: 0 0 calc(var(--radius) - 3px) calc(var(--radius) - 3px);
+  border-radius: 0 0 calc(var(--radius) - 2px) calc(var(--radius) - 2px);
 }
 /* The head's own floor, under the rows it holds. */
 .list.narrow .group.topic.open .group-tile:not(:last-child) {
@@ -684,12 +683,12 @@ function sectionBefore(i: number): boolean {
    project's own repositories begin, the place the list says "not in a topic".
    A group of repositories is drawn as a topic is, but it is below that line,
    not above it, and the repositories after it are on its side of it too. */
-.list.narrow .group.base:not(.section) { margin-top: 6px; padding-top: 0; }
+.list.narrow .group.base:not(.section):not(.topic) { margin-top: 6px; padding-top: 0; }
 .list.narrow .group.base:not(.section)::before { display: none; }
 .list.narrow .group.topic + .group.base.section { margin-top: 10px; padding-top: 10px; }
-.list.narrow .group.topic + .group.base.section::before { display: block; }
-.list.narrow .group.topic + .group.base.section.open { margin-top: 19px; padding-top: 2px; }
-.list.narrow .group.topic + .group.base.section.open::before { top: -10px; left: 15px; right: 15px; }
+.list.narrow .group.topic + .group.base.section::before { display: block; left: 0; right: 0; }
+.list.narrow .group.topic + .group.topic.base.section { margin-top: 19px; padding-top: 1px; }
+.list.narrow .group.topic + .group.topic.base.section::before { top: -10px; left: -1px; right: -1px; }
 
 /* The topic's header as a tile: the row's own box on end, in the header's
    weight, so a topic and the branches under it are told apart by the same
