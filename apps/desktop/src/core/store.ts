@@ -2294,11 +2294,17 @@ export interface AgentActivity {
    */
   own: number
   waiting: number
+  /**
+   * Of the waiting ones, those stopped on you: a question to answer or a tool
+   * to allow. They are not news to read later, so a badge draws them as the
+   * hand where the working star goes, and counts only the rest.
+   */
+  asking: number
   /** The loudest of the waiting ones, which is the colour the badge takes. */
   attention: Attention
 }
 
-const NO_ACTIVITY: AgentActivity = { running: 0, own: 0, waiting: 0, attention: 'none' }
+const NO_ACTIVITY: AgentActivity = { running: 0, own: 0, waiting: 0, asking: 0, attention: 'none' }
 
 /**
  * §12's "where am I", answered for everything the shell draws at once: the
@@ -2313,11 +2319,12 @@ const NO_ACTIVITY: AgentActivity = { running: 0, own: 0, waiting: 0, attention: 
 export const agentActivity = computed(() => {
   const map = new Map<string, AgentActivity>()
   const bump = (key: string, running: boolean, own: boolean, att: Attention) => {
-    const a = map.get(key) ?? { running: 0, own: 0, waiting: 0, attention: 'none' as Attention }
+    const a = map.get(key) ?? { running: 0, own: 0, waiting: 0, asking: 0, attention: 'none' as Attention }
     if (running) a.running++
     if (running && own) a.own++
     if (att !== 'none') {
       a.waiting++
+      if (att === 'approval') a.asking++
       if (ATTENTION_RANK[att] > ATTENTION_RANK[a.attention]) a.attention = att
     }
     map.set(key, a)
