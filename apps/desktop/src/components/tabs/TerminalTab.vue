@@ -133,6 +133,24 @@ function onKey(e: KeyboardEvent): boolean {
   // The window's view chord, not the shell's: left to bubble, or xterm turns
   // ⌘⌥← into an escape sequence and the prompt gets it instead of the ladder.
   if (e.metaKey && e.altKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) return false
+  if (!isMac && e.ctrlKey && !e.altKey && !e.metaKey) {
+    const k = e.key.toLowerCase()
+    // Ctrl+V and Ctrl+Shift+V paste, as in Windows Terminal. Without this,
+    // xterm sends ^V to the shell. Returning false lets the browser's own
+    // paste reach xterm's textarea, so bracketed paste still applies.
+    if (k === 'v') return false
+    // Ctrl+C copies when text is selected, and is ^C otherwise.
+    // Ctrl+Shift+C always copies.
+    if (k === 'c' && (e.shiftKey || term.value?.hasSelection())) {
+      if (e.type === 'keydown') {
+        const text = term.value?.getSelection() ?? ''
+        if (text) void navigator.clipboard.writeText(text)
+        if (!e.shiftKey) term.value?.clearSelection()
+      }
+      e.preventDefault()
+      return false
+    }
+  }
   if (!meta || e.altKey) return true
   if (e.key.toLowerCase() === 'f') {
     if (e.type === 'keydown') openFind()

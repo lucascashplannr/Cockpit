@@ -65,6 +65,19 @@ function defaultShell(): string {
   return process.env.SHELL ?? '/bin/zsh'
 }
 
+/**
+ * How each shell is started without its banner. A POSIX shell starts as a login
+ * shell, so it loads the user's aliases, PATH and prompt (§2). PowerShell has
+ * `-NoLogo`. cmd.exe has no switch that hides "Microsoft Windows [Version …]",
+ * so it runs `cls` before showing its first prompt.
+ */
+function shellArgs(file: string): string[] {
+  const name = file.replace(/^.*[\\/]/, '').toLowerCase().replace(/\.exe$/, '')
+  if (name === 'cmd') return ['/k', 'cls']
+  if (name === 'powershell' || name === 'pwsh') return ['-NoLogo']
+  return ['-l']
+}
+
 /** Where a shell opens: one checkout, or the root folder of a project. */
 export type TerminalTarget = { workspaceId?: string; projectId?: string }
 
@@ -101,9 +114,8 @@ export function open(
   const id = newId('term_')
   const file = shell ?? defaultShell()
 
-  // Login shell: the user's aliases, PATH and prompt must be there (§2).
   const integration = integrationEnv(file, process.env)
-  const p = mod.spawn(file, ['-l'], {
+  const p = mod.spawn(file, shellArgs(file), {
     name: 'xterm-256color',
     cols,
     rows,
