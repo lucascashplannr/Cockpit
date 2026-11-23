@@ -1,19 +1,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  Archive, CirclePlay, CircleStop, Copy, FileCode, FolderInput, FolderOutput, FolderOpen, FolderPen, FolderPlus,
+  Archive, CirclePlay, CircleStop, Copy, FileCode, FolderGit2, FolderInput, FolderOutput, FolderOpen, FolderPen, FolderPlus,
   Info, MessageSquarePlus, Pause, Play, Settings, ShieldCheck, ShieldOff, SlidersHorizontal, Stamp, Trash2, Unlink,
 } from '@lucide/vue'
 import { attentionIcon } from './agent/attention.js'
 import { markIcon } from './agent/mark.js'
 import {
-  adoptTopic, attentionOf, askDeleteTopic, askUngroup, askUntrackRepo, client, closeTopic, groupRepos, guard, isBranchProtected, isBusy, isRepoGroup,
-  markThreadRead, markThreadUnread, newConversationOn, openDeclarations, openMarkDialog, readThreadOn, revealLabel, setBranchProtected, startTopic, state,
+  addRepoTo, adoptTopic, attentionOf, askDeleteTopic, askTrashProject, askUngroup, askUntrackProject, askUntrackRepo, client, closeTopic, groupRepos, guard, isBranchProtected, isBusy, isRepoGroup,
+  markThreadRead, markThreadUnread, newConversationOn, openDeclarations, openProjectDeclarations, openMarkDialog, readThreadOn, revealLabel, setBranchProtected, startTopic, state,
   stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
- * The right-click menu on a row of the list — a repository, a branch, a topic.
+ * The right-click menu on a row of the list — a repository, a branch, a topic —
+ * and on a project's tile in the rail.
  *
  * The same verbs as the bars and the palette, reachable from the thing itself
  * without selecting it first. Same `.menu` look as the overflow menu, so it is
@@ -33,6 +34,22 @@ const ws = computed(() =>
 const topic = computed(() =>
   m.value?.target.kind === 'topic'
     ? (state.topics.find((f) => f.id === m.value!.target.id) ?? null)
+    : null,
+)
+
+/** A project's rail tile. */
+const project = computed(() =>
+  m.value?.target.kind === 'project'
+    ? (state.projects.find((p) => p.id === m.value!.target.id) ?? null)
+    : null,
+)
+/**
+ * The project's own folder, when Cockpit tracks it as a checkout: the editor
+ * and Finder open a checkout, so without one those two are not offered.
+ */
+const projectRoot = computed(() =>
+  project.value
+    ? (state.workspaces.find((w) => w.projectId === project.value!.id && w.path === project.value!.root) ?? null)
     : null,
 )
 
@@ -63,7 +80,9 @@ const readThread = computed(() =>
     ? readThreadOn({ kind: 'workspace', workspaceId: ws.value.id })
     : topic.value
       ? readThreadOn({ kind: 'topic', topicId: topic.value.id })
-      : null,
+      : project.value
+        ? readThreadOn({ kind: 'project', projectId: project.value.id })
+        : null,
 )
 
 /**
@@ -178,7 +197,7 @@ async function copyPath(path: string) {
 
 <template>
   <div
-    v-if="m && (ws || topic || conv)"
+    v-if="m && (ws || topic || conv || project)"
     ref="root"
     class="menu ctx"
     role="menu"
@@ -333,6 +352,50 @@ async function copyPath(path: string) {
           <Trash2 /> Delete the topic…
         </button>
       </template>
+    </template>
+
+    <!-- A project's rail tile: its verbs, without having to stand on it first. -->
+    <template v-else-if="project">
+      <button @click="act(() => newConversationOn({ kind: 'project', projectId: project!.id }))">
+        <MessageSquarePlus /> New conversation on this project
+      </button>
+      <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
+        <component :is="attentionIcon('reply')" /> Mark as unread
+      </button>
+      <span class="rule" />
+      <button @click="act(() => addRepoTo(project!.id))">
+        <FolderGit2 /> Add a repository…
+      </button>
+      <button @click="act(() => openProjectDeclarations(project!.id))">
+        <SlidersHorizontal /> Manage commands &amp; servers
+      </button>
+      <span class="rule" />
+      <template v-if="projectRoot">
+        <button
+          @click="act(() => guard(() => client.call('workspace.openIn', { workspaceId: projectRoot!.id, target: 'ide' })))"
+        >
+          <FileCode /> Open in the editor
+        </button>
+        <button
+          @click="act(() => guard(() => client.call('workspace.openIn', { workspaceId: projectRoot!.id, target: 'finder' })))"
+        >
+          <FolderOpen /> {{ revealLabel }}
+        </button>
+      </template>
+      <button @click="act(() => copyPath(project!.root))">
+        <Copy /> Copy the path
+      </button>
+      <span class="rule" />
+      <button @click="act(() => (state.editingProjectId = project!.id))">
+        <Settings /> Project settings…
+      </button>
+      <span class="rule" />
+      <button class="warn" @click="act(() => askUntrackProject(project!.id))">
+        <Unlink /> Untrack the project…
+      </button>
+      <button class="warn" @click="act(() => askTrashProject(project!.id))">
+        <Trash2 /> Move to the Trash…
+      </button>
     </template>
 
     <!-- A conversation: what a topic's menu says about it, for one thread. -->

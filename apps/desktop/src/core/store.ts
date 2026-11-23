@@ -19,8 +19,8 @@ import type { ConnectionState } from './client.js'
 
 /** A row of the list someone can right-click or open the details of. */
 export type ListTarget = { kind: 'workspace'; id: string } | { kind: 'topic'; id: string }
-/** What a right-click menu can be about: a row of the list, or a conversation (its tab, its History row). */
-export type MenuTarget = ListTarget | { kind: 'conversation'; id: string }
+/** What a right-click menu can be about: a row of the list, a conversation (its tab, its History row), or a project's rail tile. */
+export type MenuTarget = ListTarget | { kind: 'conversation'; id: string } | { kind: 'project'; id: string }
 
 /** What the folder picker is being opened for — it is not always a project. */
 export interface PickFolderOptions {

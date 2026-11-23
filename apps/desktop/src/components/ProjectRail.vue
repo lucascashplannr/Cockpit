@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { Activity, Asterisk, Hand, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
 import {
-  activityFor, client, guard, layout, newProject, refreshEverything, onProject, pressProject, projectMark, serviceStale, state,
+  activityFor, client, guard, layout, newProject, openContextMenu, refreshEverything, onProject, pressProject, projectMark, serviceStale, state,
 } from '../core/store.js'
 
 /**
@@ -88,7 +88,7 @@ function tileTitle(name: string, root: string, projectId: string): string {
   if (projectId === state.activeProjectId) {
     if (!onProject.value) lines.push('Click to stand on the whole project')
   }
-  lines.push('Right-click for settings')
+  lines.push('Right-click for more')
   return lines.filter(Boolean).join('\n')
 }
 </script>
@@ -100,10 +100,10 @@ function tileTitle(name: string, root: string, projectId: string): string {
         v-for="p in projects"
         :key="p.id"
         class="tile"
-        :class="{ active: p.id === state.activeProjectId }"
+        :class="{ active: p.id === state.activeProjectId, menued: state.contextMenu?.target.kind === 'project' && state.contextMenu.target.id === p.id }"
         :title="tileTitle(p.name, p.root, p.id)"
         @click="pick(p.id)"
-        @contextmenu.prevent="state.editingProjectId = p.id"
+        @contextmenu.prevent="openContextMenu($event, { kind: 'project', id: p.id })"
       >
         <!-- Its logo or its initials, as set in its settings; two letters of its name otherwise. -->
         <img v-if="p.settings.logo" class="logo" :src="p.settings.logo" alt="" />
@@ -253,7 +253,8 @@ function tileTitle(name: string, root: string, projectId: string): string {
     border-color var(--dur-2) var(--ease),
     transform var(--dur-1) var(--ease);
 }
-.tile:hover { background: var(--panel-raised); border-color: var(--line-strong); color: var(--text); }
+.tile:hover,
+.tile.menued { background: var(--panel-raised); border-color: var(--line-strong); color: var(--text); }
 .tile:active { transform: scale(0.94); }
 
 .tiles {
