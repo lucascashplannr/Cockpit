@@ -204,5 +204,6 @@ onBeforeUnmount(() => {
 .chev-r { width: 12px; height: 12px; flex: none; }
 .item .chev-r { color: var(--text-dim); }
 
-.rule { height: 1px; margin: 4px 6px; background: var(--line); }
+/* Wall to wall, through the menu's 4px padding, as every menu's rules run. */
+.rule { height: 1px; margin: 4px -4px; background: var(--line); }
 </style>

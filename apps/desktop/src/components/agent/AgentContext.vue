@@ -688,8 +688,7 @@ const title = computed(
 .val.bad { color: var(--danger); }
 .chev { width: 12px; height: 12px; flex: none; color: var(--text-dim); }
 /* Edge to edge: the panels' own padding is 5px, and a rule is not content. */
-/* `.ctx` first: base.css's `.menu .rule` insets every menu's rule by 2px and
-   would win over a bare `.rule` here. */
+/* `.ctx` first: base.css's `.menu .rule` would win over a bare `.rule` here. */
 .ctx .rule { display: block; flex: none; height: 1px; margin: 5px -5px; background: var(--line-overlay); }
 .foot { margin: 4px 10px 3px; font-size: 10.5px; color: var(--text-dim); }
 

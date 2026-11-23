@@ -2,13 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Archive, CirclePlay, CircleStop, Copy, FileCode, FolderGit2, FolderInput, FolderOutput, FolderOpen, FolderPen, FolderPlus,
-  Info, MessageSquarePlus, Pause, Play, Settings, ShieldCheck, ShieldOff, SlidersHorizontal, Stamp, Trash2, Unlink,
+  GitBranch, Info, Layers, MessageSquarePlus, PenLine, Settings, ShieldCheck, ShieldOff, SlidersHorizontal, Stamp, Trash2, Unlink,
 } from '@lucide/vue'
 import { attentionIcon } from './agent/attention.js'
 import { markIcon } from './agent/mark.js'
 import {
   addRepoTo, adoptTopic, attentionOf, askDeleteTopic, askTrashProject, askUngroup, askUntrackProject, askUntrackRepo, client, closeTopic, groupRepos, guard, isBranchProtected, isBusy, isRepoGroup,
-  markThreadRead, markThreadUnread, newConversationOn, openDeclarations, openProjectDeclarations, openMarkDialog, readThreadOn, revealLabel, setBranchProtected, startTopic, state,
+  markThreadRead, markThreadUnread, newConversationOn, openDeclarations, openProjectDeclarations, openMarkDialog, readThreadOn, revealLabel, selectProject, setBranchProtected, startTopic, state,
   stopTopic, toast, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
@@ -193,9 +193,28 @@ async function copyPath(path: string) {
     toast('error', 'could not copy the path')
   }
 }
+
+/** A topic is one branch name across every repository it spans. */
+async function copyBranch(name: string) {
+  try {
+    await navigator.clipboard.writeText(name)
+    toast('info', 'Branch name copied', { icon: 'copy', lines: [name] })
+  } catch {
+    toast('error', 'could not copy the branch name')
+  }
+}
+
+/** New topic opens on the active project, so the tile's project becomes it first. */
+function newTopicOn(projectId: string) {
+  if (state.activeProjectId !== projectId) selectProject(projectId)
+  state.topicDialogOpen = true
+}
 </script>
 
 <template>
+  <!-- Every target reads in the same order, parted by hairlines:
+       talk (a conversation, read or unread) · act on it · what it is · end it.
+       A group that would be empty is not drawn, and neither is its rule. -->
   <div
     v-if="m && (ws || topic || conv || project)"
     ref="root"
@@ -206,15 +225,12 @@ async function copyPath(path: string) {
   >
     <template v-if="group">
       <button @click="act(() => newConversationOn({ kind: 'workspace', workspaceId: group!.id }))">
-        <MessageSquarePlus /> New conversation on this group
+        <MessageSquarePlus /> New conversation
       </button>
       <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
         <component :is="attentionIcon('reply')" /> Mark as unread
       </button>
       <span class="rule" />
-      <button @click="act(() => (state.groupDialog = { projectId: group!.projectId, groupId: group!.id, pick: [] }))">
-        <FolderPen /> Edit the group…
-      </button>
       <button
         @click="act(() => guard(() => client.call('workspace.openIn', { workspaceId: group!.id, target: 'ide' })))"
       >
@@ -229,31 +245,29 @@ async function copyPath(path: string) {
         <Copy /> Copy the path
       </button>
       <span class="rule" />
-      <button class="warn" @click="act(() => askUngroup(group!.id))">
+      <button @click="act(() => (state.groupDialog = { projectId: group!.projectId, groupId: group!.id, pick: [] }))">
+        <FolderPen /> Edit the group…
+      </button>
+      <!-- The repositories move back out; nothing is lost, so it is not red. -->
+      <button @click="act(() => askUngroup(group!.id))">
         <FolderOutput /> Ungroup…
       </button>
     </template>
 
     <template v-else-if="ws">
       <button @click="act(() => newConversationOn({ kind: 'workspace', workspaceId: ws!.id }))">
-        <MessageSquarePlus /> New conversation here
+        <MessageSquarePlus /> New conversation
       </button>
       <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
         <component :is="attentionIcon('reply')" /> Mark as unread
       </button>
-      <!-- §8 — on the repositories of the project, not on a branch's
-           worktree: a declaration belongs to the repository, and every
-           worktree of it already runs what the repository declares. -->
-      <button
-        v-if="ws.kind === 'main' && ws.repoName"
-        @click="act(() => openDeclarations(ws!.repoName))"
-      >
-        <SlidersHorizontal /> Manage commands &amp; servers
-      </button>
-      <button v-if="ws.runtime" @click="act(() => toggleWorkspaceRuntime(ws!))">
-        <component :is="serverRunning ? CircleStop : CirclePlay" />
-        {{ serverRunning ? 'Stop the servers' : 'Start the servers' }}
-      </button>
+      <template v-if="ws.runtime">
+        <span class="rule" />
+        <button @click="act(() => toggleWorkspaceRuntime(ws!))">
+          <component :is="serverRunning ? CircleStop : CirclePlay" />
+          {{ serverRunning ? 'Stop the servers' : 'Start the servers' }}
+        </button>
+      </template>
       <span class="rule" />
       <button
         @click="act(() => guard(() => client.call('workspace.openIn', { workspaceId: ws!.id, target: 'ide' })))"
@@ -273,15 +287,17 @@ async function copyPath(path: string) {
         <Info /> Details…
       </button>
       <template v-if="repo">
-        <span class="rule" />
+        <!-- §8 — on the repositories of the project, not on a branch's
+             worktree: a declaration belongs to the repository, and every
+             worktree of it already runs what the repository declares. -->
+        <button @click="act(() => openDeclarations(repo!.repoName))">
+          <SlidersHorizontal /> Commands &amp; servers…
+        </button>
         <!-- §16 — the one rule set per repository. Its patterns (`release/*`)
              are written out in project settings, a click further. -->
         <button v-if="base" @click="act(() => setBranchProtected(repo!.id, base!, !baseProtected))">
           <component :is="baseProtected ? ShieldOff : ShieldCheck" />
           {{ baseProtected ? 'Unprotect' : 'Protect' }} {{ base }}
-        </button>
-        <button @click="act(() => (state.editingProjectId = repo!.projectId))">
-          <Settings /> Project settings…
         </button>
         <template v-if="!isProjectRoot">
           <!-- §4 — a group is a folder, so each of these moves this one. -->
@@ -293,15 +309,16 @@ async function copyPath(path: string) {
           >
             <FolderInput /> Move to {{ g.name }}
           </button>
-          <button @click="act(() => (state.groupDialog = { projectId: repo!.projectId, groupId: null, pick: [repo!.id] }))">
-            <FolderPlus /> New group…
-          </button>
           <button v-if="groupNow" @click="act(() => groupRepos(repo!.projectId, [repo!.id], null))">
             <FolderOutput /> Out of {{ groupNow.name }}
           </button>
+          <button @click="act(() => (state.groupDialog = { projectId: repo!.projectId, groupId: null, pick: [repo!.id] }))">
+            <FolderPlus /> New group…
+          </button>
           <span class="rule" />
-          <button class="warn" @click="act(() => askUntrackRepo(repo!.projectId, repo!.id))">
-            <Unlink /> Untrack the repository…
+          <!-- Cockpit forgets it; every file stays. Not red: nothing is lost. -->
+          <button @click="act(() => askUntrackRepo(repo!.projectId, repo!.id))">
+            <Unlink /> Remove from Cockpit…
           </button>
         </template>
       </template>
@@ -309,45 +326,51 @@ async function copyPath(path: string) {
 
     <template v-else-if="topic">
       <button @click="act(() => newConversationOn({ kind: 'topic', topicId: topic!.id }))">
-        <MessageSquarePlus /> New conversation on this topic
+        <MessageSquarePlus /> New conversation
       </button>
       <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
         <component :is="attentionIcon('reply')" /> Mark as unread
       </button>
-      <!-- Where you say it stands: the conversation's menu, at the same spot. -->
-      <button v-if="!topic.derived" @click="act(() => openMarkDialog('topic', topic!.id))">
-        <component :is="markIcon(topic.mark?.kind ?? 'review')" /> {{ topic.mark ? 'Change the status…' : 'Set a status…' }}
-      </button>
-      <button
-        v-if="topicOwned"
-        @click="act(() => (topic!.state === 'running' ? stopTopic(topic!.id) : startTopic(topic!.id)))"
-      >
-        <component :is="topic.state === 'running' ? Pause : Play" />
-        {{ topic.state === 'running' ? 'Stop the servers' : 'Start the servers' }}
-      </button>
+      <template v-if="!topic.derived">
+        <span class="rule" />
+        <button
+          v-if="topicOwned"
+          @click="act(() => (topic!.state === 'running' ? stopTopic(topic!.id) : startTopic(topic!.id)))"
+        >
+          <component :is="topic.state === 'running' ? CircleStop : CirclePlay" />
+          {{ topic.state === 'running' ? 'Stop the servers' : 'Start the servers' }}
+        </button>
+        <!-- Where you say it stands: the conversation's menu, at the same spot. -->
+        <button v-if="!topic.derived" @click="act(() => openMarkDialog('topic', topic!.id))">
+          <component :is="markIcon(topic.mark?.kind ?? 'review')" /> {{ topic.mark ? 'Change the status…' : 'Set a status…' }}
+        </button>
+      </template>
       <span class="rule" />
+      <!-- The details sheet is where a topic is renamed, so that is what it is
+           called on one that can be; an inferred one only has details. -->
+      <button @click="act(() => (state.detailsFor = { kind: 'topic', id: topic!.id }))">
+        <component :is="topic.derived ? Info : PenLine" /> {{ topic.derived ? 'Details…' : 'Edit the topic…' }}
+      </button>
+      <button @click="act(() => copyBranch(topic!.slug))">
+        <GitBranch /> Copy the branch name
+      </button>
       <!-- The gap this closes: an inferred topic had no verb but a conversation
            and a look, because every other one begins by reading a record that
            was never written. This writes it, and nothing else. -->
       <button
         v-if="adoptable"
-        title="Record that these branches are one piece of work. Nothing on disk moves — the topic simply gains a name, a state, and the close and delete verbs."
+        title="Record that these branches are one piece of work. Nothing on disk moves: the topic simply gains a name, a state, and Close and Delete."
         @click="act(() => adoptTopic(topic!.id))"
       >
         <Stamp /> Take over this topic
       </button>
-      <button @click="act(() => (state.detailsFor = { kind: 'topic', id: topic!.id }))">
-        <Info /> Details…
-      </button>
       <template v-if="topicOwned">
         <span class="rule" />
-        <!-- Refuses over unpushed work, and removing the checkouts is a plan
-             of its own that is shown before anything happens. -->
-        <button class="warn" @click="act(() => closeTopic(topic!.id, true))">
+        <!-- Close keeps the branch and refuses over unpushed work, so it is
+             not red; Delete discards it (§16), and is. -->
+        <button @click="act(() => closeTopic(topic!.id, true))">
           <Archive /> Close the topic…
         </button>
-        <!-- The other half of §16: close keeps, delete discards. Without it
-             here, a topic you simply do not want had no verb but the palette. -->
         <button class="warn" @click="act(() => askDeleteTopic(topic!.id))">
           <Trash2 /> Delete the topic…
         </button>
@@ -357,17 +380,17 @@ async function copyPath(path: string) {
     <!-- A project's rail tile: its verbs, without having to stand on it first. -->
     <template v-else-if="project">
       <button @click="act(() => newConversationOn({ kind: 'project', projectId: project!.id }))">
-        <MessageSquarePlus /> New conversation on this project
+        <MessageSquarePlus /> New conversation
       </button>
       <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
         <component :is="attentionIcon('reply')" /> Mark as unread
       </button>
       <span class="rule" />
+      <button @click="act(() => newTopicOn(project!.id))">
+        <Layers /> New topic…
+      </button>
       <button @click="act(() => addRepoTo(project!.id))">
         <FolderGit2 /> Add a repository…
-      </button>
-      <button @click="act(() => openProjectDeclarations(project!.id))">
-        <SlidersHorizontal /> Manage commands &amp; servers
       </button>
       <span class="rule" />
       <template v-if="projectRoot">
@@ -389,9 +412,12 @@ async function copyPath(path: string) {
       <button @click="act(() => (state.editingProjectId = project!.id))">
         <Settings /> Project settings…
       </button>
+      <button @click="act(() => openProjectDeclarations(project!.id))">
+        <SlidersHorizontal /> Commands &amp; servers…
+      </button>
       <span class="rule" />
-      <button class="warn" @click="act(() => askUntrackProject(project!.id))">
-        <Unlink /> Untrack the project…
+      <button @click="act(() => askUntrackProject(project!.id))">
+        <Unlink /> Remove from Cockpit…
       </button>
       <button class="warn" @click="act(() => askTrashProject(project!.id))">
         <Trash2 /> Move to the Trash…

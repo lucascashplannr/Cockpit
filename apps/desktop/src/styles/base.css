@@ -552,7 +552,9 @@ input[type='checkbox']:indeterminate::after {
 /* The keystroke that does the same thing, at the right edge. A menu is where
    you find out a verb has one. */
 .menu button .kb { margin-left: auto; padding-left: 14px; font-size: 11px; color: var(--text-dim); }
-.menu .rule { flex: none; height: 1px; margin: 4px 2px; background: var(--line-overlay); }
+/* Wall to wall, through the menu's 5px padding: a rule parts the menu, it is not
+   one more row inside it. A menu with other padding sets its own margin. */
+.menu .rule { flex: none; height: 1px; margin: 4px -5px; background: var(--line-overlay); }
 
 /* A separator separates two things. Menu items are `v-if`-heavy — a verb moves
    to the bar, a capability is absent (§3.9) — so the item between two rules can

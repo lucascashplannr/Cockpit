@@ -4436,10 +4436,10 @@ export function askUntrackProject(projectId: string): void {
   const proj = state.projects.find((p) => p.id === projectId)
   if (!proj) return
   state.pendingConfirm = {
-    title: 'Untrack ' + proj.name + '?',
+    title: 'Remove ' + proj.name + ' from Cockpit?',
     body: ['Cockpit forgets this project. Every file stays where it is, and you can add it back any time.'],
-    verb: 'Untrack',
-    done: proj.name + ' untracked',
+    verb: 'Remove',
+    done: proj.name + ' removed from Cockpit',
     danger: false,
     run: () => forgetProject(projectId),
   }
@@ -4471,9 +4471,9 @@ export function askUntrackRepo(projectId: string, workspaceId: string): void {
   if (running) why.push((running === 1 ? 'A server is' : running + ' servers are') + ' still up. Stop ' + (running === 1 ? 'it' : 'them') + ' first.')
   if (why.length) {
     state.pendingConfirm = {
-      title: repo.repoName + ' can’t be untracked yet',
+      title: repo.repoName + ' can’t be removed yet',
       body: why,
-      verb: 'Untrack',
+      verb: 'Remove',
       cancel: 'Close',
       done: '',
       danger: false,
@@ -4485,13 +4485,13 @@ export function askUntrackRepo(projectId: string, workspaceId: string): void {
   const body = [
     'Cockpit forgets this repository' +
       (loose ? ' and its ' + (loose === 1 ? 'other branch' : loose + ' other branches') : '') +
-      '. Every file stays where it is, and you can track it again any time.',
+      '. Every file stays where it is, and you can add it back any time.',
   ]
   state.pendingConfirm = {
-    title: 'Untrack ' + repo.repoName + '?',
+    title: 'Remove ' + repo.repoName + ' from Cockpit?',
     body,
-    verb: 'Untrack',
-    done: repo.repoName + ' untracked',
+    verb: 'Remove',
+    done: repo.repoName + ' removed from Cockpit',
     danger: false,
     run: async () => {
       const ok = await guard(() => client.call('project.untrackRepo', { projectId, workspaceId }))
@@ -4507,7 +4507,7 @@ export function askUntrackRepo(projectId: string, workspaceId: string): void {
 }
 
 export async function trackRepo(projectId: string, path: string): Promise<boolean> {
-  const ok = await guard(() => client.call('project.trackRepo', { projectId, path }), path + ' tracked again')
+  const ok = await guard(() => client.call('project.trackRepo', { projectId, path }), path + ' added back')
   if (!ok) return false
   await refreshProjects()
   return true

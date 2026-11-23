@@ -734,10 +734,10 @@ function buildCommands(lvl: Level): Item[] {
     out.push({
       id: 'proj:settings',
       label: 'Project settings…',
-      hint: project.name + ' — rename, move, untrack',
+      hint: project.name + ': rename, move, remove',
       group: 'Project',
       icon: Settings,
-      keywords: 'rename move untrack',
+      keywords: 'rename move remove untrack',
       run: act(() => {
         state.editingProjectId = project.id
       }),

@@ -123,8 +123,6 @@ onBeforeUnmount(() => {
 
 .tmenu { min-width: 220px; -webkit-app-region: no-drag; }
 .tmenu .w { flex: 1; }
-/* Wall to wall, through the menu's padding, as the status menu's rules run. */
-.tmenu .rule { margin: 4px -5px; }
 .tmenu .n { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .tmenu .tick { color: var(--accent); }
 .tmenu .off .tick { visibility: hidden; }

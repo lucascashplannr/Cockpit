@@ -449,7 +449,7 @@ async function browse() {
               class="icon-btn rowact del"
               :class="{ ghost: isRoot(r.path) }"
               :disabled="busy || isRoot(r.path)"
-              :title="isRoot(r.path) ? '' : 'Untrack. Cockpit forgets it, the files stay.'"
+              :title="isRoot(r.path) ? '' : 'Remove from Cockpit. The files stay.'"
               @click="askUntrackRepo(p.id, r.id)"
             >
               <Trash2 />
@@ -457,7 +457,7 @@ async function browse() {
           </div>
           <div v-for="u in untracked" :key="u" class="lrow off">
             <span class="rn mono">{{ u }}</span>
-            <button class="btn sm" :disabled="busy" title="Track it again" @click="trackRepo(p.id, u)">Track</button>
+            <button class="btn sm" :disabled="busy" title="Add it back" @click="trackRepo(p.id, u)">Add back</button>
           </div>
           <button class="lrow addrow" @click="addRepository">
             <Plus />Add a repository
@@ -548,10 +548,10 @@ async function browse() {
 
         <div class="drow">
           <div class="dtext">
-            <strong>Untrack</strong>
+            <strong>Remove from Cockpit</strong>
             <span>Cockpit forgets it. Files stay put.</span>
           </div>
-          <button class="btn" :disabled="busy" @click="askUntrackProject(p.id)">Untrack</button>
+          <button class="btn" :disabled="busy" @click="askUntrackProject(p.id)">Remove</button>
         </div>
 
         <div class="drow">
