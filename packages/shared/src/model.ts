@@ -762,6 +762,70 @@ export interface TicketRef {
   url: string
 }
 
+/**
+ * §5 — the `tickets` capability as this machine can use it: which tracker the
+ * manifest names, and whether this machine holds a way in. Null from
+ * `tickets.status` when the project has no tickets at all (absent = invisible).
+ */
+export interface TicketsStatus {
+  provider: 'jira'
+  /** `https://<site>.atlassian.net`, without a trailing slash. */
+  site: string
+  /** The Jira project key the list is narrowed to, when the manifest names one. */
+  project: string | null
+  connected: boolean
+  /** The Atlassian account the token answers to, once connected. */
+  email: string | null
+  /** Before connecting: the repository's git email, which usually is that account. */
+  suggestedEmail: string | null
+}
+
+/** Jira's three status categories, which every workflow's statuses fall into. */
+export type TicketPhase = 'todo' | 'doing' | 'done'
+
+/** A ticket as a list shows it. */
+export interface TicketSummary {
+  key: string
+  title: string
+  status: string
+  phase: TicketPhase
+  /** Story, Bug, Task, Sub-task… as the tracker names it. */
+  type: string
+  assignee: string | null
+  url: string
+}
+
+/**
+ * §5 — what an act in Cockpit does to its ticket: create the topic, open its
+ * pull request, merge it. Worked out before the act, shown in its question,
+ * and made once the act went through.
+ */
+export type TicketEvent = 'open' | 'pr' | 'merge'
+
+export interface TicketMove {
+  key: string
+  /** The status it is in now. */
+  from: string
+  /** The status it goes to, or null when it stays where it is (a link only). */
+  to: string | null
+  /** The workflow's transition that gets it there, as Jira names them: by id. */
+  transitionId: string | null
+  /** Pull requests to link on the ticket, filled in once they exist. */
+  links?: { url: string; title: string }[]
+}
+
+/** A ticket as the Ticket tool and the agent read it. */
+export interface TicketDetail extends TicketSummary {
+  priority: string | null
+  labels: string[]
+  /** Converted to Markdown from the tracker's own format. */
+  description: string
+  parent: TicketSummary | null
+  subtasks: TicketSummary[]
+  /** The latest first, at most a few. */
+  comments: { author: string; at: number; body: string }[]
+}
+
 export interface ReviewRef {
   provider: string
   number: number

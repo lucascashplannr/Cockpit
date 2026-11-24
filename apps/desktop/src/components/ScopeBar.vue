@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { GitBranch, Layers, ShieldCheck, StickyNote } from '@lucide/vue'
 import BranchMenu from './BranchMenu.vue'
 import LockChip from './LockChip.vue'
+import TicketChip from './TicketChip.vue'
 import ProjectActions from './ProjectActions.vue'
 import TopicActions from './TopicActions.vue'
 import ViewSwitcher from './ViewSwitcher.vue'
@@ -140,6 +141,15 @@ const topicMark = computed(() => {
   const t = selectedTopicGroup.value?.topic
   return t?.mark ? { id: t.id, mark: t.mark } : null
 })
+/**
+ * §5 — the ticket the topic was made from: on the topic, and on a branch of it,
+ * where the work it asks for is being done.
+ */
+const ticketTopic = computed(() => {
+  const t = selectedTopicGroup.value?.topic ?? state.topics.find((x) => x.id === w.value?.topicId)
+  return t?.ticket?.provider === 'jira' ? t : null
+})
+
 /** Opens under the badge, left edges lined up, rather than at the pointer. */
 function pressTopicMark(e: MouseEvent): void {
   if (!topicMark.value) return
@@ -215,6 +225,9 @@ function pressTopicMark(e: MouseEvent): void {
         <span v-if="topicMark.mark.kind && topicMark.mark.note" class="tn"><StickyNote /></span>
       </span>
     </button>
+
+    <!-- §5 — and the ticket it was made from, beside your word on it. -->
+    <TicketChip v-if="ticketTopic" :key="ticketTopic.id" :topic="ticketTopic" />
 
     <!-- §7 — an agent's claim on what is named to the left. Outside the dim
          run below, though it was the last word of it: that run clips, and a

@@ -130,6 +130,7 @@ export function starterManifest(name: string, repoFolder?: string | null): strin
     '# setup: C1',
     '# runtime: compose',
     '# tickets: { provider: github, repo: owner/name }',
+    '# tickets: { provider: jira, baseUrl: https://you.atlassian.net, project: KEY }',
     '',
   ].join('\n')
 }
@@ -154,6 +155,45 @@ export function slugify(name: string): string {
     .slice(0, 60)
     .replace(/-+$/, '')
   return s || 'topic'
+}
+
+/**
+ * The branch a topic opened from a ticket is on: the key as the tracker writes
+ * it, then the summary. Jira links a branch to its ticket by finding the key in
+ * its name, and finds it in capitals, so the key is not lowered with the rest.
+ * Hostnames and database names slugify it again (`scopedName`, `seed`), so
+ * nothing else sees a capital.
+ */
+export function ticketSlug(key: string, summary: string): string {
+  const k = key.toUpperCase().replace(/[^A-Z0-9-]/g, '')
+  const rest = slugify(summary)
+  if (rest === 'topic' && !summary.trim()) return k
+  return (k + '-' + rest).slice(0, 60).replace(/-+$/, '')
+}
+
+/**
+ * A ticket's move as one line, for the question before it and the toast after:
+ * `CP-583: To Do → In Progress`, `CP-583: the pull request linked`.
+ */
+export function ticketMoveLine(m: { key: string; from: string; to: string | null; links?: unknown[] }): string {
+  const n = m.links?.length ?? 0
+  const linked = n ? (n === 1 ? 'the pull request linked' : n + ' pull requests linked') : ''
+  if (!m.to) return m.key + ': ' + (linked || 'unchanged')
+  return m.key + ': ' + m.from + ' \u2192 ' + m.to + (linked ? ', ' + linked : '')
+}
+
+/**
+ * A ticket named in pasted text: a bare key (`CP-123`), or a Jira link to one,
+ * whether `/browse/CP-123` or a board's `?selectedIssue=CP-123`. Null for
+ * anything else, so a Name field can take it or leave it as a name.
+ */
+export function parseTicketRef(text: string): string | null {
+  const t = text.trim()
+  const bare = /^([A-Z][A-Z0-9_]+-\d+)$/i.exec(t)
+  if (bare) return bare[1]!.toUpperCase()
+  if (!/^https?:\/\//i.test(t)) return null
+  const m = /\/browse\/([A-Z][A-Z0-9_]+-\d+)\b/i.exec(t) ?? /[?&]selectedIssue=([A-Z][A-Z0-9_]+-\d+)\b/i.exec(t)
+  return m ? m[1]!.toUpperCase() : null
 }
 
 /**

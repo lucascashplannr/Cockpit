@@ -7,7 +7,7 @@ import {
 } from '@cockpit/shared'
 import type {
   AgentAnswers, AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
-  Conversation, ConversationMarkKind, LoadoutChoice, PermissionMode, Project, ProjectSettings, ServerBoardRow, ServerPush, SkillWhere, Workspace,
+  Conversation, ConversationMarkKind, LoadoutChoice, PermissionMode, Project, ProjectSettings, ServerBoardRow, ServerPush, SkillWhere, TicketEvent, TicketMove, Workspace,
 } from '@cockpit/shared'
 import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
 import { append, bus, countEvents, forSession, tail, touchedBy } from './journal.js'
@@ -32,6 +32,7 @@ import * as attachments from './attachments.js'
 import * as summary from './summary.js'
 import * as conflictFile from './conflictFile.js'
 import * as review from './review.js'
+import * as tickets from './tickets/index.js'
 import * as topics from './topics/index.js'
 import * as preparing from './topics/preparing.js'
 import * as conflict from './conflict.js'
@@ -380,6 +381,14 @@ async function giveMemory(c: Conversation): Promise<{ ok: true } | { ok: false; 
   return r
 }
 
+/**
+ * What a conversation opens with besides its memory: the cross-repository
+ * map (§7) and, on a topic made from a ticket, the ticket (§5).
+ */
+async function opening(topicId: string | null, paths: string[]): Promise<string> {
+  return [topics.contextBlock(topicId, paths), await tickets.preambleBlock(topicId)].filter(Boolean).join('\n\n')
+}
+
 const handlers: Record<string, Handler> = {
   'core.status': () => status(),
   /**
@@ -668,8 +677,8 @@ const handlers: Record<string, Handler> = {
   'topic.rebase': (p: { topicId: string; base?: string; bases?: Record<string, string> }) =>
     topics.rebasePlan(p.topicId, p.base, p.bases),
   /** §4 — and landing it is the act that makes the work count. */
-  'topic.merge': (p: { topicId: string; push?: boolean; base?: string }) =>
-    topics.mergePlan(p.topicId, { push: p.push, base: p.base }),
+  'topic.merge': (p: { topicId: string; push?: boolean; base?: string; bases?: Record<string, string> }) =>
+    topics.mergePlan(p.topicId, { push: p.push, base: p.base, bases: p.bases }),
   'topic.push': (p: { topicId: string }) => topics.pushPlan(p.topicId),
   'project.push': (p: { workspaceIds: string[] }) => topics.pushPlanForWorkspaces(p.workspaceIds),
   'topic.close': async (p: { topicId: string; removeWorktrees: boolean }) => {
@@ -962,7 +971,7 @@ const handlers: Record<string, Handler> = {
       topicId: r.topicId,
       // The memory is read by the launch itself (it has to know what it
       // handed over); what is passed here is the cross-repo map beside it.
-      preamble: topics.contextBlock(r.topicId, r.paths),
+      preamble: await opening(r.topicId, r.paths),
       // §5 + §16 — the manifest already has a place to widen the allow-list;
       // absent, the built-in one applies.
       allow: allowFor(r.workspaces[0]?.projectId),
@@ -994,7 +1003,7 @@ const handlers: Record<string, Handler> = {
       p.prompt,
       // The memory has moved on since; the conversation has not. Re-reading it
       // is what keeps a resumed session from acting on a stale understanding.
-      topics.contextBlock(prev.topicId, prev.paths),
+      await opening(prev.topicId, prev.paths),
       allowFor(registry.getWorkspace(prev.workspaceIds[0] ?? '')?.projectId),
       p.options,
       p.attachments,
@@ -1139,6 +1148,21 @@ const handlers: Record<string, Handler> = {
     docsSignals.dropFlag(p.projectId, p.flagId)
     append({ type: 'docs.flagged', projectId: p.projectId, payload: { flagId: p.flagId, dropped: true } })
     return { ok: true as const }
+  },
+  'tickets.status': (p: { projectId: string }) => tickets.status(p.projectId),
+  'tickets.connect': (p: { projectId: string; email: string; token: string }) => tickets.connect(p.projectId, p.email, p.token),
+  'tickets.disconnect': (p: { projectId: string }) => tickets.disconnect(p.projectId),
+  'tickets.search': (p: { projectId: string; q?: string }) => tickets.search(p.projectId, p.q ?? ''),
+  'tickets.plan': (p: { projectId: string; key: string; event: TicketEvent }) => tickets.plan(p.projectId, p.key, p.event),
+  'tickets.move': async (p: { projectId: string; move: TicketMove; topicId?: string }) => {
+    const r = await tickets.move(p.projectId, p.move, p.topicId)
+    if (r.ok && p.topicId) pushTopics()
+    return r
+  },
+  'tickets.get': async (p: { projectId: string; key: string; topicId?: string }) => {
+    const r = await tickets.get(p.projectId, p.key, p.topicId)
+    if (r.changed) pushTopics()
+    return { ticket: r.ticket, error: r.error }
   },
   'docs.info': (p: { projectId: string }) => docs.docsOf(p.projectId),
   'docs.index': (p: { projectId: string }) => docs.indexOf(p.projectId),

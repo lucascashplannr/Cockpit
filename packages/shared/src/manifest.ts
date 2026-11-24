@@ -143,7 +143,19 @@ export interface ManifestV1 {
    * person will find it rather than in one window's preferences.
    */
   guess?: Record<string, boolean>
-  tickets?: { provider: string; repo?: string; project?: string; baseUrl?: string }
+  tickets?: {
+    provider: string
+    repo?: string
+    project?: string
+    baseUrl?: string
+    /**
+     * §5 — the status a ticket goes to when its topic is created, its pull
+     * request opened, its branch merged, by name. `false` leaves it alone.
+     * Absent, the workflow decides: In Progress, a status with "review" in its
+     * name, Done.
+     */
+    moves?: { open?: string | false; pr?: string | false; merge?: string | false }
+  }
   review?: { provider: string; repo?: string }
   /**
    * §9 — the Docs home: a repository of the project, or a folder inside one.
@@ -397,6 +409,7 @@ export const MANIFEST_TEMPLATE = [
   '#     web: [pnpm install]',
   '',
   '# tickets: { provider: github, repo: owner/name }',
+  '#   or { provider: jira, baseUrl: https://you.atlassian.net, project: KEY }',
   '# docs: { repo: api, folder: docs }   # or a repository of its own: { repo: docs }',
   '',
 ].join('\n')

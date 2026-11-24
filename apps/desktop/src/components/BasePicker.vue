@@ -15,8 +15,10 @@ import { client, guard, replanBase, state } from '../core/store.js'
  * A row per repository because a topic spans several and they need not agree:
  * not on the branch, and not on whether there is anything to catch up on.
  *
- * Only a Catch up. Send to is the branch the work *belongs* to, and changing
- * that on the way past is a different decision.
+ * Only a Catch up. Where Send to and Open PR land is chosen the same way, on
+ * rows of their own in the question (`ConfirmInto`): it used to be fixed, as
+ * "the branch the work belongs to", until landing a topic on another branch
+ * turned out to be a choice people make.
  */
 
 const from = computed(() => state.pendingPlanFrom)

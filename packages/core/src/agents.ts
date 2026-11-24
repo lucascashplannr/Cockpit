@@ -24,6 +24,7 @@ import * as wrapTools from './wrapTools.js'
 import * as agentGit from './agentGit.js'
 import * as gitHook from './gitHook.js'
 import * as peersTools from './peersTools.js'
+import * as ticketTools from './ticketTools.js'
 import * as docs from './docs.js'
 import * as skills from './skills.js'
 import { getTopic, getWorkspace } from './registry.js'
@@ -95,6 +96,8 @@ export interface LaunchContext {
   memory?: boolean
   /** §9 — whether the project has docs: the `docs_read` / `docs_search` tools. */
   docs?: boolean
+  /** §5 — whether the project names a ticket tracker: the `ticket_read` tool. */
+  tickets?: boolean
   /**
    * §6 — the engine's own settings for this launch (`--settings`): which
    * instruction files to leave out, which skills are off, and that AGENTS.md
@@ -439,6 +442,7 @@ function cockpitTools(ctx: LaunchContext): string[] {
     ...(ctx.docs ? docsTools.TOOL_NAMES : []),
     ...peersTools.TOOL_NAMES,
     ...wrapTools.TOOL_NAMES,
+    ...(ctx.tickets ? ticketTools.TOOL_NAMES : []),
   ]
 }
 
@@ -2408,6 +2412,7 @@ async function launch(
     permissionMode: modeOf(opts),
     memory: session.memory !== MEMORY_OFF,
     docs: !!docsInfo,
+    tickets: ticketTools.available(session),
     settings: launchSettings(session.choice, spec.id === 'claude' ? contextLimit : null),
     instructions: addedInstructions(session.paths.slice(1), session.choice),
   }
@@ -2779,16 +2784,28 @@ async function launch(
             child.stdin?.write(spec.control.unsupported(ev.requestId) + '\n')
             break
           }
-          let reply: Record<string, unknown> | null
+          let reply: Record<string, unknown> | Promise<Record<string, unknown>> | null
           const was = l.session.memory
+          const id = (ev.message as { id?: unknown } | undefined)?.id
+          const failed = (e: unknown) => ({ jsonrpc: '2.0', id, error: { code: -32603, message: (e as Error).message } })
           try {
             reply = memoryTools.handle(l.session, l.memoryOwn, ev.message as never)
             // A `new` memory that has just come into being: the conversation
             // is pointed at it for good, and the window hears which one.
             if (l.session.memory !== was) changed = true
           } catch (e) {
-            const id = (ev.message as { id?: unknown } | undefined)?.id
-            reply = { jsonrpc: '2.0', id, error: { code: -32603, message: (e as Error).message } }
+            reply = failed(e)
+          }
+          // A tool that asks something over the network answers later. Each
+          // reply names the request it answers, so the engine takes it in any order.
+          if (reply instanceof Promise) {
+            const requestId = ev.requestId
+            const answer = spec.control.mcp
+            void reply.catch(failed).then((r) => {
+              if (!child.stdin?.writable) return
+              child.stdin.write(answer(requestId, r) + '\n')
+            })
+            break
           }
           child.stdin?.write(spec.control.mcp(ev.requestId, reply) + '\n')
           break

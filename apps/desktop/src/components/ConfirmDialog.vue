@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChevronRight, X } from '@lucide/vue'
 import BasePicker from './BasePicker.vue'
+import BaseSelect from './BaseSelect.vue'
 import { applyPendingConfirm, state } from '../core/store.js'
 
 /**
@@ -123,6 +124,27 @@ watch(
       <!-- §4 — only on a Catch up, under the sentence it qualifies: where it
            lands, and the branch, which is the one choice in the question. -->
       <BasePicker class="base" />
+
+      <!-- §4 — the other direction: where Send to and Open PR land, a row per
+           repository, each on its base unless picked otherwise. Catch up's
+           rows, so the two read as the same choice. -->
+      <div v-if="c.into" class="rows into base">
+        <div v-for="r in c.into.rows" :key="r.id" class="row">
+          <span class="rname">{{ r.name }}</span>
+          <span v-if="r.note" class="state">{{ r.note }}</span>
+          <span class="iw">into</span>
+          <BaseSelect
+            variant="word"
+            floating
+            :title="c.into.title"
+            :model-value="r.value"
+            :options="(c.into.options[r.id] ?? []).map((name) => ({ name }))"
+            :loading="c.into.loading"
+            :fallback="r.fallback"
+            @update:model-value="c.into.pick(r.id, $event)"
+          />
+        </div>
+      </div>
 
       <!-- The other kind of choice inside a question: a thing the act will
            also do, off by default because the default is the one you can
@@ -418,4 +440,19 @@ watch(
   color: var(--accent-text);
 }
 .btn.danger.solid:hover:not(:disabled) { background: var(--danger); filter: brightness(1.08); }
+
+/* Catch up's rows (BasePicker), for where an act lands instead of where it
+   comes from: the overlay hairline, a row per repository. */
+.rows {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-overlay);
+  border-radius: var(--radius-sm);
+}
+.rows .row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 11px; font-size: var(--fs-sm); }
+.rows .row + .row { border-top: 1px solid var(--line-overlay); }
+.rows .rname { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rows .state { flex: none; font-size: var(--fs-xs); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.rows .iw { flex: none; font-size: var(--fs-xs); color: var(--text-dim); }
 </style>

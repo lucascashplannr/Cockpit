@@ -14,6 +14,7 @@ import type {
   DiffFile, Topic,
   DocsInfo, DocsPage, DocsProposalSet, DocsSignals, ErasedMemory, FileDiff, GitOperation, MemoryDoc, MemorySummary, NewProjectSource, ProcessLog, Project, RuntimeUpResult,
   ProjectSettings, SearchHit, SeedProposal, StashEntry,
+  TicketDetail, TicketEvent, TicketMove, TicketRef, TicketSummary, TicketsStatus,
   Workspace,
 } from './model.js'
 
@@ -276,6 +277,12 @@ export interface PlanPreview {
    * no reason to take the worktrees back — the topic stays, and says so.
    */
   after?: PlanStep[]
+  /**
+   * §5 — what the ticket this plan is about does in its tracker once the plan
+   * has applied: a status it moves to. Not a step: Jira refusing it is no
+   * reason to take back the branches, so it is made after, and said after.
+   */
+  tracker?: TicketMove & { projectId: string; topicId: string }
 }
 
 /**
@@ -456,6 +463,8 @@ export interface Rpc {
       /** The base for one repository, by workspace id, where it differs from `base`. */
       bases?: Record<string, string>
       ticketUrl?: string
+      /** The ticket the topic was made from, as the list showed it. Wins over `ticketUrl`. */
+      ticket?: TicketRef
       /**
        * §7 — the local config to carry into each worktree, as approved by the
        * caller. Omit and only what `cockpit.yaml` declares is applied: a
@@ -556,7 +565,7 @@ export interface Rpc {
    * merge. Halts on the first conflict and keeps what already merged.
    */
   'topic.merge': {
-    params: { topicId: string; push?: boolean; base?: string }
+    params: { topicId: string; push?: boolean; base?: string; bases?: Record<string, string> }
     result: { ok: boolean; detail: string; plan: PlanPreview | null; needsCatchUp?: boolean }
   }
   /**
@@ -1006,6 +1015,31 @@ export interface Rpc {
   'agent.memorize': { params: { sessionId: string }; result: { ok: true } | { ok: false; reason: string } }
   /** Waits (at most ~90s) for the conversation's turns to land; call again if not `settled`. */
   'agent.settled': { params: { sessionId: string }; result: { settled: boolean } }
+  /** §5 — the project's tracker as this machine can reach it; null when it has none. */
+  'tickets.status': { params: { projectId: string }; result: TicketsStatus | null }
+  /** Checks the account against the tracker before keeping it: the token in the keychain, the email in config. */
+  'tickets.connect': {
+    params: { projectId: string; email: string; token: string }
+    result: { ok: true; status: TicketsStatus } | { ok: false; reason: string }
+  }
+  'tickets.disconnect': { params: { projectId: string }; result: TicketsStatus | null }
+  /** Open tickets (yours, or in an open sprint) when `q` is empty; else a key or text match. */
+  'tickets.search': { params: { projectId: string; q?: string }; result: { tickets: TicketSummary[]; error: string | null } }
+  /**
+   * What `event` would do to the ticket, by the project's workflow and its
+   * `tickets.moves`: null when it would do nothing, or Jira cannot say.
+   */
+  'tickets.plan': { params: { projectId: string; key: string; event: TicketEvent }; result: TicketMove | null }
+  /** Makes a move worked out by `tickets.plan`, and links what it names. */
+  'tickets.move': {
+    params: { projectId: string; move: TicketMove; topicId?: string }
+    result: { ok: boolean; detail: string }
+  }
+  /** One ticket, read now. With `topicId`, the topic's stored status follows what it says. */
+  'tickets.get': {
+    params: { projectId: string; key: string; topicId?: string }
+    result: { ticket: TicketDetail | null; error: string | null }
+  }
   /** §9 — draft documentation proposals in this conversation. Answers once sent. */
   'docs.document': { params: { sessionId: string }; result: { ok: true; setId: string } | { ok: false; reason: string } }
   'docs.info': { params: { projectId: string }; result: DocsInfo | null }

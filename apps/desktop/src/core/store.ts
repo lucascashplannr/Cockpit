@@ -1,11 +1,11 @@
 import { computed, nextTick, reactive, ref, shallowRef, toRaw, watch } from 'vue'
 import type {
   AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
-  Conversation, ConversationMarkKind, CockpitEvent, CockpitSettings,
+  BranchRef, Conversation, ConversationMarkKind, CockpitEvent, CockpitSettings,
   CommitPreview, ConflictProposal, CoreStatus, ReviewStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, DocsInfo, DocsOffer, DocsPage, DocsProposalSet, DocsSignals, ErasedMemory, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
-  GitState, LoadoutChoice, ProjectSettings, QuoteSource, RpcResult, SkillInfo, SkillWhere, RuntimeUpResult, ServerBoardRow, StashEntry, Workspace,
+  GitState, LoadoutChoice, ProjectSettings, QuoteSource, RpcResult, SkillInfo, SkillWhere, RuntimeUpResult, ServerBoardRow, StashEntry, TicketMove, TicketRef, Workspace,
 } from '@cockpit/shared'
 import { anchorsIn, handleFor, matchesBranch, newId, protectedPatterns, slugify, splitPrompt } from '@cockpit/shared'
 import { CoreClient, CoreError } from './client.js'
@@ -841,6 +841,13 @@ export const projectWorkspaces = computed(() =>
  * folder with no repository, and the strip must not draw a tool that would
  * open on nothing.
  */
+/** §5 — the ticket the topic a checkout belongs to was made from, if it was. */
+export function ticketOf(w: Workspace | null): { topicId: string; ticket: TicketRef } | null {
+  if (!w?.topicId) return null
+  const t = state.topics.find((x) => x.id === w.topicId)
+  return t?.ticket && t.ticket.provider === 'jira' ? { topicId: t.id, ticket: t.ticket } : null
+}
+
 export function reviewToolsFor(w: Workspace | null, wholeProject = false): ReviewTool[] {
   if (!w) return []
   // §7 — standing on the project there is no one checkout to read. The Diff
@@ -5770,8 +5777,42 @@ async function settlePlan(
     )
     return false
   }
-  toast('ok', okMessage ?? plan.operation + ' applied', { lines: [...okLines, ...planLines(plan)] })
+  // §5 — the ticket, once the branches are where the plan said: Jira refusing
+  // is its own warning, never a reason to call the plan failed.
+  const moved = plan.tracker ? await moveTicket(plan.tracker.projectId, plan.tracker, plan.tracker.topicId) : null
+  toast('ok', okMessage ?? plan.operation + ' applied', { lines: [...okLines, ...planLines(plan), ...(moved ? [moved] : [])] })
   return true
+}
+
+/* ── §5 — what an act does to its ticket ─────────────────────────────── */
+
+/** The move, said the way the question says everything else. */
+export function trackerSentence(m: TicketMove, linking = false): string {
+  if (!m.to) return 'The pull request is linked on ' + m.key + ' in Jira.'
+  return 'In Jira, ' + m.key + ' goes from ' + m.from + ' to ' + m.to + (linking ? ', and the pull request is linked there.' : '.')
+}
+
+/** Makes it, and answers the line for the toast, or null after warning on its own. */
+async function moveTicket(projectId: string, move: TicketMove, topicId?: string): Promise<string | null> {
+  const r = await client
+    .call('tickets.move', { projectId, move, ...(topicId ? { topicId } : {}) })
+    .catch((e: Error) => ({ ok: false, detail: e.message }))
+  if (r.ok) return r.detail
+  toast('warn', 'Jira not updated: ' + move.key, { lines: [r.detail] })
+  return null
+}
+
+/**
+ * The move an event would make to the ticket of the topic these checkouts are
+ * in, asked while the question is already on screen (`waiting`) so asking Jira
+ * costs the question nothing.
+ */
+async function planTicket(ws: Workspace[], event: 'pr' | 'merge'): Promise<{ move: TicketMove; projectId: string; topicId: string } | null> {
+  const own = ws.map((w) => ticketOf(w)).find(Boolean)
+  const projectId = ws[0]?.projectId
+  if (!own || !projectId) return null
+  const move = await client.call('tickets.plan', { projectId, key: own.ticket.key, event }).catch(() => null)
+  return move ? { move, projectId, topicId: own.topicId } : null
 }
 
 /**
@@ -5801,9 +5842,23 @@ function planLines(plan: PlanPreview): string[] {
  *
  * The heavy dialog stays for the operations that rewrite history.
  */
+/**
+ * §4 — where an act lands, chosen in the question: one row per repository,
+ * each on its own base unless picked otherwise. Send to and Open PR.
+ */
+export interface ConfirmInto {
+  rows: { id: string; name: string; value: string; fallback: string; note?: string }[]
+  /** The branches each repository can land on, by row id. */
+  options: Record<string, string[]>
+  loading: boolean
+  title: string
+  pick: (id: string, name: string) => void | Promise<void>
+}
+
 interface ConfirmBase {
   /** The question, asked as one. */
   title: string
+  into?: ConfirmInto
   /** What it does, in sentences — the plan's own warnings, usually. */
   body: string[]
   /** The button that says yes, in the words of the thing it does. */
@@ -6555,9 +6610,22 @@ function askPull(plan: PlanPreview, branch: string): void {
  * §4 — the step the lifecycle was missing. The topic branch goes onto the
  * base in each repository's main checkout, as one `--no-ff` merge.
  */
-export async function mergeTopic(topicId: string, push: boolean): Promise<void> {
+export async function mergeTopic(
+  topicId: string,
+  push: boolean,
+  /** By the topic's workspace id: a repository landing somewhere other than its base. */
+  bases: Record<string, string> = {},
+  /** The branch lists the question already read, kept across a re-plan. */
+  known?: Record<string, string[]>,
+): Promise<void> {
   if (stillBusy(topicWorkspaceIds(topicId))) return
-  const res = await guard(() => client.call('topic.merge', { topicId, push }))
+  // Re-planned from the question: it stays up, unanswerable, while the plan is rebuilt.
+  const asked = state.pendingConfirm?.into ? state.pendingConfirm : null
+  if (asked) asked.waiting = true
+  const res = await guard(() =>
+    client.call('topic.merge', { topicId, push, ...(Object.keys(bases).length ? { bases } : {}) }),
+  )
+  if (asked && state.pendingConfirm === asked) asked.waiting = false
   if (!res) return
   if (!res.ok || !res.plan) {
     const name = state.topics.find((t) => t.id === topicId)?.name ?? 'the topic'
@@ -6567,7 +6635,91 @@ export async function mergeTopic(topicId: string, push: boolean): Promise<void> 
     })
     return
   }
-  state.pendingPlan = res.plan
+  askSendTo(topicId, push, bases, res.plan, known)
+}
+
+/** "main", or "main and dev": the branches a question lands on, the way it would be said. */
+function namedBranches(list: string[]): string {
+  const d = [...new Set(list.filter(Boolean))]
+  return d.length > 1 ? d.slice(0, -1).join(', ') + ' and ' + d.at(-1) : (d[0] ?? 'the base')
+}
+
+/**
+ * The branches a repository can land on: what origin has, by plain name, the
+ * rule BasePicker keeps. Its own branch is not one of them.
+ */
+async function landingOptions(ws: Workspace[]): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {}
+  await Promise.all(
+    ws.map(async (w) => {
+      const bs = await client.call('git.branches', { workspaceId: w.id }).catch(() => [] as BranchRef[])
+      const seen = new Set<string>()
+      for (const b of bs) {
+        if (b.remoteOnly) seen.add(b.name.replace(/^[^/]+\//, ''))
+        // Tracked under its own name: a topic's branch is made tracking
+        // `origin/main`, which says where it came from, not that origin has it.
+        else if (b.upstream && b.upstream.replace(/^[^/]+\//, '') === b.name) seen.add(b.name)
+      }
+      if (w.git?.branch) seen.delete(w.git.branch)
+      out[w.id] = [...seen]
+    }),
+  )
+  return out
+}
+
+/** Reads the branch lists into the question that is still up, once. */
+function fillInto(into: ConfirmInto, ws: Workspace[]): void {
+  void landingOptions(ws).then((o) => {
+    const now = state.pendingConfirm?.into
+    if (!now || now.rows.map((r) => r.id).join() !== into.rows.map((r) => r.id).join()) return
+    now.options = o
+    now.loading = false
+  })
+}
+
+/**
+ * §4 — Send to, asked as a question like Catch up: where each repository's
+ * branch lands, changeable on its row, this once. The project's base stays
+ * the answer nearly always; picking another re-plans in place.
+ */
+function askSendTo(
+  topicId: string,
+  push: boolean,
+  bases: Record<string, string>,
+  plan: PlanPreview,
+  known?: Record<string, string[]>,
+): void {
+  const ws = state.workspaces.filter((w) => w.topicId === topicId && w.repo && w.git?.branch)
+  const onto = (w: Workspace) => bases[w.id] || w.git?.base || ''
+  const named = namedBranches(ws.map(onto))
+  const options = known ?? {}
+  const into: ConfirmInto = {
+    rows: ws.map((w) => ({ id: w.id, name: w.name, value: bases[w.id] ?? '', fallback: w.git?.base || 'its base' })),
+    options,
+    loading: !known,
+    title: 'Send to another branch, this once',
+    pick: (id, name) => {
+      const next = { ...bases }
+      if (name) next[id] = name
+      else delete next[id]
+      void mergeTopic(topicId, push, next, state.pendingConfirm?.into?.options ?? options)
+    },
+  }
+  state.pendingConfirm = {
+    title: 'Send to ' + named + '?',
+    into,
+    body: [
+      (ws.length === 1 ? 'The branch goes' : 'Each branch goes') + ' onto ' + named + ' as one merge.',
+      ...plan.warnings.filter((w) => !w.startsWith('--no-ff')),
+      ...(plan.tracker ? [trackerSentence(plan.tracker)] : []),
+      ...(plan.onFailure === 'halt' && ws.length > 1 ? ['Stops at the first repository that conflicts, and keeps what already landed.'] : []),
+    ],
+    verb: 'Send to ' + named,
+    done: 'Sent to ' + named,
+    danger: false,
+    plan,
+  }
+  if (!known) fillInto(into, ws)
 }
 
 /* ── conflicts ───────────────────────────────────────────────────────────
@@ -6740,6 +6892,8 @@ function prCandidates(ws: Workspace[]): Workspace[] {
 
 /** Asks, then pushes each branch and opens a pull request for it into its base. */
 export function askOpenPr(title: string, ws: Workspace[]): void {
+  // §5 — the topic's ticket, asked of Jira while the question is up.
+  const ticket = ticketOf(ws[0] ?? null) ? planTicket(ws, 'pr') : null
   const todo = prCandidates(ws).filter((w) => !prStatus[w.id]?.pr || !['open', 'draft'].includes(prStatus[w.id]!.pr!.state))
   if (!todo.length) {
     toast('error', 'Nothing to open a pull request for', { lines: ['No repository here has commits its base does not.'] })
@@ -6747,23 +6901,53 @@ export function askOpenPr(title: string, ws: Workspace[]): void {
   }
   const host = prStatus[todo[0]!.id]?.host
   const where = host === 'bitbucket' ? 'Bitbucket' : host === 'github' ? 'GitHub' : 'the host'
+  // §4 — where each request goes: its base unless picked otherwise on its row.
+  const target = (w: Workspace) => asking()?.into?.rows.find((r) => r.id === w.id)?.value || w.git!.base!
+  const asking = () => state.pendingConfirm
+  const titleFor = () =>
+    todo.length === 1 ? 'Open a pull request into ' + target(todo[0]!) + '?' : 'Open ' + todo.length + ' pull requests?'
+  const into: ConfirmInto = {
+    rows: todo.map((w) => ({
+      id: w.id,
+      name: w.name,
+      value: '',
+      fallback: w.git!.base!,
+      note: w.git!.aheadOfBase + ' commit' + (w.git!.aheadOfBase === 1 ? '' : 's'),
+    })),
+    options: {},
+    loading: true,
+    title: 'Open it into another branch',
+    pick: (id, name) => {
+      const c = asking()
+      const row = c?.into?.rows.find((r) => r.id === id)
+      if (!c || !row) return
+      row.value = name
+      // The count is against the base; against another branch it would be a guess.
+      const w = todo.find((x) => x.id === id)!
+      row.note = !name || name === w.git!.base ? w.git!.aheadOfBase + ' commit' + (w.git!.aheadOfBase === 1 ? '' : 's') : undefined
+      c.title = titleFor()
+    },
+  }
   state.pendingConfirm = {
-    title: todo.length === 1 ? 'Open a pull request into ' + todo[0]!.git!.base + '?' : 'Open ' + todo.length + ' pull requests?',
+    title: titleFor(),
     quote: title,
+    into,
     body: [
       'Each branch is pushed to origin first, then the request is opened on ' + where + '. Nothing is merged.',
-      ...todo.map((w) => w.name + ': ' + w.git!.branch + ' into ' + w.git!.base + ', ' + w.git!.aheadOfBase + ' commit(s)'),
     ],
     verb: todo.length === 1 ? 'Open pull request' : 'Open them',
     done: todo.length === 1 ? 'Pull request opened' : 'Pull requests opened',
+    doneLines: [],
     danger: false,
+    ...(ticket ? { waiting: true } : {}),
     run: async () => {
       prBusy.value = 'open'
+      const asked = state.pendingConfirm
       try {
         for (const w of todo) {
           const subjects = await client.call('git.log', { workspaceId: w.id, limit: (w.git!.aheadOfBase ?? 0) || 1 }).catch(() => [])
           const body = (subjects as { subject: string }[]).map((c) => '- ' + c.subject).join('\n')
-          const res = await guard(() => client.call('review.open', { workspaceId: w.id, title, body, target: w.git!.base! }))
+          const res = await guard(() => client.call('review.open', { workspaceId: w.id, title, body, target: target(w) }))
           if (!res) return false
           if (!res.ok) {
             toast('error', 'Pull request not opened in ' + w.name, { lines: [res.detail] })
@@ -6771,17 +6955,34 @@ export function askOpenPr(title: string, ws: Workspace[]): void {
           }
           if (res.status) prStatus[w.id] = res.status
         }
+        const t = await ticket
+        if (t) {
+          const links = todo
+            .map((w) => prStatus[w.id]?.pr)
+            .filter((p): p is NonNullable<typeof p> => !!p)
+            .map((p) => ({ url: p.url, title: 'Pull request #' + p.number + ': ' + p.title }))
+          const line = await moveTicket(t.projectId, { ...t.move, links }, t.topicId)
+          if (line && asked) asked.doneLines = [...(asked.doneLines ?? []), line]
+        }
         return true
       } finally {
         prBusy.value = null
       }
     },
   }
+  fillInto(into, todo)
+  void ticket?.then((t) => {
+    const c = state.pendingConfirm
+    if (!c || c.verb !== (todo.length === 1 ? 'Open pull request' : 'Open them')) return
+    if (t) c.body = [...(c.body ?? []), trackerSentence(t.move, true)]
+    c.waiting = false
+  })
 }
 
 export function askMergePr(ws: Workspace[]): void {
   const open = ws.filter((w) => prStatus[w.id]?.pr?.state === 'open')
   if (!open.length) return
+  const ticket = ticketOf(open[0] ?? null) ? planTicket(open, 'merge') : null
   const one = open.length === 1 ? prStatus[open[0]!.id]!.pr! : null
   state.pendingConfirm = {
     title: one ? 'Merge #' + one.number + ' into ' + one.target + '?' : 'Merge ' + open.length + ' pull requests?',
@@ -6791,9 +6992,12 @@ export function askMergePr(ws: Workspace[]): void {
     ],
     verb: one ? 'Merge #' + one.number : 'Merge them',
     done: 'Merged',
+    doneLines: [],
     danger: false,
+    ...(ticket ? { waiting: true } : {}),
     run: async () => {
       prBusy.value = 'merge'
+      const asked = state.pendingConfirm
       try {
         for (const w of open) {
           const res = await guard(() => client.call('review.merge', { workspaceId: w.id }))
@@ -6804,12 +7008,23 @@ export function askMergePr(ws: Workspace[]): void {
             return false
           }
         }
+        const t = await ticket
+        if (t) {
+          const line = await moveTicket(t.projectId, t.move, t.topicId)
+          if (line && asked) asked.doneLines = [...(asked.doneLines ?? []), line]
+        }
         return true
       } finally {
         prBusy.value = null
       }
     },
   }
+  void ticket?.then((t) => {
+    const c = state.pendingConfirm
+    if (!c || c.verb !== (one ? 'Merge #' + one.number : 'Merge them')) return
+    if (t) c.body = [...(c.body ?? []), trackerSentence(t.move)]
+    c.waiting = false
+  })
 }
 
 export function openPrPage(url: string): void {
@@ -7107,6 +7322,7 @@ export async function openTopic(input: {
   base?: string
   bases?: Record<string, string>
   branch?: string
+  ticket?: TicketRef
   seed?: SeedProposal[]
   rememberSeed?: boolean
   cloneDatabase?: boolean
@@ -7139,6 +7355,7 @@ export async function openTopic(input: {
             ? 'The repository gets ' + onBranch + ', checked out in a folder of its own. The repository itself is not touched.'
             : 'Each of the ' + n + ' repositories gets ' + onBranch + ', checked out in a folder of its own. The repositories themselves are not touched.'),
       ...res.plan.warnings,
+      ...(res.plan.tracker ? [trackerSentence(res.plan.tracker)] : []),
       // §7 — said once here; the lines themselves are under the commands.
       ...(res.plan.after?.length
         ? ['Then ' + res.plan.after.length + ' setup command' + (res.plan.after.length === 1 ? '' : 's') + ' from cockpit.yaml.']

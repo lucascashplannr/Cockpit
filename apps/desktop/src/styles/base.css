@@ -62,6 +62,16 @@ button {
   cursor: pointer;
 }
 
+/* Code inside something pressable is its label, not text to copy: a ticket
+   key on a badge, a branch name in a picker. The rule above made it an I-beam
+   in the middle of a button, and a drag there selected instead of pressed. */
+button code,
+a code,
+[role='button'] code {
+  user-select: none;
+  cursor: inherit;
+}
+
 /* Nothing to press. The one place both conventions agree. */
 button:disabled,
 [aria-disabled='true'] {

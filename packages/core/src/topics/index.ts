@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { memoryTemplate, newId, stableId } from '@cockpit/shared'
 import type {
-  ConversationMark, ConversationMarkKind, Setup, DatabasePlan, Topic, PlanPreview, PlanStep, SeedProposal, Workspace,
+  ConversationMark, ConversationMarkKind, Setup, DatabasePlan, Topic, PlanPreview, PlanStep, SeedProposal, TicketRef, Workspace,
 } from '@cockpit/shared'
 import { append } from '../journal.js'
 import { cleanMark } from '../mark.js'
@@ -10,6 +10,7 @@ import { countBehind, defaultBranch, git, listWorktrees } from '../git.js'
 import * as plans from '../plans.js'
 import { pushRefusal } from '../protect.js'
 import * as registry from '../registry.js'
+import * as tickets from '../tickets/index.js'
 import { moveToTrash } from '../files.js'
 import * as runtime from '../runtime/index.js'
 import * as agents from '../agents.js'
@@ -66,6 +67,8 @@ export interface OpenTopicInput {
    */
   branch?: string
   ticketUrl?: string
+  /** The ticket the topic was made from, as the list showed it. Wins over `ticketUrl`. */
+  ticket?: TicketRef
   /**
    * §7 — the gitignored local config to carry into each worktree, as approved.
    * Absent means "whatever the manifest declares, or nothing" — never the
@@ -140,7 +143,9 @@ export async function openPlan(
     if (branchTaken && !onBranch) {
       warnings.push(repo.name + ': branch "' + slug + '" already exists and will be reused as-is.')
     }
-    if (onBranch && !reused) {
+    // A branch named from a ticket is new more often than not: the warning is
+    // for a branch someone picked expecting it to be there.
+    if (onBranch && !reused && !input.ticket) {
       warnings.push(
         repo.name + ': no branch "' + slug + '" here or on origin — it is created from ' + base + '.',
       )
@@ -296,11 +301,16 @@ export async function openPlan(
     )
   }
 
+  // §5 — what creating it does to the ticket it is made from, asked of Jira now.
+  const move = input.ticket?.provider === 'jira' ? await tickets.plan(project.id, input.ticket.key, 'open') : null
+  const tracker = move ? { ...move, projectId: project.id, topicId } : null
+
   const preview: PlanPreview = {
     planId: newId('plan_'),
     operation: 'topic.open',
     steps,
     warnings,
+    ...(tracker ? { tracker } : {}),
     capturesRestorePoint: false,
     repos: repos.map((r) => r.name),
     ...(setupLines.lines.length ? { after: setupRunner.asSteps(setupLines.lines) } : {}),
@@ -320,9 +330,11 @@ export async function openPlan(
         rootPath,
         state: 'stopped',
         setup: input.setup,
-        ticket: input.ticketUrl
-          ? { provider: 'url', key: slug, title: name, status: 'open', url: input.ticketUrl }
-          : null,
+        ticket: input.ticket
+          ? { ...input.ticket }
+          : input.ticketUrl
+            ? { provider: 'url', key: slug, title: name, status: 'open', url: input.ticketUrl }
+            : null,
         review: null,
         mark: null,
         createdAt: Date.now(),
@@ -943,7 +955,11 @@ async function pushPlanOf(
 
 export async function mergePlan(
   topicId: string,
-  opts: { push?: boolean; base?: string } = {},
+  /**
+   * `base` for every repository; `bases`, by the topic's workspace id, for one
+   * that lands somewhere else. Neither named, each its own base.
+   */
+  opts: { push?: boolean; base?: string; bases?: Record<string, string> } = {},
 ): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null; needsCatchUp?: boolean }> {
   const f = store.get(topicId)
   if (!f) throw new Error('unknown topic: ' + topicId)
@@ -960,6 +976,8 @@ export async function mergePlan(
   /** §9 — what the topic changes, as `covers:` names code; read now, while the base is still behind. */
   const changed: string[] = []
   let sentTo: string | null = null
+  /** Every branch something lands on: one, nearly always. */
+  const landsOn = new Set<string>()
   /** Repositories whose branch would stop on a conflict against the base. */
   const conflicted: string[] = []
   /** Main checkouts on the base with edits git sets aside for the merge. */
@@ -983,7 +1001,7 @@ export async function mergePlan(
     if (tree.git?.headState === 'rebasing' || tree.git?.headState === 'merging') {
       blockers.push(tree.name + ': mid-' + tree.git.headState + ', finish or abort it first')
     }
-    const base = opts.base ?? (await baseFor(main.path))
+    const base = opts.bases?.[tree.id] || opts.base || (await baseFor(main.path))
     const branch = tree.git?.branch ?? f.slug
     if (branch === base) {
       warnings.push(tree.name + ' is already on ' + base + ' — nothing to land.')
@@ -991,6 +1009,7 @@ export async function mergePlan(
     }
     names.push(main.name)
     sentTo ??= base
+    landsOn.add(base)
     const diff = await git(main.path, ['diff', '--name-only', base + '...' + branch], 30_000)
     if (diff.ok) for (const rel of diff.stdout.split('\n').filter(Boolean)) changed.push(docsSignals.projectPath(main.id, rel))
 
@@ -1105,17 +1124,22 @@ export async function mergePlan(
 
   warnings.push(
     '--no-ff, so the topic stays one identifiable merge in the history of ' +
-      (opts.base ?? 'the base branch') + ' rather than a scatter of commits.',
+      (landsOn.size === 1 ? [...landsOn][0] : 'each base') + ' rather than a scatter of commits.',
   )
   if (!opts.push) {
     warnings.push('Nothing is pushed. The merge is local until you push it yourself.')
   }
+
+  // §5 — the work is on its base: its ticket is done, by the workflow's word for it.
+  const move = f.ticket?.provider === 'jira' ? await tickets.plan(f.projectId, f.ticket.key, 'merge') : null
+  const tracker = move ? { ...move, projectId: f.projectId, topicId } : null
 
   const preview: PlanPreview = {
     planId: newId('plan_'),
     operation: 'topic.merge',
     steps,
     warnings,
+    ...(tracker ? { tracker } : {}),
     // A restore point anchors the checkout's HEAD; a merge done aside moves
     // a branch the checkout is not on, so it would anchor nothing (see `movedFrom`).
     capturesRestorePoint: steps.some((st) => st.destructive && mains.some((m) => m.path === st.cwd)),

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { ChevronRight, Flag, TriangleAlert, X } from '@lucide/vue'
-import { applyPendingPlan, state } from '../core/store.js'
+import { applyPendingPlan, state, trackerSentence } from '../core/store.js'
 
 /**
  * §3.7 — "Toute opération affiche son plan avant de s'exécuter et laisse une
@@ -120,9 +120,10 @@ function cancel() {
            itself — Chromium wraps its content in a `::details-content` box,
            and a `min-height: 0` chain through it silently stops working. -->
       <div class="mid">
-        <div v-if="lead || reach" class="say">
+        <div v-if="lead || reach || plan.tracker" class="say">
           <p v-if="lead" class="lead">{{ lead }}</p>
           <p v-if="reach">In {{ reach }}.</p>
+          <p v-if="plan.tracker">{{ trackerSentence(plan.tracker) }}</p>
         </div>
 
         <!-- Never folded: these are the reason the question is asked at all. -->

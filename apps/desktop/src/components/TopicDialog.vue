@@ -2,13 +2,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ArrowRight, ChevronDown, Cloud, Database, FileKey, FolderTree, GitBranch, Layers, Lock,
-  TriangleAlert,
+  Ticket, TriangleAlert, X,
 } from '@lucide/vue'
-import { slugify } from '@cockpit/shared'
-import type { BranchRef, DatabasePlan, SeedProposal, Workspace } from '@cockpit/shared'
+import { parseTicketRef, slugify, ticketSlug } from '@cockpit/shared'
+import type { BranchRef, DatabasePlan, SeedProposal, TicketSummary, TicketsStatus, Workspace } from '@cockpit/shared'
 import { client, openTopic, previewDatabase, previewSeed, state } from '../core/store.js'
 import BaseSelect from './BaseSelect.vue'
 import DialogShell from './DialogShell.vue'
+import TicketConnect from './TicketConnect.vue'
 
 /**
  * §4 — opening a topic. One name, the repositories it spans, and the level
@@ -293,8 +294,109 @@ function branchNote(b: BranchOption): string {
   return b.repos.length === selected.value.length ? 'all' : b.repos.join(', ')
 }
 
+/* ── §5 — a ticket to start from ─────────────────────────────────────────
+ *
+ * Only where the project's cockpit.yaml names a tracker: absent is invisible.
+ * A ticket is a decoration of a new branch, not a third kind of one: it names
+ * the topic and puts its key at the front of the branch, where Jira looks for
+ * it, and the topic keeps it for the agent and the Ticket tool.
+ */
+
+/** The project's tracker as this machine reaches it; null when it has none. */
+const tickets = ref<TicketsStatus | null>(null)
+const ticket = ref<TicketSummary | null>(null)
+const ticketOpen = ref(false)
+const ticketQ = ref('')
+const ticketRows = ref<TicketSummary[]>([])
+const ticketLoading = ref(false)
+const ticketError = ref('')
+/** The connect form under the line, for a tracker this machine has no way into yet. */
+const connecting = ref(false)
+const ticketRoot = ref<HTMLElement | null>(null)
+const ticketField = ref<HTMLInputElement | null>(null)
+
+async function loadTickets() {
+  const projectId = state.activeProjectId
+  tickets.value = projectId ? await client.call('tickets.status', { projectId }).catch(() => null) : null
+}
+
+let ticketToken = 0
+async function searchTickets() {
+  const projectId = state.activeProjectId
+  if (!tickets.value?.connected || !projectId) return
+  const token = ++ticketToken
+  ticketLoading.value = true
+  const r = await client
+    .call('tickets.search', { projectId, q: ticketQ.value })
+    .catch((e: Error) => ({ tickets: [] as TicketSummary[], error: e.message }))
+  // A slower earlier search must not overwrite a newer answer.
+  if (token !== ticketToken) return
+  ticketRows.value = r.tickets
+  ticketError.value = r.error ?? ''
+  ticketLoading.value = false
+}
+
+let ticketDebounce: ReturnType<typeof setTimeout> | null = null
+watch(ticketQ, () => {
+  if (ticketDebounce) clearTimeout(ticketDebounce)
+  ticketDebounce = setTimeout(() => void searchTickets(), 250)
+})
+
+async function toggleTicket() {
+  if (!tickets.value?.connected) {
+    connecting.value = !connecting.value
+    return
+  }
+  ticketOpen.value = !ticketOpen.value
+  if (!ticketOpen.value) return
+  ticketQ.value = ''
+  void searchTickets()
+  await nextTick()
+  ticketField.value?.focus()
+}
+
+/** A ticket an open topic of this project was already made from: that topic is where its work is. */
+function ticketTopic(key: string): string | null {
+  const t = state.topics.find(
+    (f) => f.projectId === state.activeProjectId && f.state !== 'closed' && f.ticket?.key === key,
+  )
+  return t?.name ?? null
+}
+
+/** The ticket names the topic; the name stays yours to shorten. */
+async function pickTicket(t: TicketSummary) {
+  ticket.value = t
+  ticketOpen.value = false
+  name.value = t.title
+  await nextTick()
+  nameInput.value?.focus()
+}
+
+async function onConnected(s: TicketsStatus) {
+  tickets.value = s
+  connecting.value = false
+  await toggleTicket()
+}
+
+/** A key or a Jira link pasted into Name is that ticket, asked for there and then. */
+watch(name, async (v) => {
+  if (!tickets.value || mode.value !== 'new') return
+  const key = parseTicketRef(v)
+  if (!key || key === ticket.value?.key) return
+  if (!tickets.value.connected) {
+    connecting.value = true
+    return
+  }
+  const projectId = state.activeProjectId
+  if (!projectId) return
+  const r = await client.call('tickets.get', { projectId, key }).catch(() => null)
+  // Still what the field says: a key typed past is not one to jump to.
+  if (r?.ticket && parseTicketRef(name.value) === key) await pickTicket(r.ticket)
+})
+
 function onDown(e: MouseEvent) {
   if (branchRoot.value && !branchRoot.value.contains(e.target as Node)) branchOpen.value = false
+  if (ticketRoot.value && !ticketRoot.value.contains(e.target as Node)) ticketOpen.value = false
 }
 onMounted(() => document.addEventListener('mousedown', onDown))
 onBeforeUnmount(() => document.removeEventListener('mousedown', onDown))
@@ -302,14 +404,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDown))
 /** The branch and folder name — the core's own function, not a copy of it.
  *  It is the branch, the folder, the hostname and the database name now.
  *  An existing branch is taken as it is named: the topic is found by it. */
-const slug = computed(() => (mode.value === 'existing' ? (picked.value ?? '') : slugify(name.value)))
+const slug = computed(() =>
+  mode.value === 'existing'
+    ? (picked.value ?? '')
+    : ticket.value
+      ? ticketSlug(ticket.value.key, name.value)
+      : slugify(name.value),
+)
 
 const taken = computed(() =>
   state.topics.some((f) => f.projectId === state.activeProjectId && f.slug === slug.value && f.state !== 'closed'),
 )
 
 /** On an existing branch the name is optional: the branch's own will do. */
-const ready = computed(() => (mode.value === 'existing' ? !!picked.value : !!name.value.trim()))
+const ready = computed(() => (mode.value === 'existing' ? !!picked.value : !!name.value.trim() || !!ticket.value))
 const canOpen = computed(() => ready.value && selected.value.length > 0 && !taken.value)
 
 /* ── §7 — the local config a worktree cannot check out ───────────────────
@@ -424,6 +532,13 @@ watch(
     mode.value = 'new'
     picked.value = null
     branchOpen.value = false
+    ticket.value = null
+    ticketOpen.value = false
+    ticketRows.value = []
+    ticketError.value = ''
+    connecting.value = false
+    tickets.value = null
+    void loadTickets()
     branchesByRepo.value = {}
     void loadBranches()
     setup.value = 'isolated'
@@ -440,8 +555,9 @@ watch(
 
 /** Innermost layer first: esc closes the branch list before it closes the sheet. */
 function close() {
-  if (branchOpen.value) {
+  if (branchOpen.value || ticketOpen.value) {
     branchOpen.value = false
+    ticketOpen.value = false
     return
   }
   if (!busy.value) state.topicDialogOpen = false
@@ -457,11 +573,16 @@ async function submit() {
   const bases = Object.fromEntries(
     Object.entries(repoBase.value).filter(([id, v]) => v && selected.value.includes(id)),
   )
+  // From a ticket the branch is named, not derived from the name: the key
+  // leads it, as it is written. Opened as a named branch, one that someone
+  // already made from the ticket on origin is tracked rather than forked.
+  const t = mode.value === 'new' ? ticket.value : null
   await openTopic({
-    name: name.value.trim(),
+    name: name.value.trim() || t?.title || '',
     setup: setup.value,
     repoWorkspaceIds: selected.value,
     ...(onBranch.value ? { branch: onBranch.value } : {}),
+    ...(t ? { branch: slug.value, ticket: { provider: 'jira', key: t.key, title: t.title, status: t.status, url: t.url } } : {}),
     ...(forks && base.value ? { base: base.value } : {}),
     ...(forks && Object.keys(bases).length ? { bases } : {}),
     ...(approved.length ? { seed: approved, rememberSeed: remember.value } : {}),
@@ -489,6 +610,68 @@ async function submit() {
       <div class="seg wide">
         <button :class="{ on: mode === 'new' }" @click="setMode('new')">New branch</button>
         <button :class="{ on: mode === 'existing' }" @click="setMode('existing')">Existing branch</button>
+      </div>
+
+      <!-- §5 — first in New, because picking one fills the name under it. -->
+      <div v-if="mode === 'new' && tickets" class="field">
+        <span class="lbl">Ticket <span class="dim">optional</span></span>
+        <div class="bline">
+          <div ref="ticketRoot" class="bpick">
+            <button class="bseg press" :class="{ on: ticketOpen || connecting, blank: !ticket }" @click="toggleTicket">
+              <Ticket class="sm" />
+              <template v-if="ticket">
+                <code class="mono tkey">{{ ticket.key }}</code>
+                <span class="nm tname">{{ ticket.title }}</span>
+                <span class="bnote" :class="ticket.phase">{{ ticket.status }}</span>
+              </template>
+              <span v-else class="bname">{{ tickets.connected ? 'Choose a ticket…' : 'Connect Jira…' }}</span>
+              <ChevronDown class="ch" />
+            </button>
+            <button v-if="ticket" class="icon-btn tdrop" title="Not from a ticket" @click="ticket = null">
+              <X class="sm" />
+            </button>
+
+            <div v-if="ticketOpen" class="menu bmenu">
+              <input
+                ref="ticketField"
+                v-model="ticketQ"
+                class="find"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="Find a ticket, or its key…"
+              >
+              <div class="rows">
+                <p v-if="ticketError" class="bhint bad">{{ ticketError }}</p>
+                <p v-else-if="ticketLoading && !ticketRows.length" class="bhint">Asking Jira…</p>
+                <template v-else>
+                  <button
+                    v-for="t in ticketRows"
+                    :key="t.key"
+                    :class="{ sel: t.key === ticket?.key }"
+                    :disabled="!!ticketTopic(t.key)"
+                    :title="ticketTopic(t.key) ? 'Already the topic \u201c' + ticketTopic(t.key) + '\u201d' : t.type + (t.assignee ? ', ' + t.assignee : ', unassigned')"
+                    @click="pickTicket(t)"
+                  >
+                    <code class="mono tkey">{{ t.key }}</code>
+                    <span class="nm">{{ t.title }}</span>
+                    <span v-if="ticketTopic(t.key)" class="bnote">has a topic</span>
+                    <span v-else class="bnote" :class="t.phase">{{ t.status }}</span>
+                  </button>
+                  <p v-if="!ticketRows.length" class="bhint">
+                    {{ ticketQ.trim() ? 'Nothing matches.' : 'No open ticket of yours.' }}
+                  </p>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+        <TicketConnect
+          v-if="connecting && !tickets.connected && state.activeProjectId"
+          :project-id="state.activeProjectId"
+          :status="tickets"
+          @connected="onConnected"
+        />
       </div>
 
       <div v-if="mode === 'new'" class="field">
@@ -907,6 +1090,15 @@ async function submit() {
   color: var(--text-dim);
 }
 .bhint { margin: 0; padding: 10px 9px; font-size: var(--fs-xs); color: var(--text-dim); }
+.bhint.bad { color: var(--danger); }
+
+/* §5 — the ticket line: the branch line's shape, with the key where the
+   branch name is. The status is ink only once the ticket is under way. */
+.tkey { flex: none; font-size: var(--fs-xs); color: var(--text-muted); }
+.tname { color: var(--text); }
+.bnote.doing { color: var(--accent); }
+.bnote.done { color: var(--ok); }
+.tdrop { flex: none; align-self: center; margin-right: 5px; }
 
 /* One bordered list, as On disk is in Add a repository: the rows are a set,
    and loose checkboxes on the card read as three unrelated settings. */

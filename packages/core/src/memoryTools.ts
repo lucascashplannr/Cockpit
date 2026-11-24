@@ -2,6 +2,7 @@ import { MEMORY_NEW, MEMORY_OFF, STATE_SECTION, conversationRef } from '@cockpit
 import type { Actor, Conversation } from '@cockpit/shared'
 import * as docsTools from './docsTools.js'
 import * as peersTools from './peersTools.js'
+import * as ticketTools from './ticketTools.js'
 import * as wrapTools from './wrapTools.js'
 import * as memory from './memory.js'
 import { getWorkspace } from './registry.js'
@@ -174,7 +175,15 @@ export function signature(c: Conversation): string {
  * `own` collects the lines this conversation wrote, so that what is passed on
  * to it later as "new since your last turn" is only what *others* wrote.
  */
-export function handle(c: Conversation, own: Set<string>, msg: JsonRpc): Record<string, unknown> | null {
+/**
+ * One JSON-RPC message from the engine, answered. Every tool answers at once
+ * but `ticket_read`, which has to ask the tracker: that one call is a Promise.
+ */
+export function handle(
+  c: Conversation,
+  own: Set<string>,
+  msg: JsonRpc,
+): Record<string, unknown> | Promise<Record<string, unknown>> | null {
   if (msg.id === undefined) return null
   const reply = (result: unknown): Record<string, unknown> => ({ jsonrpc: '2.0', id: msg.id, result })
   const fail = (message: string): Record<string, unknown> => ({
@@ -201,6 +210,7 @@ export function handle(c: Conversation, own: Set<string>, msg: JsonRpc): Record<
           // joined by another one tomorrow, and its tool list is fixed at launch.
           ...peersTools.TOOLS,
           ...wrapTools.tools(),
+          ...(ticketTools.available(c) ? ticketTools.TOOLS : []),
         ],
       })
     case 'tools/call': {
@@ -208,6 +218,7 @@ export function handle(c: Conversation, own: Set<string>, msg: JsonRpc): Record<
       if (docsTools.NAMES.includes(name)) return reply(docsTools.call(c, name, msg.params?.arguments ?? {}))
       if (peersTools.NAMES.includes(name)) return reply(peersTools.call(c, name, msg.params?.arguments ?? {}))
       if (wrapTools.NAMES.includes(name)) return reply(wrapTools.call(c, name, msg.params?.arguments ?? {}))
+      if (ticketTools.NAMES.includes(name)) return ticketTools.call(c, name, msg.params?.arguments ?? {}).then(reply)
       return reply(call(c, own, name, msg.params?.arguments ?? {}))
     }
     default:

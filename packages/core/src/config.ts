@@ -67,6 +67,11 @@ export interface LocalConfig {
   contextLimit: number | null
   shell: string | null
   journalRetentionDays: number
+  /**
+   * §5 — the account each ticket tracker is reached as, by site. Only who: the
+   * token is in the keychain (`tickets/credential.ts`), never in this file.
+   */
+  trackers?: Record<string, { email: string }>
 }
 
 const DEFAULTS: LocalConfig = {
