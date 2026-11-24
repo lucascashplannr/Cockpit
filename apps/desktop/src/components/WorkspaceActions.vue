@@ -8,7 +8,7 @@ import OverflowMenu from './OverflowMenu.vue'
 import {
   activeWorkspace, askCommand, chooseCommand, chooseServer, chosenCommand, chosenServer, client,
   busyVerb, busyWord, gitBusy, guard, openCommit, openDeclarations, requestPlan, runningServers, runtimeBusy, state, stillBusy,
-  toggleWorkspaceRuntime,
+  pushCount, toggleWorkspaceRuntime,
 } from '../core/store.js'
 
 /**
@@ -406,7 +406,7 @@ async function undo() {
         <template v-if="op === 'push'"><LoaderCircle class="spin" /><span class="vl">Pushing…</span></template>
         <template v-else>
           <ArrowUpFromLine /><span class="vl">Push</span>
-          <span v-if="git.ahead" class="cnt">{{ git.ahead }}</span>
+          <span v-if="pushCount(git)" class="cnt">{{ pushCount(git) }}</span>
         </template>
       </button>
     </span>

@@ -9,7 +9,7 @@ import type { Workspace } from '@cockpit/shared'
 import StripDots, { type StripSlot } from './StripDots.vue'
 import {
   activeProject, activityFor, busyVerb, busyWord, gitBusy, onProject, openContextMenu, pickRepo, projectNarrowing, selectedGroupId, selectedTopicId, selectWorkspace,
-  repoMark, shortName, state,
+  pushCount, repoMark, shortName, state,
 } from '../core/store.js'
 
 /**
@@ -135,7 +135,7 @@ const tip = computed(() => {
   const g = w.value.git
   const facts: string[] = []
   if (g) {
-    if (g.ahead) facts.push(g.ahead + ' to push')
+    if (pushCount(g)) facts.push(pushCount(g) + ' to push')
     if (behindBase.value) facts.push(behindBase.value + ' behind ' + (g.base ?? 'the base'))
     if (toPull.value) facts.push(toPull.value + ' to pull')
     if (dirty.value) facts.push(dirty.value + ' uncommitted')
@@ -215,8 +215,8 @@ const lead = computed(() => {
     <span v-if="!narrow" class="meta num">
       <!-- Absent capability, absent indicator (§3.9): no git means no counters. -->
       <template v-if="w.git">
-        <span v-if="w.git.ahead" class="c ahead" :title="w.git.ahead + ' commit(s) ahead'">
-          <ArrowUp class="sm" />{{ w.git.ahead }}
+        <span v-if="pushCount(w.git)" class="c ahead" :title="pushCount(w.git) + ' commit(s) to push'">
+          <ArrowUp class="sm" />{{ pushCount(w.git) }}
         </span>
         <!-- One ↓, and it counts whichever distance this row can actually act
              on: the base while there is a base to catch up from, and otherwise

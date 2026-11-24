@@ -5,7 +5,7 @@ import ProjectRail from './components/ProjectRail.vue'
 import WorkspaceList from './components/WorkspaceList.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import ScopeBar from './components/ScopeBar.vue'
-import ConflictPanel from './components/ConflictPanel.vue'
+import ConflictsTab from './components/tabs/ConflictsTab.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import RunCommandDialog from './components/RunCommandDialog.vue'
@@ -31,7 +31,7 @@ import TrafficLights from './components/TrafficLights.vue'
 import Splitter from './components/Splitter.vue'
 import {
   LAYOUT_LIMITS, LIST_NARROW, activeWorkspace, client, closeDeclarations, state, goTo, guard, keyTargets, layout, listWide,
-  onProject, requestPlan, resetColumnWidth, resetPlaceWidth, saveLayout, savePlaceWidth, setColumnWidth, showsAgent, showsReview, shownReviewTool, stepAttachment,
+  conflictWorkspace, onProject, requestPlan, resetColumnWidth, resetPlaceWidth, saveLayout, savePlaceWidth, setColumnWidth, showsAgent, showsReview, shownReviewTool, stepAttachment,
   openPalette, searchFor, stepThread, stepView, toggleList,
 } from './core/store.js'
 
@@ -351,10 +351,13 @@ onUnmounted(() => {
     <div class="right">
       <ScopeBar />
 
-      <!-- §3.7 — above both columns, for the same reason: while a rebase is
-           stopped, none of what is below is the next thing to do, and that is
-           as true of a diff as it is of a thread. Absent otherwise (§3.9). -->
-      <ConflictPanel />
+      <!-- §3.7 — a merge or rebase stopped on what you stand on is not one
+           tool among others: until it ends, git refuses every verb below and
+           an agent writing files in the middle of it is a hazard. So it takes
+           the right of the window, both columns, and gives it back the moment
+           Continue or Abort ends it. Other repositories and topics in the
+           list are not held up. -->
+      <ConflictsTab v-if="conflictWorkspace" :workspace="conflictWorkspace" class="takeover" />
 
       <!-- §12 — the two things the right of the window can be, and the three
            ways to divide it between them. In `split` both are here and the
@@ -363,7 +366,7 @@ onUnmounted(() => {
            drag. Unmounted rather than hidden: a terminal and a diff behind a
            `display:none` are still a subscription and still a scroll position
            pretending to be a layout. -->
-      <div class="panes" :style="panesStyle">
+      <div v-else class="panes" :style="panesStyle">
         <ContextPanel v-if="showsAgent" />
         <ReviewTools
           v-if="showsReview"
@@ -445,6 +448,9 @@ onUnmounted(() => {
    than a grid row, because the bar is as tall as its contents and the panes
    take everything that is left. */
 .right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* The resolver, in place of both columns, while what you stand on is stopped. */
+.takeover { flex: 1; min-height: 0; }
 
 /* Where the ladder actually happens. `position: relative` for the drawer that
    hangs from the underside of the bar, and for the divider between the two. */

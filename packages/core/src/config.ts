@@ -24,6 +24,8 @@ export const PROJECT_DEFAULTS: ProjectSettings = {
   logo: null,
   repoMarks: {},
   skillsOff: [],
+  landing: 'send',
+  mergeHere: false,
 }
 
 /**
@@ -165,6 +167,8 @@ export function projectSettings(root: string): ProjectSettings {
     logo: row?.settings?.logo ?? PROJECT_DEFAULTS.logo,
     repoMarks: row?.settings?.repoMarks ?? PROJECT_DEFAULTS.repoMarks,
     skillsOff: row?.settings?.skillsOff ?? PROJECT_DEFAULTS.skillsOff,
+    landing: row?.settings?.landing === 'pr' ? 'pr' : 'send',
+    mergeHere: row?.settings?.mergeHere === true,
   }
 }
 
@@ -207,6 +211,8 @@ export function setProjectSettings(root: string, patch: Partial<ProjectSettings>
       ...(next.logo ? { logo: next.logo } : {}),
       ...(Object.keys(marks).length ? { repoMarks: marks } : {}),
       ...(next.skillsOff.length ? { skillsOff: next.skillsOff } : {}),
+      ...(next.landing === 'pr' ? { landing: 'pr' as const } : {}),
+      ...(next.landing === 'pr' && next.mergeHere ? { mergeHere: true } : {}),
     }
     if (!Object.keys(row.settings!).length) delete row.settings
     out = next

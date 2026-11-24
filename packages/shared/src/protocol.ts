@@ -7,7 +7,7 @@ import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
   AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AttachmentInput, BranchRef, Conversation, ConversationMark, ConversationMarkKind, ConversationSummary, LoadoutChoice, PermissionMode, SkillInfo, SkillWhere,
-  CockpitSettings,
+  CockpitSettings, ConflictFile, ConflictProposal, ReviewStatus,
   CommandRunResult, CommitDetail, CommitGraph, FileBlame, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DeclaredServer,
   DatabasePlan,
@@ -557,7 +557,7 @@ export interface Rpc {
    */
   'topic.merge': {
     params: { topicId: string; push?: boolean; base?: string }
-    result: { ok: boolean; detail: string; plan: PlanPreview | null }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null; needsCatchUp?: boolean }
   }
   /**
    * §4 — every branch of the topic to origin, in one act.
@@ -745,6 +745,31 @@ export interface Rpc {
   /** Marks paths resolved by hand — the escape hatch for a file meant to
    *  contain conflict markers, which `continue` refuses over on purpose. */
   'git.stage': { params: { workspaceId: string; paths: string[] }; result: GitResolveResult }
+  /** §5 — the pull request of each checkout's branch. Cached briefly; `force` asks the host again. */
+  'review.status': { params: { workspaceIds: string[]; force?: boolean }; result: ReviewStatus[] }
+  /** Pushes the branch and opens a pull request into `target` (or finds the open one). */
+  'review.open': {
+    params: { workspaceId: string; title: string; body: string; target: string }
+    result: { ok: boolean; detail: string; status: ReviewStatus | null }
+  }
+  /** Merges the open pull request on the host, where the project allows it. */
+  'review.merge': { params: { workspaceId: string }; result: { ok: boolean; detail: string; status: ReviewStatus | null } }
+  /** §3.7 — a conflicted file as hunks, each side named. Re-read every time. */
+  'conflict.file': { params: { workspaceId: string; path: string }; result: ConflictFile }
+  /** The model's resolution of each hunk, as text. Writes nothing. */
+  'conflict.propose': { params: { workspaceId: string; path: string }; result: ConflictProposal }
+  /** Re-merges one file, markers and all. */
+  'conflict.restart': { params: { workspaceId: string; path: string }; result: { ok: boolean; detail: string } }
+  /** One side of a file, whole, staged. A side that deleted it deletes it. */
+  'conflict.take': {
+    params: { workspaceId: string; path: string; side: 'ours' | 'theirs' }
+    result: { ok: boolean; detail: string }
+  }
+  /** Writes a resolution, refused if the file moved since it was read. Not staged. */
+  'conflict.save': {
+    params: { workspaceId: string; path: string; content: string; expectMtimeMs: number | null }
+    result: { ok: boolean; conflict?: boolean; mtimeMs: number }
+  }
   /**
    * §16 — throwing away uncommitted work, whole files or one hunk. Never a bare
    * restore: what goes is stashed first, titled "Discarded …", and `entry` is

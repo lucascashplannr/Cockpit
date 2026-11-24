@@ -90,6 +90,10 @@ export type EventType =
    */
   | 'git.message_drafted'
   | 'git.conflict.resolved'
+  | 'git.conflict.saved'
+  | 'review.opened'
+  | 'review.merged'
+  | 'git.conflict.proposed'
   | 'git.conflict.aborted'
   /** §16 — uncommitted work thrown away, into a stash entry rather than nowhere. */
   | 'git.discarded'

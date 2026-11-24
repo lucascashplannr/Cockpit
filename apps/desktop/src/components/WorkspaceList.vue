@@ -15,7 +15,7 @@ import {
   hoverTopicMarkMenu,
   leaveMarkMenu,
   openTopicMarkMenu,
-  selectedGroupId, selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
+  pushCount, selectedGroupId, selectedTopicId, state, toggleTopicCollapsed, workspaceGroups,
 } from '../core/store.js'
 import type { ListGroup } from '../core/store.js'
 
@@ -139,7 +139,7 @@ function hoverOwn(e: MouseEvent, topicId: string): void {
   hoverTopicMarkMenu(underOwn(e), topicId)
 }
 
-function topicTip(g: { title: string | null; topicId: string | null; workspaces: { git: { ahead: number } | null }[] }): string {
+function topicTip(g: { title: string | null; topicId: string | null; workspaces: { git: Parameters<typeof pushCount>[0] }[] }): string {
   const id = g.topicId!
   const a = activityFor('topic', id)
   const facts: string[] = []
@@ -160,8 +160,8 @@ function topicTip(g: { title: string | null; topicId: string | null; workspaces:
  * reading the first, and the second was the count in the header that said
  * what the rows underneath already said.
  */
-function unpushed(ws: { git: { ahead: number } | null }[]): number {
-  return ws.reduce((n, w) => n + (w.git?.ahead ?? 0), 0)
+function unpushed(ws: { git: Parameters<typeof pushCount>[0] }[]): number {
+  return ws.reduce((n, w) => n + pushCount(w.git), 0)
 }
 
 /**

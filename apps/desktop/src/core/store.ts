@@ -2,10 +2,10 @@ import { computed, nextTick, reactive, ref, shallowRef, toRaw, watch } from 'vue
 import type {
   AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AgentScopePreview, AgentTurn, Attachment, AttachmentInput,
   Conversation, ConversationMarkKind, CockpitEvent, CockpitSettings,
-  CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
+  CommitPreview, ConflictProposal, CoreStatus, ReviewStatus, Declaration, Declarations, DeclaredCommand, DeclaredServer, EngineOptions, GuessedServer, PermissionMode,
   DatabasePlan, DocsInfo, DocsOffer, DocsPage, DocsProposalSet, DocsSignals, ErasedMemory, MemorySummary, Topic,
   ApplyResult, NewProjectSource, PlanPreview, ProcessLog, Project, RevertPreviewEntry, SeedProposal,
-  LoadoutChoice, ProjectSettings, QuoteSource, RpcResult, SkillInfo, SkillWhere, RuntimeUpResult, ServerBoardRow, StashEntry, Workspace,
+  GitState, LoadoutChoice, ProjectSettings, QuoteSource, RpcResult, SkillInfo, SkillWhere, RuntimeUpResult, ServerBoardRow, StashEntry, Workspace,
 } from '@cockpit/shared'
 import { anchorsIn, handleFor, matchesBranch, newId, protectedPatterns, slugify, splitPrompt } from '@cockpit/shared'
 import { CoreClient, CoreError } from './client.js'
@@ -545,7 +545,7 @@ export const client = new CoreClient(CORE_URL, {
     state.topics = f
   },
   onWorkspaces(w) {
-    const next = sameWhereSame(state.workspaces, w)
+    const next = sameWhereSame(state.workspaces, calm(w))
     if (next === null) return
     state.workspaces = next
     ensureSelection()
@@ -647,6 +647,59 @@ export const client = new CoreClient(CORE_URL, {
  * rename sets its title in place, and the list must not keep that over a
  * push that says otherwise.
  */
+/**
+ * §3.7 — a repository mid-operation, drawn as what it is: one thing to finish.
+ *
+ * While a merge or a rebase is stopped, status reads true and misleading
+ * numbers. Every file that merged cleanly is staged for the commit Continue
+ * makes, so the row said "40 uncommitted" about work nobody did and that
+ * vanished into a commit on its own; ahead and behind are measured from a
+ * HEAD that is halfway somewhere. None of them is a thing to act on until the
+ * operation ends, and every verb that would act on them is refused by git.
+ *
+ * So the window stops counting for that time. The core's probe is untouched,
+ * and so is every check it makes before a plan (§3.4): this only changes what
+ * the rows, the strip, the rail and the bar draw. What the counts meant is
+ * kept on the operation itself — `merged`, `held` — for the one place that
+ * should say it.
+ */
+function calm(list: Workspace[]): Workspace[] {
+  return list.map((w) => {
+    const g = w.git
+    if (!g?.operation) return w
+    return {
+      ...w,
+      git: {
+        ...g,
+        ahead: 0,
+        behind: 0,
+        incoming: 0,
+        aheadOfBase: 0,
+        behindBase: 0,
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+      },
+    }
+  })
+}
+
+/**
+ * §4 — what a push sends that is yours.
+ *
+ * After a Catch up the branch was replayed onto the base, and `ahead` against
+ * its own remote counts every base commit it picked up along with yours:
+ * three commits of work read as "Push 33". The push does send all of those
+ * refs, but the 30 are already on origin under the base's name; the number a
+ * person reads off the button is the work, and the work is `aheadOfBase`.
+ */
+export function pushCount(g: GitState | null | undefined): number {
+  if (!g) return 0
+  const own = !!g.branch && g.upstream === 'origin/' + g.branch
+  const rewritten = own && g.behind > 0 && g.incoming === 0
+  return rewritten && g.aheadOfBase != null && g.aheadOfBase > 0 ? Math.min(g.ahead, g.aheadOfBase) : g.ahead
+}
+
 function sameWhereSame<T extends { id: string }>(current: T[], incoming: T[]): T[] | null {
   const raw = toRaw(current)
   const before = new Map(raw.map((x) => [x.id, toRaw(x)]))
@@ -747,7 +800,7 @@ async function load(): Promise<void> {
     client.call('config.get', undefined).catch(() => null),
   ])
   state.projects = projects
-  state.workspaces = workspaces
+  state.workspaces = calm(workspaces)
   state.topics = topics
   state.agents = agents
   state.events = events
@@ -4550,7 +4603,7 @@ async function refreshProjects(): Promise<void> {
     client.call('workspace.list', {}),
   ])
   state.projects = projects
-  state.workspaces = workspaces
+  state.workspaces = calm(workspaces)
   ensureSelection()
   // A settings change is how docs get linked, and a reconnect is how a fresh
   // window first learns of them: both come through here.
@@ -6507,7 +6560,11 @@ export async function mergeTopic(topicId: string, push: boolean): Promise<void> 
   const res = await guard(() => client.call('topic.merge', { topicId, push }))
   if (!res) return
   if (!res.ok || !res.plan) {
-    toast('error', res.detail)
+    const name = state.topics.find((t) => t.id === topicId)?.name ?? 'the topic'
+    toast('error', 'Not sent: ' + name, {
+      lines: res.detail.split('; '),
+      ...(res.needsCatchUp ? { action: { label: 'Catch up', run: () => void rebaseTopic(topicId) } } : {}),
+    })
     return
   }
   state.pendingPlan = res.plan
@@ -6520,7 +6577,98 @@ export async function mergeTopic(topicId: string, push: boolean): Promise<void> 
  * resolved in the IDE updates this panel without anyone asking it to.
  */
 
-export const activeConflict = computed(() => activeWorkspace.value?.git?.operation ?? null)
+/**
+ * The checkouts a topic's operation can be stopped in: its own branches, and
+ * the main checkout of each repository, which is where Send to merges. A
+ * conflict on Send was in a row the topic does not list, so standing on the
+ * topic showed every verb live over a merge that was waiting on you.
+ */
+export function topicStops(topicId: string): Workspace[] {
+  const own = state.workspaces.filter((w) => w.topicId === topicId && w.repo)
+  const folders = new Set(own.map((w) => w.path.split('/').pop()))
+  const mains = state.workspaces.filter(
+    (w) => w.kind === 'main' && w.repo && w.projectId === own[0]?.projectId && folders.has(w.path.split('/').pop()),
+  )
+  return [...own, ...mains.filter((m) => !own.includes(m))].filter((w) => !!w.git?.operation)
+}
+
+/**
+ * The one checkout the conflict panel speaks for: the one you stand on, or,
+ * on a topic, the first of its repositories that is stopped.
+ */
+export const conflictWorkspace = computed<Workspace | null>(() => {
+  const w = activeWorkspace.value
+  if (w?.git?.operation) return w
+  if (onProject.value) return projectScopeWorkspaces.value.find((x) => !!x.git?.operation) ?? null
+  const t = selectedTopicGroup.value?.topic
+  return t ? (topicStops(t.id)[0] ?? null) : null
+})
+
+/**
+ * What the window holds about a conflict while you resolve it, and nothing
+ * the disk can answer: the model's proposals (each tied to the file's mtime,
+ * so an edit elsewhere drops them) and every path seen in this operation, so
+ * a file staged on the way stays in the list as done rather than vanishing.
+ */
+export const conflictUi = reactive({
+  path: null as string | null,
+  proposals: {} as Record<string, ConflictProposal>,
+  proposing: {} as Record<string, boolean>,
+  seen: {} as Record<string, string[]>,
+})
+
+export function conflictKey(w: Workspace): string {
+  return w.id + ':' + (w.git?.operation?.kind ?? '')
+}
+
+export async function proposeConflict(w: Workspace, path: string): Promise<void> {
+  const k = w.id + ':' + path
+  if (conflictUi.proposing[k]) return
+  conflictUi.proposing[k] = true
+  try {
+    const res = await guard(() => client.call('conflict.propose', { workspaceId: w.id, path }))
+    if (!res) return
+    if (!res.ok) toast('error', 'No proposal for ' + path, { lines: [res.detail] })
+    else conflictUi.proposals[k] = res
+  } finally {
+    delete conflictUi.proposing[k]
+  }
+}
+
+/** Every file still carrying markers, two at a time: each is one model call. */
+export async function proposeAllConflicts(w: Workspace): Promise<void> {
+  const todo = [...(w.git?.operation?.unresolvedPaths ?? [])].filter((p) => !conflictUi.proposals[w.id + ':' + p])
+  const next = async (): Promise<void> => {
+    const p = todo.shift()
+    if (!p) return
+    await proposeConflict(w, p)
+    return next()
+  }
+  await Promise.all([next(), next()])
+}
+
+export async function saveConflict(w: Workspace, path: string, content: string, mtimeMs: number | null): Promise<boolean> {
+  const res = await guard(() => client.call('conflict.save', { workspaceId: w.id, path, content, expectMtimeMs: mtimeMs }))
+  if (!res) return false
+  if (!res.ok) {
+    toast('error', path + ' changed on disk', { lines: ['It was edited since it was read. Read again and choose once more.'] })
+    return false
+  }
+  delete conflictUi.proposals[w.id + ':' + path]
+  return true
+}
+
+export async function restartConflict(w: Workspace, path: string): Promise<void> {
+  const res = await guard(() => client.call('conflict.restart', { workspaceId: w.id, path }))
+  if (res && !res.ok) toast('error', 'Could not start ' + path + ' over', { lines: [res.detail] })
+}
+
+export async function takeConflictSide(w: Workspace, path: string, side: 'ours' | 'theirs'): Promise<void> {
+  const res = await guard(() => client.call('conflict.take', { workspaceId: w.id, path, side }))
+  if (res && !res.ok) toast('error', 'Could not take that side of ' + path, { lines: [res.detail] })
+}
+
+export const activeConflict = computed(() => conflictWorkspace.value?.git?.operation ?? null)
 
 /** Every workspace mid-operation, so a topic-wide rebase can be picked up
  *  from whichever repository the user is looking at. */
@@ -6531,7 +6679,7 @@ export const conflictedWorkspaces = computed(() =>
 export const conflictBusy = ref(false)
 
 export async function resolveConflict(action: 'continue' | 'abort' | 'skip'): Promise<void> {
-  const w = activeWorkspace.value
+  const w = conflictWorkspace.value
   if (!w || conflictBusy.value) return
   conflictBusy.value = true
   const res = await guard(() => client.call('git.resolve', { workspaceId: w.id, action }))
@@ -6548,7 +6696,7 @@ export async function resolveConflict(action: 'continue' | 'abort' | 'skip'): Pr
 
 /** The escape hatch for a file whose content is *meant* to contain markers. */
 export async function markResolved(paths: string[]): Promise<void> {
-  const w = activeWorkspace.value
+  const w = conflictWorkspace.value
   if (!w || !paths.length || conflictBusy.value) return
   conflictBusy.value = true
   const res = await guard(() => client.call('git.stage', { workspaceId: w.id, paths }))
@@ -6558,9 +6706,115 @@ export async function markResolved(paths: string[]): Promise<void> {
 
 /** Opens one conflicted file where it can actually be fixed (§2). */
 export async function openConflictFile(path: string): Promise<void> {
-  const w = activeWorkspace.value
+  const w = conflictWorkspace.value
   if (!w) return
   await guard(() => client.call('workspace.openIn', { workspaceId: w.id, target: 'ide', path }))
+}
+
+/* ── pull requests (§5, `review`) ─────────────────────────────────────────
+ * Read from the host, cached by the core for under a minute. The window asks
+ * for the checkouts in view when they come into view, and again every minute
+ * while they stay there; nothing else polls.
+ */
+
+export const prStatus = reactive<Record<string, ReviewStatus>>({})
+export const prBusy = ref<null | 'open' | 'merge' | 'read'>(null)
+
+export function landingOf(projectId: string | null | undefined): { landing: 'send' | 'pr'; mergeHere: boolean } {
+  const s = state.projects.find((p) => p.id === projectId)?.settings
+  return { landing: s?.landing ?? 'send', mergeHere: !!s?.mergeHere }
+}
+
+export async function refreshReview(ids: string[], force = false): Promise<void> {
+  if (!ids.length) return
+  if (force) prBusy.value = 'read'
+  const res = await client.call('review.status', { workspaceIds: ids, force }).catch(() => null)
+  if (force) prBusy.value = null
+  for (const r of res ?? []) prStatus[r.workspaceId] = r
+}
+
+/** The checkouts of a topic that have something of their own to put up for review. */
+function prCandidates(ws: Workspace[]): Workspace[] {
+  return ws.filter((w) => !!w.repo && !!w.git?.branch && w.git.branch !== w.git.base && (w.git.aheadOfBase ?? 0) > 0)
+}
+
+/** Asks, then pushes each branch and opens a pull request for it into its base. */
+export function askOpenPr(title: string, ws: Workspace[]): void {
+  const todo = prCandidates(ws).filter((w) => !prStatus[w.id]?.pr || !['open', 'draft'].includes(prStatus[w.id]!.pr!.state))
+  if (!todo.length) {
+    toast('error', 'Nothing to open a pull request for', { lines: ['No repository here has commits its base does not.'] })
+    return
+  }
+  const host = prStatus[todo[0]!.id]?.host
+  const where = host === 'bitbucket' ? 'Bitbucket' : host === 'github' ? 'GitHub' : 'the host'
+  state.pendingConfirm = {
+    title: todo.length === 1 ? 'Open a pull request into ' + todo[0]!.git!.base + '?' : 'Open ' + todo.length + ' pull requests?',
+    quote: title,
+    body: [
+      'Each branch is pushed to origin first, then the request is opened on ' + where + '. Nothing is merged.',
+      ...todo.map((w) => w.name + ': ' + w.git!.branch + ' into ' + w.git!.base + ', ' + w.git!.aheadOfBase + ' commit(s)'),
+    ],
+    verb: todo.length === 1 ? 'Open pull request' : 'Open them',
+    done: todo.length === 1 ? 'Pull request opened' : 'Pull requests opened',
+    danger: false,
+    run: async () => {
+      prBusy.value = 'open'
+      try {
+        for (const w of todo) {
+          const subjects = await client.call('git.log', { workspaceId: w.id, limit: (w.git!.aheadOfBase ?? 0) || 1 }).catch(() => [])
+          const body = (subjects as { subject: string }[]).map((c) => '- ' + c.subject).join('\n')
+          const res = await guard(() => client.call('review.open', { workspaceId: w.id, title, body, target: w.git!.base! }))
+          if (!res) return false
+          if (!res.ok) {
+            toast('error', 'Pull request not opened in ' + w.name, { lines: [res.detail] })
+            return false
+          }
+          if (res.status) prStatus[w.id] = res.status
+        }
+        return true
+      } finally {
+        prBusy.value = null
+      }
+    },
+  }
+}
+
+export function askMergePr(ws: Workspace[]): void {
+  const open = ws.filter((w) => prStatus[w.id]?.pr?.state === 'open')
+  if (!open.length) return
+  const one = open.length === 1 ? prStatus[open[0]!.id]!.pr! : null
+  state.pendingConfirm = {
+    title: one ? 'Merge #' + one.number + ' into ' + one.target + '?' : 'Merge ' + open.length + ' pull requests?',
+    body: [
+      'Merged on the host with a merge commit. The branch stays.',
+      ...open.map((w) => { const p = prStatus[w.id]!.pr!; return w.name + ': #' + p.number + ' into ' + p.target }),
+    ],
+    verb: one ? 'Merge #' + one.number : 'Merge them',
+    done: 'Merged',
+    danger: false,
+    run: async () => {
+      prBusy.value = 'merge'
+      try {
+        for (const w of open) {
+          const res = await guard(() => client.call('review.merge', { workspaceId: w.id }))
+          if (!res) return false
+          if (res.status) prStatus[w.id] = res.status
+          if (!res.ok) {
+            toast('error', 'Not merged: ' + w.name, { lines: [res.detail] })
+            return false
+          }
+        }
+        return true
+      } finally {
+        prBusy.value = null
+      }
+    },
+  }
+}
+
+export function openPrPage(url: string): void {
+  // The main process sends any window.open to the system browser (§13 rule 1).
+  window.open(url, '_blank')
 }
 
 /**
@@ -6638,7 +6892,7 @@ export async function refreshTopics(): Promise<void> {
     client.call('workspace.list', {}),
   ])
   state.topics = topics
-  state.workspaces = workspaces
+  state.workspaces = calm(workspaces)
   ensureSelection()
 }
 
@@ -7713,3 +7967,4 @@ export async function resumeSession(
 }
 
 export const busy = ref(false)
+

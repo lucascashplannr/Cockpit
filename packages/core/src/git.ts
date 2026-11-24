@@ -230,6 +230,16 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
 
   if (state.headState === 'rebasing' || state.headState === 'merging') {
     state.operation = await probeOperation(cwd, abs)
+    if (state.operation) {
+      // Mid-merge every file that merged cleanly sits staged for the commit
+      // Continue makes; mid-rebase the same is true of the commit being
+      // replayed. Said as what it is, so the window need not count it as work.
+      state.operation.merged = state.staged
+      state.operation.held =
+        existsSync(join(abs, 'rebase-merge', 'autostash')) ||
+        existsSync(join(abs, 'rebase-apply', 'autostash')) ||
+        existsSync(join(abs, 'MERGE_AUTOSTASH'))
+    }
     // Mid-rebase HEAD is detached, so `status` reported no branch. The rebase
     // state knows which branch is being replayed; without this the window says
     // "(detached)" for the whole conflict, which is true and useless.
@@ -351,7 +361,7 @@ export async function probeOperation(cwd: string, abs?: string): Promise<GitOper
 
 /** What a commit is called, preferring a remote branch; the sha if nothing. */
 async function nameOf(cwd: string, sha: string): Promise<string> {
-  const r = await git(cwd, ['name-rev', '--name-only', '--refs=refs/remotes/*', sha], 10_000)
+  const r = await git(cwd, ['name-rev', '--name-only', '--exclude=*/HEAD', '--refs=refs/remotes/*', sha], 10_000)
   const name = r.stdout.trim()
   // name-rev answers "undefined" rather than failing when nothing matches, and
   // it appends "~2" for a commit reached by walking back from a ref — neither

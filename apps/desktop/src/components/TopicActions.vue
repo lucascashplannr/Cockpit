@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { ArrowUp, GitCompareArrows, GitMerge, LoaderCircle, TriangleAlert } from '@lucide/vue'
+import { computed, onUnmounted, watch } from 'vue'
+import { ArrowUp, GitCompareArrows, GitMerge, GitPullRequest, GitPullRequestCreate, LoaderCircle, TriangleAlert } from '@lucide/vue'
 import OverflowMenu from './OverflowMenu.vue'
 import ServerSwitch from './ServerSwitch.vue'
 import type { ListGroup } from '../core/store.js'
 import {
-  busyAmong, busyVerb, busyWord, mergeTopic, pushTopic, rebaseTopic, rerunTopicSetup, showSetupLog, state,
+  busyAmong, busyVerb, busyWord, mergeTopic, pushCount, pushTopic, rebaseTopic, rerunTopicSetup, showSetupLog, state,
+  askMergePr, askOpenPr, landingOf, openPrPage, prBusy, prStatus, refreshReview, topicStops,
 } from '../core/store.js'
 
 /**
@@ -34,7 +35,84 @@ const ws = computed(() => props.group.workspaces)
 const busyOp = computed(() => busyAmong(ws.value.map((w) => w.id)))
 const op = computed(() => busyVerb(busyOp.value ?? undefined))
 
-const ahead = computed(() => ws.value.reduce((n, w) => n + (w.git?.ahead ?? 0), 0))
+const ahead = computed(() => ws.value.reduce((n, w) => n + pushCount(w.git), 0))
+
+/**
+ * §3.7 — a merge or a rebase stopped in one of the topic's repositories, or in
+ * the main checkout Send merges in. Until it ends, Push, Send and Catch up are
+ * verbs git refuses, so they are not on the bar at all: the conflict panel
+ * under it has the ones that apply.
+ */
+const stopped = computed(() => (f.value ? topicStops(f.value.id).length > 0 : false))
+
+/* ── §5 — where the project lands by pull request ─────────────────────────
+ *
+ * Send to gives way to the request: Open PR while there is none, then the
+ * request itself — its number, and the one thing about it that wants you
+ * (conflicts, failing checks, changes asked for, approved). Resolve brings
+ * the base in by merge when it conflicts; Merge is there only on a project
+ * that merges its own requests.
+ */
+const landing = computed(() => landingOf(f.value?.projectId))
+const repoIds = computed(() => ws.value.filter((w) => !!w.repo).map((w) => w.id))
+/** A repository on neither host has nothing to open a request on: Send to stays. */
+const hostless = computed(() => {
+  const rs = repoIds.value.map((id) => prStatus[id]).filter((r) => !!r)
+  return rs.length > 0 && rs.every((r) => !r.host)
+})
+const asksPr = computed(() => landing.value.landing === 'pr')
+const byPr = computed(() => asksPr.value && !hostless.value)
+
+let timer: ReturnType<typeof setInterval> | null = null
+watch(
+  () => (asksPr.value ? repoIds.value.join(',') : ''),
+  (ids) => {
+    if (timer) clearInterval(timer)
+    timer = null
+    if (!ids) return
+    void refreshReview(repoIds.value)
+    timer = setInterval(() => void refreshReview(repoIds.value), 60_000)
+  },
+  { immediate: true },
+)
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
+
+const reviews = computed(() => ws.value.map((w) => prStatus[w.id]).filter((r) => !!r))
+const live = computed(() => reviews.value.filter((r) => r.pr && (r.pr.state === 'open' || r.pr.state === 'draft')).map((r) => r.pr!))
+const merged = computed(() => (live.value.length ? [] : reviews.value.filter((r) => r.pr?.state === 'merged').map((r) => r.pr!)))
+const reviewError = computed(() => reviews.value.find((r) => r.error)?.error ?? null)
+const prConflicts = computed(() => live.value.some((p) => p.conflicts))
+
+/** The one word the chip says, in the order things want you. */
+const prWord = computed(() => {
+  const ps = live.value
+  if (prConflicts.value) return { cls: 'bad', text: 'Conflicts' }
+  if (ps.some((p) => p.checks === 'failing')) return { cls: 'bad', text: 'Checks failing' }
+  if (ps.some((p) => p.review === 'changes')) return { cls: 'warn', text: 'Changes asked' }
+  if (ps.length && ps.every((p) => p.review === 'approved')) return { cls: 'good', text: 'Approved' }
+  if (ps.some((p) => p.checks === 'pending')) return { cls: '', text: 'Checks running' }
+  if (ps.some((p) => p.state === 'draft')) return { cls: '', text: 'Draft' }
+  return { cls: '', text: 'In review' }
+})
+const prLabel = computed(() => (live.value.length === 1 ? '#' + live.value[0]!.number : live.value.length + ' PRs'))
+const prTitle = computed(() =>
+  live.value
+    .map((p) =>
+      '#' + p.number + ' ' + p.title + '\n' + p.source + ' into ' + p.target +
+      [p.review === 'approved' ? 'approved' : p.review === 'changes' ? 'changes requested' : p.review === 'waiting' ? 'waiting for review' : null,
+       p.checks ? 'checks ' + p.checks : null,
+       p.conflicts ? 'conflicts with ' + p.target : null].filter(Boolean).map((x) => '\n' + x).join(''),
+    )
+    .join('\n\n') + '\n\nOpen on ' + (live.value[0]?.host === 'bitbucket' ? 'Bitbucket' : 'GitHub'),
+)
+const canMergePr = computed(
+  () => landing.value.mergeHere && live.value.length > 0 && !prConflicts.value && live.value.every((p) => p.state === 'open'),
+)
+function openPrs(): void {
+  for (const p of live.value) openPrPage(p.url)
+}
 /**
  * §4 — what Send would land, summed. `ahead` is against each branch's own
  * remote and says nothing about the base: push the topic and it reads zero
@@ -161,6 +239,7 @@ const prepTitle = computed(() => {
     <!-- The counterpart of a per-repository commit: nothing about a push is
          specific to one repository's diff, so it is one act across all of
          them. -->
+    <template v-if="!stopped">
     <button
       v-if="canPush || op === 'push'"
       class="btn ghost nudge"
@@ -176,11 +255,57 @@ const prepTitle = computed(() => {
       </template>
     </button>
 
+    <!-- §5 — the pull request, on a project that lands through one. -->
+    <template v-if="byPr">
+      <template v-if="live.length">
+        <button class="btn ghost prchip" :class="prWord.cls" :title="prTitle" @click="openPrs">
+          <GitPullRequest /><span class="vl">{{ prLabel }}</span><span class="pw">{{ prWord.text }}</span>
+        </button>
+        <button
+          v-if="prConflicts"
+          class="btn ghost nudge"
+          :disabled="!!busyOp"
+          :title="'Merge ' + (base ?? 'the base') + ' into the branch and resolve here, then push. Nothing the reviewer read is rewritten.'"
+          @click="rebaseTopic(f!.id)"
+        >
+          <GitCompareArrows /><span class="vl">Resolve</span>
+        </button>
+        <button
+          v-else-if="canMergePr"
+          class="btn ghost ready"
+          :disabled="!!busyOp || !!prBusy"
+          title="Merge on the host with a merge commit"
+          @click="askMergePr(ws)"
+        >
+          <LoaderCircle v-if="prBusy === 'merge'" class="spin" /><GitMerge v-else /><span class="vl">Merge</span>
+        </button>
+      </template>
+      <button
+        v-else-if="canMerge"
+        class="btn ghost"
+        :class="{ ready: !dirty }"
+        :disabled="!!busyOp || !!prBusy || dirty > 0"
+        :title="dirty ? 'Commit first: a pull request carries commits, not uncommitted changes' : reviewError ?? 'Push and open a pull request into ' + (base ?? 'the base')"
+        @click="askOpenPr(f!.name, ws)"
+      >
+        <LoaderCircle v-if="prBusy === 'open'" class="spin" /><GitPullRequestCreate v-else /><span class="vl">Open PR</span>
+        <span v-if="toLand" class="cnt">{{ toLand }}</span>
+      </button>
+      <button
+        v-else-if="merged.length"
+        class="btn ghost prchip good"
+        :title="'Merged into ' + merged[0]!.target + '. Open on the host'"
+        @click="openPrPage(merged[0]!.url)"
+      >
+        <GitMerge /><span class="vl">#{{ merged[0]!.number }}</span><span class="pw">Merged</span>
+      </button>
+    </template>
+
     <!-- §4 — the step the lifecycle was missing: the branch goes onto the
          base, in every repository the topic spans. Green once there is
          something committed to send and nothing in the way of sending it. -->
     <button
-      v-if="canMerge || op === 'merge'"
+      v-if="!byPr && (canMerge || op === 'merge')"
       class="btn ghost"
       :class="{ ready: !dirty, working: op === 'merge' }"
       :disabled="!!busyOp"
@@ -196,6 +321,7 @@ const prepTitle = computed(() => {
     <!-- One plan across every repository it spans, stopping at the first
          conflict and keeping what already replayed. -->
     <button
+      v-if="!(byPr && prConflicts)"
       class="btn ghost"
       :class="{ nudge: behind > 0, working: op === 'rebase' }"
       :disabled="!!busyOp"
@@ -215,18 +341,25 @@ const prepTitle = computed(() => {
       <button :disabled="!canPush" @click="pushTopic(f!.id)">
         <ArrowUp /> Push
       </button>
+      <button v-if="byPr" :disabled="!canMerge || live.length > 0" @click="askOpenPr(f!.name, ws)">
+        <GitPullRequestCreate /> Open PR
+      </button>
       <button :disabled="!canMerge" @click="mergeTopic(f!.id, false)">
         <GitMerge /> {{ sendLabel }}
+      </button>
+      <button v-if="byPr" @click="refreshReview(repoIds, true)">
+        <GitPullRequest /> Refresh pull requests
       </button>
       <button @click="rebaseTopic(f!.id)">
         <GitCompareArrows /> Catch up
       </button>
     </OverflowMenu>
+    </template>
     <!-- The things this checkout runs, after the git verbs, parted from them
          by a hairline. Each sits on a chip — the branch chip's ground — so a
          label and its chevron read as one control and not as a word with a
          stray arrow beside it. -->
-    <i class="sep" />
+    <i v-if="!stopped" class="sep" />
     <!-- §7 — present only while `worktrees.setup` runs, or after it failed. -->
     <button
       v-if="prep?.state === 'running'"
@@ -286,6 +419,14 @@ const prepTitle = computed(() => {
 .ready { color: var(--ok); }
 /* A setup that failed is in the way of Start, so it is the one amber word. */
 .verbs .btn.failed { color: var(--warn); }
+
+/* The request's one word, coloured by whether it wants you. */
+.prchip .pw { color: var(--text-muted); }
+.prchip.bad, .prchip.bad .pw { color: var(--danger); }
+.prchip.warn, .prchip.warn .pw { color: var(--warn); }
+.prchip.good, .prchip.good .pw { color: var(--ok); }
+.verbs .btn .spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .sep { flex: none; width: 1px; height: 16px; margin: 0 6px; background: var(--line); }
 

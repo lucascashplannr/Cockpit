@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { ArrowUp, LoaderCircle } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import ServerSwitch from './ServerSwitch.vue'
-import { busyAmong, busyVerb, projectScopeWorkspaces, pushProject, state } from '../core/store.js'
+import { busyAmong, busyVerb, projectScopeWorkspaces, pushCount, pushProject, state } from '../core/store.js'
 
 /**
  * §4 — a group stands where the project does, over fewer repositories: its
@@ -23,7 +23,7 @@ const ids = computed(() => repos.value.map((w) => w.id))
 const busyOp = computed(() => busyAmong(ids.value))
 const op = computed(() => busyVerb(busyOp.value ?? undefined))
 
-const ahead = computed(() => repos.value.reduce((n, w) => n + (w.git?.ahead ?? 0), 0))
+const ahead = computed(() => repos.value.reduce((n, w) => n + pushCount(w.git), 0))
 
 /** The rule `topic.push` follows: ahead of its remote, or never pushed. */
 const canPush = computed(() =>

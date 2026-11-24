@@ -52,6 +52,82 @@ export interface GitOperation {
    * over these; a path here and not in `conflictedPaths` cannot happen.
    */
   unresolvedPaths: string[]
+  /**
+   * Files the operation already merged without a conflict. Git stages them
+   * for the commit that ends it, so status reads them as uncommitted work;
+   * they are not, they are the operation's own result, waiting.
+   */
+  merged?: number
+  /**
+   * Uncommitted work git set aside on the way in (an autostash) and puts back
+   * when the operation ends, abort included. False when there was none.
+   */
+  held?: boolean
+}
+
+/** §5 — the `review` capability's hosts. */
+export type ReviewHost = 'github' | 'bitbucket'
+
+/** A pull request, read the same way from either host. */
+export interface PullRequest {
+  host: ReviewHost
+  number: number
+  url: string
+  title: string
+  state: 'open' | 'draft' | 'merged' | 'closed'
+  source: string
+  target: string
+  author: string | null
+  /** Null when the host reports none, or the request is no longer open. */
+  checks: 'passing' | 'failing' | 'pending' | null
+  review: 'approved' | 'changes' | 'waiting' | null
+  /** Would merging the target in stop on a conflict? Worked out locally. */
+  conflicts: boolean | null
+}
+
+/** One checkout's branch, and the pull request it has, if any. */
+export interface ReviewStatus {
+  workspaceId: string
+  /** Null: origin is on neither host, so there are no PR verbs here. */
+  host: ReviewHost | null
+  pr: PullRequest | null
+  /** Why it could not be read, said once. */
+  error: string | null
+  /** Whether Cockpit may merge it (`ProjectSettings.mergeHere`). */
+  mergeHere: boolean
+}
+
+/** §3.7 — one side of a conflict, named by its branch rather than ours/theirs. */
+export interface ConflictSide {
+  label: string
+  /** The work being brought in, as opposed to what it lands on. */
+  yours: boolean
+  /** Subjects of the commits on this side that touched the file, newest first. */
+  commits: string[]
+}
+
+export type ConflictSegment =
+  | { kind: 'same'; text: string }
+  | { kind: 'hunk'; i: number; ours: string; base: string | null; theirs: string }
+
+/** A conflicted file, read off its markers. */
+export interface ConflictFile {
+  path: string
+  /** `deleted`: one side removed it and the other changed it; no markers to read. */
+  kind: 'text' | 'binary' | 'deleted'
+  segments: ConflictSegment[]
+  hunks: number
+  ours: ConflictSide
+  theirs: ConflictSide
+  mtimeMs: number | null
+}
+
+/** What the model would put in place of each hunk. Nothing is written by it. */
+export interface ConflictProposal {
+  ok: boolean
+  detail: string
+  hunks: { i: number; text: string; why: string }[]
+  mtimeMs?: number
 }
 
 /**
@@ -769,6 +845,17 @@ export interface ProjectSettings {
    * back here for all of them.
    */
   skillsOff: string[]
+  /**
+   * §4 — how a topic's work reaches its base. `send`: Send to merges it here,
+   * as it always has. `pr`: a pull request is opened on the host, and the
+   * base is reached through it.
+   */
+  landing: 'send' | 'pr'
+  /**
+   * With `pr`: whether Cockpit offers to merge the pull request itself. Off
+   * where someone else reviews and merges, which is the point of the request.
+   */
+  mergeHere: boolean
 }
 
 export interface Project {

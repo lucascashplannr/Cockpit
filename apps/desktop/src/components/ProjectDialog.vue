@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { FolderOpen, ImagePlus, Plus, ShieldCheck, ShieldPlus, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
+import { FolderOpen, GitMerge, GitPullRequest, ImagePlus, Plus, ShieldCheck, ShieldPlus, SlidersHorizontal, Trash2, TriangleAlert, X } from '@lucide/vue'
 import DialogShell from './DialogShell.vue'
 import ProtectMenu from './ProtectMenu.vue'
 import {
@@ -32,6 +32,9 @@ const nameInput = ref<HTMLInputElement | null>(null)
 const baseBranch = ref('')
 /** §16 — per repository, keyed by its name. */
 const guarded = ref<Record<string, string[]>>({})
+/** §4 — how a topic's work reaches its base: Send to here, or a pull request. */
+const landing = ref<'send' | 'pr'>('send')
+const mergeHere = ref(false)
 /** How the project and its repositories are drawn where their names have no room — see `ProjectSettings.mark`. */
 const mark = ref('')
 /** The rail's logo, which wins over the initials — see `ProjectSettings.logo`. */
@@ -62,6 +65,8 @@ watch(
     guarded.value = Object.fromEntries(
       Object.entries(proj?.settings.protectedBranches ?? {}).map(([k, v]) => [k, [...v]]),
     )
+    landing.value = proj?.settings.landing ?? 'send'
+    mergeHere.value = !!proj?.settings.mergeHere
     moveFiles.value = true
     if (proj) void nextTick(() => nameInput.value?.focus())
   },
@@ -109,6 +114,8 @@ const settingsChanged = computed(() => {
   return (
     (baseBranch.value.trim() || null) !== s.defaultBranch ||
     normal(guarded.value) !== normal(s.protectedBranches ?? {}) ||
+    landing.value !== (s.landing ?? 'send') ||
+    (landing.value === 'pr' && mergeHere.value !== !!s.mergeHere) ||
     (mark.value.trim() || null) !== (s.mark ?? null) ||
     logo.value !== (s.logo ?? null) ||
     marksKey(repoMarks.value) !== marksKey(s.repoMarks ?? {})
@@ -285,6 +292,8 @@ async function save() {
         !(await setProjectSettings(proj.id, {
           defaultBranch: baseBranch.value.trim() || null,
           protectedBranches: guarded.value,
+          landing: landing.value,
+          mergeHere: landing.value === 'pr' && mergeHere.value,
           mark: mark.value.trim() || null,
           logo: logo.value,
           repoMarks: Object.fromEntries(
@@ -541,6 +550,24 @@ async function browse() {
         </div>
       </div>
 
+      <!-- §4 — how a topic's work reaches its base. -->
+      <div class="field">
+        <span class="lbl">Topics land by</span>
+        <div class="landing">
+          <div class="seg">
+            <button :class="{ on: landing === 'send' }" title="Send to merges the topic into its base here" @click="landing = 'send'">
+              <GitMerge />Send to the base
+            </button>
+            <button :class="{ on: landing === 'pr' }" title="Open a pull request on GitHub or Bitbucket instead" @click="landing = 'pr'">
+              <GitPullRequest />Pull request
+            </button>
+          </div>
+          <label v-if="landing === 'pr'" class="mh" title="Off when someone else reviews and merges them">
+            <input v-model="mergeHere" type="checkbox" />Merge them from Cockpit
+          </label>
+        </div>
+      </div>
+
       <!-- tokens.css: colour is for meaning. The ground stays neutral; the red
            is spent on the label and the one button that earns it. -->
       <section class="zone">
@@ -583,6 +610,9 @@ async function browse() {
    labels in the muted ink, the name as the hero field, lists in a well. */
 .form { display: flex; flex-direction: column; gap: 20px; padding: 2px 0 16px; }
 .field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.landing { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.landing .seg .lucide { width: 13px; height: 13px; }
+.mh { display: inline-flex; align-items: center; gap: 7px; font-size: var(--fs-xs); color: var(--text-muted); }
 .lbl { font-size: var(--fs-xs); color: var(--text-muted); }
 .input.hero { padding: 10px 12px; font-size: var(--fs-md); font-weight: 520; letter-spacing: -0.005em; }
 .input.hero::placeholder { font-weight: 400; }

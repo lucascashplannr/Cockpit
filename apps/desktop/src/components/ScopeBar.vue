@@ -9,7 +9,7 @@ import ViewSwitcher from './ViewSwitcher.vue'
 import WorkspaceActions from './WorkspaceActions.vue'
 import { markIcon } from './agent/mark.js'
 import {
-  activeAgentScope, activeWorkspace, groupMembers, isBranchProtected, MARK_WORDS, onProject, openMarkDialog, openTopicMarkMenu, projectNarrowing,
+  activeAgentScope, activeWorkspace, conflictWorkspace, groupMembers, isBranchProtected, MARK_WORDS, onProject, openMarkDialog, openTopicMarkMenu, projectNarrowing,
   projectScopeWorkspaces, scopeLabel, selectedGroupId, selectedTopicGroup, state,
 } from '../core/store.js'
 
@@ -273,7 +273,8 @@ function pressTopicMark(e: MouseEvent): void {
       <!-- §12 — how the right of the window is divided. It ends the bar
            because it is the only control here that is about the *window*
            rather than about the thing the window is showing. -->
-      <ViewSwitcher />
+      <!-- Nothing to divide while the resolver has the window (App.vue). -->
+      <ViewSwitcher v-if="!conflictWorkspace" />
     </span>
   </header>
 </template>

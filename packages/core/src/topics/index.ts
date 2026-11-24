@@ -700,6 +700,8 @@ export async function rebasePlan(
   const names: string[] = []
   const published: string[] = []
   const targets: NonNullable<PlanPreview['targets']> = []
+  const merged: string[] = []
+  const byPr = registry.getProject(f.projectId)?.settings.landing === 'pr'
 
   for (const w of repos) {
     const onto = bases?.[w.id] || base || (await baseFor(w.path))
@@ -717,8 +719,27 @@ export async function rebasePlan(
         destructive: false,
       })
     }
-    steps.push(...plans.rebaseStep(w.path, branch, onto, remote))
-    if (w.git?.upstream === 'origin/' + branch) published.push(w.name)
+    // §4 — on a project whose work lands through a reviewed pull request, a
+    // published branch takes the base in by merge: a rebase would force-push
+    // over the commits the reviewer has read, and their comments with them.
+    if (byPr && remote && w.git?.published) {
+      steps.push({
+        title: w.name + ': merge ' + onto + ' into ' + branch,
+        command: 'git merge --no-ff --autostash -m "Merge ' + onto + ' into ' + branch + '" ' + plans.baseRef(onto, remote),
+        cwd: w.path,
+        destructive: true,
+      })
+      merged.push(w.name)
+    } else {
+      steps.push(...plans.rebaseStep(w.path, branch, onto, remote))
+      if (w.git?.upstream === 'origin/' + branch) published.push(w.name)
+    }
+  }
+  if (merged.length) {
+    warnings.push(
+      (merged.length === repos.length ? '' : merged.join(', ') + ': ') +
+        'The pull request is under review, so the base is merged in rather than replayed under it: one merge commit, a plain push, and nothing the reviewer read is rewritten.',
+    )
   }
 
   if (published.length) {
@@ -917,7 +938,7 @@ async function pushPlanOf(
 export async function mergePlan(
   topicId: string,
   opts: { push?: boolean; base?: string } = {},
-): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
+): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null; needsCatchUp?: boolean }> {
   const f = store.get(topicId)
   if (!f) throw new Error('unknown topic: ' + topicId)
   if (f.state === 'closed') return { ok: false, detail: 'this topic is closed; re-open it first', plan: null }
@@ -933,6 +954,12 @@ export async function mergePlan(
   /** §9 — what the topic changes, as `covers:` names code; read now, while the base is still behind. */
   const changed: string[] = []
   let sentTo: string | null = null
+  /** Repositories whose branch would stop on a conflict against the base. */
+  const conflicted: string[] = []
+  /** Main checkouts on the base with edits git sets aside for the merge. */
+  const setAside: string[] = []
+  /** Where each base was before a merge done aside, which no restore point covers. */
+  const movedFrom: string[] = []
 
   for (const tree of trees) {
     // A worktree's own main checkout is the one with the same folder name; for
@@ -950,12 +977,6 @@ export async function mergePlan(
     if (tree.git?.headState === 'rebasing' || tree.git?.headState === 'merging') {
       blockers.push(tree.name + ': mid-' + tree.git.headState + ', finish or abort it first')
     }
-    if (main !== tree && (main.git?.staged ?? 0) + (main.git?.unstaged ?? 0) > 0) {
-      // The merge happens in the main checkout; uncommitted work there would
-      // be caught up in it, or block the switch.
-      blockers.push(main.name + ' (main checkout): uncommitted changes')
-    }
-
     const base = opts.base ?? (await baseFor(main.path))
     const branch = tree.git?.branch ?? f.slug
     if (branch === base) {
@@ -969,38 +990,67 @@ export async function mergePlan(
 
     // No remote: the local base is the only one there is, and it is current.
     const remote = main.git?.hasRemote !== false
-    if (remote) {
-      steps.push({
-        title: main.name + ': fetch ' + base,
-        command: 'git fetch origin ' + base,
-        cwd: main.path,
-        destructive: false,
-      })
+    const onto = remote ? 'origin/' + base : base
+    if (remote) await git(main.path, ['fetch', 'origin', base], 60_000)
+
+    // §3.7 — a Send that would stop on a conflict is refused before it starts.
+    // Resolving belongs in the topic, where the branch is yours and the
+    // Conflicts tool is: Catch up brings the base in, then Send has nothing
+    // left to argue about.
+    const clash = await git(main.path, ['merge-tree', '--write-tree', '--quiet', onto, branch], 30_000)
+    if (clash.code === 1) {
+      conflicted.push(tree.name)
+      continue
     }
-    // Only when it is not already there: switching a checkout that is already
-    // on the base is a no-op that still shows up as a step, and a plan whose
-    // steps do nothing is a plan nobody reads.
-    if (main.git?.branch !== base) {
+
+    /**
+     * §4 — the main checkout is somebody's place of work, and Send used to
+     * take it over: switch it to the base, merge there, and leave it there.
+     * Uncommitted work on another branch blocked the whole Send, and a clean
+     * checkout came back on a branch nobody had asked for.
+     *
+     * On the base already, it merges there and git sets any edits aside and
+     * puts them back (`--autostash`). Anywhere else, the base is checked out
+     * in a folder of its own for the length of the merge and then removed:
+     * the main checkout, its branch and its edits are never touched.
+     */
+    const dirtyMain = (main.git?.staged ?? 0) + (main.git?.unstaged ?? 0) > 0
+    const onBase = main.git?.branch === base
+    let cwd = main.path
+    let aside: string | null = null
+    if (!onBase) {
+      const held = (await listWorktrees(main.path)).find((w) => w.branch === base && w.path !== main.path)
+      if (held && !held.path.includes('/.send/')) {
+        blockers.push(main.name + ': ' + base + ' is checked out at ' + held.path + '. Send from there, or switch it off ' + base)
+        continue
+      }
+      // A folder left by a Send that stopped halfway is Cockpit's own; it goes.
+      if (held) await git(main.path, ['worktree', 'remove', '--force', held.path], 30_000)
+      aside = join(plans.worktreeRoot(main.path), '.send', f.slug + '-' + basename(main.path))
+      cwd = aside
+      const was = (await git(main.path, ['rev-parse', '--short', base], 5_000)).stdout.trim()
+      if (was) movedFrom.push(main.name + ': ' + base + ' was at ' + was)
       steps.push({
-        title: main.name + ': switch to ' + base,
-        command: 'git switch ' + base,
+        title: main.name + ': check out ' + base + ' aside',
+        command: 'git worktree add ' + aside + ' ' + base,
         cwd: main.path,
         destructive: false,
-        undo: [{ title: main.name + ': switch back', command: 'git switch -', cwd: main.path }],
       })
+    } else if (dirtyMain) {
+      setAside.push(main.name)
     }
     if (remote) {
       steps.push({
         title: main.name + ': fast-forward ' + base,
-        command: 'git merge --ff-only origin/' + base,
-        cwd: main.path,
+        command: 'git merge --ff-only ' + (onBase && dirtyMain ? '--autostash ' : '') + onto,
+        cwd,
         destructive: false,
       })
     }
     steps.push({
       title: main.name + ': merge ' + branch + ' into ' + base,
-      command: 'git merge --no-ff ' + branch + ' -m "Merge ' + f.name.replace(/"/g, '') + '"',
-      cwd: main.path,
+      command: 'git merge --no-ff ' + (onBase && dirtyMain ? '--autostash ' : '') + branch + ' -m "Merge ' + f.name.replace(/"/g, '') + '"',
+      cwd,
       destructive: true,
     })
     if (opts.push && remote) {
@@ -1011,10 +1061,35 @@ export async function mergePlan(
       steps.push({
         title: main.name + ': push ' + base,
         command: 'git push origin ' + base,
-        cwd: main.path,
+        cwd,
         destructive: true,
       })
     }
+    if (aside) {
+      steps.push({
+        title: main.name + ': remove the folder ' + base + ' was checked out in',
+        command: 'git worktree remove ' + aside,
+        cwd: main.path,
+        destructive: false,
+      })
+    }
+  }
+
+  if (conflicted.length) {
+    return {
+      ok: false,
+      detail:
+        conflicted.join(', ') + ' would conflict with ' + (sentTo ?? opts.base ?? 'the base') +
+        '. Catch up first and resolve it in the topic, then Send.',
+      plan: null,
+      needsCatchUp: true,
+    }
+  }
+  if (setAside.length) {
+    warnings.push(setAside.join(', ') + ': the uncommitted changes there are set aside for the merge and put back after it.')
+  }
+  if (movedFrom.length) {
+    warnings.push('The main checkout stays on its branch, untouched; the base is merged in a folder of its own. ' + movedFrom.join('; ') + '.')
   }
 
   if (blockers.length) return { ok: false, detail: blockers.join('; '), plan: null }
@@ -1026,9 +1101,6 @@ export async function mergePlan(
     '--no-ff, so the topic stays one identifiable merge in the history of ' +
       (opts.base ?? 'the base branch') + ' rather than a scatter of commits.',
   )
-  warnings.push(
-    'Repositories land in order and it stops at the first conflict, keeping what already merged. Resolve it in the conflict panel, then run this again.',
-  )
   if (!opts.push) {
     warnings.push('Nothing is pushed. The merge is local until you push it yourself.')
   }
@@ -1038,7 +1110,9 @@ export async function mergePlan(
     operation: 'topic.merge',
     steps,
     warnings,
-    capturesRestorePoint: true,
+    // A restore point anchors the checkout's HEAD; a merge done aside moves
+    // a branch the checkout is not on, so it would anchor nothing (see `movedFrom`).
+    capturesRestorePoint: steps.some((st) => st.destructive && mains.some((m) => m.path === st.cwd)),
     repos: names,
     // A half-landed topic is two repositories genuinely merged and one
     // conflicted, which is a state to finish — not one to undo.

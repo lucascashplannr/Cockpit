@@ -30,6 +30,8 @@ import * as leases from './leases.js'
 import * as agents from './agents.js'
 import * as attachments from './attachments.js'
 import * as summary from './summary.js'
+import * as conflictFile from './conflictFile.js'
+import * as review from './review.js'
 import * as topics from './topics/index.js'
 import * as preparing from './topics/preparing.js'
 import * as conflict from './conflict.js'
@@ -757,6 +759,35 @@ const handlers: Record<string, Handler> = {
   },
   'git.stage': async (p: { workspaceId: string; paths: string[] }) => {
     const res = await conflict.stage(p.workspaceId, p.paths)
+    await registry.probeWorkspace(p.workspaceId)
+    pushWorkspaces()
+    return res
+  },
+  'review.status': (p: { workspaceIds: string[]; force?: boolean }) =>
+    Promise.all(p.workspaceIds.map((id) => review.status(id, { force: p.force }))),
+  'review.open': async (p: { workspaceId: string; title: string; body: string; target: string }) => {
+    const res = await review.open(p.workspaceId, p)
+    await registry.probeWorkspace(p.workspaceId)
+    pushWorkspaces()
+    return res
+  },
+  'review.merge': (p: { workspaceId: string }) => review.merge(p.workspaceId),
+  'conflict.file': (p: { workspaceId: string; path: string }) => conflictFile.file(p.workspaceId, p.path),
+  'conflict.propose': (p: { workspaceId: string; path: string }) => conflictFile.propose(p.workspaceId, p.path),
+  'conflict.restart': async (p: { workspaceId: string; path: string }) => {
+    const res = await conflictFile.restart(p.workspaceId, p.path)
+    await registry.probeWorkspace(p.workspaceId)
+    pushWorkspaces()
+    return res
+  },
+  'conflict.take': async (p: { workspaceId: string; path: string; side: 'ours' | 'theirs' }) => {
+    const res = await conflictFile.take(p.workspaceId, p.path, p.side)
+    await registry.probeWorkspace(p.workspaceId)
+    pushWorkspaces()
+    return res
+  },
+  'conflict.save': async (p: { workspaceId: string; path: string; content: string; expectMtimeMs: number | null }) => {
+    const res = conflictFile.save(p.workspaceId, p.path, p.content, p.expectMtimeMs)
     await registry.probeWorkspace(p.workspaceId)
     pushWorkspaces()
     return res
