@@ -1155,6 +1155,53 @@ export interface AgentWrap {
   ask: string
   /** What a button sends, as the person would say it. The first is the agent's pick. */
   replies: string[]
+  /**
+   * §16 — staging, a commit or a push the person asked for, proposed and not
+   * done: the agent never runs them. Cockpit does, as the person's own act,
+   * when they press the card's button (core `agentGit.ts`).
+   */
+  git: AgentGitProposal | null
+  /** The call's id, which is what the button names when it asks the core. Set by the window. */
+  toolUseId?: string
+  /** What came of the button, once it was pressed (`agent.git`). Set by the window. */
+  done?: AgentGitDone | null
+}
+
+/**
+ * What the person asked the agent to hand to git, as the agent wrote it down.
+ *
+ * - `message` set: a commit — of `files` when there are any, of every change otherwise.
+ * - no `message`, `files` set: staging only.
+ * - `push`: the branch goes to origin afterwards, or on its own with neither of the above.
+ */
+export interface AgentGitProposal {
+  /** The repository's name, when the conversation is on more than one. */
+  repo: string
+  files: string[]
+  message: string
+  push: boolean
+}
+
+/** Journalled on the conversation's thread once the person's button has run. */
+export const AGENT_GIT_EVENT = 'agent.git'
+
+export interface AgentGitDone {
+  toolUseId: string
+  ok: boolean
+  /** One line: what was done, or why it stopped. */
+  text: string
+}
+
+/** The `git` field of a `wrap_up` call, read defensively: the model wrote it. */
+export function gitProposalIn(raw: unknown): AgentGitProposal | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const o = raw as Record<string, unknown>
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+  const files = Array.isArray(o.files) ? [...new Set(o.files.map(str).filter(Boolean))] : []
+  const message = str(o.message)
+  const push = o.push === true
+  if (!message && !files.length && !push) return null
+  return { repo: str(o.repo), files, message, push }
 }
 
 /** A `wrap_up` call's input, read defensively: the model wrote it. */
@@ -1162,10 +1209,12 @@ export function wrapIn(input: Record<string, unknown>): AgentWrap | null {
   const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
   const recap = str(input.recap)
   if (!recap) return null
-  const ask = str(input.ask)
+  const git = gitProposalIn(input.git)
+  // One decision per card: a proposal is the question, and its buttons are fixed.
+  const ask = git ? '' : str(input.ask)
   const raw = Array.isArray(input.replies) ? input.replies : []
   const replies = ask ? [...new Set(raw.map(str).filter(Boolean))].slice(0, 2) : []
-  return { recap, ask, replies }
+  return { recap, ask, replies, git }
 }
 
 export interface Conversation {

@@ -1,4 +1,7 @@
-import { WRAP_TOOL } from '@cockpit/shared'
+import { WRAP_TOOL, agentCommitRules, commitMessageProblems, gitProposalIn, normalizeCommitRules } from '@cockpit/shared'
+import type { Conversation } from '@cockpit/shared'
+import { proposalRefusal } from './agentGit.js'
+import { loadConfig } from './config.js'
 
 /**
  * The end of a working turn, said once and short.
@@ -24,7 +27,29 @@ const RECAP_MAX = 300
 const ASK_MAX = 100
 const REPLY_MAX = 24
 
-export const TOOLS = [
+/** Settings → Commit messages, as they stand now: they can change while a conversation runs. */
+function commitRules() {
+  return normalizeCommitRules(loadConfig().commitRules)
+}
+
+/**
+ * The tool as the engine is shown it. A function and not a constant: the
+ * commit rules in `git.message` are read from Settings when the engine asks.
+ */
+export function tools() {
+  return TOOLS.map((t) => {
+    const git = t.inputSchema.properties.git
+    const message = {
+      ...git.properties.message,
+      description:
+        git.properties.message.description + ' It must follow the commit rules set in Cockpit, exactly: ' +
+        agentCommitRules(commitRules()).join('; ') + '. One that breaks them is refused and you write it again.',
+    }
+    return { ...t, inputSchema: { ...t.inputSchema, properties: { ...t.inputSchema.properties, git: { ...git, properties: { ...git.properties, message } } } } }
+  })
+}
+
+const TOOLS = [
   {
     name: WRAP,
     description:
@@ -59,6 +84,31 @@ export const TOOLS = [
             'With `ask` only: one or two buttons answering it, your recommendation first, each 1–3 words (at most ' + REPLY_MAX + ' characters), ' +
             'written as the person\'s own reply to you ("Yes, fix it", "Not now"). A click sends it to you as their message.',
         },
+        git: {
+          type: 'object',
+          description:
+            'Only when the person\'s latest message asked you to stage, commit or push (in any words: "commit this", "push it", "commite", "git add the docs"). ' +
+            'Never otherwise: not because the work is finished, not as a suggestion, not because they asked for it in an earlier turn. ' +
+            'You cannot run git add, git commit or git push yourself; this puts a button on the card and Cockpit runs it when the person presses it. ' +
+            'With `git`, leave out `ask` and `replies`: the button is the question. ' +
+            'The card draws the commit itself (message, files, branch, button), so the recap says only what the work changed, ' +
+            'in one sentence: never the commit, the button, the branch or whether it is pushed. Never say it is committed.',
+          properties: {
+            repo: { type: 'string', description: 'The repository\'s folder name. Needed only when this conversation is on more than one.' },
+            files: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Paths relative to the repository. With `message`, only these are committed; left out, every change is (untracked included). ' +
+                'Without `message`, these are only staged.',
+            },
+            message: {
+              type: 'string',
+              description: 'The commit message, when they asked for a commit. No double quotes.',
+            },
+            push: { type: 'boolean', description: 'They asked for a push: the branch goes to origin after the commit, or on its own without `message`.' },
+          },
+        },
       },
       required: ['recap'],
     },
@@ -67,7 +117,7 @@ export const TOOLS = [
 
 type Result = { content: { type: 'text'; text: string }[]; isError?: boolean }
 
-export function call(name: string, args: Record<string, unknown> = {}): Result {
+export function call(c: Conversation, name: string, args: Record<string, unknown> = {}): Result {
   const text = (t: string, isError = false): Result => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError } : {}) })
   if (name !== WRAP) return text('unknown tool: ' + name, true)
   const recap = typeof args.recap === 'string' ? args.recap.trim() : ''
@@ -75,6 +125,24 @@ export function call(name: string, args: Record<string, unknown> = {}): Result {
   const ask = typeof args.ask === 'string' ? args.ask.trim() : ''
   const replies = Array.isArray(args.replies) ? args.replies.filter((r) => typeof r === 'string' && r.trim()) : []
   if (replies.length && !ask) return text('Not shown: `replies` answer `ask`, and there is no `ask`. Call again without them, or with the question.', true)
+  const git = gitProposalIn(args.git)
+  if (args.git !== undefined && !git) return text('Not shown: `git` needs a `message`, `files` or `push`. Call again with what the person asked for, or without `git`.', true)
+  if (git) {
+    if (ask || replies.length) return text('Not shown: with `git` the button is the question. Call again without `ask` and `replies`.', true)
+    const refused = proposalRefusal(c, git)
+    if (refused) return text('Not shown: ' + refused + '.', true)
+    if (git.message) {
+      const rules = commitRules()
+      const problems = commitMessageProblems(git.message, rules)
+      if (problems.length) {
+        return text(
+          'Not shown: the commit message breaks the commit rules set in Cockpit (' + problems.join('; ') + '). ' +
+            'The rules: ' + agentCommitRules(rules).join('; ') + '. Call again with a message that follows them.',
+          true,
+        )
+      }
+    }
+  }
   // Over the limits is still shown — refusing would cost another step for a
   // box that is only a little long — but the agent hears it, for next time.
   const long = recap.length > RECAP_MAX * 1.3 || ask.length > ASK_MAX * 1.3
@@ -82,7 +150,8 @@ export function call(name: string, args: Record<string, unknown> = {}): Result {
     'Shown under your answer.' +
       (long ? ' It ran long; keep the recap to ' + RECAP_MAX + ' characters and the question to ' + ASK_MAX + '.' : '') +
       ' Now write your closing message: your full answer to the person, which the recap never replaces.' +
-      (ask ? ' Do not repeat the question in it.' : ''),
+      (ask ? ' Do not repeat the question in it.' : '') +
+      (git ? ' Nothing is staged, committed or pushed yet: it runs only when the person presses the button. In your closing message, one short sentence at most that it is ready on the card; never that it is done.' : ''),
   )
 }
 
@@ -95,4 +164,10 @@ export const WRAP_RULES = '# Closing a turn\n\n' + [
   'and the choice is theirs, or an approval for something you must not do alone. Something you could do next — a fix you noticed,',
   'the same change elsewhere, a cleanup — is an offer, never a question: one sentence in your closing message at most.',
   'Skip the tool for a short answer or plain conversation. Your closing message follows it and is your full answer.',
+].join(' ') + '\n\n# Staging, committing, pushing\n\n' + [
+  '`git add`, `git commit` and `git push` are refused in your shell. When the person\'s latest message asks you to stage, commit',
+  'or push, do the rest of the work, then put exactly that in `' + WRAP_TOOL + '`\'s `git` (the files, a message you write from the',
+  'diff following the commit rules in that field\'s description, never with a Co-Authored-By line, push if they said push). The card shows it with a button, and Cockpit runs it as the person\'s own act when they press it.',
+  'Only then: never propose git because the work looks finished, never as an offer, never in a turn where they did not ask.',
+  'Do not try another way (a script, an alias, `git -C`); say in your answer that it is ready for them to press.',
 ].join(' ')

@@ -21,6 +21,8 @@ import * as memory from './memory.js'
 import * as docsTools from './docsTools.js'
 import * as memoryTools from './memoryTools.js'
 import * as wrapTools from './wrapTools.js'
+import * as agentGit from './agentGit.js'
+import * as gitHook from './gitHook.js'
 import * as peersTools from './peersTools.js'
 import * as docs from './docs.js'
 import * as skills from './skills.js'
@@ -133,13 +135,16 @@ export const DEFAULT_TOOLS = [
 /**
  * §16's red lines. Push, because the doc forbids it outright. Commit, because
  * §7 requires the diff to be seen by a person first, and an agent that commits
- * its own work has taken that decision away.
+ * its own work has taken that decision away. Add, because what goes into the
+ * commit is that same decision. When the person asks for any of the three, the
+ * agent proposes it on its recap card and Cockpit runs it on their click
+ * (`agentGit.ts`).
  *
  * Refused at the call rather than hidden from the model: it is told no, and
  * the turn carries what it asked for, so the thread can say which line was
  * crossed instead of merely that something was.
  */
-export const DEFAULT_DENY = ['Bash(git push:*)', 'Bash(git commit:*)']
+export const DEFAULT_DENY = ['Bash(git push:*)', 'Bash(git commit:*)', 'Bash(git add:*)']
 
 /**
  * The historical name. `agents.allow` in a manifest is read as the tool set,
@@ -419,6 +424,7 @@ function pathsIn(input: Record<string, unknown>): string[] {
  * than left to a CLAUDE.md nobody has written yet.
  */
 const SHELL_RULES = [
+  'You never run git add, git commit or git push here; when the person asks for one, it goes on your recap card (see "Staging, committing, pushing").',
   'Bash in this session runs behind a permission check that reads each command before running it.',
   'A command containing command substitution — $(…) or backticks — cannot be read that way and is',
   'refused with "Contains command_substitution". Retrying it with dangerouslyDisableSandbox does not',
@@ -465,6 +471,15 @@ function readChoice(raw: unknown): LoadoutChoice | null {
 function launchSettings(choice: LoadoutChoice | null | undefined, contextLimit?: number | null): Record<string, unknown> {
   const out: Record<string, unknown> = {
     pluginConfigs: { 'cc-plugin-agents-md@builtin': { options: { instructionFiles: 'claude-md-and-agents-md' } } },
+    // §16 — a shell `git add/commit/push` is refused with a sentence that sends
+    // the agent to its recap card, before the deny rule refuses it in silence.
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: JSON.stringify(gitHook.refusalHook()) }] }] },
+    // The engine's own prompt asks for a Co-Authored-By line on every commit,
+    // and the agent carried it into the messages it proposes. A commit here is
+    // the person's, written to Settings → Commit messages: no trailer. Both
+    // names, the older one for an engine that predates `attribution`.
+    attribution: { commit: '', pr: '' },
+    includeCoAuthoredBy: false,
   }
   // The engine summarises once the context reaches this, instead of growing to
   // the model's whole window. Every call of a turn reads the context back, so
@@ -2430,6 +2445,7 @@ async function launch(
     told?.extra === extraNow ? '' : extraNow,
     told?.peers === peersSignature(peersNow) ? '' : unwrap(peersTools.news(peersNow)),
     command ? '' : unwrap(takeInbox(session.id)),
+    command ? '' : agentGit.takeNews(session.id).trim(),
   ]
     .filter(Boolean)
     .join('\n\n')
@@ -2997,7 +3013,7 @@ async function flushQueue(l: Live): Promise<void> {
   agentBus.emit('changed')
   await checkpointTurn(l.session, turnId, prompt || attachments.summarise(files))
   const command = commandIn(prompt)?.command.run === 'engine'
-  const news = command ? '' : memoryNews(l) + peersNews(l) + takeInbox(l.session.id)
+  const news = command ? '' : agentGit.takeNews(l.session.id) + memoryNews(l) + peersNews(l) + takeInbox(l.session.id)
   const segs = withUltracode(
     l.spec,
     withSkills(l.spec, attachments.turnSegments(news, prompt, files), l.session, prompt, files, command),

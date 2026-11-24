@@ -106,6 +106,21 @@ export function register(preview: PlanPreview, opts: RegisterOptions): PlanPrevi
   return preview
 }
 
+/**
+ * Something to do once a plan built elsewhere has run through, added after it
+ * was registered: `commit.plan` registers its own, and the agent's proposal
+ * (`agentGit.ts`) only wants to hear that it went.
+ */
+export function whenApplied(planId: string, fn: NonNullable<StoredPlan['onApplied']>): void {
+  const stored = plans.get(planId)
+  if (!stored) return
+  const before = stored.onApplied
+  stored.onApplied = async (res) => {
+    if (before) await before(res)
+    await fn(res)
+  }
+}
+
 export type Operation =
   | 'rebase' | 'merge' | 'branch' | 'switch' | 'worktree' | 'push' | 'pull' | 'sync'
 

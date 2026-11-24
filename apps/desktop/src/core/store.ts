@@ -5992,6 +5992,43 @@ export async function commit(
 }
 
 /**
+ * §16 — the staging, commit or push an agent's recap proposed, run because
+ * the person pressed its button. The press is the confirmation: the card
+ * already said what goes where, so the plan runs aside without a second
+ * question, unless it would take something away (a force-push), which keeps
+ * the red button it has everywhere else. The core reads the proposal back from
+ * the journal and records the outcome on the thread.
+ */
+export async function runAgentGit(
+  sessionId: string,
+  toolUseId: string,
+  said: { verb: string; done: string; lines: string[] },
+): Promise<boolean> {
+  const res = await guard(() => client.call('agent.gitPlan', { sessionId, toolUseId }))
+  if (!res) return false
+  if (!res.ok || !res.plan) {
+    toast('error', res.detail)
+    return false
+  }
+  const plan = res.plan
+  if (plan.steps.some((s) => s.destructive)) {
+    state.pendingConfirm = {
+      title: said.verb + '?',
+      body: plan.warnings,
+      verb: said.verb,
+      done: said.done,
+      doneLines: said.lines,
+      danger: true,
+      plan,
+    }
+    return true
+  }
+  const out = await applyAside(plan, () => {})
+  if (out === undefined) return false
+  return settlePlan(plan, out, said.done, said.lines)
+}
+
+/**
  * The last commit taken back — only ever one that no remote has. Asked as a
  * question like the commit was, with the message it is about to unmake.
  */

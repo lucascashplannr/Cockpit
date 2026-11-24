@@ -36,6 +36,7 @@ import * as conflict from './conflict.js'
 import * as seed from './seed.js'
 import * as database from './database.js'
 import * as commit from './commit.js'
+import * as agentGit from './agentGit.js'
 import * as stash from './stash.js'
 import * as discard from './discard.js'
 import * as terminals from './terminals.js'
@@ -698,6 +699,12 @@ const handlers: Record<string, Handler> = {
 
   'git.commitPreview': (p: commit.CommitInput) => commit.preview(p),
   'git.commit': (p: commit.CommitInput) => commit.plan(p),
+  /** §16 — the agent's proposal, as the person's plan. See `agentGit.ts`. */
+  'agent.gitPlan': (p: { sessionId: string; toolUseId: string }) => {
+    const c = agents.get(p.sessionId)
+    if (!c) return { ok: false, detail: 'no such conversation', plan: null }
+    return agentGit.plan(c, p.toolUseId, agents.transcript(p.sessionId))
+  },
   'git.undoCommit': (p: { workspaceId: string; hash: string }) => commit.undoPlan(p),
   'git.lastMessage': (p: { workspaceId: string }) => commit.lastMessage(p.workspaceId),
   /** §16 — a draft for the box, never a commit. See `commit.draftMessage`. */

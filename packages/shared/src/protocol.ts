@@ -1099,6 +1099,16 @@ export interface Rpc {
     result: { ok: boolean; reason?: string }
   }
   /**
+   * §16 — the git a conversation's recap proposed (`AgentWrap.git`), as a plan
+   * the window applies when the person presses the card's button. The core
+   * reads the proposal back from the journal rather than taking it from the
+   * window, and records what came of it on the thread once it has run.
+   */
+  'agent.gitPlan': {
+    params: { sessionId: string; toolUseId: string }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null }
+  }
+  /**
    * A queued turn taken back before the engine ever reads it. Named by its
    * text rather than its position: the queue drains on its own, so an index is
    * out of date by the time it crosses the socket.

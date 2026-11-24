@@ -136,8 +136,12 @@
  *
  * 2.42 — a fourth mark kind, `brainstorm`. An older core drops it on save and
  * keeps only the note.
+ *
+ * 2.43 — `agent.gitPlan` and `AgentWrap.git`: a recap may carry the staging,
+ * commit or push the person asked for, run by Cockpit on their click. An older
+ * core answers `unknown_method`.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 42 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 43 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

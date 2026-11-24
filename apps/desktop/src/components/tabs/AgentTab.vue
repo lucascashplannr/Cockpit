@@ -4,7 +4,7 @@ import type {
   // Aliased: the component that draws one is `Attachment` too, and the file
   // needs both in the same scope.
   Attachment as AttachedFile,
-  AgentAnswers, AgentQuestion, AgentScope, AgentWrap, BackgroundTask, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
+  AgentAnswers, AgentGitDone, AgentQuestion, AgentScope, AgentWrap, BackgroundTask, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
   ArrowDown, Asterisk, BellRing, ChevronRight, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, GitFork, Hand, Hourglass, MessageSquareText,
@@ -30,10 +30,10 @@ import {
   saveThreadScroll, sendTurn, sessionsForScope, startAgentIn, startFresh, state, stopConversation, documentConversation,
   chooseMemory, deleteConversation, forgetMemoryChoice, memoryLabel, renameConversation, restoreConversation,
   threadScrollOf, toast, transcriptOf, pickThread, type ThreadScroll, answerPeers, openConversation, peerTitle,
-  MARK_WORDS, openMarkMenu,
+  MARK_WORDS, openMarkMenu, runAgentGit,
 } from '../../core/store.js'
 import {
-  COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, commandOff, conversationRef, isDocument, isHandoff, isMemorize,
+  AGENT_GIT_EVENT, COMMAND_ENGINES, QUESTION_TOOL, anchorOf, anchorsIn, canonicalSection, commandIn, commandOff, conversationRef, isDocument, isHandoff, isMemorize,
   isWake, questionsIn, readPrompt, wakeLines, WRAP_TOOL, wrapIn,
 } from '@cockpit/shared'
 import { usePaced } from '../../core/reveal.js'
@@ -424,6 +424,7 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
   const byCall = new Map<string, Extract<Item, { kind: 'tool' }>>()
   const byQuestion = new Map<string, Asked>()
   const byTell = new Map<string, Peer>()
+  const byWrap = new Map<string, AgentWrap>()
   let ti = 0
 
   for (const e of transcriptOf(sessionId)) {
@@ -463,6 +464,13 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
       if (offerId) into.push({ kind: 'docsOffer', id: e.id, offerId })
       continue
     }
+    // What came of a recap's git button: drawn on that card, never as a line.
+    if (e.type === AGENT_GIT_EVENT) {
+      const d = e.payload as AgentGitDone | null
+      const w = d?.toolUseId ? byWrap.get(d.toolUseId) : undefined
+      if (w && d) w.done = d
+      continue
+    }
     if (e.type === 'agent.compacted') {
       const p = e.payload as { before?: number; after?: number }
       into.push({ kind: 'compact', id: e.id, before: Number(p?.before ?? 0), after: Number(p?.after ?? 0) })
@@ -474,7 +482,13 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
       // Its result is dropped with the other unmatched ones below.
       if (p?.tool === WRAP_TOOL) {
         const wrap = wrapIn(p.input ?? {})
-        if (wrap) into.push({ kind: 'wrap', id: e.id, wrap })
+        if (wrap) {
+          if (p.toolUseId) {
+            wrap.toolUseId = p.toolUseId
+            byWrap.set(p.toolUseId, wrap)
+          }
+          into.push({ kind: 'wrap', id: e.id, wrap })
+        }
         continue
       }
       // §6 — the memory tools are not work on the code, and a card for each
@@ -1337,6 +1351,43 @@ function hideWrap(): void {
   if (id) hiddenWraps.value = new Set(hiddenWraps.value).add(id)
 }
 const canReply = computed(() => !!selected.value && !isBusy(selected.value) && !busy.value && !blocked.value.length)
+
+/**
+ * Where the recap's git proposal lands, for the card to say: the repository
+ * and its branch, and how many files a commit of everything would take. Read
+ * off the window's own copy of the checkout; the core re-checks all of it.
+ */
+const gitTarget = computed(() => {
+  const g = shownWrap.value?.git
+  const s = selected.value
+  if (!g || !s) return null
+  const ws = state.workspaces.filter((w) => s.workspaceIds.includes(w.id) && w.repo && w.kind !== 'group')
+  // Named however the agent wrote it: the folder name, the checkout's name, or
+  // its whole path (which is what it sees). The core matches the same ways.
+  const base = (p: string) => p.replace(/\/+$/, '').split('/').pop() ?? p
+  const w = g.repo
+    ? ws.find((x) => x.repoName === g.repo || x.name === g.repo || x.path === g.repo || base(x.path) === g.repo)
+    : ws.length === 1 ? ws[0] : undefined
+  return {
+    repo: w?.repoName ?? base(g.repo),
+    branch: w?.git?.branch ?? null,
+    changes: w?.git ? w.git.staged + w.git.unstaged + w.git.untracked : null,
+    several: ws.length > 1,
+  }
+})
+const gitRunning = ref(false)
+/** The card's git button: Cockpit runs what the agent proposed, as the person's act. */
+async function runGit(said: { verb: string; done: string; lines: string[] }): Promise<void> {
+  const x = shownWrap.value
+  const s = selected.value
+  if (!x?.toolUseId || !s || gitRunning.value) return
+  gitRunning.value = true
+  try {
+    await runAgentGit(s.id, x.toolUseId, said)
+  } finally {
+    gitRunning.value = false
+  }
+}
 
 /** A reply button: the words on it go in as the person's turn. The draft in the box is left alone. */
 async function replyWith(text: string): Promise<void> {
@@ -2201,7 +2252,10 @@ function ago(ts: number): string {
               v-if="i === exchanges.length - 1 && shownWrap"
               :wrap="shownWrap"
               :can-reply="canReply"
+              :target="gitTarget"
+              :running="gitRunning"
               @reply="replyWith"
+              @git="runGit"
               @dismiss="hideWrap"
             />
 

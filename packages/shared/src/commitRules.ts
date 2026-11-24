@@ -87,3 +87,51 @@ export function commitRuleLines(r: CommitRules): string[] {
     ...r.extra.split('\n').map((l) => l.trim()).filter(Boolean),
   ]
 }
+
+/**
+ * The rules an agent's proposed message follows (`AgentWrap.git`): the house
+ * style when there is one, Draft's own one-line format otherwise. Said to the
+ * agent, and checked by `commitMessageProblems` before the card shows it.
+ */
+export function agentCommitRules(r: CommitRules): string[] {
+  const house = commitRuleLines(r)
+  return [
+    ...(house.length
+      ? house
+      : ['One line, imperative, concrete, at most ' + PLAIN_SUBJECT_MAX + ' characters, in the convention of the repository\'s recent log']),
+    'One line only: no body',
+    'No Co-Authored-By, Signed-off-by or any other trailer line',
+  ]
+}
+
+const PLAIN_SUBJECT_MAX = 72
+
+/**
+ * What can be checked without a model, each as a short reason. Empty when the
+ * message passes. A typed message in the commit box is never checked: this is
+ * for the agent, which has the engine's own habits (a body, a co-author line)
+ * pulling the other way.
+ */
+export function commitMessageProblems(message: string, r: CommitRules): string[] {
+  const out: string[] = []
+  const m = message.trim()
+  if (/^\s*(co-authored-by|signed-off-by|reviewed-by|generated with)\b/im.test(m) || /🤖/u.test(m)) {
+    out.push('it has a co-author or other trailer line')
+  }
+  if (/\n/.test(m)) out.push('it is more than one line')
+  const subject = m.split('\n')[0]!.trim()
+  if (!r.on) {
+    if (subject.length > PLAIN_SUBJECT_MAX) out.push('it is longer than ' + PLAIN_SUBJECT_MAX + ' characters')
+    return out
+  }
+  const shape =
+    r.scope === 'required' ? /^([a-z][a-z0-9-]*)\([^()\s]+\): \S/
+      : r.scope === 'optional' ? /^([a-z][a-z0-9-]*)(\([^()\s]+\))?: \S/
+        : /^([a-z][a-z0-9-]*): \S/
+  const hit = shape.exec(subject)
+  if (!hit) out.push('it is not in the form ' + commitFormat(r))
+  else if (!r.types.includes(hit[1]!)) out.push(hit[1] + ' is not one of the types (' + r.types.join(', ') + ')')
+  if (r.noTickets && /\(#\d+\)|(^|\s)#\d+\b/.test(m)) out.push('it has a ticket or PR number')
+  if (r.noEmoji && /\p{Extended_Pictographic}/u.test(m)) out.push('it has an emoji')
+  return out
+}
