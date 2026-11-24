@@ -2,6 +2,7 @@ import { DEFAULT_PORT, loadConfig } from './config.js'
 import { getDb, pruneJournal, schemaOutcome } from './db.js'
 import { append } from './journal.js'
 import * as registry from './registry.js'
+import { pruneOrphans } from './ports.js'
 import * as supervisor from './supervisor.js'
 import * as agents from './agents.js'
 import * as leases from './leases.js'
@@ -64,6 +65,11 @@ async function main(): Promise<void> {
   // and an "unknown workspace" for the one it was already looking at. This is
   // the same enumeration without the probe, so it costs milliseconds.
   await registry.hydrate()
+  // §11 — claims for workspaces that are not on disk. Previews used to claim
+  // one per keystroke of a topic name; they peek now, and this gives back what
+  // they took. Only here: mid-run, a topic being made claims ahead of its folder.
+  const freedPorts = pruneOrphans(new Set(registry.allWorkspaces().map((w) => w.id)))
+  if (freedPorts) process.stdout.write('[cockpit-core] released ' + freedPorts + ' orphaned port(s)\n')
 
   const server = startServer(port)
   server.on('listening', () => {

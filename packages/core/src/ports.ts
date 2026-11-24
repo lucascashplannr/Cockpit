@@ -47,10 +47,10 @@ export async function isPortFree(port: number): Promise<boolean> {
 }
 
 /**
- * Returns the already-assigned port when there is one, otherwise probes
- * forward from the deterministic slot until it finds a free, unclaimed port.
+ * The port `key` has, or the one it would get: probes forward from the
+ * deterministic slot to the first free, unclaimed port. Writes nothing.
  */
-export async function allocate(key: string): Promise<number> {
+async function pick(key: string): Promise<number> {
   const cfg = loadConfig()
   const existing = cfg.portAssignments[key]
   if (existing) return existing
@@ -64,12 +64,67 @@ export async function allocate(key: string): Promise<number> {
     const port = lo + ((start + i) % span)
     if (taken.has(port)) continue
     if (!(await isPortFree(port))) continue
-    updateConfig((c) => {
-      c.portAssignments[key] = port
-    })
     return port
   }
   throw new Error('no free port in range ' + lo + '-' + hi)
+}
+
+/**
+ * Returns the already-assigned port when there is one, otherwise claims the
+ * one `pick` finds. The claim is kept until the workspace is gone.
+ */
+export async function allocate(key: string): Promise<number> {
+  const port = await pick(key)
+  if (loadConfig().portAssignments[key] !== port) {
+    updateConfig((c) => {
+      c.portAssignments[key] = port
+    })
+  }
+  return port
+}
+
+/**
+ * The port `key` would be given, without claiming it. For anything shown
+ * before it happens: the Create topic sheet asks on every keystroke of the
+ * name, and each slug is a different future worktree. Claiming there leaked
+ * one port per keystroke until the whole range was gone.
+ */
+export function peek(key: string): Promise<number> {
+  return pick(key)
+}
+
+/**
+ * Claims `port` for `key` when it is still unclaimed, so a number a preview
+ * showed and a file was written with stays the number the runtime binds.
+ * Falls back to `allocate` when someone else took it in between.
+ */
+export async function claim(key: string, port: number): Promise<number> {
+  const cfg = loadConfig()
+  if (cfg.portAssignments[key]) return cfg.portAssignments[key]!
+  const owned = Object.values(cfg.portAssignments).includes(port) || cfg.portBlocklist.includes(port)
+  if (owned) return allocate(key)
+  updateConfig((c) => {
+    c.portAssignments[key] = port
+  })
+  return port
+}
+
+/**
+ * Drops every claim whose workspace is not one of `live`. Run once at boot,
+ * after the registry has enumerated what is on disk, and never mid-run: a
+ * topic being created claims for a worktree that does not exist yet.
+ */
+export function pruneOrphans(live: Set<string>): number {
+  let n = 0
+  updateConfig((c) => {
+    for (const k of Object.keys(c.portAssignments)) {
+      if (!live.has(k.split('/')[1] ?? '')) {
+        delete c.portAssignments[k]
+        n++
+      }
+    }
+  })
+  return n
 }
 
 export function release(key: string): void {

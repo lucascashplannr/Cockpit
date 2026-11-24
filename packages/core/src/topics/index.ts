@@ -281,7 +281,7 @@ export async function openPlan(
           ...repos.map((r) => ({ repoName: r.repoName, cwd: join(rootPath!, basename(r.path)), mainPath: r.path })),
           { repoName: '', cwd: rootPath!, mainPath: null },
         ])
-      : { lines: [], warnings: [] }
+      : { lines: [], warnings: [], contexts: [] }
   warnings.push(...setupLines.warnings)
 
   if (input.setup !== 'branch') {
@@ -335,6 +335,9 @@ export async function openPlan(
       // there is nowhere to put a `.env`; after it, the topic is bootable
       // rather than a checkout missing every file git refuses to track.
       if (input.setup !== 'branch') await runSeed(input, repos, slug, project.id)
+      // The plan showed its setup lines with ports it only peeked at, since a
+      // plan can be cancelled. Applied, they are this topic's to keep.
+      for (const ctx of setupLines.contexts) await seed.claimPorts(project.id, ctx)
 
       append({
         type: 'topic.opened',
@@ -367,9 +370,12 @@ async function runSeed(
   for (const repo of repos) {
     const name = basename(repo.path)
     let proposal = approved.get(name) ?? null
+    // Approved in the sheet, where its ports were only peeked at: the files
+    // are about to be written with those numbers, so they are kept now.
+    if (proposal) await seed.claimPorts(projectId, proposal.context)
 
     if (!proposal) {
-      const detected = await seed.propose({ projectId, repoPath: repo.path, slug })
+      const detected = await seed.propose({ projectId, repoPath: repo.path, slug, claim: true })
       // Declared in the manifest is an answer already given; detected is a
       // question nobody was asked, and acting on it unasked is exactly the
       // guessing §5 warns about.

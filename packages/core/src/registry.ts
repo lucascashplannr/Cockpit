@@ -13,6 +13,7 @@ import { run } from './exec.js'
 import { append } from './journal.js'
 import { leaseCovering, leasesCovering } from './leases.js'
 import { runtimeStateFor } from './runtime/index.js'
+import { releaseForWorkspace } from './ports.js'
 import { covers, liveSessions, sessionsTouching } from './agents.js'
 
 /**
@@ -908,6 +909,8 @@ async function runReconcile(
   for (const [id, w] of [...workspaces]) {
     if (!existsSync(w.path)) {
       workspaces.delete(id)
+      // §11 — its ports go back to the range. Nothing else ever gave them back.
+      releaseForWorkspace(w.projectId, id)
       append({ type: 'workspace.forgotten', projectId: w.projectId, workspaceId: id, payload: { path: w.path } })
     }
   }

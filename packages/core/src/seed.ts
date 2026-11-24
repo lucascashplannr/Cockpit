@@ -7,7 +7,7 @@ import { isLocalHost } from './database.js'
 import { detectRuntime, findManifest, readManifest } from './detect.js'
 import { git } from './git.js'
 import { append } from './journal.js'
-import { allocate, portKey } from './ports.js'
+import { allocate, claim, peek, portKey } from './ports.js'
 import * as plans from './plans.js'
 
 /**
@@ -304,6 +304,11 @@ export async function contextFor(input: {
   /** Which listeners need a port. Always includes `web`. */
   services?: string[]
   override?: string
+  /**
+   * Keep the ports. Only for a worktree that is being made: a preview asks for
+   * every slug typed and must leave the range as it found it.
+   */
+  claim?: boolean
 }): Promise<SeedContext> {
   const repo = basename(input.repoPath)
   const target = plans.topicWorktreePath(input.repoPath, input.slug, input.override)
@@ -315,7 +320,8 @@ export async function contextFor(input: {
   const ports: Record<string, number> = {}
   for (const service of new Set(['web', ...(input.services ?? [])])) {
     try {
-      ports[service] = await allocate(portKey(input.projectId, futureWorkspaceId, service))
+      const key = portKey(input.projectId, futureWorkspaceId, service)
+      ports[service] = await (input.claim ? allocate(key) : peek(key))
     } catch {
       // No free port in the range. The template stays unresolved rather than
       // being written as a wrong number, and the UI shows it that way.
@@ -335,6 +341,18 @@ export async function contextFor(input: {
   }
 }
 
+/**
+ * Keeps the ports a previewed context showed, once the worktree they are for
+ * is really being made. `ctx.path` is the worktree, whose path the workspace
+ * id derives from, exactly as `contextFor` keyed them.
+ */
+export async function claimPorts(projectId: string, ctx: Pick<SeedContext, 'path' | 'ports'>): Promise<void> {
+  const wsId = stableId('ws', ctx.path)
+  for (const [service, port] of Object.entries(ctx.ports)) {
+    await claim(portKey(projectId, wsId, service), port)
+  }
+}
+
 /* ── proposing ───────────────────────────────────────────────────────── */
 
 export interface ProposeInput {
@@ -342,6 +360,8 @@ export interface ProposeInput {
   repoPath: string
   slug: string
   override?: string
+  /** See `contextFor`. */
+  claim?: boolean
 }
 
 /**
@@ -436,6 +456,7 @@ export async function propose(input: ProposeInput): Promise<SeedProposal> {
     baseDb,
     services,
     override: input.override,
+    claim: input.claim,
   })
 
   for (const rel of present) {

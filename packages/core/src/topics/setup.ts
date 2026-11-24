@@ -63,19 +63,22 @@ export async function resolve(
   projectId: string,
   slug: string,
   targets: SetupTarget[],
-): Promise<{ lines: SetupLine[]; warnings: string[] }> {
+  opts: { claim?: boolean } = {},
+): Promise<{ lines: SetupLine[]; warnings: string[]; contexts: SeedContext[] }> {
   const manifest = manifestOf(projectId)
   const declaredSetup = manifest?.worktrees?.setup ?? {}
   const tld = String((manifest?.herd as { tld?: unknown } | undefined)?.tld ?? 'test')
   const lines: SetupLine[] = []
   const warnings: string[] = []
+  const contexts: SeedContext[] = []
 
   for (const t of targets) {
     const key = guessKey(t.repoName)
     const list = declaredSetup[key] ?? (t.repoName ? declaredSetup[basename(t.cwd)] : undefined)
     if (!list?.length) continue
 
-    const ctx = await contextOf(projectId, slug, t, tld, list)
+    const { ctx, seeded } = await contextOf(projectId, slug, t, tld, list, !!opts.claim)
+    if (seeded) contexts.push(seeded)
     for (const template of list) {
       const command = seed.resolveTemplate(template, ctx)
       const left = [...command.matchAll(/\{\{([\w:.-]+)\}\}/g)].map((m) => '{{' + m[1] + '}}')
@@ -83,12 +86,13 @@ export async function resolve(
       lines.push({ repo: key, cwd: t.cwd, command })
     }
   }
-  return { lines, warnings }
+  return { lines, warnings, contexts }
 }
 
 /**
- * The seed's context, built only as far as the lines ask: `{{port}}` allocates
- * a port and `{{db}}` reads a `.env`, and `herd link {{scoped}}` needs neither.
+ * The seed's context, built only as far as the lines ask: `{{port}}` names a
+ * port and `{{db}}` reads a `.env`, and `herd link {{scoped}}` needs neither.
+ * `seeded` is the context as `contextFor` keyed its ports, for `claimPorts`.
  */
 async function contextOf(
   projectId: string,
@@ -96,22 +100,24 @@ async function contextOf(
   t: SetupTarget,
   tld: string,
   list: string[],
-): Promise<SeedContext> {
+  claim: boolean,
+): Promise<{ ctx: SeedContext; seeded: SeedContext | null }> {
   const repo = t.repoName || basename(t.cwd)
   const scoped = scopedName(repo, slug)
   const cheap: SeedContext = { slug, repo, scoped, host: scoped + '.' + tld, ports: {}, db: '', path: t.cwd }
   const wants = list.join('\n')
-  if (!t.mainPath || !/\{\{(port|db)\b/.test(wants)) return cheap
+  if (!t.mainPath || !/\{\{(port|db)\b/.test(wants)) return { ctx: cheap, seeded: null }
   const services = [...wants.matchAll(/\{\{port(?::(\w+))?\}\}/g)].map((m) => m[1] ?? 'web')
-  const ctx = await seed.contextFor({
+  const seeded = await seed.contextFor({
     projectId,
     repoPath: t.mainPath,
     slug,
     tld,
     baseDb: database.connectionOf(t.mainPath)?.database ?? null,
     services,
+    claim,
   })
-  return { ...ctx, path: t.cwd }
+  return { ctx: { ...seeded, path: t.cwd }, seeded }
 }
 
 /** What the plan shows under its commands. */
@@ -232,7 +238,7 @@ export async function rerun(topicId: string): Promise<{ ok: boolean; detail: str
     (preparing.get(topicId, rec.rootPath)?.steps ?? []).filter((s) => s.state === 'failed').map((s) => s.repo),
   )
   const all = targetsOf(topicId, rec.projectId)
-  const { lines } = await resolve(rec.projectId, rec.slug, all)
+  const { lines } = await resolve(rec.projectId, rec.slug, all, { claim: true })
   const again = failed.size ? lines.filter((l) => failed.has(l.repo)) : lines
   if (!again.length) {
     preparing.set(topicId, rec.rootPath, null)
