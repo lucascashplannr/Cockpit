@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import {
-  Ban, Check, CircleAlert, CircleCheck, FileCode, FileWarning, LoaderCircle, Pencil, RotateCcw, SkipForward, Sparkles,
+  Ban, Check, CircleAlert, CircleCheck, Combine, FileCode, FileWarning, LoaderCircle, Pencil, RotateCcw, SkipForward, Sparkles,
 } from '@lucide/vue'
 import type { ConflictFile, ConflictSegment, Workspace } from '@cockpit/shared'
 import {
@@ -196,6 +196,11 @@ async function writeIfDone(): Promise<void> {
 const chosenCount = computed(() => hunks.value.filter((h) => chosen[h.i] !== undefined).length)
 const proposedCount = computed(() => hunks.value.filter((h) => proposed.value[h.i]).length)
 
+/** A side's text as the lines the Diff draws, one row each. */
+function lines(text: string): string[] {
+  return text ? text.replace(/\n$/, '').split('\n') : []
+}
+
 function shortLabel(label: string): string {
   return label.replace(/^origin\//, '')
 }
@@ -203,12 +208,13 @@ function shortLabel(label: string): string {
 
 <template>
   <div v-if="op" class="conflicts">
-    <!-- What is happening, and the verbs that end it: the bar of this mode. -->
+    <!-- What is happening, and the verbs that end it: the bar of this mode.
+         The surface of the column, not a red band: the mark says conflict. -->
     <div class="top">
-      <CircleAlert class="ic" />
+      <CircleAlert class="mark" />
       <div class="what">
         <span class="head">{{ heading }}</span>
-        <span class="dim num">
+        <span class="sub num">
           <template v-if="progress">{{ progress }} · </template>{{ left ? left + ' of ' + files.length + (files.length === 1 ? ' file' : ' files') + ' left' : 'all ' + files.length + ' resolved' }}
         </span>
       </div>
@@ -248,25 +254,36 @@ function shortLabel(label: string): string {
     <p v-if="note" class="note">{{ note }}</p>
 
     <div class="body">
-      <ul class="files">
-        <li v-for="f in files" :key="f.path">
-          <button class="file" :class="[f.status, { on: f.path === path }]" :title="f.path" @click="conflictUi.path = f.path">
-            <component :is="f.status === 'left' ? FileWarning : CircleCheck" class="sm fi" />
-            <span class="fn">{{ f.path.split('/').pop() }}</span>
-            <span class="fd">{{ f.path.split('/').slice(0, -1).join('/') }}</span>
+      <!-- The Diff's file list: the same header, the same rows. -->
+      <aside class="files">
+        <div class="ftop"><span class="section-label">files ({{ files.length }})</span></div>
+        <div class="scroll">
+          <button
+            v-for="f in files"
+            :key="f.path"
+            class="frow"
+            :class="[f.status, { on: f.path === path }]"
+            :title="f.path"
+            @click="conflictUi.path = f.path"
+          >
+            <component :is="f.status === 'left' ? FileWarning : CircleCheck" class="fi" />
+            <span class="fp">
+              <span class="fname">{{ f.path.split('/').pop() }}</span>
+              <span class="fdir">{{ f.path.split('/').slice(0, -1).join('/') }}</span>
+            </span>
           </button>
-        </li>
-      </ul>
+        </div>
+      </aside>
 
       <section v-if="path" class="detail">
-        <div class="fhead">
-          <span class="fpath mono" :title="path">{{ path }}</span>
-          <span v-if="status === 'left' && hunks.length" class="dim num">{{ chosenCount }} of {{ hunks.length }} chosen</span>
+        <div class="vhead">
+          <span class="mono vpath" :title="path">{{ path }}</span>
+          <span v-if="status === 'left' && hunks.length" class="count num">{{ chosenCount }} of {{ hunks.length }} chosen</span>
           <span class="grow" />
           <template v-if="status === 'left' && file?.kind === 'text'">
             <button
               v-if="proposedCount"
-              class="btn ghost accent"
+              class="btn ghost agent"
               title="Take every proposal for this file"
               @click="useAllProposals"
             >
@@ -282,89 +299,93 @@ function shortLabel(label: string): string {
           <button class="icon-btn" title="Open in the editor" @click="openConflictFile(path)"><FileCode class="sm" /></button>
         </div>
 
-        <div v-if="loading && !file" class="empty"><LoaderCircle class="spin" /></div>
+        <div v-if="loading && !file" class="msg"><LoaderCircle class="spin sm" /></div>
 
         <!-- Resolved: in the IDE, here, or staged by Continue's way in. -->
-        <div v-else-if="status !== 'left'" class="empty ok">
-          <CircleCheck />Resolved{{ status === 'staged' ? ' and staged' : '' }}. Continue takes it as it is now.
+        <div v-else-if="status !== 'left'" class="msg ok">
+          <CircleCheck class="sm" />Resolved{{ status === 'staged' ? ' and staged' : '' }}. Continue takes it as it is now.
         </div>
 
         <!-- No markers to read: binary, or deleted on one side. -->
-        <div v-else-if="file && file.kind !== 'text'" class="whole">
+        <div v-else-if="file && file.kind !== 'text'" class="msg col">
           <p>{{ file.kind === 'binary' ? 'A binary file changed on both sides.' : 'One side deleted this file and the other changed it.' }}</p>
-          <div class="acts">
-            <button class="btn ghost" @click="takeConflictSide(w, path, sides!.left.key)">Take {{ shortLabel(sides!.left.side.label) }}</button>
-            <button class="btn ghost" @click="takeConflictSide(w, path, sides!.right.key)">Take yours</button>
+          <div class="acts flush">
+            <button class="btn" @click="takeConflictSide(w, path, sides!.left.key)">Take {{ shortLabel(sides!.left.side.label) }}</button>
+            <button class="btn" @click="takeConflictSide(w, path, sides!.right.key)">Take yours</button>
           </div>
         </div>
 
         <!-- Markers git did not write, or none at all: leave it to a person. -->
-        <div v-else-if="file && !hunks.length" class="whole">
+        <div v-else-if="file && !hunks.length" class="msg col">
           <p>No conflict markers git can read in this file.</p>
-          <div class="acts"><button class="btn ghost" @click="markResolved([path])">Mark it resolved</button></div>
+          <div class="acts flush"><button class="btn" @click="markResolved([path])">Mark it resolved</button></div>
         </div>
 
         <div v-else-if="file && sides" class="hunks">
-          <!-- The two columns, named once: what it lands on, and yours. -->
-          <div class="cols">
-            <div class="col base">
-              <span class="cn"><i class="sw base" />{{ shortLabel(sides.left.side.label) }}</span>
-              <span v-for="c in sides.left.side.commits.slice(0, 2)" :key="c" class="cm">{{ c }}</span>
+          <article v-for="(h, n) in hunks" :key="h.i" class="hunk">
+            <!-- The Diff's hunk header line: which conflict, and the verbs that
+                 are not one side's. Each side carries its own Take. -->
+            <div class="hhead">
+              <span class="hn">Conflict {{ n + 1 }} of {{ hunks.length }}</span>
+              <span class="grow" />
+              <template v-if="chosen[h.i] !== undefined && editing !== h.i">
+                <span class="hok"><Check />Chosen</span>
+                <button class="btn ghost" @click="delete chosen[h.i]"><RotateCcw />Change</button>
+              </template>
+              <template v-else-if="editing !== h.i">
+                <button class="btn ghost" :title="shortLabel(sides.left.side.label) + ' first, then yours'" @click="choose(h.i, both(h))">
+                  <Combine />Both
+                </button>
+                <button class="btn ghost" @click="startEdit(h)"><Pencil />Edit</button>
+              </template>
             </div>
-            <div class="col yours">
-              <span class="cn"><i class="sw yours" />yours · {{ shortLabel(sides.right.side.label) }}</span>
-              <span v-for="c in sides.right.side.commits.slice(0, 2)" :key="c" class="cm">{{ c }}</span>
+
+            <div v-for="(l, k) in lines(context(h.i, 'before'))" :key="'b' + k" class="line ctx">{{ l }}</div>
+
+            <div v-if="chosen[h.i] !== undefined && editing !== h.i" class="side result">
+              <div v-for="(l, k) in lines(chosen[h.i]!)" :key="k" class="line">{{ l }}</div>
+              <div v-if="!chosen[h.i]" class="line none">nothing</div>
             </div>
-          </div>
-
-          <article v-for="(h, n) in hunks" :key="h.i" class="hunk" :class="{ chosen: chosen[h.i] !== undefined }">
-            <div class="hn dim">Conflict {{ n + 1 }} of {{ hunks.length }}</div>
-            <pre v-if="context(h.i, 'before')" class="ctx mono">{{ context(h.i, 'before') }}</pre>
-
-            <template v-if="chosen[h.i] !== undefined && editing !== h.i">
-              <pre class="code result mono">{{ chosen[h.i] || '(nothing)' }}</pre>
-              <div class="acts">
-                <span class="dim"><Check class="sm" /> Chosen</span>
-                <button class="btn ghost" @click="delete chosen[h.i]">Change</button>
-              </div>
-            </template>
 
             <template v-else-if="editing === h.i">
-              <textarea v-model="draft" class="edit mono" spellcheck="false" :rows="Math.min(18, draft.split('\n').length + 1)" />
+              <textarea v-model="draft" class="edit" spellcheck="false" :rows="Math.min(18, draft.split('\n').length + 1)" />
               <div class="acts">
-                <button class="btn ghost accent" @click="choose(h.i, draft.endsWith('\n') || !draft ? draft : draft + '\n')">Use this</button>
+                <button class="btn primary" @click="choose(h.i, draft.endsWith('\n') || !draft ? draft : draft + '\n')">Use this</button>
                 <button class="btn ghost" @click="editing = null">Cancel</button>
               </div>
             </template>
 
             <template v-else>
+              <!-- The two candidates, each named where it is read, each with its own Take. -->
               <div class="pair">
-                <div class="side base">
-                  <pre class="code mono">{{ sideText(h, sides.left.key) || '(nothing)' }}</pre>
-                </div>
-                <div class="side yours">
-                  <pre class="code mono">{{ sideText(h, sides.right.key) || '(nothing)' }}</pre>
+                <div v-for="s in [{ c: 'base', at: sides.left }, { c: 'yours', at: sides.right }]" :key="s.c" class="side" :class="s.c">
+                  <div class="shead" :title="s.at.side.commits.join('\n')">
+                    <i class="sw" />
+                    <span class="cn">{{ s.c === 'yours' ? 'yours · ' : '' }}{{ shortLabel(s.at.side.label) }}</span>
+                    <span v-if="s.at.side.commits[0]" class="cm">{{ s.at.side.commits[0] }}</span>
+                    <span class="grow" />
+                    <button class="btn ghost take" @click="choose(h.i, sideText(h, s.at.key))"><Check />Take</button>
+                  </div>
+                  <div v-for="(l, k) in lines(sideText(h, s.at.key))" :key="k" class="line">{{ l }}</div>
+                  <div v-if="!sideText(h, s.at.key)" class="line none">nothing</div>
                 </div>
               </div>
-              <div v-if="proposed[h.i]" class="prop">
-                <div class="lab"><Sparkles class="sm" />Proposal</div>
-                <pre class="code mono">{{ proposed[h.i]!.text || '(nothing)' }}</pre>
-                <p v-if="proposed[h.i]!.why" class="why">{{ proposed[h.i]!.why }}</p>
-              </div>
-              <div class="acts">
-                <button v-if="proposed[h.i]" class="btn ghost accent" @click="choose(h.i, proposed[h.i]!.text)">
-                  <Sparkles />Use proposal
-                </button>
-                <button class="btn ghost" @click="choose(h.i, sideText(h, sides.left.key))">Take {{ shortLabel(sides.left.side.label) }}</button>
-                <button class="btn ghost" @click="choose(h.i, sideText(h, sides.right.key))">Take yours</button>
-                <button class="btn ghost" title="Theirs first, then yours" @click="choose(h.i, both(h))">Both</button>
-                <button class="btn ghost" @click="startEdit(h)"><Pencil />Edit</button>
+              <div v-if="proposed[h.i]" class="side prop">
+                <div class="shead">
+                  <Sparkles class="pi" />
+                  <span class="cn">Proposal</span>
+                  <span v-if="proposed[h.i]!.why" class="cm">{{ proposed[h.i]!.why }}</span>
+                  <span class="grow" />
+                  <button class="btn ghost take" @click="choose(h.i, proposed[h.i]!.text)"><Check />Take</button>
+                </div>
+                <div v-for="(l, k) in lines(proposed[h.i]!.text)" :key="k" class="line">{{ l }}</div>
+                <div v-if="!proposed[h.i]!.text" class="line none">nothing</div>
               </div>
             </template>
 
-            <pre v-if="context(h.i, 'after')" class="ctx mono">{{ context(h.i, 'after') }}</pre>
+            <div v-for="(l, k) in lines(context(h.i, 'after'))" :key="'a' + k" class="line ctx">{{ l }}</div>
           </article>
-          <p v-if="saving" class="dim"><LoaderCircle class="spin sm" /> Writing {{ path }}…</p>
+          <p v-if="saving" class="msg"><LoaderCircle class="spin sm" />Writing {{ path }}…</p>
         </div>
       </section>
     </div>
@@ -373,7 +394,9 @@ function shortLabel(label: string): string {
 
 <style scoped>
 /* A mode, not a tool: it has the right of the window to itself (App.vue), so
-   it is laid out for that width and narrows only when the window does. */
+   it is laid out for that width and narrows only when the window does. It is
+   built from the Diff's parts (the file list, the 40px file header, lines
+   drawn edge to edge) so the two read as one app. */
 .conflicts {
   container-type: inline-size;
   display: flex;
@@ -381,32 +404,36 @@ function shortLabel(label: string): string {
   min-height: 0;
   min-width: 0;
   font-size: var(--fs-sm);
-  background: var(--surface-work, var(--bg));
+  background: var(--surface-review);
 }
+.grow { flex: 1; }
 
+/* ── the bar of the mode ──────────────────────────────────────────────
+   One surface with the column under it and a hairline where it ends (the
+   rule in tokens.css). Conflict is said by the mark, not by a band. */
 .top {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 12px 20px;
+  gap: 6px;
+  min-height: 52px;
+  padding: 8px 14px 8px 16px;
   border-bottom: 1px solid var(--line);
-  background: var(--danger-soft);
   flex: none;
 }
-.ic { width: 18px; height: 18px; color: var(--danger); flex: none; }
+.mark { width: 16px; height: 16px; color: var(--danger); flex: none; margin-right: 4px; }
 .what { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.head { font-weight: 600; font-size: var(--fs-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dim { color: var(--text-muted); font-size: var(--fs-xs); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.grow { flex: 1; }
-.top .btn { height: 28px; padding: 0 11px; font-size: var(--fs-xs); flex: none; }
-.top .btn.danger { color: var(--danger); border-color: transparent; }
-.top .btn.primary:disabled { opacity: 1; background: transparent; border-color: var(--line-strong); color: var(--text-dim); box-shadow: none; }
-.verb { display: inline-flex; }
+.head { font-weight: 600; font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
+.top .btn { height: 28px; padding: 0 10px; font-size: var(--fs-xs); flex: none; }
+.top .btn.danger,
+.top .btn.danger:hover:not(:disabled) { color: var(--danger); }
+.top .btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+.verb { display: inline-flex; margin-left: 4px; }
 
 .note {
   margin: 0;
-  padding: 8px 20px;
+  padding: 8px 16px;
   font-size: var(--fs-xs);
   color: var(--text-muted);
   border-bottom: 1px solid var(--line-soft);
@@ -424,108 +451,157 @@ function shortLabel(label: string): string {
   .files { max-height: 150px; border-right: 0; border-bottom: 1px solid var(--line); }
 }
 
-.files { list-style: none; margin: 0; padding: 8px; overflow: auto; border-right: 1px solid var(--line); }
-.file {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  width: 100%;
-  padding: 6px 8px 6px 28px;
-  position: relative;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: none;
-  text-align: left;
-  color: var(--text);
-  font-size: var(--fs-xs);
-  min-width: 0;
-}
-.file:hover { background: var(--hover); }
-.file.on { background: var(--selected); }
-.fi { position: absolute; left: 8px; top: 8px; color: var(--danger); }
-.file.done .fi, .file.staged .fi { color: var(--ok); }
-.file.done .fn, .file.staged .fn { color: var(--text-muted); }
-.fn { white-space: nowrap; font-weight: 500; }
-.fd { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-
-.detail { overflow: auto; min-width: 0; }
-.fhead {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+/* ── the files: the Diff's list ───────────────────────────────────────── */
+.files { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+.ftop { display: flex; align-items: center; padding: 12px 15px 8px; flex: none; }
+.scroll { flex: 1; overflow-y: auto; padding: 0 6px 6px; }
+.frow {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 20px;
-  background: var(--surface-work, var(--bg));
-  border-bottom: 1px solid var(--line-soft);
+  gap: 7px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  transition: background var(--dur-1) var(--ease-soft), color var(--dur-1) var(--ease-soft);
 }
-.fpath { font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.fhead .btn { height: 26px; padding: 0 10px; font-size: var(--fs-xs); flex: none; }
-.btn.accent { color: var(--accent); }
-
-.empty { display: flex; align-items: center; gap: 8px; padding: 28px 20px; color: var(--text-muted); font-size: var(--fs-sm); }
-.empty.ok { color: var(--ok); }
-.whole { padding: 20px; font-size: var(--fs-sm); color: var(--text-muted); }
-.whole p { margin: 0 0 10px; }
-
-.hunks { padding: 14px 20px 32px; max-width: 1280px; }
-
-/* The two columns' names, once, over every conflict of the file. */
-.cols {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px;
-  margin: 0 9px 12px;
+.frow:hover { background: var(--hover); }
+.frow.on { background: var(--selected); color: var(--text); }
+.fi { width: 13px; height: 13px; flex: none; color: var(--danger); }
+.frow.done .fi, .frow.staged .fi { color: var(--ok); }
+.fp { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; overflow: hidden; white-space: nowrap; }
+.fname { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.fdir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
 }
-.col { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.cn { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); font-weight: 600; color: var(--text); }
-.col.yours .cn { color: var(--accent); }
-.cm { font-size: var(--fs-xs); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 14px; }
-.sw { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-.sw.base { background: var(--line-strong); }
-.sw.yours { background: var(--accent); }
 
-.hunk {
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 8px;
-  margin-bottom: 14px;
-  background: var(--panel);
+/* ── the file: the Diff's header, the Diff's lines ────────────────────── */
+.detail { overflow: auto; min-width: 0; }
+.vhead {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-review);
 }
-.hunk.chosen { border-color: var(--line-soft); background: transparent; }
-.hn { padding: 0 2px 4px; }
-pre { margin: 0; }
-.mono { font-family: var(--mono); font-size: 12px; line-height: 1.55; }
-.ctx { color: var(--text-dim); padding: 2px 8px; white-space: pre; overflow-x: auto; }
-.code { white-space: pre; overflow-x: auto; padding: 8px 10px; }
+.vpath { font-size: var(--fs-xs); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.count { flex: none; font-size: var(--fs-xs); color: var(--text-dim); }
+.vhead .btn { height: 26px; padding: 0 9px; font-size: var(--fs-xs); flex: none; }
 
-.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin: 4px 0; }
-@container (max-width: 620px) { .pair, .cols { grid-template-columns: minmax(0, 1fr); } }
-.side { border-radius: var(--radius-sm); min-width: 0; border: 1px solid var(--line-soft); }
-.side.yours { border-color: var(--accent-soft); background: color-mix(in srgb, var(--accent-soft) 35%, transparent); }
-.lab { display: flex; align-items: center; gap: 5px; padding: 5px 10px 0; font-size: 10.5px; color: var(--text-muted); }
-.side.yours .lab { color: var(--accent); }
+/* Anything written by an agent wears the agent's ink (tokens.css). */
+.btn.agent { color: var(--agent); }
+.btn.agent:hover:not(:disabled) { color: var(--agent); }
 
-.prop { margin: 8px 0 4px; border-radius: var(--radius-sm); background: var(--hover); }
-.why { margin: 0; padding: 0 10px 8px; font-size: var(--fs-xs); color: var(--text-muted); }
-.result { background: var(--ok-soft); border-radius: var(--radius-sm); margin: 4px 0; }
+.msg { display: flex; align-items: center; gap: 8px; margin: 0; padding: 24px 20px; font-size: var(--fs-sm); color: var(--text-muted); }
+.msg.ok { color: var(--ok); }
+.msg.col { flex-direction: column; align-items: flex-start; gap: 0; }
+.msg p { margin: 0; }
+
+.hunks { padding-bottom: 32px; }
+
+.hunk { margin-top: 14px; }
+/* The Diff's hunk header line: the count, and the verbs no one side owns. */
+.hhead {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 0 10px 0 20px;
+  background: var(--bg-sunken);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.hn { white-space: nowrap; }
+.hok { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; color: var(--ok); }
+.hok .lucide { width: 12px; height: 12px; }
+.hhead + .line { margin-top: 6px; }
+.hunk > .line.ctx:last-child { margin-bottom: 2px; }
+
+/* The header's verbs and each side's Take: the Diff header's ghost buttons. */
+.hhead .btn,
+.shead .btn { height: 24px; padding: 0 8px; gap: 5px; font-size: var(--fs-xs); }
+.hhead .btn .lucide,
+.shead .btn .lucide { width: 12px; height: 12px; }
+
+.line {
+  padding: 0 16px 0 20px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  tab-size: 4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.line.ctx { color: var(--text-dim); }
+.line.none { font-family: var(--font); font-size: var(--fs-xs); font-style: italic; color: var(--text-dim); }
+
+/* The candidates. Each is a band of its own ink with an edge in its colour,
+   so it reads apart from the faint lines around it, and is named on its own
+   first line rather than once at the top of the file. */
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1px; margin: 6px 0; }
+@container (max-width: 620px) { .pair { grid-template-columns: minmax(0, 1fr); gap: 6px; } }
+.side {
+  --edge: var(--line-strong);
+  min-width: 0;
+  padding: 0 0 6px;
+  background: var(--hover);
+  box-shadow: inset 2px 0 0 var(--edge);
+}
+.side.yours { --edge: var(--accent); background: var(--selected); }
+.side.prop { --edge: var(--agent); background: var(--agent-soft); margin: 6px 0; }
+.side.result { --edge: var(--ok); background: var(--diff-add-bg); padding-top: 6px; margin: 6px 0; }
+
+.shead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 8px 0 20px;
+  font-size: var(--fs-xs);
+}
+.sw { width: 8px; height: 8px; border-radius: 2px; flex: none; background: var(--edge); }
+.pi { width: 12px; height: 12px; flex: none; color: var(--agent); }
+.cn { flex: none; font-weight: 600; color: var(--text); }
+.side.yours .cn { color: var(--accent); }
+.side.prop .cn { color: var(--agent); }
+.cm { min-width: 0; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.take { flex: none; }
+/* The side a Take would keep lights up while the pointer is on it. */
+.side:has(.take:hover) { box-shadow: inset 2px 0 0 var(--edge), inset 0 0 0 1px var(--edge); }
 
 .edit {
-  width: 100%;
+  display: block;
+  width: calc(100% - 32px);
   box-sizing: border-box;
-  margin: 4px 0;
+  margin: 6px 16px;
   padding: 8px 10px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
-  background: var(--surface-input, var(--bg));
+  background: var(--surface-input);
   color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
   resize: vertical;
 }
 
-.acts { display: flex; align-items: center; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+.acts { display: flex; align-items: center; gap: 6px; padding: 8px 16px 6px 20px; flex-wrap: wrap; }
+.acts.flush { padding: 12px 0 0; }
 .acts .btn { height: 26px; padding: 0 10px; font-size: var(--fs-xs); }
-.spin { animation: spin 0.9s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 </style>
