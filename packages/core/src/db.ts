@@ -357,6 +357,14 @@ function migrate(d: Db): void {
   // turn's total over every call it made, which is a different question.
   addColumn(d, 'agent_turns', 'context_cached', 'INTEGER NOT NULL DEFAULT 0')
   addColumn(d, 'agent_turns', 'model', "TEXT NOT NULL DEFAULT ''")
+  // A turn the engine's own message ended (a usage limit, an API error) used to
+  // record the sum of every call it made as its level: no per-call figure, the
+  // totals in its place, far past the window, and the meter pinned at 100%. That
+  // shape is no level a call can have; cleared to "unknown" so the roll-up reads
+  // the turn before. Idempotent — nothing written since matches it.
+  d.exec(`UPDATE agent_turns SET context_tokens = 0
+    WHERE context_window > 0 AND context_tokens > context_window AND context_cached = 0
+      AND cache_read > 0 AND context_tokens = input_tokens + cache_read + cache_creation`)
   // The screenshots and files that went in with the prompt, as JSON. On the
   // turn rather than on the session: it is a property of what was asked, and a
   // thread reread next week has to show what was attached to *which* question.

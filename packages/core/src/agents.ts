@@ -1662,6 +1662,12 @@ function writeTurnUsage(
           'SELECT context_window AS win, model FROM agent_turns WHERE session_id = ? AND context_window > 0 ORDER BY seq DESC LIMIT 1',
         )
         .get(sessionId) as { win: number; model: string } | undefined)
+  const window = Math.min(u.window || prev?.win || 0, contextLimit ?? Infinity)
+  // The sum stands in for a level only when it could be one: past the window
+  // it is several calls added up, and "unknown" (0, which the roll-up skips
+  // for the turn before) is the honest reading.
+  const sum = u.input + u.cacheRead + u.cacheCreation
+  const level = contextTokens || (window && sum > window ? 0 : sum)
   getDb()
     .prepare(
       `UPDATE agent_turns SET input_tokens = ?, output_tokens = ?, cache_read = ?, cache_creation = ?,
@@ -1676,9 +1682,9 @@ function writeTurnUsage(
       // everything served from cache. Cached is not free of the window — it is
       // the window. Not the turn's totals: those sum every call it made, which
       // is money, not level. See `contextTokens`.
-      contextTokens || u.input + u.cacheRead + u.cacheCreation,
-      contextCached,
-      Math.min(u.window || prev?.win || 0, contextLimit ?? Infinity),
+      level,
+      contextTokens ? contextCached : 0,
+      window,
       u.model || prev?.model || '',
       cost,
       row.id,
@@ -2822,9 +2828,17 @@ async function launch(
 
         // Overwritten rather than accumulated: each call reports the whole
         // window it ran against, so the newest figure *is* the level.
+        // Zero is no report: the engine's own messages — "You've hit your
+        // limit", an API error — are assistant messages with an empty usage,
+        // and no call was made for them. Taken as the level, they emptied it,
+        // and `writeTurnUsage` then fell back to the turn's sum over every
+        // call: 8.6M tokens against a 400k window, a meter at 100% on every
+        // turn the limit cut short.
         case 'context':
-          if (typeof ev.contextTokens === 'number') l.context = ev.contextTokens
-          if (typeof ev.contextCached === 'number') l.contextCached = ev.contextCached
+          if (typeof ev.contextTokens === 'number' && ev.contextTokens > 0) {
+            l.context = ev.contextTokens
+            l.contextCached = ev.contextCached ?? 0
+          }
           break
 
         // The level drops here and not on the next call: the next call may be
