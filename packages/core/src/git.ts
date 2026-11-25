@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { BranchRef, GitOperation, GitState } from '@cockpit/shared'
 import { run, serialize } from './exec.js'
 import type { RunResult } from './exec.js'
@@ -18,7 +18,23 @@ export function git(cwd: string, args: string[], timeoutMs = 30_000) {
 export function gitWith(
   cwd: string,
   args: string[],
-  opts: { timeoutMs?: number; env?: Record<string, string>; input?: string } = {},
+  opts: {
+    timeoutMs?: number
+    env?: Record<string, string>
+    input?: string
+    /**
+     * Work nobody is waiting for (the periodic fetch). It queues like any
+     * write, but an `urgent` call in the same folder calls it off.
+     */
+    background?: boolean
+    /**
+     * A step of a plan a person confirmed. Background work queued or running
+     * in this folder is stopped first, so a Commit or a Push never waits for
+     * a fetch over the network. Only background work: two writes still never
+     * overlap, and the stopped git is waited for until it has gone.
+     */
+    urgent?: boolean
+  } = {},
 ): Promise<RunResult> {
   if (opts.input === undefined && isReadOnly(args)) {
     // Off the queue: a reader cannot collide with anything, and queued it waited
@@ -35,9 +51,29 @@ export function gitWith(
       }),
     )
   }
-  const once = () => run('git', args, { cwd, timeoutMs: opts.timeoutMs ?? 30_000, env: opts.env, input: opts.input })
-  return serialize('git:' + cwd, async () => {
+  const key = 'git:' + cwd
+  if (opts.urgent) for (const c of backgroundIn.get(key) ?? []) c.abort()
+  let ctl: AbortController | null = null
+  if (opts.background) {
+    ctl = new AbortController()
+    const set = backgroundIn.get(key) ?? new Set()
+    set.add(ctl)
+    backgroundIn.set(key, set)
+  }
+  const once = () =>
+    run('git', args, {
+      cwd,
+      timeoutMs: opts.timeoutMs ?? 30_000,
+      env: opts.env,
+      input: opts.input,
+      signal: ctl?.signal,
+      waitOnAbort: true,
+    })
+  const queued = serialize(key, async () => {
+    // Called off before its turn came: nothing was started, nothing to undo.
+    if (ctl?.signal.aborted) return { code: 130, stdout: '', stderr: '[cockpit] cancelled', ok: false }
     const r = await once()
+    if (ctl?.signal.aborted) return r
     if (r.ok) return r
     // A lock left by a git that died stops every write in the repository
     // until someone deletes it. When nobody is using it, that someone is us —
@@ -60,7 +96,17 @@ export function gitWith(
     }
     return once()
   })
+  if (!ctl) return queued
+  const mine = ctl
+  return queued.finally(() => {
+    const set = backgroundIn.get(key)
+    set?.delete(mine)
+    if (set && !set.size) backgroundIn.delete(key)
+  })
 }
+
+/** Background git by queue key, so an urgent call can stop it (`gitWith`). */
+const backgroundIn = new Map<string, Set<AbortController>>()
 
 /**
  * §16 — the per-repository queue exists so two git commands never fight over a
@@ -153,7 +199,7 @@ export async function isWorktree(path: string): Promise<boolean> {
 export async function probeGit(cwd: string, baseOverride?: string | null): Promise<GitState | null> {
   if (!isRepo(cwd)) return null
 
-  const [status, head, unpushed, remotes, base] = await Promise.all([
+  const [status, head, unpushed, remotes, base, abs] = await Promise.all([
     git(cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=all']),
     git(cwd, ['log', '-1', '--format=%H%x1f%s%x1f%an%x1f%at']),
     // `HEAD`, not `--branches`: the latter answers for the whole repository,
@@ -165,6 +211,9 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     // Reads a ref file in the common case, so it costs about nothing to probe
     // it every time rather than resolving it at the moment of the action.
     baseOverride ? Promise.resolve(baseOverride) : defaultBranch(cwd),
+    // Asked now rather than at the end: the in-progress checks below only
+    // need it, and one more round trip was one more git start in a row.
+    gitDir(cwd),
   ])
 
   if (!status.ok) return null
@@ -221,21 +270,33 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
     }
   }
 
+  // Everything that needed only the branch name, asked side by side. Each
+  // answer is read exactly as it was when these ran one after another; asking
+  // one whose answer turns out not to be needed costs a git start, not a wait.
+  const own = state.branch ? 'origin/' + state.branch : null
+  const onRemote = !!(state.branch && state.hasRemote)
+  const againstBase = !!(state.base && state.branch && state.branch !== state.base)
+  const [ownRef, ownAb, neverPushed, baseAb] = await Promise.all([
+    onRemote ? git(cwd, ['rev-parse', '--verify', '--quiet', 'refs/remotes/' + own], 10_000) : null,
+    // Only read when the ref above exists; when it does not, this fails and
+    // is ignored, as the call it replaces was never made.
+    onRemote && state.upstream !== own ? git(cwd, ['rev-list', '--left-right', '--count', 'HEAD...' + own], 15_000) : null,
+    onRemote && state.hasUnpushedWork ? git(cwd, ['rev-list', '--count', 'HEAD', '--not', '--remotes'], 15_000) : null,
+    againstBase ? countBase(cwd, state.base!) : null,
+  ])
+
   // The branch's own remote is what Push is measured against, whatever the
   // tracking config says. A topic branch tracks `origin/<base>` until a push
   // with `-u`, and one pushed from a terminal without it stays that way for
   // good: its counts kept answering for the base, so a branch that was behind
   // its own remote read as level and Push went dark.
   state.published = false
-  if (state.branch && state.hasRemote) {
-    const own = 'origin/' + state.branch
-    const ref = await git(cwd, ['rev-parse', '--verify', '--quiet', 'refs/remotes/' + own], 10_000)
-    if (ref.ok && ref.stdout.trim()) {
+  if (onRemote && ownRef) {
+    if (ownRef.ok && ownRef.stdout.trim()) {
       state.published = true
-      if (state.upstream !== own) {
-        const ab = await git(cwd, ['rev-list', '--left-right', '--count', 'HEAD...' + own], 15_000)
-        const m = /^(\d+)\s+(\d+)/.exec(ab.stdout.trim())
-        if (ab.ok && m) {
+      if (state.upstream !== own && ownAb) {
+        const m = /^(\d+)\s+(\d+)/.exec(ownAb.stdout.trim())
+        if (ownAb.ok && m) {
           state.upstream = own
           state.ahead = Number(m[1])
           state.behind = Number(m[2])
@@ -247,10 +308,9 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
   // Never pushed: `ahead` answered for whatever the branch happened to track —
   // nothing at all for a branch made without an upstream, so Push stood there
   // with no count. What its first push sends is every commit no remote has.
-  if (state.branch && state.hasRemote && !state.published) {
+  if (onRemote && !state.published) {
     if (state.hasUnpushedWork) {
-      const n = await git(cwd, ['rev-list', '--count', 'HEAD', '--not', '--remotes'], 15_000)
-      if (n.ok && /^\d+$/.test(n.stdout.trim())) state.ahead = Number(n.stdout.trim())
+      if (neverPushed?.ok && /^\d+$/.test(neverPushed.stdout.trim())) state.ahead = Number(neverPushed.stdout.trim())
     } else if (unpushed.ok) {
       state.ahead = 0
     }
@@ -265,12 +325,7 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
   // §4 — what Send would land, which is not what `ahead` counts. Skipped
   // when there is nothing to compare against, and when the branch *is* the
   // base: a base branch has nothing to send to itself.
-  if (state.base && state.branch && state.branch !== state.base) {
-    state.aheadOfBase = await countAhead(cwd, state.base)
-  } else if (state.branch && state.branch === state.base) {
-    state.aheadOfBase = 0
-  }
-
+  //
   // §4 — and what Catch up would replay this branch on top of, which is not
   // what `behind` counts either.
   //
@@ -279,8 +334,11 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
   // on `main` is not a rebase with nothing to replay, it is a pull — a
   // different verb, already counted by `behind`. Answering both left the
   // window offering two buttons for one act, each with the same number on it.
-  if (state.base && state.branch && state.branch !== state.base) {
-    state.behindBase = await countBehind(cwd, state.base)
+  if (againstBase) {
+    state.aheadOfBase = baseAb?.ahead ?? null
+    state.behindBase = baseAb?.behind ?? null
+  } else if (state.branch && state.branch === state.base) {
+    state.aheadOfBase = 0
   }
 
   if (head.ok && head.stdout.trim()) {
@@ -295,7 +353,6 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
 
   // In-progress operations, so the UI never offers a rebase mid-rebase — and,
   // when there is one, can offer the only three verbs that end it instead.
-  const abs = await gitDir(cwd)
   if (existsSync(join(abs, 'rebase-merge')) || existsSync(join(abs, 'rebase-apply'))) {
     state.headState = 'rebasing'
   } else if (existsSync(join(abs, 'MERGE_HEAD'))) {
@@ -350,14 +407,53 @@ export async function probeGit(cwd: string, baseOverride?: string | null): Promi
  * does not queue another behind it on the next tick.
  */
 const FETCH_MIN_INTERVAL = 120_000
+/** By repository (its common `.git`), not by folder: see `fetchRemote`. */
 const lastFetch = new Map<string, number>()
 
-export async function fetchRemote(cwd: string, opts: { force?: boolean } = {}): Promise<boolean> {
+/**
+ * Keyed by repository, because every worktree of a repository shares its
+ * remote-tracking refs: one fetch in any of its checkouts moves `origin/*` for
+ * all of them. Keyed by folder, a repository with eight topics went to origin
+ * eight times every two minutes, and the eight fetches fought over the same
+ * refs.
+ *
+ * `background`: a Commit, a Push or any other confirmed step in the same
+ * folder calls it off rather than waiting behind it (`gitWith`). A fetch that
+ * was called off is not counted as done, so the next pass tries again.
+ */
+export async function fetchRemote(
+  cwd: string,
+  opts: { force?: boolean; background?: boolean } = {},
+): Promise<boolean> {
+  const repo = commonDirOf(cwd) ?? cwd
   const now = Date.now()
-  if (!opts.force && now - (lastFetch.get(cwd) ?? 0) < FETCH_MIN_INTERVAL) return false
-  lastFetch.set(cwd, now)
-  const r = await git(cwd, ['fetch', '--prune', 'origin'], 30_000)
+  if (!opts.force && now - (lastFetch.get(repo) ?? 0) < FETCH_MIN_INTERVAL) return false
+  lastFetch.set(repo, now)
+  const r = await gitWith(cwd, ['fetch', '--prune', 'origin'], { timeoutMs: 30_000, background: opts.background })
+  if (r.code === 130 && lastFetch.get(repo) === now) lastFetch.delete(repo)
   return r.ok
+}
+
+/**
+ * The repository's own `.git` folder, which every worktree of it shares, read
+ * off the disk rather than asked of git: a main checkout's `.git` is that
+ * folder; a worktree's is a file naming its private folder, whose `commondir`
+ * points back to the shared one. Null when the layout is anything else.
+ */
+export function commonDirOf(cwd: string): string | null {
+  const dotGit = join(cwd, '.git')
+  try {
+    const st = statSync(dotGit)
+    if (st.isDirectory()) return dotGit
+    if (!st.isFile()) return null
+    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'))
+    if (!m) return null
+    const own = resolve(cwd, m[1]!.trim())
+    const common = join(own, 'commondir')
+    return existsSync(common) ? resolve(own, readFileSync(common, 'utf8').trim()) : own
+  } catch {
+    return null
+  }
 }
 
 export async function gitDir(cwd: string): Promise<string> {
@@ -622,15 +718,6 @@ export async function log(cwd: string, limit = 40) {
 }
 
 
-/**
- * Commits on HEAD that `base` does not have. `origin/<base>` first — the base
- * a topic is measured against is the shared one, and a local `main` left
- * behind months ago would flatter every count on the machine.
- */
-async function countAhead(cwd: string, base: string): Promise<number | null> {
-  return countRange(cwd, base, (ref) => ref + '..HEAD')
-}
-
 /** The other direction, and the same two refs tried in the same order. */
 export async function countBehind(cwd: string, base: string): Promise<number | null> {
   return countRange(cwd, base, (ref) => 'HEAD..' + ref)
@@ -659,6 +746,20 @@ async function countIncoming(
   const r = await git(cwd, ['rev-list', '--count', upstream, '--not', 'HEAD', ...seen], 15_000)
   const n = r.ok ? Number(r.stdout.trim()) : NaN
   return Number.isFinite(n) ? n : behind
+}
+
+/**
+ * `countAhead` and `countBehind` in one git call: `<ref>...HEAD` counted
+ * left/right is "on the base, not here" then "here, not on the base". The same
+ * two refs in the same order, and null for both when neither resolves.
+ */
+async function countBase(cwd: string, base: string): Promise<{ ahead: number; behind: number } | null> {
+  for (const ref of ['origin/' + base, base]) {
+    const r = await git(cwd, ['rev-list', '--left-right', '--count', ref + '...HEAD'], 15_000)
+    const m = /^(\d+)\s+(\d+)/.exec(r.stdout.trim())
+    if (r.ok && m) return { behind: Number(m[1]), ahead: Number(m[2]) }
+  }
+  return null
 }
 
 async function countRange(

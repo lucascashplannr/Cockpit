@@ -20,6 +20,12 @@ export interface RunOptions {
   windowsHide?: boolean
   /** Aborting it stops the child; the result comes back with code 130. */
   signal?: AbortSignal
+  /**
+   * On abort, answer only once the child is gone (SIGKILL after 3 s), as a
+   * timeout does. For a git that may hold a lock: the queue must not start the
+   * next one in the repository while this one is still letting go of it.
+   */
+  waitOnAbort?: boolean
 }
 
 const IS_WIN = process.platform === 'win32'
@@ -110,10 +116,16 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       resolveRun({ code, stdout, stderr, ok: code === 0 })
     }
 
+    let aborted = false
     function onAbort() {
+      aborted = true
       child.kill('SIGTERM')
       stderr += '\n[cockpit] cancelled'
-      finish(130)
+      if (!opts.waitOnAbort) return finish(130)
+      killer = setTimeout(() => {
+        child.kill('SIGKILL')
+        finish(130)
+      }, 3000)
     }
 
     // SIGTERM first: git removes its lock files (.git/index.lock) on SIGTERM
@@ -143,9 +155,17 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
       stderr += String(err)
       finish(127)
     })
+    // Called off: done once git itself has exited, which is when its locks
+    // are gone. Its helpers (a sleeping upload-pack, `git-remote-https`) may
+    // hold the pipes open a little longer, and 'close' would wait for them.
+    child.on('exit', () => {
+      if (!aborted || !opts.waitOnAbort) return
+      clearTimeout(killer)
+      finish(130)
+    })
     child.on('close', (code) => {
       clearTimeout(killer)
-      finish(timedOut ? 124 : (code ?? 0))
+      finish(aborted ? 130 : timedOut ? 124 : (code ?? 0))
     })
     if (opts.signal?.aborted) onAbort()
     else opts.signal?.addEventListener('abort', onAbort, { once: true })

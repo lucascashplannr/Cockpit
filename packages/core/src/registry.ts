@@ -8,7 +8,7 @@ import * as topicStore from './topics/store.js'
 import * as preparing from './topics/preparing.js'
 import { loadConfig, migrateLegacyLocks, updateConfig, projectSettings, setProjectSettings } from './config.js'
 import { childRepos, detectCapabilities, findManifest, groupedRepos, projectNameFor, readManifest } from './detect.js'
-import { fetchRemote, git, isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
+import { commonDirOf, fetchRemote, git, isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
 import { leaseCovering, leasesCovering } from './leases.js'
@@ -858,6 +858,14 @@ export async function reconcile(
   opts: { fetch?: 'throttled' | 'force' | 'never'; ifIdle?: boolean } = {},
 ): Promise<number> {
   if (inFlight && opts.ifIdle) return 0
+  // The network first, and outside the pass: a fetch can take seconds, and
+  // everyone waiting for a pass (every plan's re-probe after it ran) used to
+  // wait for the fetches inside it. What is fetched here is what the registry
+  // already knows of; a repository the pass itself discovers is fetched there.
+  if (opts.fetch !== 'never') {
+    await fetchRepos(projectId, opts.fetch === 'force')
+    if (inFlight && opts.ifIdle) return 0
+  }
   // A loop, not one await: several callers can be waiting on the same pass,
   // and each of them has to find the way clear for itself.
   while (inFlight) await inFlight.catch(() => 0)
@@ -868,6 +876,31 @@ export async function reconcile(
   } finally {
     inFlight = null
   }
+}
+
+/**
+ * One fetch per repository the registry knows of in these projects (all of
+ * them when none is named). Several checkouts of one repository share its
+ * remote-tracking refs, so one fetch speaks for all of them (git.ts
+ * `fetchRemote`); the main checkout is the one asked, being the one a topic's
+ * work happens least in.
+ */
+async function fetchRepos(projectId: string | undefined, force: boolean): Promise<void> {
+  const ids = [...workspaces.values()].filter((w) => !projectId || w.projectId === projectId).map((w) => w.id)
+  await fetchEach(ids, force)
+}
+
+async function fetchEach(workspaceIds: string[], force: boolean): Promise<void> {
+  const byRepo = new Map<string, Workspace>()
+  for (const id of workspaceIds) {
+    const w = workspaces.get(id)
+    if (!w?.repo || !existsSync(w.path)) continue
+    const key = commonDirOf(w.path) ?? w.path
+    const had = byRepo.get(key)
+    if (!had || (had.kind !== 'main' && w.kind === 'main')) byRepo.set(key, w)
+  }
+  // In parallel: network calls, and independent of each other.
+  await Promise.all([...byRepo.values()].map((w) => fetchRemote(w.path, { force, background: true })))
 }
 
 /**
@@ -921,20 +954,15 @@ async function runReconcile(
     const project = buildProject(root)
     addTopicRoots(project)
     await discoverWorktrees(project)
-    // Before the probe, not after: the probe reads the refs this moves, and
-    // in parallel because these are network calls and they are independent.
-    if (opts.fetch !== 'never') {
-      await Promise.all(
-        project.workspaceIds.map((wid) => {
-          const w = workspaces.get(wid)
-          return w?.repo ? fetchRemote(w.path, { force: opts.fetch === 'force' }) : null
-        }),
-      )
-    }
-    for (const wid of project.workspaceIds) {
-      await probeWorkspace(wid)
-      changed++
-    }
+    // Before the probe, not after: the probe reads the refs this moves. Done
+    // already by `reconcile` for every repository it knew of, so this is
+    // throttled: it only goes to origin for one this pass just discovered.
+    if (opts.fetch !== 'never') await fetchEach(project.workspaceIds, false)
+    // Side by side: each checkout is its own folder, and the readers they run
+    // share one bounded pool (git.ts `readSlot`). One after another, a pass
+    // over 28 checkouts held every waiting plan for seconds.
+    await Promise.all(project.workspaceIds.map((wid) => probeWorkspace(wid)))
+    changed += project.workspaceIds.length
     deriveTopics(project)
   }
   append({ type: 'core.reconciled', payload: { projects: roots.length, workspaces: changed } })

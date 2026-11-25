@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs'
+import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { DiffFile, DiffHunkLine, FileDiff } from '@cockpit/shared'
 import { git } from './git.js'
@@ -24,18 +24,21 @@ export async function files(workspaceId: string, base?: string): Promise<DiffFil
   // `-z` throughout. Without it git quotes any path outside ASCII
   // (`"\303\251.txt"`) and writes a rename's numstat as `old => new`, so the
   // keys never met: a renamed file was counted as new from top to bottom.
-  const [numstat, status] = await Promise.all([
+  // All four side by side: they are readers (git.ts runs those off the queue),
+  // and the list waited for the last two one after the other.
+  const [numstat, status, untracked, head] = await Promise.all([
     git(ws.path, [...diffArgs(base), '--numstat', '-z']),
     git(ws.path, [...diffArgs(base), '--name-status', '-z']),
+    // Untracked files never appear in `git diff`, but they are unmistakably
+    // part of the work in progress and must be reviewable.
+    base ? null : git(ws.path, ['ls-files', '--others', '--exclude-standard', '-z']),
+    base ? null : git(ws.path, ['log', '-1', '--format=%ct', 'HEAD']),
   ])
 
   const statusByPath = new Map<string, { status: DiffFile['status']; oldPath: string | null }>()
   for (const s of parseNameStatus(status.stdout)) statusByPath.set(s.path, { status: s.status, oldPath: s.oldPath })
 
-  // Untracked files never appear in `git diff`, but they are unmistakably
-  // part of the work in progress and must be reviewable.
-  if (!base) {
-    const untracked = await git(ws.path, ['ls-files', '--others', '--exclude-standard', '-z'])
+  if (untracked) {
     for (const p of untracked.stdout.split('\0').filter(Boolean)) {
       if (!statusByPath.has(p)) statusByPath.set(p, { status: 'A', oldPath: null })
     }
@@ -44,9 +47,16 @@ export async function files(workspaceId: string, base?: string): Promise<DiffFil
   const counts = parseNumstat(numstat.stdout)
 
   // Untracked files carry no numstat entry, but showing them as +0/-0 makes
-  // brand-new work look empty in the review. Count their lines directly.
-  for (const p of statusByPath.keys()) {
-    if (!counts.has(p)) counts.set(p, countNewFile(join(ws.path, p)))
+  // brand-new work look empty in the review. Count their lines directly —
+  // read asynchronously: read in a row with the sync calls, a folder of new
+  // files held the whole core, every other window request included.
+  // In batches: a few at a time is the speed, all at once is a file
+  // descriptor per file, and running out of those fails every git call.
+  const uncounted = [...statusByPath.keys()].filter((p) => !counts.has(p))
+  for (let i = 0; i < uncounted.length; i += 32) {
+    const batch = uncounted.slice(i, i + 32)
+    const got = await Promise.all(batch.map((p) => countNewFile(join(ws.path, p))))
+    batch.forEach((p, k) => counts.set(p, got[k]!))
   }
 
   const paths = [...statusByPath.keys()]
@@ -54,10 +64,7 @@ export async function files(workspaceId: string, base?: string): Promise<DiffFil
   // §7 — who among the conversations, since the last commit: what was
   // committed before is not this change, whoever made it.
   let by = new Map<string, { id: string; title: string }[]>()
-  if (!base) {
-    const head = await git(ws.path, ['log', '-1', '--format=%ct', 'HEAD'])
-    by = changedBy(workspaceId, paths, (Number(head.stdout.trim()) || 0) * 1000)
-  }
+  if (head) by = changedBy(workspaceId, paths, (Number(head.stdout.trim()) || 0) * 1000)
 
   return paths
     .map((p) => {
@@ -178,10 +185,10 @@ export function parseUnified(text: string): DiffHunkLine[] {
 
 const COUNT_LIMIT = 2 * 1024 * 1024
 
-function countNewFile(full: string): { add: number; del: number; binary: boolean } {
+async function countNewFile(full: string): Promise<{ add: number; del: number; binary: boolean }> {
   try {
-    if (statSync(full).size > COUNT_LIMIT) return { add: 0, del: 0, binary: false }
-    const buf = readFileSync(full)
+    if ((await stat(full)).size > COUNT_LIMIT) return { add: 0, del: 0, binary: false }
+    const buf = await readFile(full)
     for (let i = 0; i < Math.min(buf.length, 4096); i++) {
       if (buf[i] === 0) return { add: 0, del: 0, binary: true }
     }

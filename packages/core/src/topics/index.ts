@@ -933,9 +933,16 @@ async function pushPlanOf(
       (names.length === 1 ? ' repository pushes' : ' repositories push') +
       ' to origin. Nothing is merged anywhere by it.',
   )
-  warnings.push(
-    'Repositories push in order and it stops at the first refusal, keeping the ones that went.',
-  )
+  // Side by side unless one of them is a force-push: that one keeps the old
+  // order and stops at the first refusal (plans.ts `runsTogether`).
+  const together = steps.length > 1 && !steps.some((s) => s.destructive)
+  if (steps.length > 1) {
+    warnings.push(
+      together
+        ? 'Repositories push side by side; one that is refused does not stop the others, and the ones that went are kept.'
+        : 'Repositories push in order and it stops at the first refusal, keeping the ones that went.',
+    )
+  }
 
   const preview: PlanPreview = {
     planId: newId('plan_'),
@@ -949,7 +956,7 @@ async function pushPlanOf(
     // pushed. Un-pushing them to "recover" would be a rewrite of the remote.
     onFailure: 'halt',
   }
-  plans.register(preview, { workspaceIds: ids })
+  plans.register(preview, { workspaceIds: ids, concurrent: together })
   return { ok: true, detail: names.join(', '), plan: preview }
 }
 

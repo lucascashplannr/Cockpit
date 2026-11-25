@@ -760,14 +760,17 @@ const handlers: Record<string, Handler> = {
     } else {
       // A worktree, a branch, a topic: the structure may have moved, and the
       // full pass is what rebuilds it. Only the plan's own project, though —
-      // no plan reaches into another one.
+      // no plan reaches into another one. And without going to origin: a plan
+      // that needed the remote fetched it as one of its own steps, and the
+      // window should not wait on the network to hear that it ran. The 60s
+      // pass fetches the rest.
       const projectIds = new Set(
         (scope?.workspaceIds ?? [])
           .map((id) => registry.getWorkspace(id)?.projectId)
           .filter((id): id is string => !!id),
       )
-      if (projectIds.size) for (const id of projectIds) await registry.reconcile(id)
-      else await registry.reconcile()
+      if (projectIds.size) for (const id of projectIds) await registry.reconcile(id, { fetch: 'never' })
+      else await registry.reconcile(undefined, { fetch: 'never' })
     }
     pushAll()
     return res

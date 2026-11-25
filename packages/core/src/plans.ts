@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { newId } from '@cockpit/shared'
 import type { ApplyResult, PlanPreview, PlanStep } from '@cockpit/shared'
 import { getDb } from './db.js'
-import { defaultBranch, git, listWorktrees, probeOperation } from './git.js'
+import { defaultBranch, git, gitWith, listWorktrees, probeOperation } from './git.js'
 import * as restore from './restore.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
@@ -46,6 +46,8 @@ interface StoredPlan extends PlanPreview {
    * one (§3.7).
    */
   onBefore?: () => void | Promise<void>
+  /** See `RegisterOptions.concurrent`. */
+  concurrent?: boolean
 }
 
 const plans = new Map<string, StoredPlan>()
@@ -75,6 +77,14 @@ export interface RegisterOptions {
    * appearing in the previewed command, in the journal, or on anyone's `ps`.
    */
   env?: Record<string, string>
+  /**
+   * The steps may run side by side: each in its own repository, none needing
+   * another's result, none with an undo (a `halt` plan). A push over several
+   * repositories is the case: one network round trip each, end to end, for no
+   * reason. Honoured only while that stays true of the steps (`runsTogether`);
+   * otherwise the plan runs in order as any other.
+   */
+  concurrent?: boolean
 }
 
 /**
@@ -106,6 +116,7 @@ export function register(preview: PlanPreview, opts: RegisterOptions): PlanPrevi
     env: opts.env,
     onApplied: opts.onApplied,
     onBefore: opts.onBefore,
+    concurrent: opts.concurrent,
   })
   append({
     type: 'git.plan',
@@ -552,6 +563,8 @@ export async function apply(planId: string): Promise<ApplyResult> {
   // still leaves the anchor behind.
   if (stored.onBefore) await stored.onBefore()
 
+  if (runsTogether(stored)) return applyTogether(stored, restorePoint)
+
   const lines: string[] = []
   /** Steps that already ran, newest last — the rollback order is their reverse. */
   const done: PlanStep[] = []
@@ -672,6 +685,65 @@ export async function apply(planId: string): Promise<ApplyResult> {
 }
 
 /**
+ * Whether a `concurrent` plan's steps really can run side by side: two or
+ * more, each in a different folder, nothing to roll back, nothing destructive
+ * (a force-push keeps the order and the stop at the first refusal), nothing to
+ * run before them.
+ */
+function runsTogether(p: StoredPlan): boolean {
+  if (!p.concurrent || p.steps.length < 2 || p.onBefore) return false
+  if ((p.onFailure ?? 'rollback') !== 'halt') return false
+  if (p.steps.some((s) => s.destructive || s.undo?.length)) return false
+  return new Set(p.steps.map((s) => s.cwd)).size === p.steps.length
+}
+
+/**
+ * `apply` for steps that run side by side. Each repository's git still queues
+ * on its own folder (§16), so nothing here overlaps within one repository.
+ * The output reads in the plan's order whatever order they finished in, and a
+ * step that failed is said as `apply` says it; the others went, and are kept.
+ */
+async function applyTogether(stored: StoredPlan, restorePoint: string | null): Promise<ApplyResult> {
+  const results = await Promise.all(stored.steps.map((step) => exec(step, stored.env)))
+  const lines: string[] = []
+  const failed: number[] = []
+  results.forEach((r, i) => {
+    lines.push('$ ' + stored.steps[i]!.command)
+    if (r.stdout.trim()) lines.push(r.stdout.trim())
+    if (r.stderr.trim()) lines.push(r.stderr.trim())
+    if (!r.ok) failed.push(i)
+  })
+
+  if (failed.length) {
+    lines.push('')
+    for (const i of failed) {
+      const step = stored.steps[i]!
+      const r = results[i]!
+      append({
+        type: 'git.failed',
+        level: 'error',
+        workspaceId: stored.stepOwner[i] ?? stored.workspaceIds[0] ?? null,
+        payload: { operation: stored.operation, step: step.title, code: r.code, output: r.stderr.slice(-2000) },
+      })
+      lines.push('[cockpit] stopped at "' + step.title + '" (exit ' + r.code + ')' + failureReason(r.stderr))
+    }
+    const went = stored.steps.length - failed.length
+    if (went) lines.push('[cockpit] ' + went + ' other step(s) went through and were kept.')
+    if (restorePoint) lines.push('[cockpit] restore point ' + restorePoint.slice(0, 8) + ' is available via undo.')
+    return { ok: false, output: lines.join('\n'), restorePoint, remaining: 0 }
+  }
+
+  append({
+    type: 'git.applied',
+    workspaceId: stored.workspaceIds[0] ?? null,
+    payload: { operation: stored.operation, steps: stored.steps.length, restorePoint },
+  })
+  const output = lines.join('\n')
+  if (stored.onApplied) await stored.onApplied({ output })
+  return { ok: true, output, restorePoint }
+}
+
+/**
  * Why a step failed, as git said it — ": <reason>." or "." when it said
  * nothing usable. The toast shows only the "stopped at" line, and "exit 128"
  * on its own names no cause.
@@ -714,7 +786,9 @@ async function exec(
   const bin = parts[0] ?? 'git'
   const args = parts.slice(1)
 
-  if (bin === 'git' && !step.run) return git(step.cwd, args, 180_000)
+  // Urgent: a step of a plan someone confirmed. A background fetch in the same
+  // folder is called off rather than waited for (git.ts `gitWith`).
+  if (bin === 'git' && !step.run) return gitWith(step.cwd, args, { timeoutMs: 180_000, urgent: true })
 
   if (!step.run || step.run !== bin) {
     return {

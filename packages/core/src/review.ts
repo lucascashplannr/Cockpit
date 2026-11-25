@@ -1,5 +1,5 @@
 import type { PullRequest, ReviewHost, ReviewStatus } from '@cockpit/shared'
-import { fetchRemote, git } from './git.js'
+import { fetchRemote, git, gitWith } from './git.js'
 import { run } from './exec.js'
 import { append } from './journal.js'
 import { pushRefusal } from './protect.js'
@@ -300,7 +300,8 @@ export async function open(
 
   const refusal = await pushRefusal(ws, branch)
   if (refusal) return { ok: false, detail: refusal, status: null }
-  const push = await git(ws.path, ['push', '-u', 'origin', branch], 120_000)
+  // Urgent: the person pressed it; a background fetch here steps aside.
+  const push = await gitWith(ws.path, ['push', '-u', 'origin', branch], { timeoutMs: 120_000, urgent: true })
   if (!push.ok) return { ok: false, detail: ws.name + ': push refused. ' + push.stderr.trim().split('\n').slice(-2).join(' '), status: null }
 
   try {
