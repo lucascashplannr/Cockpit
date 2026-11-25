@@ -1,7 +1,7 @@
 import { lstatSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { newId } from '@cockpit/shared'
-import { commitRuleLines, normalizeCommitRules } from '@cockpit/shared'
+import { commitFormat, commitMax, commitMessageProblems, commitRuleLines, normalizeCommitRules } from '@cockpit/shared'
 import type { CommitPreview, PlanPreview, PlanStep } from '@cockpit/shared'
 import { loadConfig } from './config.js'
 import { run, which } from './exec.js'
@@ -390,22 +390,47 @@ export async function lastMessage(workspaceId: string): Promise<string | null> {
 
 /**
  * Enough diff to write about; past this, the summary carries the rest. In
- * characters, across every repository of the commit — about 45k tokens.
+ * characters, across every repository of the commit — about 25k tokens.
  *
  * It was 120k characters, and an ordinary docs commit (2.6k lines of prose,
  * 135k characters) tripped it every time: the draft came with a warning to
  * distrust it over a diff the engine could have read whole in a few seconds.
  * Then 400k, which let a large feature commit send ~180k tokens for one
  * sentence. The cap is for the change that is mostly generated or moved code,
- * not for a day's writing.
+ * not for a day's writing. Then 160k, which spent up to 70k tokens of the
+ * person's subscription on one line; a message names the main change, and the
+ * file list (never cut) carries the rest.
  */
-const DRAFT_DIFF_BUDGET = 160_000
+const DRAFT_DIFF_BUDGET = 60_000
 
 /**
  * One commit message does not need the agents' model. Named here because the
- * engine's own default follows the account, which is Opus.
+ * engine's own default follows the account, which is Opus. Haiku writes the
+ * same line for about a twentieth of Sonnet's cost.
  */
-const DRAFT_MODEL = 'sonnet'
+const DRAFT_MODEL = 'haiku'
+
+/**
+ * The drafter's whole system prompt. Without it the engine sends Claude Code's
+ * own, with its tool list: ~20k tokens on every draft, for a call that reads a
+ * diff and writes one line.
+ */
+const DRAFT_SYSTEM = 'You write git commit messages. Reply with the message only.'
+
+/** The engine as a plain text-in, text-out call: no tools, settings, skills or MCP. */
+function draftArgs(): string[] {
+  return [
+    '-p',
+    '--restricted',
+    '--strict-mcp-config',
+    '--tools', '',
+    '--disable-slash-commands',
+    '--setting-sources', '',
+    '--system-prompt', DRAFT_SYSTEM,
+    '--model', DRAFT_MODEL,
+    '--output-format', 'text',
+  ]
+}
 
 /**
  * Files whose patch says nothing the filename does not. A regenerated lockfile
@@ -671,19 +696,20 @@ async function draftWith(input: DraftInput, signal: AbortSignal): Promise<DraftR
     '',
     '--- diff ---',
     ctx.text,
+    // Said again after the diff: a long patch is the last thing read, and the
+    // rules above it were what the draft forgot.
+    ...(house.length
+      ? ['--- end of diff ---', '',
+         'Now the message: ' + commitFormat(rules) + ', at most ' + commitMax(rules) +
+         ' characters, the main change only.']
+      : []),
   ].join('\n')
 
   // §16 — the drafting call is not an agent session: no tools it could write
   // with, no lease, no checkpoint, nothing to resume. `--restricted` drops the
   // command-running tools and the project's own settings files, so a repo's
   // CLAUDE.md cannot dress this up into something other than one sentence.
-  const r = await run(bin, [
-    '-p',
-    '--restricted',
-    '--strict-mcp-config',
-    '--model', DRAFT_MODEL,
-    '--output-format', 'text',
-  ], { input: prompt, timeoutMs: 90_000, maxBuffer: 256 * 1024, signal })
+  const r = await run(bin, draftArgs(), { input: prompt, timeoutMs: 90_000, maxBuffer: 256 * 1024, signal })
 
   if (signal.aborted) return stopped(ctx.truncated)
   if (!r.ok) {
@@ -700,7 +726,9 @@ async function draftWith(input: DraftInput, signal: AbortSignal): Promise<DraftR
     }
   }
 
-  const message = cleanDraft(r.stdout, rules.on ? rules : null)
+  let message = cleanDraft(r.stdout, rules.on ? rules : null)
+  if (message && house.length) message = await fitRules(bin, message, rules, house, signal)
+  if (signal.aborted) return stopped(ctx.truncated)
   if (!message) {
     return { ok: false, detail: 'the engine returned nothing', message: '', engine, truncated: ctx.truncated }
   }
@@ -718,6 +746,42 @@ async function draftWith(input: DraftInput, signal: AbortSignal): Promise<DraftR
   })
 
   return { ok: true, detail: ctx.repos.join(', '), message, engine, truncated: ctx.truncated }
+}
+
+/**
+ * A draft that breaks the house rules gets one rewrite, from the draft alone:
+ * no diff, so it costs a few hundred tokens rather than the first call again.
+ * Still too long after that, its first sentence stands in when that fits; past
+ * that the box shows what came back, and the person edits it.
+ */
+async function fitRules(
+  bin: string,
+  message: string,
+  rules: ReturnType<typeof normalizeCommitRules>,
+  house: string[],
+  signal: AbortSignal,
+): Promise<string> {
+  let problems = commitMessageProblems(message, rules)
+  if (!problems.length) return message
+  const r = await run(bin, draftArgs(), {
+    input: [
+      'This commit message breaks the rules (' + problems.join('; ') + '):',
+      '',
+      message,
+      '',
+      'Rewrite it to follow them. Keep the main change, drop the rest. The rules:',
+      ...house.map((l) => '  - ' + l),
+    ].join('\n'),
+    timeoutMs: 60_000,
+    maxBuffer: 64 * 1024,
+    signal,
+  })
+  const again = r.ok ? cleanDraft(r.stdout, rules) : ''
+  if (again) message = again
+  problems = commitMessageProblems(message, rules)
+  if (!problems.length) return message
+  const first = /^.*?[a-z0-9)]\.(?=\s+[A-Z])/.exec(message)?.[0].replace(/\.$/, '')
+  return first && !commitMessageProblems(first, rules).length ? first : message
 }
 
 /**

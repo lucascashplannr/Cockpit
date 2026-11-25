@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { COMMIT_TYPES, CONTEXT_LIMITS, normalizeCommitRules } from '@cockpit/shared'
+import { COMMIT_TYPES, CONTEXT_LIMITS, commitMax, normalizeCommitRules } from '@cockpit/shared'
 import type { CommitRules } from '@cockpit/shared'
 import {
   Bell, BellOff, FolderOpen, FolderTree, GitCommitHorizontal, Hand, MonitorCog, Moon, SlidersHorizontal, Sun,
@@ -322,7 +322,10 @@ function blurOnEnter(e: KeyboardEvent) {
         </div>
 
         <div class="row">
-          <div class="txt"><span class="t">Length</span></div>
+          <div class="txt">
+            <span class="t">Length</span>
+            <span class="d">At most {{ commitMax(rules) }} characters.</span>
+          </div>
           <div class="seg">
             <button :class="{ on: rules.sentences === 1 }" @click="rules.sentences = 1">1 sentence</button>
             <button :class="{ on: rules.sentences === 2 }" @click="rules.sentences = 2">2 sentences</button>

@@ -73,15 +73,29 @@ export function commitFormat(r: CommitRules): string {
       : 'type: subject'
 }
 
+/**
+ * The whole message's length, in characters. "Two sentences" alone let a draft
+ * run to 400 characters of clauses joined by "and", plus an "It also…" for
+ * everything else the diff touched: two sentences, as written, and unreadable
+ * in a log.
+ */
+export function commitMax(r: CommitRules): number {
+  return r.sentences === 1 ? 72 : 100
+}
+
 /** The rules as the drafter reads them, one line each. Empty when off. */
 export function commitRuleLines(r: CommitRules): string[] {
   if (!r.on) return []
+  const max = commitMax(r)
   return [
     'Format: ' + commitFormat(r),
     'type is one of: ' + r.types.join(', '),
     ...(r.scope === 'none' ? [] : ['scope: the area changed, one lowercase word (core, diff, settings…)']),
     'subject: ' + r.language + ', imperative ("add", not "added"), lowercase start, no trailing period',
-    r.sentences === 1 ? 'One sentence, on one line' : 'At most two sentences, on one line',
+    r.sentences === 1
+      ? 'One sentence, on one line, at most ' + max + ' characters in all'
+      : 'One or two short sentences, on one line, at most ' + max + ' characters in all',
+    'Name the main change only. Leave the side changes out: no "It also", no list of everything the diff touches',
     ...(r.noTickets ? ['No ticket or PR numbers such as (#123)'] : []),
     ...(r.noEmoji ? ['No emoji'] : []),
     ...r.extra.split('\n').map((l) => l.trim()).filter(Boolean),
@@ -131,6 +145,7 @@ export function commitMessageProblems(message: string, r: CommitRules): string[]
   const hit = shape.exec(subject)
   if (!hit) out.push('it is not in the form ' + commitFormat(r))
   else if (!r.types.includes(hit[1]!)) out.push(hit[1] + ' is not one of the types (' + r.types.join(', ') + ')')
+  if (subject.length > commitMax(r)) out.push('it is ' + subject.length + ' characters, the limit is ' + commitMax(r))
   if (r.noTickets && /\(#\d+\)|(^|\s)#\d+\b/.test(m)) out.push('it has a ticket or PR number')
   if (r.noEmoji && /\p{Extended_Pictographic}/u.test(m)) out.push('it has an emoji')
   return out
