@@ -2360,11 +2360,16 @@ export interface AgentActivity {
    * hand where the working star goes, and counts only the rest.
    */
   asking: number
+  /**
+   * Between turns, with a command or agent it left running in the background:
+   * not working, not done, it will pick up on its own. The tab's hourglass.
+   */
+  background: number
   /** The loudest of the waiting ones, which is the colour the badge takes. */
   attention: Attention
 }
 
-const NO_ACTIVITY: AgentActivity = { running: 0, own: 0, waiting: 0, asking: 0, attention: 'none' }
+const NO_ACTIVITY: AgentActivity = { running: 0, own: 0, waiting: 0, asking: 0, background: 0, attention: 'none' }
 
 /**
  * §12's "where am I", answered for everything the shell draws at once: the
@@ -2378,9 +2383,10 @@ const NO_ACTIVITY: AgentActivity = { running: 0, own: 0, waiting: 0, asking: 0, 
  */
 export const agentActivity = computed(() => {
   const map = new Map<string, AgentActivity>()
-  const bump = (key: string, running: boolean, own: boolean, att: Attention) => {
-    const a = map.get(key) ?? { running: 0, own: 0, waiting: 0, asking: 0, attention: 'none' as Attention }
+  const bump = (key: string, running: boolean, own: boolean, att: Attention, bg: boolean) => {
+    const a = map.get(key) ?? { running: 0, own: 0, waiting: 0, asking: 0, background: 0, attention: 'none' as Attention }
     if (running) a.running++
+    if (bg) a.background++
     if (running && own) a.own++
     if (att !== 'none') {
       a.waiting++
@@ -2393,7 +2399,8 @@ export const agentActivity = computed(() => {
   for (const c of state.agents) {
     const running = isBusy(c)
     const att = attentionOf(c)
-    if (!running && att === 'none') continue
+    const bg = !running && !!c.background?.length
+    if (!running && !bg && att === 'none') continue
 
     // A conversation lights every level it belongs to: the checkouts it can
     // write in, the topic those sit under, and the project holding them.
@@ -2413,7 +2420,7 @@ export const agentActivity = computed(() => {
     const own = c.scope.kind + ':' + (
       c.scope.kind === 'topic' ? c.scope.topicId : c.scope.kind === 'project' ? c.scope.projectId : c.scope.workspaceId
     )
-    for (const k of keys) bump(k, running, k === own, att)
+    for (const k of keys) bump(k, running, k === own, att, bg)
   }
   return map
 })

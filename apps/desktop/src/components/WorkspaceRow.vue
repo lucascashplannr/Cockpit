@@ -2,7 +2,7 @@
 import { attentionIcon } from './agent/attention.js'
 import { computed } from 'vue'
 import {
-  ArrowDownToLine, ArrowUp, Asterisk, FileDiff, GitBranch, GitCompareArrows,
+  ArrowDownToLine, ArrowUp, Asterisk, FileDiff, GitBranch, GitCompareArrows, Hourglass,
   SquareDot, TriangleAlert,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
@@ -173,6 +173,8 @@ const lead = computed(() => {
     return { icon: Asterisk, cls: 'working', title: kindLabel.value + ' · an agent is working here' }
   if (a.attention !== 'none')
     return { icon: attentionIcon(a.attention), cls: a.attention, title: kindLabel.value + ' · ' + ATTENTION_TEXT[a.attention] }
+  if (a.background)
+    return { icon: Hourglass, cls: 'waiting', title: kindLabel.value + ' · an agent is waiting on what it left running' }
   return { icon: w.value.kind === 'worktree' ? GitBranch : SquareDot, cls: '', title: kindLabel.value }
 })
 </script>
@@ -296,7 +298,7 @@ const lead = computed(() => {
 .row.selected .kind { color: var(--accent); }
 /* An agent's state keeps its own colour on the selected row too: the
    selection tint says where you are, this says what needs you. */
-.row .kind.working { color: var(--agent); }
+.row .kind.working, .row .kind.waiting { color: var(--agent); }
 .row .kind.approval, .row .kind.blocked { color: var(--warn); }
 .row .kind.reply { color: var(--agent); }
 .row .kind.failed { color: var(--danger); }

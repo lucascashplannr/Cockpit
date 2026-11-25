@@ -5,7 +5,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import type { Topic } from '@cockpit/shared'
 import {
-  ArrowUp, Asterisk, ChevronRight, Folder, FolderPlus, Layers, LoaderCircle, Plus, StickyNote,
+  ArrowUp, Asterisk, ChevronRight, Folder, FolderPlus, Hourglass, Layers, LoaderCircle, Plus, StickyNote,
 } from '@lucide/vue'
 import WorkspaceRow from './WorkspaceRow.vue'
 import ListToggle from './ListToggle.vue'
@@ -103,6 +103,7 @@ function topicMark(topicId: string): { icon: Component; cls: string; tip: string
   const a = activityFor('topic', topicId)
   if (a.attention !== 'none') return { icon: attentionIcon(a.attention), cls: a.attention, tip: ATTENTION_TEXT[a.attention] ?? '' }
   if (a.running) return { icon: Asterisk, cls: 'working', tip: a.running + ' conversation(s) running on this topic', turning: a.own > 0 }
+  if (a.background) return { icon: Hourglass, cls: 'waiting', tip: a.background + ' conversation(s) waiting on what they left running' }
   return null
 }
 
@@ -227,6 +228,7 @@ function headMark(g: ListGroup): ReturnType<typeof topicMark> {
   const a = activityFor('workspace', g.groupId!)
   if (a.attention !== 'none') return { icon: attentionIcon(a.attention), cls: a.attention, tip: (ATTENTION_TEXT[a.attention] ?? '').replace('topic', 'group') }
   if (a.running) return { icon: Asterisk, cls: 'working', tip: a.running + ' conversation(s) running in this group', turning: a.own > 0 }
+  if (a.background) return { icon: Hourglass, cls: 'waiting', tip: a.background + ' conversation(s) waiting on what they left running' }
   return null
 }
 
@@ -719,7 +721,7 @@ function sectionBefore(i: number): boolean {
 .group-tile .lead { display: flex; color: var(--text-muted); }
 .group-tile .lead .lucide { width: var(--tile-ic); height: var(--tile-ic); }
 .group-tile.selected .lead, .group-tile.holding .lead { color: var(--accent); }
-.group-tile .lead.working, .group-tile .lead.reply { color: var(--agent); }
+.group-tile .lead.working, .group-tile .lead.waiting, .group-tile .lead.reply { color: var(--agent); }
 .group-tile .lead.approval, .group-tile .lead.blocked { color: var(--warn); }
 .group-tile .lead.failed { color: var(--danger); }
 
@@ -775,7 +777,7 @@ function sectionBefore(i: number): boolean {
    the place back the moment the pointer (or the keyboard) is on it. */
 .twist.marked .mark { width: 13px; height: 13px; stroke-width: 2.4; }
 .twist.working .mark { width: 14px; height: 14px; }
-.twist.working .mark, .twist.reply .mark { color: var(--agent); }
+.twist.working .mark, .twist.waiting .mark, .twist.reply .mark { color: var(--agent); }
 .twist.approval .mark, .twist.blocked .mark { color: var(--warn); }
 .twist.failed .mark { color: var(--danger); }
 .twist.marked .chev { display: none; }

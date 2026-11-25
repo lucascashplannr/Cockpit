@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Activity, Asterisk, Hand, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
+import { Activity, Asterisk, Hand, Hourglass, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
 import {
   activityFor, client, guard, layout, newProject, openContextMenu, refreshEverything, onProject, pressProject, projectMark, serviceStale, state,
 } from '../core/store.js'
@@ -39,7 +39,7 @@ function counts(projectId: string) {
   const dirty = ws.filter((w) => w.git && w.git.staged + w.git.unstaged + w.git.untracked > 0).length
   const running = ws.filter((w) => w.runtime?.status === 'up').length
   const agent = activityFor('project', projectId)
-  return { dirty, running, agents: agent.running, attention: agent.attention, asking: agent.asking, waiting: agent.waiting - agent.asking }
+  return { dirty, running, agents: agent.running, attention: agent.attention, asking: agent.asking, background: agent.background, waiting: agent.waiting - agent.asking }
 }
 
 /**
@@ -115,7 +115,7 @@ function tileTitle(name: string, root: string, projectId: string): string {
              A border said "working" too, and nobody saw it, least of all on
              the selected tile. -->
         <span
-          v-if="counts(p.id).agents || counts(p.id).asking || counts(p.id).waiting"
+          v-if="counts(p.id).agents || counts(p.id).asking || counts(p.id).background || counts(p.id).waiting"
           class="count num"
           :class="{ solo: !counts(p.id).waiting }"
         >
@@ -124,6 +124,8 @@ function tileTitle(name: string, root: string, projectId: string): string {
                only what else waits (an answer to read elsewhere). -->
           <Hand v-if="counts(p.id).asking" class="agent-hand" />
           <Asterisk v-else-if="counts(p.id).agents" class="agent-star" />
+          <!-- Between turns with something left running: it will pick up on its own. -->
+          <Hourglass v-else-if="counts(p.id).background" class="agent-wait" />
           <template v-if="counts(p.id).waiting">{{ counts(p.id).waiting }}</template>
         </span>
       </button>
@@ -356,7 +358,7 @@ function tileTitle(name: string, root: string, projectId: string): string {
   box-shadow: 0 0 0 2px var(--surface-rail);
 }
 .count .agent-star { width: 10px; height: 10px; flex: none; stroke-width: 3; }
-.count .agent-hand { width: 10px; height: 10px; flex: none; stroke-width: 2.5; }
+.count .agent-hand, .count .agent-wait { width: 10px; height: 10px; flex: none; stroke-width: 2.5; }
 /* The star alone: a round badge, not a pill with nothing after the star. */
 .count.solo { padding: 0; }
 
