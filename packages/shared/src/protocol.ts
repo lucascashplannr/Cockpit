@@ -7,7 +7,7 @@ import type { PROTOCOL_VERSION } from './protocol-version.js'
 import type { CockpitEvent } from './events.js'
 import type {
   AddRepoSource, AgentAnswers, AgentLoadout, AgentScope, AttachmentInput, BranchRef, Conversation, ConversationMark, ConversationMarkKind, ConversationSummary, LoadoutChoice, PermissionMode, SkillInfo, SkillWhere,
-  CockpitSettings, ConflictFile, ConflictProposal, ReviewStatus,
+  CockpitSettings, ConflictFile, ContextBreakdown, ConflictProposal, ReviewStatus,
   CommandRunResult, CommitDetail, CommitGraph, FileBlame, CommitPreview, CoreStatus, Declaration, Declarations, DeclaredCommand,
   DeclaredServer,
   DatabasePlan,
@@ -1192,6 +1192,8 @@ export interface Rpc {
    * tomorrow has to read as what was said, and this is where that comes from.
    */
   'agent.transcript': { params: { sessionId: string }; result: CockpitEvent[] }
+  /** §6 — what fills the window, as of the end of the last turn that said. */
+  'agent.context': { params: { sessionId: string }; result: ContextBreakdown | null }
   /**
    * §3.7 — what going back to a turn would change, per repository, before it
    * changes anything. An undo that says "this will revert 12 files, +340 −18"

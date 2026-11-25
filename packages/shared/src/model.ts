@@ -1443,6 +1443,8 @@ export interface Conversation {
     contextWindow: number
     costUsd: number
     model: string
+    /** When the engine last said what fills the window (`agent.context`); null before it ever has. */
+    breakdownAt: number | null
   } | null
   /**
    * §16 — the tools the allow-list refused during the last turn, by name.
@@ -1985,3 +1987,24 @@ export type AddRepoSource =
   /** Cloned into `<project>/<repo>`. */
   | { kind: 'clone'; url: string; repoName: string | null; branch: string | null }
 
+
+/**
+ * §6 — what fills a conversation's window, in the engine's own accounting
+ * (its `get_context_usage`, the figures behind `/context`). Asked once a turn
+ * ends; read on demand through `agent.context`, never pushed with the list.
+ */
+export interface ContextBreakdown {
+  at: number
+  /** What the engine counts as in the window, and the window itself. */
+  total: number
+  max: number
+  /** The level the engine compacts at, or null when it never does. */
+  compactAt: number | null
+  /**
+   * `kind`: `used` is in the window, `deferred` is known but not loaded until
+   * asked for, `buffer` is held back for the compaction itself, `free` is room.
+   */
+  categories: { id: string; name: string; tokens: number; kind: string }[]
+  /** The parts of a category, keyed by the category's `id`, largest first. */
+  parts: Record<string, { name: string; tokens: number; detail?: string }[]>
+}

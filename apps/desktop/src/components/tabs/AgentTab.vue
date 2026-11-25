@@ -10,6 +10,7 @@ import {
   ArrowDown, Asterisk, BellRing, ChevronRight, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, GitFork, Hand, Hourglass, MessageSquareText,
   Paperclip, Redo2, Send, Undo2, X,
 } from '@lucide/vue'
+import { useContextLevel } from '../agent/contextLevel.js'
 import AgentMarkdown from '../agent/AgentMarkdown.vue'
 import ToolCall from '../agent/ToolCall.vue'
 import ToolGroup from '../agent/ToolGroup.vue'
@@ -1702,15 +1703,8 @@ function k(n: number): string {
 }
 
 
-/** Where the conversation stands against its own window. */
-const ctx = computed(() => {
-  const u = selected.value?.usage
-  if (!u || !u.contextWindow) return null
-  return {
-    ...u,
-    pct: Math.min(100, Math.round((u.contextTokens / u.contextWindow) * 100)),
-  }
-})
+/** Where the conversation stands against its window and its compaction point. */
+const ctx = useContextLevel(selected)
 
 /**
  * §6 — "vider devient gratuit : la conversation part, la mémoire reste."
@@ -1719,8 +1713,7 @@ const ctx = computed(() => {
  * reason answers are getting worse. Said once, with the two things that
  * actually help beside it, rather than as a colour nobody has been taught.
  */
-const CROWDED = 70
-const crowded = computed(() => (ctx.value?.pct ?? 0) >= CROWDED)
+const crowded = computed(() => ctx.value?.warn ?? false)
 
 /* ── presentation ──────────────────────────────────────────────────────── */
 
@@ -2368,7 +2361,10 @@ function ago(ts: number): string {
         <p v-if="crowded" class="crowd">
           <Gauge class="sm" />
           <span>
-            The window is {{ ctx?.pct }}% full — answers get worse from here.
+            <template v-if="ctx?.nearCompact">
+              {{ k(ctx.toCompact ?? 0) }} left before it compacts, and a summary loses detail.
+            </template>
+            <template v-else>The window is {{ ctx?.pct }}% full, answers get worse from here.</template>
             Promote what matters to the memory, then start fresh: the next
             conversation reads it on the way in.
           </span>

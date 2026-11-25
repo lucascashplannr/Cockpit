@@ -6,7 +6,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { open, readFile, realpath, stat } from 'node:fs/promises'
 import { CLAUDE_MODELS, MEMORY_OFF, QUESTION_TOOL, WAKE_PROMPT, commandIn, conversationRef, newId } from '@cockpit/shared'
 import type {
-  AgentAnswers, AgentLoadout, AgentScope, Attachment, AttachmentInput, CockpitEvent, Conversation, ConversationMark, ConversationMarkKind, AgentTurn, LoadoutChoice, MemorySource, PeerMessage, PermissionMode,
+  AgentAnswers, AgentLoadout, AgentScope, Attachment, ContextBreakdown, AttachmentInput, CockpitEvent, Conversation, ConversationMark, ConversationMarkKind, AgentTurn, LoadoutChoice, MemorySource, PeerMessage, PermissionMode,
   PermissionRequest, TurnUsage, BackgroundTask,
 } from '@cockpit/shared'
 import { getDb } from './db.js'
@@ -199,6 +199,8 @@ export interface NormalizedEvent {
     /** The engine's answer to a control request this driver sent; `text` says why it refused. */
     | 'control_done'
     | 'control_error'
+    /** §6 — the engine's answer to `get_context_usage`: what fills the window, as `breakdown`. */
+    | 'context_usage'
     /**
      * The engine summarised its conversation — `/compact`, or on its own when
      * the window filled. `contextTokens` is where the window stands after,
@@ -246,6 +248,8 @@ export interface NormalizedEvent {
   reason?: string
   /** `tool_result` only: where a call sent to the background writes its output. */
   outputFile?: string
+  /** `context_usage` only. */
+  breakdown?: ContextBreakdown
   /** `end` only: the invocations §16 refused during this turn. */
   denials?: string[]
   /** `task_started` / `task_ended` only. */
@@ -345,6 +349,8 @@ export interface EngineSpec {
     setMode(requestId: string, mode: PermissionMode): string
     /** Launch settings changed on a running process; null puts a key back to the engine's own. */
     applySettings?(requestId: string, settings: Record<string, unknown>): string
+    /** §6 — ask what fills the window. The id must start with `ctx_`: that is how the answer is told apart. */
+    contextUsage?(requestId: string): string
     unsupported(requestId: string): string
     /** The answer to an `mcp` request: the server's JSON-RPC reply. */
     mcp?(requestId: string, response: Record<string, unknown> | null): string
@@ -767,6 +773,10 @@ const claudeEngine: EngineSpec = {
     if (type === 'control_response') {
       const r = (o.response ?? {}) as Record<string, unknown>
       const requestId = String(r.request_id ?? '')
+      if (requestId.startsWith('ctx_')) {
+        const breakdown = r.subtype === 'error' ? null : breakdownIn((r.response ?? {}) as Record<string, unknown>)
+        return breakdown ? [{ kind: 'context_usage', requestId, breakdown }] : []
+      }
       if (r.subtype !== 'error') return [{ kind: 'control_done', requestId }]
       return [{ kind: 'control_error', requestId, text: String(r.error ?? 'refused') }]
     }
@@ -1001,6 +1011,8 @@ const claudeEngine: EngineSpec = {
         request_id: requestId,
         request: { subtype: 'apply_flag_settings', settings },
       }),
+    contextUsage: (requestId) =>
+      JSON.stringify({ type: 'control_request', request_id: requestId, request: { subtype: 'get_context_usage' } }),
     unsupported: (requestId) =>
       JSON.stringify({
         type: 'control_response',
@@ -1643,11 +1655,6 @@ function writeTurnUsage(
    */
   contextTokens: number,
   contextCached: number,
-  /**
-   * The level the engine summarises at. The meter fills toward it rather than
-   * toward the model's whole window: it is the room the conversation has.
-   */
-  contextLimit: number | null,
 ): void {
   const row = getDb()
     .prepare("SELECT id FROM agent_turns WHERE session_id = ? AND status = 'running' ORDER BY seq DESC LIMIT 1")
@@ -1666,7 +1673,10 @@ function writeTurnUsage(
           'SELECT context_window AS win, model FROM agent_turns WHERE session_id = ? AND context_window > 0 ORDER BY seq DESC LIMIT 1',
         )
         .get(sessionId) as { win: number; model: string } | undefined)
-  const window = Math.min(u.window || prev?.win || 0, contextLimit ?? Infinity)
+  // The model's whole window, never the context limit: the meter reads the
+  // level against what the model can hold and marks where the engine
+  // compacts on top of it. Capped, one message on a 200k limit read as half full.
+  const window = u.window || prev?.win || 0
   // The sum stands in for a level only when it could be one: past the window
   // it is several calls added up, and "unknown" (0, which the roll-up skips
   // for the turn before) is the honest reading.
@@ -1808,10 +1818,11 @@ function rollUp(sessionId: string): Conversation['usage'] {
          (SELECT context_tokens FROM agent_turns WHERE session_id = ? AND context_tokens > 0 AND undone_by IS NULL ORDER BY seq DESC LIMIT 1) AS ctx,
          (SELECT context_window FROM agent_turns WHERE session_id = ? AND context_tokens > 0 AND undone_by IS NULL ORDER BY seq DESC LIMIT 1) AS win,
          (SELECT model         FROM agent_turns WHERE session_id = ? AND context_tokens > 0 AND undone_by IS NULL ORDER BY seq DESC LIMIT 1) AS model,
+         (SELECT json_extract(context_breakdown, '$.at') FROM agent_turns WHERE session_id = ? AND context_breakdown IS NOT NULL AND undone_by IS NULL ORDER BY seq DESC LIMIT 1) AS bat,
          (SELECT COALESCE(SUM(cost_usd), 0) FROM agent_turns WHERE session_id = ?) AS cost`,
     )
-    .get(sessionId, sessionId, sessionId, sessionId) as
-    | { ctx: number | null; win: number | null; model: string | null; cost: number }
+    .get(sessionId, sessionId, sessionId, sessionId, sessionId) as
+    | { ctx: number | null; win: number | null; model: string | null; bat: number | null; cost: number }
     | undefined
   if (!row?.ctx) return null
   return {
@@ -1819,6 +1830,86 @@ function rollUp(sessionId: string): Conversation['usage'] {
     contextWindow: Number(row.win ?? 0),
     costUsd: Number(row.cost ?? 0),
     model: String(row.model ?? ''),
+    breakdownAt: row.bat == null ? null : Number(row.bat),
+  }
+}
+
+/**
+ * §6 — the engine's account of what fills the window, kept on the turn it
+ * describes: the last one, which `closeTurn` has just closed. A turn undone
+ * since takes its account with it, as it takes its level.
+ */
+function writeBreakdown(sessionId: string, b: ContextBreakdown): boolean {
+  const row = getDb()
+    .prepare('SELECT id FROM agent_turns WHERE session_id = ? AND undone_by IS NULL ORDER BY seq DESC LIMIT 1')
+    .get(sessionId) as { id: string } | undefined
+  if (!row) return false
+  getDb().prepare('UPDATE agent_turns SET context_breakdown = ? WHERE id = ?').run(JSON.stringify(b), row.id)
+  return true
+}
+
+export function contextBreakdown(sessionId: string): ContextBreakdown | null {
+  const row = getDb()
+    .prepare(
+      `SELECT context_breakdown AS b FROM agent_turns
+        WHERE session_id = ? AND context_breakdown IS NOT NULL AND undone_by IS NULL ORDER BY seq DESC LIMIT 1`,
+    )
+    .get(sessionId) as { b: string } | undefined
+  if (!row) return null
+  try {
+    return JSON.parse(row.b) as ContextBreakdown
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The engine's `get_context_usage` answer, cut to what the panel shows. Its
+ * `gridRows` (a terminal's square chart) and colours are its own rendering and
+ * are dropped; the lists become parts of the category they add up to.
+ */
+function breakdownIn(r: Record<string, unknown>): ContextBreakdown | null {
+  if (!Array.isArray(r.categories)) return null
+  const n = (v: unknown): number => (typeof v === 'number' && isFinite(v) ? v : 0)
+  const s = (v: unknown): string => (typeof v === 'string' ? v : '')
+  const rows = (v: unknown): Record<string, unknown>[] =>
+    Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object') : []
+  const tail = (p: string): string => p.split(/[\\/]/).filter(Boolean).slice(-2).join('/')
+  const byTokens = (a: { tokens: number }, b: { tokens: number }) => b.tokens - a.tokens
+
+  const categories = rows(r.categories)
+    .map((c) => ({ id: s(c.id), name: s(c.name), tokens: n(c.tokens), kind: s(c.kind) || 'used' }))
+    .filter((c) => c.id && c.name)
+
+  const parts: ContextBreakdown['parts'] = {}
+  const put = (id: string, items: { name: string; tokens: number; detail?: string }[]) => {
+    const kept = items.filter((x) => x.name && x.tokens > 0).sort(byTokens)
+    if (kept.length) parts[id] = kept
+  }
+  const m = (r.messageBreakdown ?? {}) as Record<string, unknown>
+  put('messages', [
+    { name: 'Tool results', tokens: n(m.toolResultTokens) },
+    { name: 'Tool calls', tokens: n(m.toolCallTokens) },
+    { name: 'Your messages', tokens: n(m.userMessageTokens) },
+    { name: 'Answers', tokens: n(m.assistantMessageTokens) },
+    { name: 'Attachments', tokens: n(m.attachmentTokens) },
+  ])
+  put('memory_files', rows(r.memoryFiles).map((f) => ({ name: tail(s(f.path)), tokens: n(f.tokens), detail: s(f.path) })))
+  const sk = (r.skills ?? {}) as Record<string, unknown>
+  put('skills', rows(sk.skillFrontmatter).map((x) => ({ name: s(x.name), tokens: n(x.tokens) })))
+  const mcp = rows(r.mcpTools)
+  put('mcp_tools', mcp.filter((t) => t.isLoaded !== false).map((t) => ({ name: s(t.name), tokens: n(t.tokens), detail: s(t.serverName) })))
+  put('mcp_tools_deferred', mcp.filter((t) => t.isLoaded === false).map((t) => ({ name: s(t.name), tokens: n(t.tokens), detail: s(t.serverName) })))
+  put('custom_agents', rows(r.agents).map((a) => ({ name: s(a.agentType) || s(a.name), tokens: n(a.tokens), detail: s(a.source) })))
+
+  const threshold = n(r.autoCompactThreshold)
+  return {
+    at: Date.now(),
+    total: n(r.totalTokens),
+    max: n(r.maxTokens),
+    compactAt: r.isAutoCompactEnabled === false || !threshold ? null : threshold,
+    categories,
+    parts,
   }
 }
 
@@ -2819,6 +2910,10 @@ async function launch(
           l.modeAsked.delete(ev.requestId ?? '')
           break
 
+        case 'context_usage':
+          if (ev.breakdown && writeBreakdown(session.id, ev.breakdown)) changed = true
+          break
+
         case 'control_error': {
           const was = l.modeAsked.get(ev.requestId ?? '')
           if (was === undefined) break
@@ -2882,7 +2977,7 @@ async function launch(
           // conversation's cost over a denominator that was never turns.
           session.turns++
           if (l.usage) {
-            writeTurnUsage(session.id, l.usage, l.costSoFar, l.context, l.contextCached, l.contextLimit)
+            writeTurnUsage(session.id, l.usage, l.costSoFar, l.context, l.contextCached)
             l.costSoFar = l.usage.cumulativeCostUsd
             l.usage = null
           }
@@ -2902,6 +2997,10 @@ async function launch(
           // A streaming engine ends a *turn* here, not the process. Closing the
           // turn and letting the next one in is what the queue is waiting for.
           closeTurn(session.id, 'done')
+          // §6 — what fills the window now, itemised. Answered from the
+          // engine's own bookkeeping: no call to the model, nothing billed.
+          if (spec.control?.contextUsage && child.stdin?.writable)
+            child.stdin.write(spec.control.contextUsage(newId('ctx_')) + '\n')
           l.streamingId = null
           l.busy = false
           // Zero rather than left at the total: the window reads this as "how

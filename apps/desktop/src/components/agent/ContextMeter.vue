@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import type { Conversation } from '@cockpit/shared'
+import { ChevronRight } from '@lucide/vue'
+import { CLAUDE_MODELS } from '@cockpit/shared'
+import type { ContextBreakdown, Conversation } from '@cockpit/shared'
+import { client } from '../../core/store.js'
+import { CROWDED, useContextLevel } from './contextLevel.js'
 
 /**
  * §6 + §16 — how full the window is, what the thread has cost, and where both
@@ -45,20 +49,15 @@ function money(n: number): string {
 }
 
 const u = computed(() => props.session.usage)
-const pct = computed(() =>
-  u.value?.contextWindow
-    ? Math.min(100, Math.round((u.value.contextTokens / u.value.contextWindow) * 100))
-    : 0,
-)
-
 /**
- * Where a window stops being a curiosity and starts being the reason answers
- * are getting worse — the same line the banner over the composer draws, stated
- * once in each place it is shown rather than shared through the store for the
- * sake of it.
+ * Against the model's whole window, with the context limit marked on it. The
+ * same reading the banner over the composer uses (contextLevel.ts).
  */
-const CROWDED = 70
-const crowded = computed(() => pct.value >= CROWDED)
+const level = useContextLevel(computed(() => props.session))
+const pct = computed(() => level.value?.pct ?? 0)
+const compactAt = computed(() => level.value?.compactAt ?? null)
+/** Amber once a compaction is near, or the window itself is crowded. */
+const crowded = computed(() => level.value?.warn ?? false)
 
 /**
  * The last turn that reported anything. Not simply `history.at(-1)`: a turn in
@@ -96,6 +95,103 @@ const seg = computed(() => {
   }
 })
 
+/* ── what fills it ─────────────────────────────────────────────────────────
+ *
+ * The engine's own itemisation (`agent.context`), asked for when the panel
+ * opens and again whenever a turn has brought a newer one. Not pushed with the
+ * conversation: the parts run to a hundred MCP tools. */
+const breakdown = ref<ContextBreakdown | null>(null)
+async function loadBreakdown(): Promise<void> {
+  if (!u.value?.breakdownAt) return void (breakdown.value = null)
+  if (breakdown.value?.at === u.value.breakdownAt) return
+  const id = props.session.id
+  const b = await client.call('agent.context', { sessionId: id }).catch(() => null)
+  if (props.session.id === id) breakdown.value = b
+}
+
+/** The section stays as it was left, across conversations and restarts. */
+const KEY = 'cockpit.contextBreakdown'
+const showParts = ref(localStorage.getItem(KEY) === 'open')
+watch(showParts, (v) => localStorage.setItem(KEY, v ? 'open' : 'closed'))
+/** Which categories are opened into their parts; not remembered. */
+const opened = ref(new Set<string>())
+function toggle(id: string): void {
+  const next = new Set(opened.value)
+  if (!next.delete(id)) next.add(id)
+  opened.value = next
+}
+
+/**
+ * Three hues for what a person can act on (the conversation itself, the
+ * built-in tools, the MCP servers), one neutral for the rest: the same choice
+ * the engine's own `/context` makes, so the two read alike.
+ */
+const HUE: Record<string, string> = {
+  messages: 'var(--accent)',
+  system_tools: 'var(--info)',
+  mcp_tools: 'var(--ok)',
+}
+const hue = (id: string): string => HUE[id] ?? 'var(--text-dim)'
+
+/** The engine's names, said the way the rest of the window says things. */
+const NAMES: Record<string, string> = {
+  autocompact_buffer: 'Held for compacting',
+  // The engine's free space ends where it compacts, not at the window's edge.
+  free_space: 'Room before compacting',
+}
+const nameOf = (c: { id: string; name: string }): string => NAMES[c.id] ?? c.name.replace(/\s*\(deferred\)$/i, '')
+
+const rows = computed(() => {
+  const b = breakdown.value
+  if (!b) return null
+  // Against the model's window, like the number and the bar above. Not the
+  // engine's `max`: under a context limit that is the limit, and every share
+  // came out two and a half times too big on a 400k limit.
+  const max = u.value?.contextWindow || b.max || 1
+  const row = (c: ContextBreakdown['categories'][number]) => ({
+    ...c,
+    label: nameOf(c),
+    share: c.tokens / max,
+    parts: b.parts[c.id] ?? [],
+  })
+  const cats = b.categories.filter((c) => c.tokens > 0)
+  return {
+    used: cats.filter((c) => c.kind === 'used').sort((a, z) => z.tokens - a.tokens).map(row),
+    room: cats.filter((c) => c.kind === 'buffer' || c.kind === 'free').map(row),
+    later: cats.filter((c) => c.kind === 'deferred').sort((a, z) => z.tokens - a.tokens).map(row),
+  }
+})
+
+/** One decimal under 10%, none above: "0.7%", "7.7%", "80%". */
+function share(x: number): string {
+  const p = x * 100
+  return (p < 10 ? p.toFixed(1) : Math.round(p)) + '%'
+}
+
+/** "Opus 5.5" rather than the engine's id; the id itself when the table does not know it. */
+const modelName = computed(() => {
+  const id = u.value?.model ?? ''
+  return CLAUDE_MODELS.find((m) => m.id === id)?.label ?? id.replace(/^claude-/, '')
+})
+
+/**
+ * The one sentence under the bar: how far the engine is from compacting, or,
+ * with no compaction point, how much room is left.
+ */
+const status = computed(() => {
+  const l = level.value
+  if (!l) return ''
+  if (l.compactAt !== null) return k(l.toCompact ?? 0) + ' left before it compacts at ' + k(l.compactAt)
+  if (l.crowded) return 'Past ' + CROWDED + '%, answers get worse from here'
+  return k(Math.max(0, l.window - l.tokens)) + ' free'
+})
+
+/** The last turn's token figures, for the tooltip on its row. */
+const turnTokens = computed(() => {
+  const t = turn.value?.usage
+  return t ? k(t.input) + ' in, ' + k(t.output) + ' out, ' + k(t.cacheCreation) + ' written to cache' : ''
+})
+
 /* ── the ring ────────────────────────────────────────────────────────────
  *
  * Drawn as one stroked circle with a gap in it rather than two arcs: r = 6 on
@@ -105,6 +201,29 @@ const seg = computed(() => {
 const R = 6
 const C = 2 * Math.PI * R
 const dash = computed(() => (C * Math.min(100, pct.value)) / 100 + ' ' + C)
+
+/** Where the engine compacts, as a share of the window, for the marks. */
+const markAt = computed(() => (compactAt.value && u.value?.contextWindow ? compactAt.value / u.value.contextWindow : null))
+/** Half the tick's length: the ring's own stroke, so it marks the ring without breaking its outline. */
+const TICK = 1.25
+/** A short radial tick across the ring at the compaction point. */
+const tick = computed(() => {
+  if (markAt.value === null) return null
+  const a = markAt.value * 2 * Math.PI
+  const at = (r: number) => ({ x: 8 + r * Math.sin(a), y: 8 - r * Math.cos(a) })
+  const i = at(R - TICK)
+  const o = at(R + TICK)
+  return { x1: i.x, y1: i.y, x2: o.x, y2: o.y }
+})
+
+const title = computed(() => {
+  if (!u.value) return ''
+  const near = level.value?.nearCompact && level.value.toCompact !== null
+  return k(u.value.contextTokens) + ' of ' + k(u.value.contextWindow) + ' tokens in context'
+    + (compactAt.value ? ', compacts at ' + k(compactAt.value) : '')
+    + (near ? ' (' + k(level.value!.toCompact!) + ' left)' : '')
+    + ' · ' + money(u.value.costUsd) + ' so far'
+})
 
 /* ── opening, closing, and the clock that only runs while it is open ───── */
 
@@ -121,6 +240,7 @@ function onKey(ev: KeyboardEvent): void {
 }
 watch(open, (isOpen) => {
   if (isOpen) {
+    void loadBreakdown()
     now.value = Date.now()
     clock = window.setInterval(() => (now.value = Date.now()), 30_000)
     document.addEventListener('mousedown', onDocDown)
@@ -131,6 +251,10 @@ watch(open, (isOpen) => {
     document.removeEventListener('mousedown', onDocDown)
     document.removeEventListener('keydown', onKey)
   }
+})
+watch(() => [u.value?.breakdownAt, props.session.id], () => {
+  if (open.value) void loadBreakdown()
+  else breakdown.value = null
 })
 onBeforeUnmount(() => {
   if (clock !== null) clearInterval(clock)
@@ -162,13 +286,13 @@ function secs(from: number, to: number | null): string {
       class="trigger"
       :class="{ open, crowded }"
       :aria-expanded="open"
-      :title="k(u.contextTokens) + ' of ' + k(u.contextWindow) + ' tokens in context · '
-        + money(u.costUsd) + ' so far'"
+      :title="title"
       @click="open = !open"
     >
       <svg class="ring" viewBox="0 0 16 16" aria-hidden="true">
         <circle class="track" cx="8" cy="8" :r="R" />
         <circle class="fill" cx="8" cy="8" :r="R" :stroke-dasharray="dash" />
+        <line v-if="tick" class="tick" v-bind="tick" />
       </svg>
       <span class="num">{{ pct }}%</span>
       <span class="num cost">{{ money(u.costUsd) }}</span>
@@ -178,57 +302,113 @@ function secs(from: number, to: number | null): string {
          and this is the last control in its row. -->
     <div v-if="open" class="panel">
       <header class="head">
-        <span class="lbl">Context window</span>
-        <span class="fig" :class="{ crowded }">
-          {{ k(u.contextTokens) }} / {{ k(u.contextWindow) }} ({{ pct }}%)
-        </span>
+        <span class="ttl">Context</span>
+        <span v-if="modelName" class="model">{{ modelName }}</span>
       </header>
 
-      <div v-if="seg" class="bar">
-        <i class="s cached" :style="{ width: seg.w(seg.cached) }" />
-        <i class="s fresh" :style="{ width: seg.w(seg.fresh) }" />
+      <div class="body">
+        <div class="level">
+          <span class="big">{{ k(u.contextTokens) }}</span>
+          <span class="of">of {{ k(u.contextWindow) }}</span>
+          <span class="pct" :class="{ crowded }">{{ pct }}%</span>
+        </div>
+
+        <div v-if="seg" class="bar">
+          <template v-if="rows">
+            <i
+              v-for="c in rows.used"
+              :key="c.id"
+              class="s"
+              :style="{ width: c.share * 100 + '%', background: hue(c.id) }"
+              :title="c.label + ', ' + k(c.tokens)"
+            />
+          </template>
+          <template v-else>
+            <i class="s cached" :style="{ width: seg.w(seg.cached) }" :title="k(seg.cached) + ' read back from cache'" />
+            <i class="s fresh" :style="{ width: seg.w(seg.fresh) }" :title="k(seg.fresh) + ' new this turn'" />
+          </template>
+          <i
+            v-if="markAt !== null"
+            class="mark"
+            :class="{ crowded }"
+            :style="{ left: markAt * 100 + '%' }"
+            :title="'Compacts at ' + k(compactAt ?? 0)"
+          />
+        </div>
+
+        <p class="status" :class="{ crowded }">{{ status }}</p>
       </div>
 
-      <ul v-if="seg" class="legend">
-        <li><i class="k cached" /> Cached <b>{{ k(seg.cached) }}</b></li>
-        <li><i class="k fresh" /> Sent whole <b>{{ k(seg.fresh) }}</b></li>
-        <li><i class="k free" /> Free <b>{{ k(seg.free) }}</b></li>
-      </ul>
+      <section v-if="rows" class="parts">
+        <button class="disc" :aria-expanded="showParts" @click="showParts = !showParts">
+          <ChevronRight class="chev" :class="{ down: showParts }" />
+          What fills it
+        </button>
 
-      <!-- §6 — said where the number is, and only that far. The banner over
-           the composer carries the same warning with the two buttons that act
-           on it, forty pixels from here; repeating the remedy would be one
-           sentence written twice on one screen. What this adds is the line the
-           number is being read against, which the banner never names. -->
-      <p v-if="crowded" class="warn">
-        Past {{ CROWDED }}% — answers get worse from here.
-      </p>
+        <div v-if="showParts" class="list">
+          <template v-for="group in [rows.used, rows.room]" :key="group === rows.used ? 'used' : 'room'">
+            <div v-if="group === rows.room" class="gap" />
+            <template v-for="c in group" :key="c.id">
+              <component
+                :is="c.parts.length ? 'button' : 'div'"
+                class="row"
+                :class="{ room: c.kind !== 'used', open: opened.has(c.id), more: c.parts.length }"
+                @click="c.parts.length && toggle(c.id)"
+              >
+                <i class="sw" :class="{ hollow: c.kind !== 'used' }" :style="c.kind === 'used' ? { background: hue(c.id) } : {}" />
+                <span class="nm">{{ c.label }}</span>
+                <ChevronRight v-if="c.parts.length" class="chev sm" :class="{ down: opened.has(c.id) }" />
+                <span class="tk">{{ k(c.tokens) }}</span>
+                <span class="pc">{{ share(c.share) }}</span>
+              </component>
+              <ul v-if="opened.has(c.id)" class="sub">
+                <li v-for="x in c.parts" :key="x.name + (x.detail ?? '')" :title="x.detail">
+                  <span class="nm">{{ x.name }}</span>
+                  <span class="tk">{{ k(x.tokens) }}</span>
+                </li>
+              </ul>
+            </template>
+          </template>
 
-      <div class="rule" />
+          <template v-if="rows.later.length">
+            <p class="cap" title="Known to the agent by name only, loaded when it needs one">Loaded when needed</p>
+            <template v-for="c in rows.later" :key="c.id">
+              <component
+                :is="c.parts.length ? 'button' : 'div'"
+                class="row room"
+                :class="{ open: opened.has(c.id), more: c.parts.length }"
+                @click="c.parts.length && toggle(c.id)"
+              >
+                <i class="sw hollow" />
+                <span class="nm">{{ c.label }}</span>
+                <ChevronRight v-if="c.parts.length" class="chev sm" :class="{ down: opened.has(c.id) }" />
+                <span class="tk">{{ k(c.tokens) }}</span>
+                <span class="pc" />
+              </component>
+              <ul v-if="opened.has(c.id)" class="sub">
+                <li v-for="x in c.parts" :key="x.name + (x.detail ?? '')" :title="x.detail">
+                  <span class="nm">{{ x.name }}</span>
+                  <span class="tk">{{ k(x.tokens) }}</span>
+                </li>
+              </ul>
+            </template>
+          </template>
+        </div>
+      </section>
 
       <dl class="facts">
-        <div v-if="u.model" class="f">
-          <dt>Model</dt>
-          <dd>{{ u.model }}</dd>
-        </div>
-        <div class="f">
-          <dt>Cost</dt>
-          <dd>{{ money(u.costUsd) }} over {{ session.turns }} turn{{ session.turns === 1 ? '' : 's' }}</dd>
-        </div>
-        <div v-if="turn?.usage" class="f">
+        <dt>Spent</dt>
+        <dd>
+          <b>{{ money(u.costUsd) }}</b>
+          <span>{{ session.turns }} turn{{ session.turns === 1 ? '' : 's' }}</span>
+        </dd>
+        <template v-if="turn?.usage">
           <dt>Last turn</dt>
-          <dd>
-            {{ k(turn.usage.input) }} in · {{ k(turn.usage.output) }} out ·
-            {{ k(turn.usage.cacheCreation) }} cached · {{ money(turn.usage.costUsd) }}
+          <dd :title="turnTokens">
+            <b>{{ money(turn.usage.costUsd) }}</b>
+            <span v-if="turn.endedAt">{{ secs(turn.startedAt, turn.endedAt) }}, {{ ago(turn.endedAt) }}</span>
           </dd>
-        </div>
-        <div v-if="turn" class="f">
-          <dt>Measured</dt>
-          <dd>
-            end of turn {{ turn.seq }}
-            <template v-if="turn.endedAt"> · {{ ago(turn.endedAt) }} · {{ secs(turn.startedAt, turn.endedAt) }}</template>
-          </dd>
-        </div>
+        </template>
       </dl>
     </div>
   </div>
@@ -274,72 +454,154 @@ function secs(from: number, to: number | null): string {
    the line is. */
 .trigger.crowded .num, .trigger.crowded:hover .num { color: var(--warn); }
 .trigger.crowded .fill { stroke: var(--warn); }
+/* The compaction point: a hairline across the ring, quiet until it is near. */
+.tick { stroke: var(--text-muted); stroke-width: 1.2; stroke-linecap: round; }
+.trigger.crowded .tick { stroke: var(--warn); }
 
-/* ── the panel ──────────────────────────────────────────────────────────── */
+/* ── the panel ──────────────────────────────────────────────────────────
+   Drawn like the other popovers (the ticket card): a header row on a hairline,
+   then the one number that matters large, the bar under it, and the money last. */
 .panel {
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
-  z-index: 10;
-  width: 320px;
-  padding: 12px;
-  border: 1px solid var(--line-strong);
+  z-index: 60;
+  width: 300px;
+  border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--panel-raised);
+  background: var(--overlay);
   box-shadow: var(--shadow-md);
   font-variant-numeric: tabular-nums;
-}
-
-.head { display: flex; align-items: baseline; gap: 10px; }
-.lbl { font-size: var(--fs-xs); color: var(--text-dim); }
-.fig { margin-left: auto; font-size: var(--fs-xs); color: var(--text); }
-.fig.crowded { color: var(--warn); }
-
-/* The whole window, left to right, with what is in it drawn from the left and
-   the remainder left as the track: free space is the absence of a segment
-   rather than a segment of its own, which is why the legend's third key is an
-   outline and the other two are filled. */
-.bar {
-  display: flex;
-  height: 5px;
-  margin: 9px 0 8px;
-  border-radius: 3px;
-  background: var(--line-strong);
   overflow: hidden;
 }
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line-overlay);
+}
+.ttl { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.model { margin-left: auto; font-size: var(--fs-xs); color: var(--text-dim); }
+
+.body { padding: 14px 14px 12px; }
+
+.level { display: flex; align-items: baseline; gap: 6px; }
+.big { font-size: 22px; font-weight: 640; letter-spacing: -0.02em; line-height: 1; color: var(--text); }
+.of { font-size: var(--fs-sm); color: var(--text-dim); }
+.pct { margin-left: auto; font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); }
+.pct.crowded { color: var(--warn); }
+
+/* The whole window, left to right; free space is the track, not a segment. */
+.bar {
+  position: relative;
+  display: flex;
+  height: 6px;
+  margin: 12px 0 9px;
+  border-radius: 3px;
+  background: var(--line-strong);
+}
 .s { display: block; height: 100%; transition: width var(--dur-3) var(--ease-soft); }
+/* Rounded by hand rather than clipped: the compaction mark stands out of it. */
+.s:first-child { border-radius: 3px 0 0 3px; }
 .s.cached { background: var(--info); }
 .s.fresh { background: var(--accent); }
+.mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--text-muted);
+}
+.mark.crowded { background: var(--warn); }
 
-.legend {
+.status { margin: 0; font-size: var(--fs-xs); color: var(--text-dim); }
+
+/* ── what fills it ───────────────────────────────────────────────────────── */
+.parts { border-top: 1px solid var(--line-overlay); }
+.disc {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 10.5px;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 32px;
+  padding: 0 14px 0 10px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: left;
+}
+.disc:hover { color: var(--text); }
+.chev { width: 14px; height: 14px; flex: none; color: var(--text-dim); transition: transform var(--dur-1) var(--ease-soft); }
+.chev.sm { width: 12px; height: 12px; }
+.chev.down { transform: rotate(90deg); }
+
+/* Scrolls on its own: a category opened into a hundred MCP tools must not
+   push the money off the panel. */
+.list {
+  max-height: min(46vh, 360px);
+  overflow-y: auto;
+  padding: 0 6px 8px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-align: left;
+}
+.row.more:hover, .row.open { background: var(--hover); color: var(--text); }
+.row.room { color: var(--text-dim); }
+.sw { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+.sw.hollow { box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+.row .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .chev { margin-left: -4px; }
+.tk { margin-left: auto; color: var(--text); font-weight: 550; }
+.row.room .tk { color: var(--text-dim); font-weight: 400; }
+.pc { width: 38px; flex: none; text-align: right; color: var(--text-dim); }
+.gap { height: 6px; }
+.cap {
+  margin: 8px 8px 2px;
+  font-size: 11px;
   color: var(--text-dim);
 }
-.legend li { display: inline-flex; align-items: center; gap: 5px; }
-.legend b { font-weight: 550; color: var(--text-muted); }
-.k { width: 6px; height: 6px; border-radius: 50%; flex: none; }
-.k.cached { background: var(--info); }
-.k.fresh { background: var(--accent); }
-.k.free { box-shadow: inset 0 0 0 1.5px var(--line-strong); }
-
-.warn {
-  margin: 10px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--warn);
+.sub {
+  margin: 2px 0 4px;
+  padding: 0 0 0 23px;
+  list-style: none;
 }
+.sub li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 21px;
+  padding-right: 54px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.sub .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub .tk { color: var(--text-muted); font-weight: 400; }
+.status.crowded { color: var(--warn); }
 
-.rule { height: 1px; margin: 11px 0; background: var(--line); }
-
-.facts { margin: 0; font-size: 11px; }
-.f { display: flex; align-items: baseline; gap: 10px; }
-.f + .f { margin-top: 6px; }
-.f dt { flex: none; width: 66px; color: var(--text-dim); }
-.f dd { margin: 0; flex: 1; color: var(--text-muted); overflow-wrap: anywhere; }
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 11px 14px 12px;
+  border-top: 1px solid var(--line-overlay);
+  font-size: var(--fs-xs);
+}
+.facts dt { color: var(--text-dim); }
+.facts dd { display: flex; align-items: baseline; gap: 8px; margin: 0; min-width: 0; color: var(--text-dim); }
+.facts b { font-weight: 600; color: var(--text); }
 </style>

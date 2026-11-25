@@ -1287,6 +1287,7 @@ const handlers: Record<string, Handler> = {
    * before the person has scrolled.
    */
   'agent.transcript': (p: { sessionId: string }) => agents.transcript(p.sessionId),
+  'agent.context': (p: { sessionId: string }) => agents.contextBreakdown(p.sessionId),
   /**
    * §3.7 — what reverting to a turn would throw away, before it is thrown.
    */
