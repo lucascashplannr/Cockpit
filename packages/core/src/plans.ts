@@ -51,6 +51,15 @@ interface StoredPlan extends PlanPreview {
 const plans = new Map<string, StoredPlan>()
 const PLAN_TTL = 10 * 60_000
 
+/**
+ * What a plan is and where it runs, read before `apply` — which forgets the
+ * plan as it starts — so the caller can decide how much to re-probe after it.
+ */
+export function scopeOf(planId: string): { operation: string; workspaceIds: string[] } | null {
+  const p = plans.get(planId)
+  return p ? { operation: p.operation, workspaceIds: [...p.workspaceIds] } : null
+}
+
 function gc(): void {
   const now = Date.now()
   for (const [id, p] of plans) if (now - p.createdAt > PLAN_TTL) plans.delete(id)

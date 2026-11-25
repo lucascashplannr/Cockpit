@@ -1039,6 +1039,11 @@ watch(
   },
 )
 
+// First, ahead of the commit preview and the stashes: the list is what the tab
+// is opened for, and the preview is a full probe of every repository it covers.
+// Registered here rather than with the other watchers below, because immediate
+// watchers start in the order they are declared and so do their calls.
+watch(() => props.workspace.id, load, { immediate: true })
 watch([() => scope.value.join(), stageAll], () => void refreshCommit(), { immediate: true })
 watch(() => props.workspace.id, () => void refreshStashes(), { immediate: true })
 // The counts come from the core's own probe, so they follow every push — of
@@ -1186,7 +1191,8 @@ function nearestNew(nums: (number | null)[], i: number): number | null {
 const unifiedNew = computed(() => (current.value?.lines ?? []).map((l) => (l.kind === 'meta' ? null : l.newLine)))
 const splitNew = computed(() => splitRows.value.map((r) => ('meta' in r ? null : r.right.num)))
 
-watch(() => props.workspace.id, load, { immediate: true })
+// The list's own watcher (`load`, immediate) is registered above the commit
+// preview's, so the files are the first thing asked for.
 // The other groups follow their own repositories' counts, as this one does below.
 watch(
   () => props.repos?.map((w) => w.id + ':' + changeCount(w) + ':' + w.lastProbedAt).join(),

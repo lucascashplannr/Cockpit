@@ -62,6 +62,17 @@ import { termBus } from './terminals.js'
  * Electron window, the CLI, or a machine across a network.
  */
 
+/**
+ * Plans that move commits, the index or a stash, and never a branch, a folder
+ * or a topic. After one, `git.apply` re-probes only the repositories it ran in
+ * instead of running the full pass over every project (registry.refreshRepos).
+ * Anything not listed takes the full pass: a missing entry is only slower.
+ */
+const COMMITS_ONLY = new Set([
+  'commit', 'amend', 'undo commit', 'stage', 'push', 'topic.push',
+  'stash', 'stash pop', 'stash apply', 'stash drop',
+])
+
 const clients = new Set<WebSocket>()
 const startedAt = Date.now()
 let listeningOn = DEFAULT_PORT
@@ -739,8 +750,25 @@ const handlers: Record<string, Handler> = {
   'git.plan': (p: { workspaceId: string; operation: plans.Operation; args?: Record<string, string> }) =>
     plans.plan(p.workspaceId, p.operation, p.args ?? {}),
   'git.apply': async (p: { planId: string }) => {
+    // Read first: `apply` forgets the plan as it starts.
+    const scope = plans.scopeOf(p.planId)
     const res = await plans.apply(p.planId)
-    await registry.reconcile()
+    if (scope && COMMITS_ONLY.has(scope.operation)) {
+      // No branch, no folder, no topic changed: re-probing the repositories it
+      // ran in is the whole of what there is to learn (registry.refreshRepos).
+      await registry.refreshRepos(scope.workspaceIds)
+    } else {
+      // A worktree, a branch, a topic: the structure may have moved, and the
+      // full pass is what rebuilds it. Only the plan's own project, though —
+      // no plan reaches into another one.
+      const projectIds = new Set(
+        (scope?.workspaceIds ?? [])
+          .map((id) => registry.getWorkspace(id)?.projectId)
+          .filter((id): id is string => !!id),
+      )
+      if (projectIds.size) for (const id of projectIds) await registry.reconcile(id)
+      else await registry.reconcile()
+    }
     pushAll()
     return res
   },

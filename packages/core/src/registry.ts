@@ -960,6 +960,31 @@ export function refreshAgentActivity(): void {
   }
 }
 
+/**
+ * After a plan that moved commits but no branch and no folder — a commit, an
+ * amend, a push, a stash — only the repositories it ran in can have changed.
+ *
+ * Every checkout of those repositories is probed, not just the ones the plan
+ * named: worktrees share their refs, so a commit on `main` moves the Catch up
+ * count of every topic branched from it, and a push moves `origin/<branch>`
+ * for all of them. Nothing outside those repositories is touched: what used to
+ * run here was a full `reconcile()`, every repository of every project probed
+ * one after the other plus a fetch of each, and the window waited for all of
+ * it before learning its own commit had landed. The 60-second pass still
+ * covers everything else.
+ */
+export async function refreshRepos(workspaceIds: string[]): Promise<void> {
+  const touched = workspaceIds.map((id) => workspaces.get(id)).filter((w): w is Workspace => !!w && !!w.repo)
+  const keys = new Set(touched.map((w) => w.projectId + '\0' + w.repoName))
+  const ids = new Set(touched.map((w) => w.id))
+  for (const w of workspaces.values()) {
+    if (w.repo && w.repoName && keys.has(w.projectId + '\0' + w.repoName) && existsSync(w.path)) ids.add(w.id)
+  }
+  // Side by side: each repository's git queues on its own folder (§16), so
+  // checkouts of different repositories never wait on each other.
+  await Promise.all([...ids].map((id) => probeWorkspace(id).catch(() => null)))
+}
+
 /** Cheap refresh used by the watcher: git + lease only, no runtime probing. */
 export async function refreshGit(id: string): Promise<Workspace | null> {
   const ws = workspaces.get(id)

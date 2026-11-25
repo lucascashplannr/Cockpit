@@ -20,6 +20,21 @@ export function gitWith(
   args: string[],
   opts: { timeoutMs?: number; env?: Record<string, string>; input?: string } = {},
 ): Promise<RunResult> {
+  if (opts.input === undefined && isReadOnly(args)) {
+    // Off the queue: a reader cannot collide with anything, and queued it waited
+    // behind every other git of the repository — a fetch over the network
+    // included. One git start costs ~150 ms on Windows, so the Diff tab's dozen
+    // reads in a row were seconds where side by side they are a fraction of one.
+    // GIT_OPTIONAL_LOCKS=0 is what makes "a reader" true of `status` and `diff`
+    // too: without it they may take index.lock to refresh the stat cache.
+    return readSlot(() =>
+      run('git', args, {
+        cwd,
+        timeoutMs: opts.timeoutMs ?? 30_000,
+        env: { ...opts.env, GIT_OPTIONAL_LOCKS: '0' },
+      }),
+    )
+  }
   const once = () => run('git', args, { cwd, timeoutMs: opts.timeoutMs ?? 30_000, env: opts.env, input: opts.input })
   return serialize('git:' + cwd, async () => {
     const r = await once()
@@ -45,6 +60,69 @@ export function gitWith(
     }
     return once()
   })
+}
+
+/**
+ * §16 — the per-repository queue exists so two git commands never fight over a
+ * lock. Only a command that may write takes one, so only those need the queue.
+ *
+ * An allow-list, by subcommand and — where one subcommand both reads and
+ * writes — by its verb. Anything not on it is queued as before: a command
+ * missing from here is only slower, never unsafe. A leading global option
+ * (`--git-dir`, `-c`) is queued too rather than parsed.
+ */
+const READS = new Set([
+  'diff', 'log', 'show', 'status', 'ls-files', 'ls-tree', 'rev-parse', 'rev-list', 'cat-file',
+  'merge-base', 'for-each-ref', 'name-rev', 'blame', 'grep', 'describe', 'check-ignore',
+  'check-ref-format', 'show-ref', 'diff-tree', 'diff-index', 'diff-files', 'count-objects',
+])
+
+export function isReadOnly(args: string[]): boolean {
+  const [cmd, ...rest] = args
+  if (!cmd || cmd.startsWith('-')) return false
+  if (READS.has(cmd)) return true
+  const verb = rest[0]
+  switch (cmd) {
+    case 'stash':
+      return verb === 'list' || verb === 'show'
+    case 'worktree':
+      return verb === 'list'
+    case 'reflog':
+      return verb === 'show'
+    case 'remote':
+      return verb === undefined || verb === '-v' || verb === 'get-url'
+    case 'branch':
+      return verb === '--show-current' || verb === '--list'
+    case 'symbolic-ref':
+      // Reading names one ref; two is setting it, and -d deletes it.
+      return !rest.includes('-d') && !rest.includes('--delete') && rest.filter((a) => !a.startsWith('-')).length === 1
+    default:
+      return false
+  }
+}
+
+/**
+ * Readers run side by side, but not without limit: a Diff over every
+ * repository of a topic, a probe and the watcher landing together would
+ * otherwise start dozens of processes at once on a machine where each start
+ * is the expensive part.
+ */
+const READ_LIMIT = 8
+let readsRunning = 0
+const readsWaiting: (() => void)[] = []
+
+async function readSlot<T>(fn: () => Promise<T>): Promise<T> {
+  // A slot freed is handed straight to the next in line, never put back for
+  // grabs: a caller arriving in between would otherwise make it nine.
+  if (readsRunning >= READ_LIMIT) await new Promise<void>((go) => readsWaiting.push(go))
+  else readsRunning++
+  try {
+    return await fn()
+  } finally {
+    const next = readsWaiting.shift()
+    if (next) next()
+    else readsRunning--
+  }
 }
 
 export function isRepo(path: string): boolean {
