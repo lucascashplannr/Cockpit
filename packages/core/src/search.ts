@@ -1,6 +1,7 @@
 import type { SearchHit } from '@cockpit/shared'
 import { run, which } from './exec.js'
 import { getWorkspace } from './registry.js'
+import { cockpitOwned } from './files.js'
 
 /**
  * §12 — "Recherche plein texte … recherche simultanée dans tous les repos
@@ -47,7 +48,9 @@ export async function text(opts: SearchOptions): Promise<{
       ? await ripgrep(ws.path, opts, remaining)
       : await gitGrep(ws.path, opts, remaining)
 
-    for (const h of found) hits.push({ ...h, workspaceId: wsId })
+    // Cockpit's own files are not the project's: see `cockpitOwned`.
+    const owned = cockpitOwned(ws.path)
+    for (const h of found) if (!owned(h.path)) hits.push({ ...h, workspaceId: wsId })
   }
 
   return { hits, truncated: truncated || hits.length >= max, engine: eng }
@@ -66,6 +69,7 @@ async function ripgrep(
     '--glob', '!.git',
     '--glob', '!vendor',
     '--glob', '!dist',
+    '--glob', '!.cockpit',
   ]
   if (!opts.regex) args.push('--fixed-strings')
   if (!opts.caseSensitive) args.push('--ignore-case')

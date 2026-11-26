@@ -9,7 +9,7 @@ import type {
   AgentAnswers, AgentScope, AttachmentInput, CockpitEvent, CockpitSettings, ConfigView, CoreStatus, Declaration, RpcRequest, RpcResponse,
   Conversation, ConversationMarkKind, LoadoutChoice, PermissionMode, Project, ProjectSettings, ServerBoardRow, ServerPush, SkillWhere, TicketEvent, TicketMove, Workspace,
 } from '@cockpit/shared'
-import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, updateConfig } from './config.js'
+import { COCKPIT_HOME, DEFAULT_PORT, loadConfig, safeResolve, updateConfig } from './config.js'
 import { append, bus, countEvents, forSession, tail, touchedBy } from './journal.js'
 import * as commands from './commands.js'
 import * as declare from './declare.js'
@@ -716,7 +716,10 @@ const handlers: Record<string, Handler> = {
   'fs.readImage': (p: { workspaceId: string; rel: string }) => files.readImage(p.workspaceId, p.rel),
   'fs.write': (p: { workspaceId: string; rel: string; content: string; expectMtimeMs: number | null }) => {
     // §16 — the window asks first; this is the wall behind the question.
-    const refusal = writeRefusal([registry.requireWorkspace(p.workspaceId)], 'save')
+    // Of the repository the file is in: saved from a folder above it, the folder protects nothing.
+    const ws = registry.requireWorkspace(p.workspaceId)
+    const own = files.repoOf(ws, safeResolve(ws.path, p.rel))
+    const refusal = writeRefusal([own ?? ws], 'save')
     if (refusal) throw new Error(refusal)
     return files.write(p.workspaceId, p.rel, p.content, p.expectMtimeMs)
   },

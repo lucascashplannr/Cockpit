@@ -57,8 +57,8 @@ import {
 import MarkdownPreview from '../MarkdownPreview.vue'
 import Splitter from '../Splitter.vue'
 import {
-  LAYOUT_DEFAULTS, LAYOUT_LIMITS, changeCount, client, goTo, guard, layout, openCommits, resetPlaceWidth,
-  savePlaceWidth, setColumnWidth, state, stopSaveOnProtected, toast,
+  LAYOUT_DEFAULTS, LAYOUT_LIMITS, changeCount, client, goTo, guard, layout, openCommits, pickSpanRepo, repoOfFile,
+  resetPlaceWidth, savePlaceWidth, setColumnWidth, state, stopSaveOnProtected, toast,
 } from '../../core/store.js'
 import { buildMarks, changeMarks, noMarks, setMarks } from '../../core/changeMarks.js'
 import { cockpitTheme, languageFor } from '../../core/editor.js'
@@ -129,6 +129,12 @@ let treeFor: string | null = null
 const files = ref<OpenFile[]>([]) as Ref<OpenFile[]>
 /** The one on screen. */
 const openPath = ref<string | null>(null)
+/**
+ * The repository the open file is in, and its path there. The workspace itself
+ * when it is one; at a topic's, a group's or the project's folder, the
+ * checkout under it holding the file — what git, blame and protection ask.
+ */
+const owner = computed(() => (openPath.value ? repoOfFile(props.workspace, openPath.value) : null))
 const cur = computed(() => files.value.find((f) => f.path === openPath.value) ?? null)
 const openMtime = computed({
   get: () => cur.value?.mtime ?? null,
@@ -451,9 +457,11 @@ async function save() {
   const v = view.value
   const f = cur.value
   if (!v || !f) return
-  // §16 — asked before the write, so the edit is still in the editor after.
-  if (stopSaveOnProtected(props.workspace)) return
   const path = f.path
+  // §16 — asked before the write, so the edit is still in the editor after.
+  // Of the repository the file is in: a folder above it protects nothing.
+  const own = repoOfFile(props.workspace, path)
+  if (own && stopSaveOnProtected(own.ws)) return
   const res = await guard(() =>
     client.call('fs.write', {
       workspaceId: props.workspace.id,
@@ -499,12 +507,13 @@ async function loadMarks() {
   const v = view.value
   if (!path || !v || image.value) return
   const mine = ++marksSeq
-  if (!props.workspace.repo) {
+  const own = owner.value
+  if (!own) {
     v.dispatch({ effects: setMarks.of(noMarks) })
     return
   }
   const [d, r] = await Promise.all([
-    guard(() => client.call('diff.file', { workspaceId: props.workspace.id, path })),
+    guard(() => client.call('diff.file', { workspaceId: own.ws.id, path: own.path })),
     guard(() => client.call('fs.read', { workspaceId: props.workspace.id, rel: path })),
   ])
   if (mine !== marksSeq || view.value !== v || openPath.value !== path || dirty.value || !d || !r) return
@@ -527,7 +536,9 @@ async function loadBlame() {
   const v = view.value
   if (!path || !v || image.value) return
   const mine = ++blameSeq
-  const r = await guard(() => client.call('git.blame', { workspaceId: props.workspace.id, path }))
+  const own = owner.value
+  if (!own) return
+  const r = await guard(() => client.call('git.blame', { workspaceId: own.ws.id, path: own.path }))
   if (mine !== blameSeq || view.value !== v || openPath.value !== path || !r) return
   blameTracked.value = r.tracked
   blameMarks(v, r)
@@ -558,13 +569,20 @@ function openBlamed(c: BlameCommit) {
     goTo('diff')
     return
   }
-  if (openPath.value) openCommits(c.hash, openPath.value)
+  commitsOf(c.hash)
 }
 
 function fileCommits() {
-  if (!openPath.value) return
   detailOpen.value = false
-  openCommits(null, openPath.value)
+  commitsOf(null)
+}
+
+/** The file's commits, in the Diff of its own repository — turned to it, from a folder. */
+function commitsOf(hash: string | null) {
+  const own = owner.value
+  if (!own) return
+  if (own.ws.id !== props.workspace.id) pickSpanRepo(own.ws.id, 'diff')
+  openCommits(hash, own.path)
 }
 
 // A commit moves the lines it took from not committed to its own; a switch
@@ -572,8 +590,10 @@ function fileCommits() {
 // Both keyed by the workspace too: another workspace is not a commit here.
 // Its file is not open yet, and asking it for this one's fails — `loadRoot`
 // reads what belongs there.
+const ownerKey = () => props.workspace.id + '|' + (owner.value?.ws.id ?? '')
+const ownGit = () => owner.value?.ws.git
 watch(
-  [() => props.workspace.id, () => [props.workspace.git?.lastCommit?.hash, props.workspace.git?.branch].join('|')],
+  [ownerKey, () => [ownGit()?.lastCommit?.hash, ownGit()?.branch].join('|')],
   ([id], [was]) => {
     if (id === was && blameOn.value && !dirty.value) void loadBlame()
   },
@@ -581,8 +601,11 @@ watch(
 // A commit, a discard or an agent's edit moves what is marked.
 watch(
   [
-    () => props.workspace.id,
-    () => [props.workspace.git?.lastCommit?.hash, props.workspace.git?.branch, changeCount(props.workspace)].join('|'),
+    ownerKey,
+    () => {
+      const g = ownGit()
+      return [g?.lastCommit?.hash, g?.branch, owner.value ? changeCount(owner.value.ws) : 0].join('|')
+    },
   ],
   ([id], [was]) => {
     if (id === was && !dirty.value) void loadMarks()
@@ -1009,18 +1032,18 @@ onBeforeUnmount(() => {
               </template>
             </dl>
             <div class="rule" />
-            <button v-if="workspace.repo && !image" @click="fileCommits"><GitCommitVertical />Commits</button>
+            <button v-if="owner && !image" @click="fileCommits"><GitCommitVertical />Commits</button>
             <button @click="copyPath"><Copy />Copy path</button>
             <button @click="openInIde"><SquareArrowOutUpRight />Open in IDE</button>
             <button @click="revealFolder"><FolderOpen />Open folder</button>
           </div>
         </div>
-        <div v-if="openPath && !image && (previewKind || workspace.repo)" class="seg" role="group" aria-label="File view">
+        <div v-if="openPath && !image && (previewKind || owner)" class="seg" role="group" aria-label="File view">
           <button :class="{ on: reading === 'code' }" title="Code" aria-label="Code" @click="read('code')">
             <Code /><span class="vlabel">Code</span>
           </button>
           <button
-            v-if="workspace.repo"
+            v-if="owner"
             :class="{ on: reading === 'authors' }"
             :title="reading === 'authors' && !blameTracked ? 'Not committed yet — git has no history for it' : 'Who wrote each line'"
             aria-label="Authors"

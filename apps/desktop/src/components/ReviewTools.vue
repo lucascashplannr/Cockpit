@@ -11,7 +11,7 @@ import CommitsTab from './tabs/CommitsTab.vue'
 import OutputTab from './tabs/OutputTab.vue'
 import TerminalTab from './tabs/TerminalTab.vue'
 import ProjectRepoMenu from './ProjectRepoMenu.vue'
-import { changeCount, goTo, onProject, reviewSpan, reviewTools, shownReviewTool, spanDiffAll, spanDiffRepo, spanRepo, spanTerminal, state } from '../core/store.js'
+import { changeCount, goTo, onProject, reviewSpan, reviewTools, shownReviewTool, spanCode, spanDiffAll, spanDiffRepo, spanTerminal, state } from '../core/store.js'
 import type { ReviewTool } from '../core/store.js'
 
 /**
@@ -55,9 +55,9 @@ const changed = computed(() =>
  * the project, or a topic across repositories, is one of them, named at the
  * end of the strip above the tool (`reviewSpan`).
  */
-const repo = computed(() => spanRepo.value ?? props.workspace)
+// The Code and the Terminal can also stand at the span's folder, in every repository at once.
+const codeRepo = computed(() => spanCode.value ?? props.workspace)
 const diffRepo = computed(() => spanDiffRepo.value ?? props.workspace)
-// The Terminal alone can also stand at the span's folder, in every repository at once.
 const termRepo = computed(() => spanTerminal.value ?? props.workspace)
 
 
@@ -154,7 +154,7 @@ watch(shownReviewTool, () => nextTick(fit))
       <!-- §7 — on the project or a topic across repositories, which one these three are on. -->
       <template v-if="reviewSpan && (shownReviewTool === 'diff' || shownReviewTool === 'code' || shownReviewTool === 'terminal')">
         <span class="grow" />
-        <ProjectRepoMenu :diff="shownReviewTool === 'diff'" :terminal="shownReviewTool === 'terminal'" />
+        <ProjectRepoMenu :diff="shownReviewTool === 'diff'" :terminal="shownReviewTool === 'terminal'" :code="shownReviewTool === 'code'" />
       </template>
     </nav>
 
@@ -165,7 +165,7 @@ watch(shownReviewTool, () => nextTick(fit))
       <DiffTab v-else-if="shownReviewTool === 'diff'" :workspace="diffRepo" :repos="spanDiffAll" />
       <MemoryTab v-else-if="shownReviewTool === 'memory'" :workspace="workspace" />
       <DocsTab v-else-if="shownReviewTool === 'docs'" :workspace="workspace" />
-      <CodeTab v-else-if="shownReviewTool === 'code'" :workspace="repo" />
+      <CodeTab v-else-if="shownReviewTool === 'code'" :workspace="codeRepo" />
       <OutputTab v-else-if="shownReviewTool === 'output'" :workspace="workspace" :whole-project="onProject" />
       <TerminalTab v-else-if="shownReviewTool === 'terminal'" :workspace="termRepo" />
     </div>

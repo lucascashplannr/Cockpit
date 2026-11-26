@@ -306,10 +306,16 @@ export const state = reactive({
   spanRepo: {} as Record<string, string>,
   /**
    * Same key: the span's Terminal is at its folder (`spanFolder`) — in every
-   * repository at once — rather than in the one picked. The Diff and the Code
-   * have no such reading, so they keep the pick.
+   * repository at once — rather than in the one picked. The Diff has no such
+   * reading (its "All" is `spanDiffAll`), so it keeps the pick.
    */
   spanAtFolder: {} as Record<string, boolean>,
+  /**
+   * Same key, for the Code: its tree is the span's folder, every repository
+   * side by side under it — the topic's root, the group's, the project's.
+   * Apart from the Terminal's: a shell standing there is not a tree asked for.
+   */
+  spanCodeAtFolder: {} as Record<string, boolean>,
   /**
    * Same key: the span's Diff lists every repository's changes at once
    * (`spanDiffAll`). The one picked is still where the commit box, the stash
@@ -1438,6 +1444,29 @@ export const spanTerminal = computed<Workspace | null>(() => {
   return spanRepo.value
 })
 
+/** Where the span's Code is: its folder, when that was picked, else the picked repository. */
+export const spanCode = computed<Workspace | null>(() => {
+  const span = reviewSpan.value
+  if (span && state.spanCodeAtFolder[span.key] && spanFolder.value) return spanFolder.value
+  return spanRepo.value
+})
+
+/**
+ * The repository a file seen from a folder belongs to, and its path in there:
+ * the deepest checkout holding it. From a repository it is that repository.
+ * Null for a file in the folder itself, outside every one of them.
+ */
+export function repoOfFile(w: Workspace, path: string): { ws: Workspace; path: string } | null {
+  if (w.repo) return { ws: w, path }
+  const full = w.path + '/' + path
+  let best: Workspace | null = null
+  for (const x of state.workspaces) {
+    if (!x.repo || x.kind === 'group' || !full.startsWith(x.path + '/')) continue
+    if (!best || x.path.length > best.path.length) best = x
+  }
+  return best ? { ws: best, path: full.slice(best.path.length + 1) } : null
+}
+
 /** Of those, the one the Code and the Terminal are on: the one picked, else the first with something to read. */
 export const spanRepo = computed<Workspace | null>(() => {
   const span = reviewSpan.value
@@ -1448,20 +1477,22 @@ export const spanRepo = computed<Workspace | null>(() => {
 
 /**
  * Turn the span's Diff, Code and Terminal to one of its repositories — or the
- * Terminal to its folder. A Terminal standing at the folder stays there until
- * a repository is picked from the Terminal itself (`from`): picking one for the
- * Diff, or opening a file, is not asking the shell to move. The Diff showing
+ * Terminal or the Code to its folder. Either standing at the folder stays there
+ * until a repository is picked from that tool itself (`from`): picking one for
+ * the Diff is not asking the shell to move, nor the tree. The Diff showing
  * every repository is the same: only a pick from the Diff's own menu narrows it.
  */
-export function pickSpanRepo(workspaceId: string, from: 'terminal' | 'diff' | null = null): void {
+export function pickSpanRepo(workspaceId: string, from: 'terminal' | 'diff' | 'code' | null = null): void {
   const span = reviewSpan.value
   if (!span) return
   if (workspaceId === spanFolder.value?.id) {
-    state.spanAtFolder[span.key] = true
+    if (from === 'code') state.spanCodeAtFolder[span.key] = true
+    else state.spanAtFolder[span.key] = true
   } else if (span.repos.some((w) => w.id === workspaceId)) {
     state.spanRepo[span.key] = workspaceId
     if (from === 'terminal') delete state.spanAtFolder[span.key]
     if (from === 'diff') delete state.spanDiffAll[span.key]
+    if (from === 'code') delete state.spanCodeAtFolder[span.key]
   }
 }
 
@@ -4677,8 +4708,16 @@ export function openFileAt(workspaceId: string, path: string, line: number | nul
   const w = state.workspaces.find((x) => x.id === workspaceId)
   if (!w) return
   if (reviewSpan.value?.repos.some((x) => x.id === w.id)) {
-    pickSpanRepo(w.id)
-    state.codeRequest = { workspaceId, path, line }
+    // The Code at the span's folder keeps its tree: the file opens in it, by
+    // its path from there. A repository outside the folder turns it to that one.
+    const folder = spanFolder.value && spanCode.value?.id === spanFolder.value.id ? spanFolder.value : null
+    if (folder && w.path.startsWith(folder.path + '/')) {
+      pickSpanRepo(w.id)
+      state.codeRequest = { workspaceId: folder.id, path: w.path.slice(folder.path.length + 1) + '/' + path, line }
+    } else {
+      pickSpanRepo(w.id, 'code')
+      state.codeRequest = { workspaceId, path, line }
+    }
     goTo('code')
     return
   }

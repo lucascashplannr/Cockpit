@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, ChevronDown, FolderTree, Layers, SquareDot } from '@lucide/vue'
 import {
   activeProject, pickSpanDiffAll, pickSpanRepo, repoMark, reviewSpan, shortName, spanDiffAll, spanDiffRepo, spanDiffRepos,
-  spanFolder, spanRepo, spanTerminal,
+  spanCode, spanFolder, spanTerminal,
 } from '../core/store.js'
 import type { Workspace } from '@cockpit/shared'
 
@@ -16,16 +16,18 @@ import type { Workspace } from '@cockpit/shared'
  *
  * Every tool offers every repository.
  * `terminal` adds the span's folder above them (`spanFolder`): a shell there is
- * in every repository at once. `diff` adds every repository at once too
+ * in every repository at once. `code` adds it too: the tree from the topic's,
+ * the group's or the project's root. `diff` adds every repository at once too
  * (`spanDiffAll`): their changes listed together, grouped.
  */
-const props = defineProps<{ diff?: boolean; terminal?: boolean }>()
+const props = defineProps<{ diff?: boolean; terminal?: boolean; code?: boolean }>()
+const from = computed(() => (props.terminal ? 'terminal' : props.diff ? 'diff' : props.code ? 'code' : null))
 
 const current = computed(() =>
-  props.diff ? spanDiffRepo.value : props.terminal ? spanTerminal.value : spanRepo.value,
+  props.diff ? spanDiffRepo.value : props.terminal ? spanTerminal.value : spanCode.value,
 )
-const folder = computed(() => (props.terminal ? spanFolder.value : null))
-/** Whether this menu has an "All repositories" row: the folder for the Terminal, every one for the Diff. */
+const folder = computed(() => (props.terminal || props.code ? spanFolder.value : null))
+/** Whether this menu has an "All repositories" row: the folder for the Terminal and the Code, every one for the Diff. */
 const hasAll = computed(() => (props.diff ? spanDiffRepos.value.length > 1 : !!folder.value))
 const atAll = computed(() =>
   props.diff ? !!spanDiffAll.value : !!folder.value && current.value?.id === folder.value.id,
@@ -62,12 +64,12 @@ const open = ref(false)
 const root = ref<HTMLElement | null>(null)
 
 function pick(id: string): void {
-  pickSpanRepo(id, props.terminal ? 'terminal' : props.diff ? 'diff' : null)
+  pickSpanRepo(id, from.value)
   open.value = false
 }
 function pickAll(): void {
   if (props.diff) pickSpanDiffAll()
-  else if (folder.value) pickSpanRepo(folder.value.id)
+  else if (folder.value) pickSpanRepo(folder.value.id, from.value)
   open.value = false
 }
 
@@ -97,7 +99,7 @@ onBeforeUnmount(() => {
     <button
       class="trigger"
       :class="{ open }"
-      :title="atAll ? (diff ? 'All repositories — every change, grouped' : 'All repositories — from the folder they sit in') : name(current)"
+      :title="atAll ? (diff ? 'All repositories, every change grouped' : 'All repositories, from the folder they sit in') : name(current)"
       :disabled="repos.length + (hasAll ? 1 : 0) < 2"
       @click="open = !open"
     >

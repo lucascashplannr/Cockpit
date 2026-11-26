@@ -1,8 +1,9 @@
 import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
-import type { FileEntry } from '@cockpit/shared'
+import { MANIFEST_FILENAMES } from '@cockpit/shared'
+import type { FileEntry, Workspace } from '@cockpit/shared'
 import { safeResolve } from './config.js'
-import { requireWorkspace } from './registry.js'
+import { allProjects, allWorkspaces, requireWorkspace, workspaceForPath } from './registry.js'
 import { statusMap, trackedFiles } from './git.js'
 import { recordTouch } from './journal.js'
 
@@ -15,10 +16,50 @@ import { recordTouch } from './journal.js'
 const HIDDEN = new Set(['node_modules', '.git', 'vendor', 'dist', '.next', '.turbo', '.DS_Store'])
 const MAX_READ = 2 * 1024 * 1024
 
+const MANIFESTS = new Set<string>(MANIFEST_FILENAMES)
+
+/**
+ * Cockpit's own files, never shown in a tree nor found by a search: `.cockpit/`
+ * (memory, setup) wherever it is, the manifest at a project's root, and the
+ * folder topics' worktrees are made in — a topic's repositories are reached as
+ * the topic, not as folders of the project. Read once per listing or search:
+ * `owned(rel)` then answers for paths under `wsPath`.
+ */
+export function cockpitOwned(wsPath: string): (rel: string) => boolean {
+  const roots = new Set(allProjects().map((p) => p.root))
+  const bases = new Set<string>()
+  for (const p of allProjects()) bases.add(join(p.root, 'worktrees'))
+  for (const w of allWorkspaces()) if (w.kind === 'group' && w.topicId) bases.add(dirname(w.path))
+  // Only a base inside this workspace hides anything: from a topic's own
+  // folder, every path is under the base, and all of them are the topic.
+  const inside = [...bases].filter((b) => b.startsWith(wsPath + '/'))
+  return (rel) => {
+    const parts = rel.split('/')
+    if (parts.includes('.cockpit')) return true
+    const full = join(wsPath, rel)
+    if (MANIFESTS.has(parts[parts.length - 1]!) && roots.has(dirname(full))) return true
+    return inside.some((b) => full === b || full.startsWith(b + '/'))
+  }
+}
+
+/**
+ * The repository a path is in: the workspace itself when it is one; read from
+ * a folder above several (a topic's, a group's, the project's root), the
+ * deepest checkout holding it. Null for a path outside every repository.
+ */
+export function repoOf(ws: Workspace, full: string): Workspace | null {
+  if (ws.repo) return ws
+  const own = workspaceForPath(full)
+  return own?.repo ? own : null
+}
+
 export async function list(workspaceId: string, rel: string): Promise<FileEntry[]> {
   const ws = requireWorkspace(workspaceId)
   const dir = safeResolve(ws.path, rel || '.')
-  const status = ws.repo ? await statusMap(ws.path) : new Map<string, string>()
+  // From a folder, the marks of whichever repository this directory is in.
+  const repo = repoOf(ws, dir)
+  const status = repo ? await statusMap(repo.path) : new Map<string, string>()
+  const owned = cockpitOwned(ws.path)
 
   const entries = readdirSync(dir, { withFileTypes: true })
   const out: FileEntry[] = []
@@ -35,13 +76,14 @@ export async function list(workspaceId: string, rel: string): Promise<FileEntry[
       continue
     }
     const relPath = relative(ws.path, full)
+    if (owned(relPath)) continue
     out.push({
       name: e.name,
       path: relPath,
       kind: e.isDirectory() ? 'dir' : e.isSymbolicLink() ? 'symlink' : 'file',
       size,
       mtimeMs,
-      gitStatus: status.get(relPath) ?? null,
+      gitStatus: repo ? (status.get(relative(repo.path, full)) ?? null) : null,
     })
   }
   return out.sort((a, b) => {
@@ -128,7 +170,10 @@ export function write(
   mkdirSync(dirname(full), { recursive: true })
   writeFileSync(full, content, 'utf8')
   const mtimeMs = statSync(full).mtimeMs
-  recordTouch(workspaceId, rel, { kind: 'human' })
+  // Attributed to the repository it is in, by its path there, not to a folder above it.
+  const own = repoOf(ws, full)
+  if (own) recordTouch(own.id, relative(own.path, full), { kind: 'human' })
+  else recordTouch(workspaceId, rel, { kind: 'human' })
   return { ok: true, mtimeMs }
 }
 
@@ -136,7 +181,8 @@ export function write(
 export async function tracked(workspaceId: string): Promise<string[]> {
   const ws = requireWorkspace(workspaceId)
   if (!ws.repo) return []
-  return trackedFiles(ws.path)
+  const owned = cockpitOwned(ws.path)
+  return (await trackedFiles(ws.path)).filter((f) => !owned(f))
 }
 
 /**
