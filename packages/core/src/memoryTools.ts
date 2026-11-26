@@ -69,9 +69,9 @@ export const MEMORY_RULES = [
   `Note a decision made — by you or the person — or an interface created or changed before the turn ends;`,
   `call ${STATE} when you finish a piece of work. Each call reads this whole conversation again: make`,
   'memory calls in the same message as other tool calls where you can, and at the end of a turn all',
-  'of them in one message. Do not log steps or review rounds, restate the code, note what git already',
-  'shows, or copy a fact that belongs to the whole project into a topic memory. Note only what would',
-  'change what the next agent does.',
+  'of them in one message. Do not log steps or review rounds, describe what you built (the code shows it),',
+  'note what git already shows, or copy a fact that belongs to the whole project into a topic memory.',
+  'Note only what would change what the next agent does, and that it could not read off the code.',
 ].join(' ')
 
 const NOTE_SECTIONS = memory.SECTIONS.filter((s) => s !== STATE_SECTION)
@@ -83,7 +83,10 @@ const TOOLS = [
       'Add one line to the shared memory of this topic or project. Other agents and the next conversation read it. ' +
       'Use for decisions with their reason, rejected approaches with why, constraints, contracts other code relies on (with where they live), ' +
       'and open questions waiting on the person. One short line, at most ' + NOTE_MAX + ' characters. ' +
-      'Pass `replaces` when this supersedes an existing entry.',
+      'Note what reading the code would not tell the next agent: why a choice was made, what the person asked for, ' +
+      'what was tried and dropped, what must stay true. Not what you built: which component renders what, ' +
+      'a width, a prop, a slot, a file moved or deleted. Once committed, the code says that, and the line is only weight. ' +
+      'Before adding, look for an entry on the same thing: pass `replaces` to rewrite it rather than adding beside it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -138,8 +141,14 @@ const TOOLS = [
   {
     name: READ,
     description:
-      'Read the shared memory as it stands now, including what other conversations wrote since this one started, and its Past.',
-    inputSchema: { type: 'object', properties: {} },
+      'Read the shared memory as it stands now, including what other conversations wrote since this one started. ' +
+      'Its Past (what stopped being true, and why) is left out unless you pass `past`: it is history, often larger than the rest.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        past: { type: 'boolean', description: 'Also return Past. Only when you need why something was dropped or changed.' },
+      },
+    },
   },
 ]
 
@@ -287,7 +296,9 @@ function call(
       return text('Moved to Past: ' + past.replace(/^\s*[-*+]\s+/, ''))
     }
     case READ:
-      return text(memory.forEngine(memory.contentAt(home.file, home.kind) ?? '', true) || 'The memory is empty.')
+      // Past only when asked: in one memory it was half the file, ~5k tokens
+      // on every read for history the reader rarely wanted.
+      return text(memory.forEngine(memory.contentAt(home.file, home.kind) ?? '', args.past === true) || 'The memory is empty.')
     default:
       return text('Unknown tool: ' + name, true)
   }

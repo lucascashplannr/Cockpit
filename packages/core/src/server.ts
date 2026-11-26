@@ -24,6 +24,7 @@ import * as diff from './diff.js'
 import * as history from './history.js'
 import * as plans from './plans.js'
 import * as memory from './memory.js'
+import * as memoryTidy from './memoryTidy.js'
 import * as docs from './docs.js'
 import * as docsSignals from './docsSignals.js'
 import * as leases from './leases.js'
@@ -1100,6 +1101,9 @@ const handlers: Record<string, Handler> = {
       docsSignals.drafting(offer, set.id)
       collectWhenSettled(p.sessionId, set.id)
     }
+    // §6 — the handoff brought the memory up to date with this conversation;
+    // the tidy then reads it whole, every conversation's notes, not only these.
+    void agents.whenSettled(p.sessionId).then(() => memoryTidy.soon(memory.homeOf(c), 'handoff', p.sessionId))
     return { ok: true as const, skipped: false, docsSetId: set?.id ?? null }
   },
   /**
@@ -1376,6 +1380,16 @@ const handlers: Record<string, Handler> = {
     memory.promote(p.workspaceId, p.section, p.text, p.memoryId)
     pushWorkspaces()
     return { ok: true }
+  },
+  'memory.tidy': (p: { workspaceId: string; memoryId?: string; sessionId?: string }) => {
+    const home = memory.homeAt(p.workspaceId, p.memoryId)
+    void memoryTidy.tidy(home, 'asked', p.sessionId ?? null)
+    return { ok: true as const, started: true }
+  },
+  'memory.untidy': (p: { tidyId: string }) => {
+    const r = memoryTidy.undo(p.tidyId)
+    if (r.ok) pushWorkspaces()
+    return r
   },
 
   'journal.tail': (p: { workspaceId?: string; projectId?: string; limit?: number; types?: string[] }) =>

@@ -280,6 +280,8 @@ type Item =
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
   /** `/compact` — the window before and after the engine summarised it. */
   | { kind: 'compact'; id: string; before: number; after: number }
+  /** §6 — the memory made shorter after this turn, and whether it was taken back. */
+  | { kind: 'tidy'; id: string; tidyId: string; before: number; after: number; entries: number; retired: number; undone: boolean }
   /** §6 — a line the agent put in the shared memory, or the state it set. §9 — or a docs flag. */
   | { kind: 'memory'; id: string; section: string; text: string; flag?: boolean; replaces?: string }
   /** §9 — pages offered for an update, once the work was final. */
@@ -312,6 +314,7 @@ type Row =
   | { kind: 'group'; id: string; calls: Extract<Item, { kind: 'tool' }>[] }
   | { kind: 'revert'; id: string; files: number; workspaces: number; redo: boolean }
   | { kind: 'compact'; id: string; before: number; after: number }
+  | { kind: 'tidy'; id: string; tidyId: string; before: number; after: number; entries: number; retired: number; undone: boolean }
   /** `cont`: under a note of the same section just above, so the label is not said twice. */
   | { kind: 'memory'; id: string; section: string; text: string; flag?: boolean; replaces?: string; cont?: boolean }
   | { kind: 'docsOffer'; id: string; offerId: string }
@@ -384,7 +387,7 @@ function rowsOf(items: Item[]): Row[] {
       rows.push({ ...it, cont: prev?.kind === 'memory' && prev.section === it.section })
       continue
     }
-    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'docsOffer' || it.kind === 'question' || it.kind === 'peer') rows.push({ ...it })
+    if (it.kind === 'revert' || it.kind === 'compact' || it.kind === 'tidy' || it.kind === 'docsOffer' || it.kind === 'question' || it.kind === 'peer') rows.push({ ...it })
     else rows.push({ kind: 'text', id: it.id, text: it.text })
   }
   flush()
@@ -426,6 +429,7 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
   const byQuestion = new Map<string, Asked>()
   const byTell = new Map<string, Peer>()
   const byWrap = new Map<string, AgentWrap>()
+  const byTidy = new Map<string, Extract<Item, { kind: 'tidy' }>>()
   let ti = 0
 
   for (const e of transcriptOf(sessionId)) {
@@ -470,6 +474,31 @@ function bucketize(sessionId: string, turns: AgentTurn[]): Item[][] {
       const d = e.payload as AgentGitDone | null
       const w = d?.toolUseId ? byWrap.get(d.toolUseId) : undefined
       if (w && d) w.done = d
+      continue
+    }
+    if (e.type === 'memory.tidied') {
+      const p = e.payload as {
+        tidyId?: string; before?: { entries?: number; chars?: number }; after?: { entries?: number; chars?: number }; outdated?: number
+      } | null
+      if (!p?.tidyId) continue
+      const t: Extract<Item, { kind: 'tidy' }> = {
+        kind: 'tidy',
+        id: e.id,
+        tidyId: p.tidyId,
+        before: Number(p.before?.chars ?? 0),
+        after: Number(p.after?.chars ?? 0),
+        entries: Number(p.before?.entries ?? 0) - Number(p.after?.entries ?? 0),
+        retired: Number(p.outdated ?? 0),
+        undone: false,
+      }
+      byTidy.set(p.tidyId, t)
+      into.push(t)
+      continue
+    }
+    // Drawn on the tidy's own line, never as one of its own.
+    if (e.type === 'memory.untidied') {
+      const t = byTidy.get((e.payload as { tidyId?: string } | null)?.tidyId ?? '')
+      if (t) t.undone = true
       continue
     }
     if (e.type === 'agent.compacted') {
@@ -625,6 +654,21 @@ function openPeer(id: string | null): void {
 }
 async function letAnswer(): Promise<void> {
   if (selected.value) await answerPeers(selected.value)
+}
+
+/**
+ * §6 — what a tidy did, in what a conversation pays for it: tokens handed at
+ * the opening (characters / 3.6, the estimate the memory budget is set in).
+ */
+function tidyLine(r: { before: number; after: number; entries: number; undone: boolean }): string {
+  if (r.undone) return 'taken back'
+  const fewer = r.entries > 0 ? r.entries + ' entr' + (r.entries === 1 ? 'y' : 'ies') + ' fewer, ' : ''
+  return fewer + k(Math.round(r.before / 3.6)) + ' → ' + k(Math.round(r.after / 3.6)) + ' tokens'
+}
+
+async function untidy(tidyId: string): Promise<void> {
+  const r = await guard(() => client.call('memory.untidy', { tidyId }))
+  if (r && !r.ok) toast('warn', 'Memory tidy not undone', { lines: [r.reason] })
 }
 
 /** `replaces` names "enough of the words to pick out one entry". */
@@ -2175,6 +2219,18 @@ function ago(ts: number): string {
                 <span class="memo-sec">Compacted</span>
                 <span class="memo-tx">{{ k(r.before) }} → {{ k(r.after) }} tokens</span>
               </p>
+              <p
+                v-else-if="r.kind === 'tidy'"
+                class="undone compacted memo"
+                :class="{ gone: r.undone }"
+                :data-anchor="r.id"
+                :title="'Handed to each conversation: ' + k(Math.round(r.before / 3.6)) + ' → ' + k(Math.round(r.after / 3.6)) + ' tokens. What was retired is under Past.'"
+              >
+                <BookMarked class="sm" />
+                <span class="memo-sec">Memory tidied</span>
+                <span class="memo-tx">{{ tidyLine(r) }}</span>
+                <button v-if="!r.undone" class="lnk" @click="untidy(r.tidyId)">Undo</button>
+              </p>
               <!-- It happened to the code, so it is a line in the thread rather
                    than a toast that has since gone. -->
               <p v-else class="undone" :data-anchor="r.id">
@@ -3057,6 +3113,9 @@ button.pulse.idlewait[aria-expanded='true'] .wchev { opacity: 1; }
 /* Nothing to watch out for: amber is for "something needs you". */
 .undone.compacted { border-left-color: var(--line-strong); }
 .undone.compacted .lucide { color: var(--text-dim); }
+/* A tidy taken back: still said, at half the weight. */
+.undone.gone { opacity: 0.55; }
+.undone .lnk { margin-left: auto; flex: none; }
 /* A memory note: the section as a quiet label, the line itself one row that
    ellipsises — the whole of it is in the Memory tool, a click away. */
 .undone.memo { min-width: 0; }

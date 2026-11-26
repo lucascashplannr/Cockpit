@@ -15,6 +15,7 @@ import { moveToTrash } from '../files.js'
 import * as runtime from '../runtime/index.js'
 import * as agents from '../agents.js'
 import * as docsSignals from '../docsSignals.js'
+import * as memoryTidy from '../memoryTidy.js'
 
 /**
  * §15 — the branch this path's project says it works against, and only then
@@ -1274,6 +1275,9 @@ export async function mergePlan(
       } catch {
         /* the docs are a courtesy here: a failure must not fail the Send */
       }
+      // §6 — what the topic built is in the base now: its memory's notes on
+      // it are the code's to say. Drawn in its latest conversation.
+      memoryTidy.soon(memoryTidy.topicHome(topicId), 'sent', agents.listForTopic(topicId)[0]?.id ?? null)
     },
   })
   return { ok: true, detail: 'plan ready', plan: preview }

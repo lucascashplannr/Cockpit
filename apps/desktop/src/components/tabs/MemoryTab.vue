@@ -446,7 +446,7 @@ watch(
   () => state.events[state.events.length - 1],
   (e) => {
     if (!e || editing.value || past.value) return
-    if (e.type === 'memory.promoted' || e.type === 'memory.written') void load()
+    if (e.type === 'memory.promoted' || e.type === 'memory.written' || e.type === 'memory.tidied' || e.type === 'memory.untidied') void load()
   },
 )
 

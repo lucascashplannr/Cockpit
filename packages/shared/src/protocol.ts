@@ -1264,6 +1264,14 @@ export interface Rpc {
     params: { workspaceId: string; section: string; text: string; memoryId?: string }
     result: { ok: true }
   }
+  /**
+   * §6 — the tidy, asked for: a model makes the memory shorter. Answers once
+   * it is started; `memory.tidied` lands when it is done (or nothing, when
+   * there was nothing to change).
+   */
+  'memory.tidy': { params: { workspaceId: string; memoryId?: string; sessionId?: string }; result: { ok: true; started: boolean } }
+  /** A tidy taken back, line for line, over whatever was written since. */
+  'memory.untidy': { params: { tidyId: string }; result: { ok: true; lines: number } | { ok: false; reason: string } }
 
   'journal.tail': {
     params: { workspaceId?: string; projectId?: string; limit?: number; types?: string[] }

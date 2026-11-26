@@ -162,6 +162,9 @@ export type EventType =
   // memory
   | 'memory.written'
   | 'memory.promoted'
+  /** §6 — a model made the memory shorter; and that, taken back. */
+  | 'memory.tidied'
+  | 'memory.untidied'
   // §9 — the Document step
   | 'docs.proposed'
   | 'docs.accepted'

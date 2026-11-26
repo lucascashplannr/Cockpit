@@ -3,7 +3,7 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
-  MEMORY_NEW, MEMORY_OFF, MEMORY_SECTIONS, PAST_SECTION, PROJECT_MEMORY, RULED_OUT_SECTION, STATE_SECTION, canonicalSection,
+  MEMORY_NEW, MEMORY_OFF, MEMORY_SECTIONS, OPEN_QUESTIONS_SECTION, PAST_SECTION, PROJECT_MEMORY, RULED_OUT_SECTION, STATE_SECTION, canonicalSection,
   conversationRef, englishMemory, hasMemoryEntries, memorySignature, memoryTemplate, shapedMemory, signatureAlone,
   slugify, splitSignature, topicMemoryId,
 } from '@cockpit/shared'
@@ -258,7 +258,7 @@ function parseSections(content: string): { title: string; body: string }[] {
  * checkout, the one it had before there were several — its topic's, else the
  * project's.
  */
-function homeAt(workspaceId: string, memoryId?: string): MemoryHome {
+export function homeAt(workspaceId: string, memoryId?: string): MemoryHome {
   const ws = requireWorkspace(workspaceId)
   const id = memoryId ?? (ws.topicId ? topicMemoryId(ws.topicId) : PROJECT_MEMORY)
   const home = homeFor(ws.projectId, id, ws.id)
@@ -752,4 +752,180 @@ function withSection(content: string, section: string, body: string): string {
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * §6 — the tidy (memoryTidy.ts): a memory read back by a model and made
+ * shorter, applied here, where the lines are known.
+ *
+ * Every live entry gets an id the model answers with, in file order. Goal and
+ * State are not entries: one is the work's, the other is replaced whole by the
+ * agent that finishes a piece of it. Past is already out of what is handed.
+ */
+export interface TidyEntry {
+  id: string
+  section: string
+  line: string
+}
+
+export type TidyOp =
+  | { op: 'outdate'; id: string; why: string }
+  | { op: 'merge'; ids: string[]; section?: string; text: string }
+  | { op: 'rewrite'; id: string; text: string }
+
+/** What a tidy changed, line for line: enough to undo it over notes written since. */
+export interface TidyChange {
+  removed: { section: string; line: string }[]
+  added: { section: string; line: string }[]
+  /** How many of each op took. */
+  outdated: number
+  merged: number
+  rewritten: number
+}
+
+const UNTIDIED = new Set<string>(['Goal', STATE_SECTION, PAST_SECTION])
+/**
+ * Merged or reworded, never retired by a model: a question waits on the
+ * person, and a rejected approach is what stops the next agent proposing it.
+ */
+const KEPT_BY_TIDY = new Set<string>([OPEN_QUESTIONS_SECTION, RULED_OUT_SECTION])
+
+export function tidyEntries(content: string): TidyEntry[] {
+  const out: TidyEntry[] = []
+  let section = ''
+  for (const line of content.split('\n')) {
+    const h = /^##\s+(.+?)\s*$/.exec(line)
+    if (h) {
+      section = h[1]!
+      continue
+    }
+    if (!section || UNTIDIED.has(section) || !/^\s*[-*+]\s+\S/.test(line)) continue
+    // From the line, not its position: a model asked to answer "E8" counts
+    // its way there and lands on E9. An id it has to copy, it copies.
+    let id = tidyId(line)
+    while (out.some((e) => e.id === id)) id = tidyId(id + line)
+    out.push({ id, section, line })
+  }
+  return out
+}
+
+function tidyId(s: string): string {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619)
+  return 'm' + (h >>> 0).toString(36).slice(0, 4)
+}
+
+/** The length of what a conversation is handed: the measure a tidy is judged by. */
+export function handedLength(content: string | null): number {
+  return content ? forEngine(content).length : 0
+}
+
+/**
+ * The model's answer, applied to the file as it is *now*. An op whose entry
+ * has changed or gone since it was read is skipped, so a note written while
+ * the model was thinking is never lost, and an entry is used by one op at most.
+ * Null when nothing applied.
+ */
+export function applyTidy(home: MemoryHome, entries: TidyEntry[], ops: TidyOp[], max: number): TidyChange | null {
+  const at0 = contentAt(home.file, home.kind)
+  if (!at0) return null
+  let content: string = at0
+  const byId = new Map(entries.map((e) => [e.id, e]))
+  const used = new Set<string>()
+  const change: TidyChange = { removed: [], added: [], outdated: 0, merged: 0, rewritten: 0 }
+  const text = (t: unknown): string => (typeof t === 'string' ? unsigned(oneLine(t)).replace(/^[-*+]\s+/, '') : '')
+
+  for (const op of ops) {
+    const ids = op.op === 'merge' ? (Array.isArray(op.ids) ? op.ids : []) : [op.id]
+    if (op.op === 'merge' && ids.length < 2) continue
+    if (!ids.length || ids.some((id) => !byId.has(id) || used.has(id))) continue
+    const es = ids.map((id) => byId.get(id)!)
+    const lines = content.split('\n')
+    if (es.some((e) => !lines.includes(e.line))) continue
+
+    if (op.op === 'outdate') {
+      const e = es[0]!
+      const why = text(op.why)
+      if (KEPT_BY_TIDY.has(e.section) || !why) continue
+      lines.splice(lines.indexOf(e.line), 1)
+      const past = pastLine(e.line, 'tidied ' + shortDate() + ': ' + clip(why, 160))
+      content = withEntry(lines.join('\n'), PAST_SECTION, past)
+      change.removed.push({ section: e.section, line: e.line })
+      change.added.push({ section: PAST_SECTION, line: past })
+      change.outdated++
+    } else if (op.op === 'rewrite') {
+      const e = es[0]!
+      const words = text(op.text)
+      if (!words || words.length > max) continue
+      const signed = splitSignature(e.line.replace(/^\s*[-*+]\s+/, '')).signed
+      const line = '- ' + words + (signed ? ' ' + memorySignature(signed.by, signed.date, signed.ref ?? undefined) : '')
+      if (line === e.line) continue
+      lines[lines.indexOf(e.line)] = line
+      content = lines.join('\n')
+      change.removed.push({ section: e.section, line: e.line })
+      change.added.push({ section: e.section, line })
+      change.rewritten++
+    } else if (op.op === 'merge') {
+      const words = text(op.text)
+      // Several facts said once may take more than one says alone.
+      if (!words || words.length > Math.round(max * 1.5)) continue
+      const wanted = canonicalSection(op.section ?? '')
+      const section = es.some((e) => e.section === wanted) ? wanted : es[0]!.section
+      const line = '- ' + words + ' ' + mergedSignature(es.map((e) => e.line))
+      // In the place of the first of them that is in the section it lands in.
+      const at = es.find((e) => e.section === section)!
+      lines[lines.indexOf(at.line)] = line
+      for (const e of es) {
+        const i = e === at ? -1 : lines.indexOf(e.line)
+        if (i !== -1) lines.splice(i, 1)
+      }
+      content = lines.join('\n')
+      for (const e of es) change.removed.push({ section: e.section, line: e.line })
+      change.added.push({ section, line })
+      change.merged++
+    } else continue
+    for (const id of ids) used.add(id)
+  }
+  if (!change.removed.length) return null
+  writeAt(home, content)
+  return change
+}
+
+/**
+ * A tidy taken back: what it wrote that is still there goes, what it took that
+ * is not there comes back. Line for line, so notes written since stay.
+ */
+export function undoTidy(home: MemoryHome, change: TidyChange): number {
+  const at0 = contentAt(home.file, home.kind)
+  if (!at0) return 0
+  let content: string = at0
+  let n = 0
+  for (const a of change.added) {
+    const lines = content.split('\n')
+    const i = lines.indexOf(a.line)
+    if (i === -1) continue
+    lines.splice(i, 1)
+    content = lines.join('\n')
+    n++
+  }
+  for (const r of change.removed) {
+    if (content.split('\n').includes(r.line)) continue
+    content = withEntry(content, r.section, r.line)
+    n++
+  }
+  if (n) writeAt(home, content)
+  return n
+}
+
+/**
+ * Who a merged entry is from: every repository its parts came from, and the
+ * day and conversation of the last of them — the one most likely still to be
+ * asked about it.
+ */
+function mergedSignature(lines: string[]): string {
+  const signed = lines.map((l) => splitSignature(l.replace(/^\s*[-*+]\s+/, '')).signed).filter((s) => !!s)
+  const names = [...new Set(signed.flatMap((s) => s!.by.split(/\s*\+\s*/)).filter(Boolean))]
+  const by = !names.length ? 'tidy' : names.length > 2 ? names.length + ' repositories' : names.join(' + ')
+  const last = signed.at(-1)
+  return memorySignature(by, last?.date ?? shortDate(), last?.ref ?? undefined)
 }

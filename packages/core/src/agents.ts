@@ -20,6 +20,7 @@ import { ranUnasked } from './unasked.js'
 import * as memory from './memory.js'
 import * as docsTools from './docsTools.js'
 import * as memoryTools from './memoryTools.js'
+import * as memoryTidy from './memoryTidy.js'
 import * as wrapTools from './wrapTools.js'
 import * as agentGit from './agentGit.js'
 import * as gitHook from './gitHook.js'
@@ -1361,6 +1362,17 @@ function clearIdleTimer(l: Live): void {
 }
 
 const live = new Map<string, Live>()
+
+/**
+ * §6 — a tidy's lines are the same facts said shorter: no conversation on that
+ * memory is told them as "new since your last turn". Counted as its own, the
+ * way its own notes are, whether it is running or let go.
+ */
+memoryTidy.onQuiet((file, lines) => {
+  const on = (c: Conversation | null | undefined): boolean => !!c && memory.homeOf(c)?.file === file
+  for (const l of live.values()) if (on(l.session)) for (const x of lines) l.memoryOwn.add(x)
+  for (const [id, h] of handedOver) if (on(get(id))) for (const x of lines) h.own.add(x)
+})
 
 /**
  * §3.3 — the window is a view over what the core pushes, so a session that
@@ -2997,6 +3009,9 @@ async function launch(
           // A streaming engine ends a *turn* here, not the process. Closing the
           // turn and letting the next one in is what the queue is waiting for.
           closeTurn(session.id, 'done')
+          // §6 — a memory left over budget is tidied now, beside the work:
+          // the next conversation that opens on it is handed the short one.
+          if (session.memory !== MEMORY_OFF) memoryTidy.afterTurn(session)
           // §6 — what fills the window now, itemised. Answered from the
           // engine's own bookkeeping: no call to the model, nothing billed.
           if (spec.control?.contextUsage && child.stdin?.writable)
