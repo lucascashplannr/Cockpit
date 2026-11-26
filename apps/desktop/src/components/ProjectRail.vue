@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Activity, Asterisk, Hand, Hourglass, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
+import { Activity, ArrowDownToLine, ArrowUp, Asterisk, GitCommitHorizontal, Hand, Hourglass, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
 import {
-  activityFor, client, guard, layout, newProject, openContextMenu, refreshEverything, onProject, pressProject, projectMark, serviceStale, state,
+  activityFor, busyVerb, busyWord, client, gitBusy, guard, layout, newProject, openContextMenu, refreshEverything, onProject, pressProject, projectMark, serviceStale, state,
 } from '../core/store.js'
 
 /**
@@ -39,7 +39,29 @@ function counts(projectId: string) {
   const dirty = ws.filter((w) => w.git && w.git.staged + w.git.unstaged + w.git.untracked > 0).length
   const running = ws.filter((w) => w.runtime?.status === 'up').length
   const agent = activityFor('project', projectId)
-  return { dirty, running, agents: agent.running, attention: agent.attention, asking: agent.asking, background: agent.background, waiting: agent.waiting - agent.asking }
+  return { dirty, running, agents: agent.running, attention: agent.attention, asking: agent.asking, background: agent.background, waiting: agent.waiting - agent.asking, git: gitAct(ws) }
+}
+
+/**
+ * A commit, a pull or a push running in any checkout of the project, by the
+ * glyph the bar's own button wears. It goes in the badge's glyph slot for as
+ * long as git takes: you pressed it, maybe from another project, and the tile
+ * is where you look to see it land. Other plans (switch, stash, merge) keep
+ * their spinner on the bar and the strip only.
+ */
+type GitAct = { kind: 'commit' | 'push' | 'pull'; op: string }
+const GIT_ACTS: Record<string, GitAct['kind']> = {
+  commit: 'commit', amend: 'commit', 'undo commit': 'commit',
+  push: 'push',
+  pull: 'pull', rebase: 'pull', sync: 'pull',
+}
+function gitAct(ws: { id: string }[]): GitAct | null {
+  for (const w of ws) {
+    const op = gitBusy[w.id]
+    const kind = op ? GIT_ACTS[busyVerb(op) ?? ''] : undefined
+    if (kind) return { kind, op: op! }
+  }
+  return null
 }
 
 /**
@@ -81,6 +103,7 @@ const ATTENTION_TEXT: Record<string, string> = {
 function tileTitle(name: string, root: string, projectId: string): string {
   const c = counts(projectId)
   const lines = [name + ' — ' + root]
+  if (c.git) lines.push('● ' + busyWord(c.git.op) + '…')
   if (c.running) lines.push('● ' + c.running + ' server(s) up')
   if (c.agents) lines.push('● ' + c.agents + ' agent conversation(s) running')
   if (c.dirty) lines.push('● ' + c.dirty + ' checkout(s) with uncommitted changes')
@@ -115,7 +138,7 @@ function tileTitle(name: string, root: string, projectId: string): string {
              A border said "working" too, and nobody saw it, least of all on
              the selected tile. -->
         <span
-          v-if="counts(p.id).agents || counts(p.id).asking || counts(p.id).background || counts(p.id).waiting"
+          v-if="counts(p.id).agents || counts(p.id).asking || counts(p.id).git || counts(p.id).background || counts(p.id).waiting"
           class="count num"
           :class="{ solo: !counts(p.id).waiting }"
         >
@@ -123,6 +146,11 @@ function tileTitle(name: string, root: string, projectId: string): string {
                working: the hand takes the star's place, and the number counts
                only what else waits (an answer to read elsewhere). -->
           <Hand v-if="counts(p.id).asking" class="agent-hand" />
+          <!-- A commit, pull or push in flight: short, and yours, so it takes
+               the star's place until git comes back. -->
+          <GitCommitHorizontal v-else-if="counts(p.id).git?.kind === 'commit'" class="git-act" />
+          <ArrowUp v-else-if="counts(p.id).git?.kind === 'push'" class="git-act up" />
+          <ArrowDownToLine v-else-if="counts(p.id).git?.kind === 'pull'" class="git-act down" />
           <Asterisk v-else-if="counts(p.id).agents" class="agent-star" />
           <!-- Between turns with something left running: it will pick up on its own. -->
           <Hourglass v-else-if="counts(p.id).background" class="agent-wait" />
@@ -359,6 +387,16 @@ function tileTitle(name: string, root: string, projectId: string): string {
 }
 .count .agent-star { width: 10px; height: 10px; flex: none; stroke-width: 3; }
 .count .agent-hand, .count .agent-wait { width: 10px; height: 10px; flex: none; stroke-width: 2.5; }
+/* Git at work: the commit mark breathes, the arrows nudge the way the
+   commits go. Turning is the agent's. */
+.count .git-act { width: 10px; height: 10px; flex: none; stroke-width: 3; animation: pulse 1.1s ease-in-out infinite; }
+.count .git-act.up { animation: nudge-up 0.9s ease-in-out infinite; }
+.count .git-act.down { animation: nudge-down 0.9s ease-in-out infinite; }
+@keyframes nudge-up { 0%, 100% { transform: translateY(1px); } 50% { transform: translateY(-1px); } }
+@keyframes nudge-down { 0%, 100% { transform: translateY(-1px); } 50% { transform: translateY(1px); } }
+@media (prefers-reduced-motion: reduce) {
+  .count .git-act { animation: none; }
+}
 /* The star alone: a round badge, not a pill with nothing after the star. */
 .count.solo { padding: 0; }
 

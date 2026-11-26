@@ -181,7 +181,10 @@ function topicTip(g: { title: string | null; topicId: string | null; workspaces:
  * what the rows underneath already said.
  */
 function unpushed(ws: { git: Parameters<typeof pushCount>[0] }[]): number {
-  return ws.reduce((n, w) => n + pushCount(w.git), 0)
+  // A repository mid-rebase or mid-merge counts nothing: its branch has not
+  // moved yet, and its row shows the operation instead (WorkspaceRow `op`).
+  const stopped = (g: Parameters<typeof pushCount>[0]) => g?.headState === 'rebasing' || g?.headState === 'merging'
+  return ws.reduce((n, w) => n + (stopped(w.git) ? 0 : pushCount(w.git)), 0)
 }
 
 /**

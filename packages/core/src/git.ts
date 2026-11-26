@@ -581,10 +581,34 @@ function finishWorktree(c: Partial<WorktreeEntry>): WorktreeEntry {
   return {
     path: c.path!,
     head: c.head ?? '',
-    branch: c.branch ?? null,
+    // Mid-rebase HEAD is detached and `worktree list` names no branch, though
+    // the branch is still that folder's: git refuses to check it out anywhere
+    // else until the rebase ends. Read without it, the folder had no branch,
+    // and the registry filed it under a topic of its own named after the folder.
+    branch: c.branch ?? (c.detached && c.path ? rebasingBranch(c.path) : null),
     bare: c.bare ?? false,
     detached: c.detached ?? false,
   }
+}
+
+/** The branch a rebase stopped in this checkout is replaying, or null. */
+function rebasingBranch(path: string): string | null {
+  let dir = join(path, '.git')
+  try {
+    // A worktree's `.git` is a file pointing at its own git dir.
+    if (statSync(dir).isFile()) {
+      const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(dir, 'utf8'))
+      if (!m) return null
+      dir = resolve(path, m[1]!.trim())
+    }
+  } catch {
+    return null
+  }
+  for (const sub of ['rebase-merge', 'rebase-apply']) {
+    const head = readTrimmed(join(dir, sub, 'head-name'))
+    if (head?.startsWith('refs/heads/')) return head.slice('refs/heads/'.length)
+  }
+  return null
 }
 
 /**

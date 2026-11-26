@@ -5,6 +5,7 @@ import type {
   Capability, ManifestV1, ProjectSettings, Setup, Topic, Project, Workspace, WorkspaceDetails,
 } from '@cockpit/shared'
 import * as topicStore from './topics/store.js'
+import type { TopicRecord } from './topics/store.js'
 import * as preparing from './topics/preparing.js'
 import { markOf } from './repoMarks.js'
 import { loadConfig, migrateLegacyLocks, updateConfig, projectSettings, setProjectSettings } from './config.js'
@@ -576,6 +577,13 @@ function buildProject(root: string): Project {
   return project
 }
 
+/**
+ * The branch `git worktree list` gave each worktree on the last pass, by
+ * workspace id: what a worktree is on before it has been probed (the boot
+ * enumeration runs before any probe), and while a probe has failed.
+ */
+const listedBranch = new Map<string, string | null>()
+
 /** Second pass: worktrees have to be listed from a live repo. */
 async function discoverWorktrees(project: Project): Promise<void> {
   const mains = project.workspaceIds
@@ -588,6 +596,7 @@ async function discoverWorktrees(project: Project): Promise<void> {
       if (resolve(entry.path) === resolve(main.path)) continue
       if (!existsSync(entry.path)) continue
       const id = stableId('ws', entry.path)
+      listedBranch.set(id, entry.branch)
       const known = workspaces.get(id)
       if (known) {
         project.workspaceIds.includes(id) || project.workspaceIds.push(id)
@@ -634,12 +643,20 @@ async function discoverWorktrees(project: Project): Promise<void> {
  *
  * Persisted: the user opened it, so its identity, name and live/parked state
  * outlive the daemon (that is the whole point of the table). Its membership is
- * still probed — matched by branch — because a worktree deleted by hand must
- * drop out of the topic rather than linger in a list.
+ * still probed, because a worktree deleted by hand must drop out of the topic
+ * rather than linger in a list. A worktree inside the topic's own folder is
+ * the topic's, whatever its HEAD says; one elsewhere is matched by branch.
  *
- * Inferred: several worktrees happen to share a branch name. Nothing is
- * invented when there is no match, and an inferred topic has no root folder,
- * so it can hold neither a memory nor a cross-repo context.
+ * The folder comes first because the branch is not always there to read.
+ * Mid-rebase HEAD is detached, and a pass that landed then (the boot
+ * enumeration before any probe, a probe that failed, a rebase moving between
+ * two reads) filed the repository under an inferred topic named after its
+ * folder: one repository, a red "rebasing", in a topic nobody made.
+ *
+ * Inferred: worktrees on a branch no record owns. Only on a branch that was
+ * read: a worktree whose branch is unknown is a loose repository row, never a
+ * topic named after something that is not a branch. An inferred topic has no
+ * root folder, so it can hold neither a memory nor a cross-repo context.
  */
 function deriveTopics(project: Project): void {
   // Keyed on the project, not on the previous `topicIds`: buildProject hands
@@ -650,25 +667,47 @@ function deriveTopics(project: Project): void {
   }
   project.topicIds = []
 
+  const records = topicStore.list(project.id)
+  const inside = (path: string, root: string) => resolve(path).startsWith(resolve(root) + sep)
+  // A worktree in a record's folder, closed records included: the leftovers
+  // of a closed topic are that topic's, not material for an inferred one. An
+  // open record first, since a topic reopened under its old name has the
+  // closed one's folder.
+  const homeOf = (w: Workspace) => {
+    const at = records.filter((r) => r.rootPath && inside(w.path, r.rootPath))
+    return at.find((r) => r.state !== 'closed') ?? at[0] ?? null
+  }
+
   const claimed = new Set<string>()
+  const home = new Map<string, TopicRecord>()
   const byBranch = new Map<string, Workspace[]>()
   for (const id of project.workspaceIds) {
     const w = workspaces.get(id)
     if (!w || w.kind !== 'worktree') continue
     w.topicId = null
-    const branch = w.git?.branch ?? w.name
+    const h = homeOf(w)
+    if (h) {
+      home.set(w.id, h)
+      continue
+    }
+    // Probed, or as listed while it has not been (or could not be).
+    const branch = w.git ? w.git.branch : (listedBranch.get(w.id) ?? null)
     if (!branch) continue
     const arr = byBranch.get(branch) ?? []
     arr.push(w)
     byBranch.set(branch, arr)
   }
+  const housed = (rec: TopicRecord) =>
+    project.workspaceIds
+      .map((id) => workspaces.get(id))
+      .filter((w): w is Workspace => !!w && home.get(w.id) === rec)
 
-  for (const rec of topicStore.list(project.id)) {
+  for (const rec of records) {
     if (rec.state === 'closed') continue
 
-    // Membership is probed, never stored: the worktrees on that branch, plus
-    // the topic's own root folder when it has one.
-    const group = byBranch.get(rec.slug) ?? []
+    // Membership is probed, never stored: the worktrees in its folder or on
+    // its branch, plus the topic's own root folder when it has one.
+    const group = [...housed(rec), ...(byBranch.get(rec.slug) ?? [])]
     const rootWs = rec.rootPath ? workspaces.get(stableId('ws', rec.rootPath)) : undefined
 
     const topic: Topic = {
@@ -714,7 +753,7 @@ function deriveTopics(project: Project): void {
   // worktrees may still be on disk. Without this the leftovers of a closed
   // topic are re-derived as an "inferred" topic under the same stable id,
   // which resurrects it under its branch name and hides the real record.
-  const owned = new Set(topicStore.list(project.id).map((r) => r.slug))
+  const owned = new Set(records.map((r) => r.slug))
 
   for (const [branch, group] of byBranch) {
     if (owned.has(branch)) continue
@@ -945,6 +984,7 @@ async function runReconcile(
   for (const [id, w] of [...workspaces]) {
     if (!existsSync(w.path)) {
       workspaces.delete(id)
+      listedBranch.delete(id)
       // §11 — its ports go back to the range. Nothing else ever gave them back.
       releaseForWorkspace(w.projectId, id)
       append({ type: 'workspace.forgotten', projectId: w.projectId, workspaceId: id, payload: { path: w.path } })

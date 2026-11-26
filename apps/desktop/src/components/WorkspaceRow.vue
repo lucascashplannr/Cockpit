@@ -3,7 +3,7 @@ import { attentionIcon } from './agent/attention.js'
 import { markIcon } from './agent/mark.js'
 import { computed } from 'vue'
 import {
-  ArrowDownToLine, ArrowUp, Asterisk, FileDiff, GitBranch, GitCompareArrows, Hourglass,
+  ArrowDownToLine, ArrowUp, Asterisk, FileDiff, GitBranch, GitCompareArrows, GitMerge, Hourglass,
   SquareDot, StickyNote, TriangleAlert,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
@@ -135,7 +135,8 @@ const short = computed(() =>
 const tip = computed(() => {
   const g = w.value.git
   const facts: string[] = []
-  if (g) {
+  if (g && op.value) facts.push(opTip.value)
+  else if (g) {
     if (pushCount(g)) facts.push(pushCount(g) + ' to push')
     if (behindBase.value) facts.push(behindBase.value + ' behind ' + (g.base ?? 'the base'))
     if (toPull.value) facts.push(toPull.value + ' to pull')
@@ -147,6 +148,22 @@ const tip = computed(() => {
   if (gitBusy[w.value.id]) facts.unshift(busyWord(gitBusy[w.value.id]) + '…')
   else if (busySlot.value === 'run') facts.unshift('Starting the server…')
   return [w.value.name + ' — ' + lead.value.title, facts.join(' · '), ownTip.value].filter(Boolean).join('\n')
+})
+
+/**
+ * A rebase or merge stopped in this checkout. While one is, it is the row's
+ * only news: the branch ref has not moved yet, so push, behind and pull counts
+ * describe a state that the operation is about to replace, and the
+ * uncommitted count is the conflicted files said a second time.
+ */
+const op = computed(() => {
+  const s = w.value.git?.headState
+  return s === 'rebasing' || s === 'merging' ? s : null
+})
+const opTip = computed(() => {
+  const n = w.value.git?.conflicted ?? 0
+  const what = op.value === 'merging' ? 'Merge in progress' : 'Rebase in progress'
+  return n ? what + ', ' + n + ' conflicted file(s)' : what
 })
 
 /** Where you said this repository stands: kept until changed, like a topic's. */
@@ -225,15 +242,21 @@ const lead = computed(() => {
     <StripDots
       v-if="narrow"
       :run="up"
-      :push="!!w.git?.ahead"
-      :dirty="!!dirty"
-      :conflict="!!w.git?.conflicted"
+      :push="!op && !!w.git?.ahead"
+      :dirty="!op && !!dirty"
+      :conflict="!!op || !!w.git?.conflicted"
       :busy="busySlot"
     />
 
     <span v-if="!narrow" class="meta num">
       <!-- Absent capability, absent indicator (§3.9): no git means no counters. -->
-      <template v-if="w.git">
+      <!-- A rebase or merge stopped here is the row's only news (`op`): its
+           verb's icon, red because it waits on you, and the files in conflict. -->
+      <span v-if="w.git && op" class="c conflict" :title="opTip">
+        <GitCompareArrows v-if="op === 'rebasing'" class="sm" /><GitMerge v-else class="sm" />
+        <template v-if="w.git.conflicted">{{ w.git.conflicted }}</template>
+      </span>
+      <template v-else-if="w.git">
         <span v-if="pushCount(w.git)" class="c ahead" :title="pushCount(w.git) + ' commit(s) to push'">
           <ArrowUp class="sm" />{{ pushCount(w.git) }}
         </span>
@@ -260,7 +283,7 @@ const lead = computed(() => {
         <span v-if="dirty" class="c dirty" :title="dirty + ' uncommitted change(s)'">
           <FileDiff class="sm" />{{ dirty }}
         </span>
-        <span v-if="w.git.conflicted" class="c conflict" :title="'conflicted'">
+        <span v-if="w.git.conflicted" class="c conflict" :title="w.git.conflicted + ' conflicted file(s)'">
           <TriangleAlert class="sm" />{{ w.git.conflicted }}
         </span>
         <span v-if="w.git.headState !== 'attached'" class="chip danger">{{ w.git.headState }}</span>
