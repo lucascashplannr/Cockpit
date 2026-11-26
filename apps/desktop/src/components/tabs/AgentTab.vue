@@ -7,7 +7,7 @@ import type {
   AgentAnswers, AgentGitDone, AgentQuestion, AgentScope, AgentWrap, BackgroundTask, AgentScopePreview, Conversation, AgentTurn, PeerMessage, PermissionMode, QuoteSource, Workspace,
 } from '@cockpit/shared'
 import {
-  ArrowDown, Asterisk, BellRing, ChevronRight, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, Gauge, GitFork, Hand, Hourglass, MessageSquareText,
+  ArrowDown, Asterisk, BellRing, ChevronRight, BookMarked, BookOpen, Check, Clock, Copy, EyeOff, FoldVertical, GitFork, Hand, Hourglass, MessageSquareText,
   Paperclip, Redo2, Send, Undo2, X,
 } from '@lucide/vue'
 import { useContextLevel } from '../agent/contextLevel.js'
@@ -1715,6 +1715,15 @@ const ctx = useContextLevel(selected)
  */
 const crowded = computed(() => ctx.value?.warn ?? false)
 
+/** Either answer is a turn of its own, so neither goes while one is running. */
+const crowdBusy = computed(() => !!selected.value && isBusy(selected.value))
+
+/** `/compact`, sent the way the typed command is. */
+function compactNow(): void {
+  const s = selected.value
+  if (s && !isBusy(s)) void sendTurn(s.id, '/compact', [])
+}
+
 /* ── presentation ──────────────────────────────────────────────────────── */
 
 /**
@@ -2355,22 +2364,6 @@ function ago(ts: number): string {
           </span>
           <span class="mnote">{{ selected.mark.note }}</span>
         </button>
-        <!-- §6 — "vider devient gratuit : la conversation part, la mémoire
-             reste". The one moment that sentence is actionable is this one, so
-             it is said here rather than in a document. -->
-        <p v-if="crowded" class="crowd">
-          <Gauge class="sm" />
-          <span>
-            <template v-if="ctx?.nearCompact">
-              {{ k(ctx.toCompact ?? 0) }} left before it compacts, and a summary loses detail.
-            </template>
-            <template v-else>The window is {{ ctx?.pct }}% full, answers get worse from here.</template>
-            Promote what matters to the memory, then start fresh: the next
-            conversation reads it on the way in.
-          </span>
-          <button class="link" @click="goTo('memory')">Memory</button>
-          <button class="link go" @click="scope && startFresh(scope)">Start fresh</button>
-        </p>
 
         <QuestionAsk
           v-if="selected && asking"
@@ -2379,6 +2372,31 @@ function ago(ts: number): string {
           :more="pending.length - 1"
         />
         <PermissionAsk v-else-if="selected && pending.length" :session-id="selected.id" :requests="pending" />
+
+        <!-- §6 — "vider devient gratuit : la conversation part, la mémoire
+             reste". Docked on the box, because the answer is typed there:
+             Hand off is /next (the memory first, then a new conversation
+             from it), Compact is /compact now rather than mid-turn. -->
+        <div v-if="crowded && ctx" class="crowd">
+          <svg class="cring" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="6" />
+            <circle class="fill" cx="8" cy="8" r="6" pathLength="100" :stroke-dasharray="(ctx.nearCompact ? ctx.ofLimit : ctx.pct) + ' 100'" />
+          </svg>
+          <span v-if="ctx.nearCompact" class="say"><b>{{ k(ctx.toCompact ?? 0) }}</b> left before it compacts</span>
+          <span v-else class="say">The window is <b>{{ ctx.pct }}%</b> full</span>
+          <button
+            class="btn ghost"
+            :disabled="crowdBusy"
+            title="Summarise the conversation now, between turns (/compact). A summary loses detail."
+            @click="compactNow"
+          >Compact</button>
+          <button
+            class="btn primary"
+            :disabled="crowdBusy"
+            title="Write what matters to the memory, then start a new conversation from it (/next)"
+            @click="clearThread('handoff')"
+          >{{ handingOff === selected.id ? 'Handing off' : 'Hand off' }}</button>
+        </div>
 
         <Composer
           ref="composer"
@@ -2877,31 +2895,28 @@ button.pulse.idlewait[aria-expanded='true'] .wchev { opacity: 1; }
 .exbar .act { padding: 3px 6px; }
 
 /* ── §6, the window ─────────────────────────────────────────────────────── */
-.crowd {
+/* A tab on the composer's top edge, in the box's own fill: it is about what
+   to type next, so it sits on the box rather than over it as a warning. Only
+   the number and the ring are amber. */
+.foot > .crowd {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 0 0 10px;
-  padding: 9px 12px;
-  border: 1px solid var(--warn-soft);
-  border-radius: var(--radius-sm);
-  background: var(--warn-soft);
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--warn);
+  gap: 8px;
+  max-width: calc(var(--measure) - 20px);
+  padding: 7px 8px 7px 14px;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--surface-input);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
-.crowd .lucide { flex: none; }
-.crowd span { flex: 1; }
-.crowd .link {
-  flex: none;
-  color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  font-size: inherit;
-  white-space: nowrap;
-}
-.crowd .link:hover { color: var(--text); }
-.crowd .link.go { font-weight: 650; }
+.crowd .say { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crowd .say b { color: var(--warn); font-weight: 600; font-variant-numeric: tabular-nums; }
+.crowd .btn { flex: none; height: 26px; padding: 0 11px; font-size: var(--fs-xs); }
+.cring { flex: none; width: 14px; height: 14px; transform: rotate(-90deg); }
+.cring circle { fill: none; stroke: var(--line-strong); stroke-width: 2.4; }
+.cring .fill { stroke: var(--warn); stroke-linecap: round; }
 
 /* Your own status, as a pill in its colour, and your note beside it. */
 .markline {
@@ -3253,4 +3268,7 @@ button.pulse.idlewait[aria-expanded='true'] .wchev { opacity: 1; }
 /* The same column as the conversation above it: a box that ran wider than the
    text it is about read as a different surface rather than the end of one. */
 .foot > * { max-width: var(--measure); margin-left: auto; margin-right: auto; }
+/* The docked tab already stands taller than the box: less gap over it, so it
+   takes less of the conversation. */
+.foot:has(> .crowd:first-child) { padding-top: 10px; }
 </style>
