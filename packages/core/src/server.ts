@@ -34,6 +34,7 @@ import * as conflictFile from './conflictFile.js'
 import * as review from './review.js'
 import * as tickets from './tickets/index.js'
 import * as topics from './topics/index.js'
+import { setRepoMark } from './repoMarks.js'
 import * as preparing from './topics/preparing.js'
 import * as conflict from './conflict.js'
 import * as seed from './seed.js'
@@ -69,7 +70,7 @@ import { termBus } from './terminals.js'
  * Anything not listed takes the full pass: a missing entry is only slower.
  */
 const COMMITS_ONLY = new Set([
-  'commit', 'amend', 'undo commit', 'stage', 'push', 'topic.push',
+  'commit', 'amend', 'undo commit', 'stage', 'push', 'topic.push', 'topic.pull',
   'stash', 'stash pop', 'stash apply', 'stash drop',
 ])
 
@@ -601,6 +602,13 @@ const handlers: Record<string, Handler> = {
     if (r.ok) pushTopics()
     return r
   },
+  'repo.mark': (p: { workspaceId: string; mark: { kind: ConversationMarkKind | null; note: string } | null }) => {
+    const w = registry.getWorkspace(p.workspaceId)
+    if (!w) return { ok: false as const, reason: 'That repository is gone.' }
+    const r = setRepoMark(w, p.mark)
+    if (r.ok) pushWorkspaces()
+    return r
+  },
   'topic.rename': async (p: { topicId: string; name: string }) => {
     topics.rename(p.topicId, p.name)
     const f = registry.getTopic(p.topicId)
@@ -692,6 +700,7 @@ const handlers: Record<string, Handler> = {
     topics.mergePlan(p.topicId, { push: p.push, base: p.base, bases: p.bases }),
   'topic.push': (p: { topicId: string }) => topics.pushPlan(p.topicId),
   'project.push': (p: { workspaceIds: string[] }) => topics.pushPlanForWorkspaces(p.workspaceIds),
+  'project.pull': (p: { workspaceIds: string[] }) => topics.pullPlanForWorkspaces(p.workspaceIds),
   'topic.close': async (p: { topicId: string; removeWorktrees: boolean }) => {
     const res = await topics.closePlan(p.topicId, p.removeWorktrees)
     if (!res.plan) {

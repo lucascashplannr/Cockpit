@@ -6,7 +6,7 @@ import type {
 } from '@cockpit/shared'
 import { append } from '../journal.js'
 import { cleanMark } from '../mark.js'
-import { countBehind, defaultBranch, git, listWorktrees } from '../git.js'
+import { countBehind, defaultBranch, fetchRemote, git, listWorktrees } from '../git.js'
 import * as plans from '../plans.js'
 import { pushRefusal } from '../protect.js'
 import * as registry from '../registry.js'
@@ -954,6 +954,109 @@ async function pushPlanOf(
     repos: names,
     // Two repositories pushed and one refused is two repositories correctly
     // pushed. Un-pushing them to "recover" would be a rewrite of the remote.
+    onFailure: 'halt',
+  }
+  plans.register(preview, { workspaceIds: ids, concurrent: together })
+  return { ok: true, detail: names.join(', '), plan: preview }
+}
+
+/**
+ * §7 — the project's pull: each repository's current branch brought level with
+ * its own branch on origin, the per-repository `pull` (plans.ts) over all of
+ * them at once.
+ *
+ * Fetched first, on purpose and not throttled: the counts the bar shows are as
+ * old as the last background fetch, and a person pressing Pull is asking what
+ * origin holds now. A repository with nothing incoming sits out silently; one
+ * whose branch has no branch of its own on origin sits out and says why.
+ */
+export async function pullPlanForWorkspaces(
+  workspaceIds: string[],
+): Promise<{ ok: boolean; detail: string; plan: PlanPreview | null }> {
+  const trees = workspaceIds
+    .map((id) => registry.requireWorkspace(id))
+    .filter((w) => w.repo && w.kind !== 'group' && w.git?.hasRemote !== false)
+  if (!trees.length) return { ok: false, detail: 'no repository with a remote to pull from', plan: null }
+
+  await Promise.all(trees.map((t) => fetchRemote(t.path, { force: true }).catch(() => false)))
+  const probed = await Promise.all(trees.map((t) => registry.refreshGit(t.id)))
+
+  const steps: PlanStep[] = []
+  const warnings: string[] = []
+  const names: string[] = []
+  const ids: string[] = []
+  const replayed: string[] = []
+  /** A fast-forward over uncommitted changes, which git may refuse. */
+  let dirtyForwards = false
+  for (const [i, tree] of trees.entries()) {
+    const fresh = probed[i] ?? tree
+    const g = fresh.git
+    if (!g) continue
+    if (g.operation) {
+      warnings.push(fresh.name + ': in the middle of a ' + g.operation + '. Finish or abort it first.')
+      continue
+    }
+    if (!g.branch) {
+      warnings.push(fresh.name + ': detached HEAD, no branch to pull.')
+      continue
+    }
+    // A branch that tracks the base, or nothing, has no branch of its own on
+    // origin: Catch up is its verb, and a first push comes before any pull.
+    if (g.upstream !== 'origin/' + g.branch) continue
+    if (g.incoming === 0) continue
+
+    // One step per repository, so the plan can run them side by side
+    // (`runsTogether`): `git pull` is the fetch and the merge in one.
+    const replay = g.ahead > 0
+    steps.push({
+      title: replay
+        ? fresh.name + ': replay your ' + g.ahead + ' commit(s) on top of ' + g.upstream
+        : fresh.name + ': fast-forward ' + g.branch + ' (' + g.incoming + ' commit(s))',
+      command: replay
+        ? 'git pull --rebase --autostash origin ' + g.branch
+        : 'git pull --ff-only origin ' + g.branch,
+      cwd: fresh.path,
+      destructive: replay,
+    })
+    if (replay) replayed.push(fresh.name)
+    else if (g.staged + g.unstaged > 0) dirtyForwards = true
+    names.push(fresh.name)
+    ids.push(fresh.id)
+  }
+
+  if (!steps.length) {
+    return {
+      ok: false,
+      detail: warnings.join(' ') || 'nothing to pull, every branch is level with origin',
+      plan: null,
+    }
+  }
+
+  if (replayed.length) {
+    warnings.push(
+      (replayed.length === names.length ? '' : replayed.join(', ') + ': ') +
+        'Your commits there are not on origin yet, so they are replayed on top of what arrived. Uncommitted changes are set aside and put back.',
+    )
+  }
+  if (dirtyForwards) {
+    warnings.push('A fast-forward refuses over changes git would have to overwrite; commit or stash them if it stops.')
+  }
+  const together = steps.length > 1 && !steps.some((s) => s.destructive)
+  if (steps.length > 1) {
+    warnings.push(
+      together
+        ? 'Repositories pull side by side; one that stops does not stop the others.'
+        : 'Repositories pull in order and it stops at the first one that cannot, keeping the ones that went.',
+    )
+  }
+
+  const preview: PlanPreview = {
+    planId: newId('plan_'),
+    operation: 'topic.pull',
+    steps,
+    warnings,
+    capturesRestorePoint: replayed.length > 0,
+    repos: names,
     onFailure: 'halt',
   }
   plans.register(preview, { workspaceIds: ids, concurrent: together })

@@ -3,7 +3,7 @@ import { attentionIcon } from './agent/attention.js'
 import { markIcon } from './agent/mark.js'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { Component } from 'vue'
-import type { Topic } from '@cockpit/shared'
+import type { Topic, Workspace } from '@cockpit/shared'
 import {
   ArrowUp, Asterisk, ChevronRight, Folder, FolderPlus, Hourglass, Layers, LoaderCircle, Plus, StickyNote,
 } from '@lucide/vue'
@@ -39,8 +39,27 @@ function filteredOut(g: ListGroup): boolean {
   if (g.topicId === selectedTopicId.value || holdsSelection(g.workspaces)) return false
   return activityFor('topic', g.topicId).attention === 'none'
 }
-const groups = computed(() => workspaceGroups.value.filter((g) => !filteredOut(g)))
-const hiddenCount = computed(() => workspaceGroups.value.length - groups.value.length)
+/**
+ * A repository goes by the status set on it, under the same two exceptions:
+ * the one you are standing on, and one asking for you. A group whose every
+ * repository is left out goes with them.
+ */
+function repoOut(w: Workspace): boolean {
+  if (w.kind !== 'main' || !hiddenTopicKinds[w.mark?.kind ?? 'none']) return false
+  if (w.id === state.activeWorkspaceId && !onProject.value) return false
+  return activityFor('workspace', w.id).attention === 'none'
+}
+const groups = computed(() =>
+  workspaceGroups.value
+    .filter((g) => !filteredOut(g))
+    .map((g) => (g.topicId ? g : { ...g, workspaces: g.workspaces.filter((w) => !repoOut(w)) }))
+    .filter((g) => g.topicId || g.workspaces.length),
+)
+/** Topics and repositories the filter leaves out, for its tooltip. */
+const hiddenCount = computed(() => {
+  const shown = (gs: ListGroup[]) => gs.reduce((n, g) => n + (g.topicId ? 1 : g.workspaces.length), 0)
+  return shown(workspaceGroups.value) - shown(groups.value)
+})
 
 /**
  * §4 — the topic being created, until its row exists: drawn where it will

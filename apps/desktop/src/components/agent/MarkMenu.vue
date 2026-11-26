@@ -20,13 +20,18 @@ const conv = computed(() =>
 const topic = computed(() =>
   markMenu.id && markMenu.on === 'topic' ? (state.topics.find((t) => t.id === markMenu.id) ?? null) : null,
 )
+const repo = computed(() =>
+  markMenu.id && markMenu.on === 'repo' ? (state.workspaces.find((w) => w.id === markMenu.id) ?? null) : null,
+)
 /** What it is about, whichever it is: its name and what is on it now. */
 const target = computed(() =>
   conv.value
     ? { name: conv.value.title || 'Untitled', mark: conv.value.mark ?? null }
     : topic.value
       ? { name: topic.value.name, mark: topic.value.mark ?? null }
-      : null,
+      : repo.value
+        ? { name: repo.value.name, mark: repo.value.mark ?? null }
+        : null,
 )
 
 const root = ref<HTMLElement | null>(null)

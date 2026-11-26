@@ -337,6 +337,17 @@ function migrate(d: Db): void {
       exit_code    INTEGER
     );
     CREATE INDEX IF NOT EXISTS terminal_history_project ON terminal_history(project_id, id DESC);
+
+    -- Where a person says a repository stands, on its own checkout: the same
+    -- status and note a topic carries. Keyed by the repository's name, not its
+    -- checkout's id, which a move into a group rekeys. A new table an older
+    -- core never reads, so no version bump.
+    CREATE TABLE IF NOT EXISTS repo_marks (
+      project_id   TEXT NOT NULL,
+      repo         TEXT NOT NULL,
+      mark         TEXT NOT NULL,
+      PRIMARY KEY (project_id, repo)
+    );
   `)
 
   // §16 — "Coût affiché", and §6's whole argument: a conversation whose window

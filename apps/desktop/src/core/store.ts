@@ -419,7 +419,7 @@ export const state = reactive({
    */
   groupDialog: null as { projectId: string; groupId: string | null; pick: string[] } | null,
   /** The sheet that sets a conversation's or a topic's status and note. */
-  markDialog: null as { on: 'conversation' | 'topic'; id: string } | null,
+  markDialog: null as { on: MarkOn; id: string } | null,
   pendingPlan: null as PlanPreview | null,
   /**
    * §4 — what produced the plan on screen, and against which base.
@@ -2999,12 +2999,33 @@ export async function markTopic(
 }
 
 /**
+ * The same for a repository, from its own row: kept until changed, like a
+ * topic's. The workspace list is pushed; this sets it at once.
+ */
+export async function markRepo(
+  workspaceId: string,
+  mark: { kind: ConversationMarkKind | null; note: string } | null,
+): Promise<boolean> {
+  const r = await guard(() => client.call('repo.mark', { workspaceId, mark }))
+  if (!r) return false
+  if (!r.ok) {
+    toast('error', r.reason)
+    return false
+  }
+  for (const w of state.workspaces) if (w.id === workspaceId) w.mark = r.mark
+  return true
+}
+
+/** What a status can be set on. */
+export type MarkOn = 'conversation' | 'topic' | 'repo'
+
+/**
  * The popover that sets it, opened at the pointer: on a conversation from a
  * tab or the line in the thread, on a topic from its header's menu.
  */
 export const markMenu = reactive({
   id: null as string | null,
-  on: 'conversation' as 'conversation' | 'topic',
+  on: 'conversation' as MarkOn,
   x: 0,
   y: 0,
   /** Opened by hovering: it goes again when the pointer leaves it and what opened it. */
@@ -3022,10 +3043,10 @@ export function openMarkMenu(e: MouseEvent, sessionId: string): void {
  * in the sheet below. Shown from where they are displayed: the badge on the
  * bar, the topic's header, the line over the composer.
  */
-export function openTopicMarkMenu(at: { x: number; y: number }, topicId: string): void {
+export function openTopicMarkMenu(at: { x: number; y: number }, topicId: string, on: MarkOn = 'topic'): void {
   clearTimeout(markHoverTimer)
   markMenu.hover = false
-  markMenu.on = 'topic'
+  markMenu.on = on
   markMenu.id = topicId
   markMenu.x = at.x
   markMenu.y = at.y
@@ -3036,11 +3057,11 @@ export function openTopicMarkMenu(at: { x: number; y: number }, topicId: string)
  * popup. A click on the thing keeps it (above).
  */
 let markHoverTimer: ReturnType<typeof setTimeout> | undefined
-export function hoverTopicMarkMenu(at: { x: number; y: number }, topicId: string): void {
+export function hoverTopicMarkMenu(at: { x: number; y: number }, topicId: string, on: MarkOn = 'topic'): void {
   if (markMenu.id && !markMenu.hover) return
   clearTimeout(markHoverTimer)
   markHoverTimer = setTimeout(() => {
-    openTopicMarkMenu(at, topicId)
+    openTopicMarkMenu(at, topicId, on)
     markMenu.hover = true
   }, markMenu.id ? 0 : 350)
 }
@@ -3055,7 +3076,7 @@ export function leaveMarkMenu(): void {
   }, 200)
 }
 /** The sheet that sets a status and note: from a right-click, or the popup's pencil. */
-export function openMarkDialog(on: 'conversation' | 'topic', id: string): void {
+export function openMarkDialog(on: MarkOn, id: string): void {
   markMenu.id = null
   state.markDialog = { on, id }
 }
@@ -6477,6 +6498,46 @@ export async function pushProject(workspaceIds: string[]): Promise<void> {
   }
   if (asking && !stillAsking(asking)) return
   askPush(res.plan, subject(res.plan.repos?.length ?? res.plan.steps.length, res.plan.repos?.[0]))
+}
+
+/**
+ * §7 — the project's pull: each repository it is on brought level with its own
+ * branch on origin. Asked at once, like Push: the core fetches every one of
+ * them before it can say what would come in, and that takes a moment.
+ */
+export async function pullProject(workspaceIds: string[]): Promise<void> {
+  if (stillBusy(workspaceIds)) return
+  const subject = (n: number, first: string | undefined) =>
+    n > 1 ? n + ' repositories from origin' : (first ?? 'this branch') + ' from origin'
+  // Asked early only for the repositories that look like they have something
+  // coming: a question that flashes up only to be withdrawn is worse than a wait.
+  const guess = state.workspaces.filter((w) => workspaceIds.includes(w.id) && (w.git?.incoming ?? 0) > 0)
+  const asking = guess.length
+    ? askWhilePlanning({ title: 'Pull ' + subject(guess.length, guess[0]?.git?.branch ?? undefined) + '?', verb: 'Pull' })
+    : null
+  const res = await guard(() => client.call('project.pull', { workspaceIds }))
+  if (!res || !res.ok || !res.plan) {
+    if (asking) dropWhilePlanning(asking)
+    if (res) toast('info', res.detail)
+    return
+  }
+  if (asking && !stillAsking(asking)) return
+  const plan = res.plan
+  const n = plan.repos?.length ?? plan.steps.length
+  // One repository is named by its branch, as the repository's own Pull is.
+  const only = n === 1 ? state.workspaces.find((w) => workspaceIds.includes(w.id) && w.name === plan.repos?.[0]) : null
+  const what = subject(n, only?.git?.branch ?? plan.repos?.[0])
+  state.pendingConfirm = {
+    title: 'Pull ' + what + '?',
+    body: [
+      ...(plan.steps.some((s) => s.destructive) ? [] : ['What origin holds comes in. Nothing of yours is rewritten.']),
+      ...plan.warnings,
+    ],
+    verb: 'Pull',
+    done: 'Pulled ' + what,
+    danger: false,
+    plan,
+  }
 }
 
 /**

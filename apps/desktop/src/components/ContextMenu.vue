@@ -261,11 +261,16 @@ function newTopicOn(projectId: string) {
       <button v-if="readThread" @click="act(() => markThreadUnread(readThread!))">
         <component :is="attentionIcon('reply')" /> Mark as unread
       </button>
-      <template v-if="ws.runtime">
+      <template v-if="ws.runtime || repo">
         <span class="rule" />
-        <button @click="act(() => toggleWorkspaceRuntime(ws!))">
+        <button v-if="ws.runtime" @click="act(() => toggleWorkspaceRuntime(ws!))">
           <component :is="serverRunning ? CircleStop : CirclePlay" />
           {{ serverRunning ? 'Stop the servers' : 'Start the servers' }}
+        </button>
+        <!-- Where you say it stands, as on a topic: only a repository's own
+             checkout; a branch of a topic takes the topic's. -->
+        <button v-if="repo" @click="act(() => openMarkDialog('repo', repo!.id))">
+          <component :is="markIcon(repo.mark?.kind ?? 'review')" /> {{ repo.mark ? 'Change the status…' : 'Set a status…' }}
         </button>
       </template>
       <span class="rule" />

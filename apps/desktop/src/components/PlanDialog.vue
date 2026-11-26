@@ -35,6 +35,7 @@ const TITLES: Record<string, string> = {
   push: 'Push',
   'topic.push': 'Push',
   pull: 'Pull',
+  'topic.pull': 'Pull',
   switch: 'Switch branch',
   branch: 'New branch',
   worktree: 'New branch folder',

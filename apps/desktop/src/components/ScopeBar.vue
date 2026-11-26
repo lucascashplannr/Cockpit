@@ -139,7 +139,10 @@ const offline = computed(() => scope.value?.kind === 'workspace' && !group.value
  */
 const topicMark = computed(() => {
   const t = selectedTopicGroup.value?.topic
-  return t?.mark ? { id: t.id, mark: t.mark } : null
+  if (t) return t.mark ? { on: 'topic' as const, id: t.id, mark: t.mark } : null
+  // A repository's own checkout carries one too, kept the same way.
+  const r = scope.value?.kind === 'workspace' && !group.value && w.value?.kind === 'main' ? w.value : null
+  return r?.mark ? { on: 'repo' as const, id: r.id, mark: r.mark } : null
 })
 /**
  * §5 — the ticket the topic was made from: on the topic, and on a branch of it,
@@ -154,9 +157,9 @@ const ticketTopic = computed(() => {
 function pressTopicMark(e: MouseEvent): void {
   if (!topicMark.value) return
   // With no note there is nothing to read: straight to the sheet.
-  if (!topicMark.value.mark.note) return openMarkDialog('topic', topicMark.value.id)
+  if (!topicMark.value.mark.note) return openMarkDialog(topicMark.value.on, topicMark.value.id)
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  openTopicMarkMenu({ x: r.left, y: r.bottom + 6 }, topicMark.value.id)
+  openTopicMarkMenu({ x: r.left, y: r.bottom + 6 }, topicMark.value.id, topicMark.value.on)
 }
 
 /* §8 — the servers are not on this line. They were a dot and a port here, a

@@ -1,19 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { Layers, MessageSquare, X } from '@lucide/vue'
+import { FolderGit2, Layers, MessageSquare, X } from '@lucide/vue'
 import type { ConversationMarkKind } from '@cockpit/shared'
 import DialogShell from './DialogShell.vue'
 import { markIcon } from './agent/mark.js'
-import { MARK_WORDS, markConversation, markTopic, state } from '../core/store.js'
+import { MARK_WORDS, markConversation, markRepo, markTopic, state } from '../core/store.js'
 
 /**
- * Where a conversation or a topic stands, and why: set here, read in the
- * popup the pencil came from (MarkMenu), or from "Set a status…" in the
- * right-click menu of a tab, a History row or a topic.
+ * Where a conversation, a topic or a repository stands, and why: set here,
+ * read in the popup the pencil came from (MarkMenu), or from "Set a status…"
+ * in the right-click menu of a tab, a History row, a topic or a repository.
  *
  * Nothing applies until Save. A status clicked again comes off, so a note
  * can stand alone. A conversation's is cleared by the next turn sent; a
- * topic's stays until it is changed here.
+ * topic's and a repository's stay until they are changed here.
  *
  * Unread is not here: it is the list's own mark, not a status, and the same
  * right-click menu has it.
@@ -24,12 +24,15 @@ const conv = computed(() =>
   d.value?.on === 'conversation' ? ([...state.agents, ...state.keptAgents].find((c) => c.id === d.value!.id) ?? null) : null,
 )
 const topic = computed(() => (d.value?.on === 'topic' ? (state.topics.find((t) => t.id === d.value!.id) ?? null) : null))
+const repo = computed(() => (d.value?.on === 'repo' ? (state.workspaces.find((w) => w.id === d.value!.id) ?? null) : null))
 const target = computed(() =>
   conv.value
     ? { name: conv.value.title || 'Untitled', mark: conv.value.mark ?? null }
     : topic.value
       ? { name: topic.value.name, mark: topic.value.mark ?? null }
-      : null,
+      : repo.value
+        ? { name: repo.value.name, mark: repo.value.mark ?? null }
+        : null,
 )
 
 const CHOICES: ConversationMarkKind[] = ['brainstorm', 'review', 'hold', 'done']
@@ -73,6 +76,8 @@ async function save(): Promise<void> {
   if (t) ok = await markTopic(t.id, { kind: k, note: note.value })
   const c = conv.value
   if (c) ok = await markConversation(c.id, { kind: k, note: note.value })
+  const r = repo.value
+  if (r) ok = await markRepo(r.id, { kind: k, note: note.value })
   busy.value = false
   if (ok) state.markDialog = null
 }
@@ -85,6 +90,8 @@ async function clear(): Promise<void> {
   if (t?.mark) ok = await markTopic(t.id, null)
   const c = conv.value
   if (c?.mark) ok = await markConversation(c.id, null)
+  const r = repo.value
+  if (r?.mark) ok = await markRepo(r.id, null)
   busy.value = false
   if (ok) state.markDialog = null
 }
@@ -104,7 +111,7 @@ function onNoteKey(e: KeyboardEvent): void {
     :dismissible="!busy"
     @close="close"
   >
-    <template #lead><component :is="topic ? Layers : MessageSquare" class="sm gi" /></template>
+    <template #lead><component :is="topic ? Layers : repo ? FolderGit2 : MessageSquare" class="sm gi" /></template>
     <div class="form">
       <div class="field">
         <span class="lbl">Status</span>

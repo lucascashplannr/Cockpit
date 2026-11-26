@@ -6,6 +6,7 @@ import type {
 } from '@cockpit/shared'
 import * as topicStore from './topics/store.js'
 import * as preparing from './topics/preparing.js'
+import { markOf } from './repoMarks.js'
 import { loadConfig, migrateLegacyLocks, updateConfig, projectSettings, setProjectSettings } from './config.js'
 import { childRepos, detectCapabilities, findManifest, groupedRepos, projectNameFor, readManifest } from './detect.js'
 import { commonDirOf, fetchRemote, git, isRepo, isWorktree, listWorktrees, probeGit } from './git.js'
@@ -37,6 +38,8 @@ export function allProjects(): Project[] {
 
 export function allWorkspaces(projectId?: string): Workspace[] {
   const list = [...workspaces.values()]
+  // Read on the way out: a probe rebuilds the checkout, the status outlives it.
+  for (const w of list) if (w.kind === 'main') w.mark = markOf(w)
   const filtered = projectId ? list.filter((w) => w.projectId === projectId) : list
   return filtered.sort((a, b) => {
     if (a.projectId !== b.projectId) return a.projectId.localeCompare(b.projectId)

@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { attentionIcon } from './agent/attention.js'
+import { markIcon } from './agent/mark.js'
 import { computed } from 'vue'
 import {
   ArrowDownToLine, ArrowUp, Asterisk, FileDiff, GitBranch, GitCompareArrows, Hourglass,
-  SquareDot, TriangleAlert,
+  SquareDot, StickyNote, TriangleAlert,
 } from '@lucide/vue'
 import type { Workspace } from '@cockpit/shared'
 import StripDots, { type StripSlot } from './StripDots.vue'
 import {
-  activeProject, activityFor, busyVerb, busyWord, gitBusy, onProject, openContextMenu, pickRepo, projectNarrowing, selectedGroupId, selectedTopicId, selectWorkspace,
-  pushCount, repoMark, shortName, state,
+  activeProject, activityFor, busyVerb, busyWord, gitBusy, hoverTopicMarkMenu, leaveMarkMenu, MARK_WORDS, onProject, openContextMenu, openTopicMarkMenu, pickRepo,
+  projectNarrowing, selectedGroupId, selectedTopicId, selectWorkspace, pushCount, repoMark, shortName, state,
 } from '../core/store.js'
 
 /**
@@ -145,8 +146,21 @@ const tip = computed(() => {
   if (up.value) facts.unshift('server up')
   if (gitBusy[w.value.id]) facts.unshift(busyWord(gitBusy[w.value.id]) + '…')
   else if (busySlot.value === 'run') facts.unshift('Starting the server…')
-  return [w.value.name + ' — ' + lead.value.title, facts.join(' · ')].filter(Boolean).join('\n')
+  return [w.value.name + ' — ' + lead.value.title, facts.join(' · '), ownTip.value].filter(Boolean).join('\n')
 })
+
+/** Where you said this repository stands: kept until changed, like a topic's. */
+const own = computed(() => (w.value.kind === 'main' ? (w.value.mark ?? null) : null))
+const ownTip = computed(() => {
+  const m = own.value
+  return m ? [m.kind ? MARK_WORDS[m.kind] : 'Note', m.note].filter(Boolean).join('\n') : ''
+})
+
+/** Under the note glyph, its right edge on the glyph's, as on a topic's header. */
+function underOwn(e: MouseEvent): { x: number; y: number } {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  return { x: r.right + 4 - 300, y: r.bottom + 6 }
+}
 
 /**
  * Two things live in this list and the icon is what tells them apart: a
@@ -175,6 +189,9 @@ const lead = computed(() => {
     return { icon: attentionIcon(a.attention), cls: a.attention, title: kindLabel.value + ' · ' + ATTENTION_TEXT[a.attention] }
   if (a.background)
     return { icon: Hourglass, cls: 'waiting', title: kindLabel.value + ' · an agent is waiting on what it left running' }
+  // With nothing live to say, what you said about it yourself, as a topic does.
+  const m = own.value
+  if (m?.kind) return { icon: markIcon(m.kind), cls: 'own k-' + m.kind, title: kindLabel.value + ' · ' + MARK_WORDS[m.kind] }
   return { icon: w.value.kind === 'worktree' ? GitBranch : SquareDot, cls: '', title: kindLabel.value }
 })
 </script>
@@ -248,6 +265,19 @@ const lead = computed(() => {
         </span>
         <span v-if="w.git.headState !== 'attached'" class="chip danger">{{ w.git.headState }}</span>
       </template>
+      <!-- Your note on it, at the end; its status leads the row. Hover or
+           click for the popup that reads it. -->
+      <span
+        v-if="own?.note"
+        class="own"
+        role="button"
+        aria-label="Note"
+        @mouseenter="hoverTopicMarkMenu(underOwn($event), w.id, 'repo')"
+        @mouseleave="leaveMarkMenu"
+        @click.stop="openTopicMarkMenu(underOwn($event), w.id, 'repo')"
+      >
+        <StickyNote class="sm" />
+      </span>
 
     </span>
   </button>
@@ -304,6 +334,23 @@ const lead = computed(() => {
 .row .kind.failed { color: var(--danger); }
 /* The hand at the default weight reads as bold beside the row's name. */
 .kind.approval .lucide { stroke-width: 1.75; }
+/* Your status, in its own ink, as on a topic's lid: hold and a note stay dim. */
+.row .kind.own { color: var(--text-muted); }
+.row .kind.own.k-review { color: var(--accent); }
+.row .kind.own.k-done { color: var(--ok); }
+.row .kind.own.k-brainstorm { color: var(--info); }
+/* The note glyph: the topic header's, to the pixel. */
+.meta .own {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  margin: -3px;
+  border-radius: 4px;
+  color: var(--text-dim);
+}
+.meta .own .lucide { width: 12px; height: 12px; stroke-width: 2.1; }
+.meta .own:hover { color: var(--text); background: var(--line-soft); }
 
 .name {
   flex: 1;

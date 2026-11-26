@@ -9,7 +9,7 @@ import {
 import type { TopicFilterKind } from '../core/store.js'
 
 /**
- * Which topics the list shows, by the status set on them. In the list's own
+ * Which topics and repositories the list shows, by the status set on them. In the list's own
  * header, beside the width toggle: it is about the column, like that one.
  * Lit while something is left out, so a short list never passes for a whole one.
  */
@@ -26,7 +26,10 @@ const filtering = computed(() => TOPIC_FILTER_KINDS.some((k) => hiddenTopicKinds
 /** How many of the list's topics carry each status: the menu's right-hand column. */
 const counts = computed(() => {
   const out: Record<TopicFilterKind, number> = { none: 0, brainstorm: 0, review: 0, hold: 0, done: 0 }
-  for (const g of workspaceGroups.value) if (g.topicId) out[topicFilterKind(g.topic)]++
+  for (const g of workspaceGroups.value) {
+    if (g.topicId) out[topicFilterKind(g.topic)]++
+    else for (const w of g.workspaces) if (w.kind === 'main') out[w.mark?.kind ?? 'none']++
+  }
   return out
 })
 
@@ -34,10 +37,10 @@ const word = (k: TopicFilterKind) => (k === 'none' ? 'No status' : MARK_WORDS[k]
 const icon = (k: TopicFilterKind) => (k === 'none' ? Circle : markIcon(k))
 
 const tip = computed(() => {
-  if (!filtering.value) return 'Filter topics by status'
+  if (!filtering.value) return 'Filter by status'
   const shown = TOPIC_FILTER_KINDS.filter((k) => !hiddenTopicKinds[k]).map(word)
-  return (shown.length ? 'Showing ' + shown.join(', ') : 'Showing no topic') +
-    (props.hidden ? '\n' + props.hidden + ' topic(s) hidden' : '')
+  return (shown.length ? 'Showing ' + shown.join(', ') : 'Showing nothing') +
+    (props.hidden ? '\n' + props.hidden + ' hidden' : '')
 })
 
 function toggle(): void {
@@ -88,7 +91,7 @@ onBeforeUnmount(() => {
       class="icon-btn"
       :class="{ on: open, lit: filtering && !open }"
       :title="tip"
-      aria-label="Filter topics by status"
+      aria-label="Filter by status"
       :aria-expanded="open"
       @click="toggle"
     >

@@ -682,6 +682,13 @@ export interface Workspace {
    */
   leases?: LeaseInfo[]
   hasMemory: boolean
+  /**
+   * Where a person says a repository stands, set from its row: the same
+   * status and note as a topic's, and it stays until changed. Only on a
+   * repository's own checkout (`kind: 'main'`); absent elsewhere and from an
+   * older core.
+   */
+  mark?: ConversationMark | null
   lastProbedAt: number
   /** Disk footprint, surfaced because it accumulates silently (§16). */
   diskBytes: number | null

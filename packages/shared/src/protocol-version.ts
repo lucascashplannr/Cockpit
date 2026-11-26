@@ -140,8 +140,14 @@
  * 2.43 — `agent.gitPlan` and `AgentWrap.git`: a recap may carry the staging,
  * commit or push the person asked for, run by Cockpit on their click. An older
  * core answers `unknown_method`.
+ *
+ * 2.44 — `project.pull`: every repository of the project brought level with
+ * its own branch on origin, in one plan. An older core answers `unknown_method`.
+ *
+ * 2.45 — `repo.mark` and `Workspace.mark`: a status and note on a repository's
+ * own checkout, kept until changed. An older core answers `unknown_method`.
  */
-export const PROTOCOL_VERSION = { major: 2, minor: 43 } as const
+export const PROTOCOL_VERSION = { major: 2, minor: 45 } as const
 
 export function protocolCompatible(a: { major: number }, b: { major: number }): boolean {
   return a.major === b.major

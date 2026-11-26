@@ -532,6 +532,14 @@ export interface Rpc {
   'topic.setup': { params: { topicId: string }; result: { ok: boolean; detail: string } }
   'topic.rename': { params: { topicId: string; name: string }; result: Topic }
   /**
+   * The same for a repository, from its own checkout's row. Kept per
+   * repository, so every window and a move into a group keep it.
+   */
+  'repo.mark': {
+    params: { workspaceId: string; mark: { kind: ConversationMarkKind | null; note: string } | null }
+    result: { ok: true; mark: ConversationMark | null } | { ok: false; reason: string }
+  }
+  /**
    * Where a person says a topic stands, and why. Null clears it, and so does a
    * mark with neither a kind nor a note. An inferred topic answers not ok.
    */
@@ -585,6 +593,14 @@ export interface Rpc {
    * repository it is on, to origin, in one plan.
    */
   'project.push': {
+    params: { workspaceIds: string[] }
+    result: { ok: boolean; detail: string; plan: PlanPreview | null }
+  }
+  /**
+   * §7 — the other direction: what origin holds of each repository's current
+   * branch that the checkout does not, brought in, in one plan.
+   */
+  'project.pull': {
     params: { workspaceIds: string[] }
     result: { ok: boolean; detail: string; plan: PlanPreview | null }
   }
